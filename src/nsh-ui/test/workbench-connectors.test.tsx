@@ -554,7 +554,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.press("Settings");
   await app.press("Devices and chat apps");
   await app.waitFor("label:channels-section");
-  await app.waitFor("No bot connected");
+  await app.waitFor("Not connected");
 
   // Open Telegram channel modal, configure & start, then close modal.
   await app.press("channel-toggle-telegram");
@@ -564,7 +564,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.waitFor("remote-disclaimer-agree");
   expect(backend.configuredBots.length).toBe(0);
   await app.press("remote-disclaimer-agree");
-  await app.waitFor("Active bot: Telegram(@openbitfun_bot)");
+  await app.waitFor("Connected: Telegram(@openbitfun_bot)");
   expect(backend.configuredBots.at(-1)).toMatchObject({
     bot_type: "telegram",
     bot_token: "tg-bot-token-123",
@@ -574,7 +574,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
 
   // Stop bot
   await app.press("connector-bot-stop");
-  await app.waitFor("No bot connected");
+  await app.waitFor("Not connected");
   expect(backend.stopBotCount()).toBe(1);
 
   // Open Feishu channel modal, configure & start, then close modal.
@@ -582,7 +582,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.type("connector-feishu-app-id", "cli_app_1");
   await app.type("connector-feishu-app-secret", "sec_feishu_1");
   await app.press("connector-feishu-connect");
-  await app.waitFor("Active bot: Feishu(cli_feishu_1)");
+  await app.waitFor("Connected: Feishu(cli_feishu_1)");
   expect(backend.configuredBots.at(-1)).toMatchObject({
     bot_type: "feishu",
     app_id: "cli_app_1",

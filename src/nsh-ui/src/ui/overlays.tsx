@@ -11,8 +11,10 @@ import {
   cleanup,
   createMotion,
   effect,
+  keymap,
   lifecycle,
   reduceMotion,
+  safeArea,
   signal,
   type Align,
   type Bounds,
@@ -26,22 +28,26 @@ import {
 import { Dialog, Input } from "nsh/base";
 import { tr } from "../i18n";
 import {
+  compactLayout,
   concentricRadius,
   controlHeight,
   elevationShadow,
   fontMono,
   isLightAppearance,
+  layout,
   palette,
   radii,
   space,
   textLineHeight,
   textSize,
   textTracking,
+  touchSlop,
 } from "../theme";
 import { Icon, type IconName } from "./icons";
 import {
   MOTION_DURATION,
   MOTION_EASE_STANDARD_BEZIER,
+  drawerEnterMotion,
   enterMotion,
   modalEnterMotion,
   paintTransition,
@@ -50,8 +56,46 @@ import {
   pressTransition,
   tactileActiveStyle,
 } from "./motion";
+import { focusRingStyle } from "./primitives";
 
 export type ModalSize = "sm" | "md" | "lg" | "xl";
+
+// LIFO Escape stack so Escape always dismisses only the topmost open modal,
+// menu, drawer, or sheet — even when no `<Input>` inside it holds focus.
+const escapeStack: Array<() => void> = [];
+let unbindEscapeKey: (() => void) | null = null;
+
+function syncEscapeBinding(): void {
+  if (escapeStack.length > 0 && !unbindEscapeKey) {
+    try {
+      unbindEscapeKey = keymap.bind("escape", () => {
+        const top = escapeStack[escapeStack.length - 1];
+        if (top) top();
+      });
+    } catch {
+      unbindEscapeKey = null;
+    }
+  } else if (escapeStack.length === 0 && unbindEscapeKey) {
+    const stop = unbindEscapeKey;
+    unbindEscapeKey = null;
+    stop();
+  }
+}
+
+/**
+ * Registers an Escape-key dismiss handler on the topmost overlay stack and
+ * returns an unregister callback. Call inside a mounted overlay/sheet/drawer
+ * and pair with `cleanup(...)`.
+ */
+export function registerEscapeDismiss(onDismiss: () => void): () => void {
+  escapeStack.push(onDismiss);
+  syncEscapeBinding();
+  return () => {
+    const idx = escapeStack.lastIndexOf(onDismiss);
+    if (idx >= 0) escapeStack.splice(idx, 1);
+    syncEscapeBinding();
+  };
+}
 
 function modalMaxWidth(size: ModalSize): number {
   if (size === "sm") return 420;
@@ -72,11 +116,11 @@ export function ModalHeader(props: ModalHeaderProps) {
     <View
       style={{
         flexDirection: "row",
-        alignItems: "center",
+        alignItems: "flex-start",
         flexShrink: 0,
         gap: space.md,
-        paddingHorizontal: space.xxl,
-        paddingTop: space.xxl,
+        paddingHorizontal: compactLayout() ? space.lg : space.xl,
+        paddingTop: compactLayout() ? space.md : space.xl,
         paddingBottom: space.sm,
       }}
     >
@@ -113,7 +157,7 @@ export function ModalHeader(props: ModalHeaderProps) {
         <View
           role="button"
           accessibilityLabel="modal-close"
-          hitSlop={4}
+          hitSlop={touchSlop(controlHeight.sm)}
           onPress={props.onClose}
           style={{
             width: controlHeight.sm,
@@ -124,15 +168,12 @@ export function ModalHeader(props: ModalHeaderProps) {
             alignItems: "center",
             justifyContent: "center",
             cursor: "pointer",
+            userSelect: "none",
             ...pressTransition(MOTION_DURATION.fast),
           }}
           hoverStyle={{ backgroundColor: palette().buttonSecondaryHover }}
-          activeStyle={tactileActiveStyle(0.94, { backgroundColor: palette().buttonSecondaryPressed })}
-          focusVisibleStyle={{
-            outlineWidth: 2,
-            outlineColor: palette().borderFocus,
-            outlineOffset: 2,
-          }}
+          activeStyle={tactileActiveStyle(0.96, { backgroundColor: palette().buttonSecondaryPressed })}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Icon name="close" size={14} color={palette().textElevatedMuted} />
         </View>
@@ -150,7 +191,12 @@ export function ModalBody(props: ModalBodyProps) {
   return (
     <Scroll
       style={[{ flexShrink: 1, minHeight: 0 }, props.style]}
-      contentStyle={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 20, gap: 16 }}
+      contentStyle={{
+        paddingHorizontal: compactLayout() ? space.lg : space.xl,
+        paddingTop: space.md,
+        paddingBottom: space.lg,
+        gap: space.lg,
+      }}
     >
       {props.children}
     </Scroll>
@@ -170,10 +216,10 @@ export function ModalFooter(props: ModalFooterProps) {
         flexShrink: 0,
         alignItems: "center",
         justifyContent: "flex-end",
-        gap: 8,
-        paddingHorizontal: 24,
-        paddingTop: 4,
-        paddingBottom: 22,
+        gap: space.sm,
+        paddingHorizontal: compactLayout() ? space.lg : space.xl,
+        paddingTop: space.xs,
+        paddingBottom: compactLayout() ? space.lg + safeArea().bottom : space.xl,
         backgroundColor: "transparent",
       }}
     >
@@ -196,8 +242,12 @@ export interface ModalDialogProps {
 }
 
 function ModalCard(props: ModalDialogProps) {
-  // Modals are viewport-centered (never trigger-anchored), so center origin is intentional.
-  const motion = modalEnterMotion();
+  // Centered modal on desktop; bottom sheet with grab handle on phone (<720).
+  const isSheet = compactLayout();
+  const motion = isSheet ? drawerEnterMotion("bottom") : modalEnterMotion();
+  if (props.closeOnEscape !== false) {
+    cleanup(registerEscapeDismiss(() => props.onClose()));
+  }
   return (
     <View
       role="dialog"
@@ -205,21 +255,38 @@ function ModalCard(props: ModalDialogProps) {
       style={[
         {
           width: "100%",
-          maxWidth: modalMaxWidth(props.size ?? "md"),
+          maxWidth: compactLayout() ? "100%" : modalMaxWidth(props.size ?? "md"),
           maxHeight: "90%",
-          borderRadius: radii.xl,
+          borderTopLeftRadius: radii.xl,
+          borderTopRightRadius: radii.xl,
+          borderBottomLeftRadius: compactLayout() ? 0 : radii.xl,
+          borderBottomRightRadius: compactLayout() ? 0 : radii.xl,
           borderCurve: "continuous",
           borderWidth: 1,
+          borderBottomWidth: compactLayout() ? 0 : 1,
           borderColor: palette().border,
           backgroundColor: palette().surfaceElevated,
           boxShadow: elevationShadow(3),
           overflow: "hidden",
           flexDirection: "column",
-          transformOrigin: "center",
+          paddingBottom: compactLayout() && !props.footer ? safeArea().bottom : 0,
+          transformOrigin: compactLayout() ? "bottom center" : "center",
         },
         motion.style,
       ]}
     >
+      <If when={compactLayout()}>
+        <View style={{ alignItems: "center", paddingTop: space.sm, paddingBottom: space.xs, flexShrink: 0 }}>
+          <View
+            style={{
+              width: 36,
+              height: 4,
+              borderRadius: radii.pill,
+              backgroundColor: palette().borderStrong,
+            }}
+          />
+        </View>
+      </If>
       <If when={props.title ?? ""}>
         {titleText => (
           <ModalHeader
@@ -265,9 +332,9 @@ export function ModalDialog(props: ModalDialogProps) {
           top: 0,
           right: 0,
           bottom: 0,
-          padding: 24,
-          alignItems: "center",
-          justifyContent: "center",
+          padding: compactLayout() ? 0 : space.xl,
+          alignItems: compactLayout() ? "stretch" : "center",
+          justifyContent: compactLayout() ? "flex-end" : "center",
           pointerEvents: "box-none",
         }}
       >
@@ -322,6 +389,7 @@ function MenuSurface(props: {
   onClose: () => void;
 }) {
   const motion = popoverEnterMotion(props.placement, props.align, MOTION_DURATION.popover);
+  cleanup(registerEscapeDismiss(() => props.onClose()));
   return (
     <View
       role="menu"
@@ -369,20 +437,18 @@ function MenuSurface(props: {
                 <If when={Boolean(item().header) && Boolean(item().label)}>
                   <View
                     style={{
-                      paddingHorizontal: 9,
-                      paddingTop: 6,
-                      paddingBottom: 3,
+                      paddingHorizontal: space.sm,
+                      paddingTop: space.chip,
+                      paddingBottom: space.xs,
                       pointerEvents: "none",
                     }}
                   >
                     <Text
                       style={{
                         color: palette().textElevatedMuted,
-                        fontSize: textSize(11),
+                        fontSize: textSize(12),
                         fontWeight: "600",
-                        letterSpacing: textTracking(11, true),
-                        textTransform: "uppercase",
-                        lineHeight: textLineHeight(11, 1.24),
+                        lineHeight: textLineHeight(12, 1.3),
                         numberOfLines: 1,
                         textOverflow: "ellipsis",
                       }}
@@ -406,18 +472,19 @@ function MenuSurface(props: {
                       item().onSelect?.();
                     }}
                     style={{
-                      minHeight: 30,
+                      minHeight: compactLayout() ? layout.touchTarget : 30,
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: 8,
-                      paddingHorizontal: 8,
-                      paddingVertical: 6,
+                      gap: space.sm,
+                      paddingHorizontal: space.sm,
+                      paddingVertical: space.chip,
                       borderRadius: MENU_ITEM_RADIUS,
                       borderCurve: "continuous",
                       backgroundColor: item().active
                         ? palette().surfaceSubtle
                         : "transparent",
                       cursor: item().disabled ? "not-allowed" : "pointer",
+                      userSelect: "none",
                       ...pressTransition(MOTION_DURATION.fast),
                     }}
                     hoverStyle={{
@@ -432,11 +499,7 @@ function MenuSurface(props: {
                         ? palette().dangerHoverBg
                         : palette().panelHover,
                     })}
-                    focusVisibleStyle={{
-                      outlineWidth: 2,
-                      outlineColor: palette().borderFocus,
-                      outlineOffset: -1,
-                    }}
+                    focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                     disabledStyle={{ opacity: 0.45 }}
                   >
                     <If when={item().icon ?? ""}>
@@ -445,16 +508,14 @@ function MenuSurface(props: {
                           name={iconName() as IconName}
                           size={14}
                           color={
-                            item().danger
-                              ? palette().danger
-                              : item().active
-                                ? palette().text
-                                : palette().textSecondary
+                            item().active
+                              ? palette().text
+                              : palette().textSecondary
                           }
                         />
                       )}
                     </If>
-                    <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+                    <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                       <Text
                         style={{
                           color: item().danger ? palette().danger : palette().text,
@@ -472,8 +533,8 @@ function MenuSurface(props: {
                           <Text
                             style={{
                               color: palette().textElevatedMuted,
-                              fontSize: textSize(11),
-                              lineHeight: textLineHeight(11, 1.35),
+                              fontSize: textSize(12),
+                              lineHeight: textLineHeight(12, 1.35),
                               numberOfLines: 2,
                               textOverflow: "ellipsis",
                             }}
@@ -689,6 +750,7 @@ function SelectPopoverSurface<T extends string>(props: {
   onSelect: (value: T) => void;
   onClose: () => void;
 }) {
+  cleanup(registerEscapeDismiss(() => props.onClose()));
   const motion = popoverEnterMotion(props.placement, props.align, MOTION_DURATION.popover);
   const listMaxHeight = () =>
     Math.max(96, props.maxHeight - (props.searchable ? 56 : 12));
@@ -718,19 +780,19 @@ function SelectPopoverSurface<T extends string>(props: {
         <View
           style={{
             boxSizing: "border-box",
-            height: controlHeight.sm,
+            height: compactLayout() ? 36 : controlHeight.sm,
+            minHeight: compactLayout() ? 36 : controlHeight.sm,
             flexShrink: 0,
             flexDirection: "row",
             alignItems: "center",
-            gap: 6,
-            paddingHorizontal: 8,
+            gap: space.chip,
+            paddingHorizontal: space.sm,
             paddingVertical: 0,
             borderRadius: SELECT_INNER_RADIUS,
             borderCurve: "continuous",
             borderWidth: 1,
             borderColor: palette().border,
             backgroundColor: palette().inputBg,
-            boxShadow: palette().shadowInset,
             ...paintTransition(MOTION_DURATION.fast),
           }}
           focusWithinStyle={{
@@ -746,10 +808,12 @@ function SelectPopoverSurface<T extends string>(props: {
             style={{
               flex: 1,
               minWidth: 0,
+              height: "100%",
+              minHeight: compactLayout() ? 34 : controlHeight.sm - 2,
               color: palette().text,
               placeholderColor: palette().textElevatedMuted,
               caretColor: palette().accent,
-              fontSize: textSize(12),
+              fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(12),
             }}
             onChange={e => props.onQueryChange(e.value)}
             onSubmit={() => {
@@ -766,7 +830,7 @@ function SelectPopoverSurface<T extends string>(props: {
         style={{ flexShrink: 1, minHeight: 0, maxHeight: listMaxHeight() }}
         scrollbar={true}
       >
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: space.hair }}>
           <Each of={props.options} key={opt => opt.value}>
             {opt => (
               <View
@@ -782,17 +846,18 @@ function SelectPopoverSurface<T extends string>(props: {
                   props.onSelect(opt().value);
                 }}
                 style={{
-                  minHeight: 30,
+                  minHeight: compactLayout() ? layout.touchTarget : 30,
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 8,
-                  paddingHorizontal: 9,
-                  paddingVertical: 5,
+                  gap: space.sm,
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.chip,
                   borderRadius: SELECT_INNER_RADIUS,
                   borderCurve: "continuous",
                   backgroundColor:
                     opt().value === props.value ? palette().accentSoft : "transparent",
                   cursor: opt().disabled ? "not-allowed" : "pointer",
+                  userSelect: "none",
                   ...pressTransition(MOTION_DURATION.fast),
                 }}
                 hoverStyle={{
@@ -806,11 +871,7 @@ function SelectPopoverSurface<T extends string>(props: {
                   backgroundColor:
                     opt().value === props.value ? palette().accentSoft : palette().panelHover,
                 })}
-                focusVisibleStyle={{
-                  outlineWidth: 2,
-                  outlineColor: palette().borderFocus,
-                  outlineOffset: -1,
-                }}
+                focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                 disabledStyle={{ opacity: 0.45 }}
               >
                 <If when={opt().icon ?? ""}>
@@ -826,7 +887,7 @@ function SelectPopoverSurface<T extends string>(props: {
                     />
                   )}
                 </If>
-                <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+                <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                   <Text
                     style={{
                       color:
@@ -847,8 +908,8 @@ function SelectPopoverSurface<T extends string>(props: {
                       <Text
                         style={{
                           color: palette().textElevatedMuted,
-                          fontSize: textSize(11),
-                          lineHeight: textLineHeight(11, 1.35),
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.35),
                           numberOfLines: 2,
                           textOverflow: "ellipsis",
                         }}
@@ -942,6 +1003,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
         ref={el => anchorRef.set(el)}
         role="combobox"
         disabled={props.disabled}
+        hitSlop={touchSlop((props.size ?? "md") === "sm" ? controlHeight.sm : controlHeight.md)}
         accessibilityLabel={props.accessibilityLabel}
         accessibilityState={{
           expanded: open(),
@@ -956,7 +1018,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
           boxSizing: "border-box",
           height: (props.size ?? "md") === "sm" ? controlHeight.sm : controlHeight.md,
           maxWidth: "100%",
-          paddingHorizontal: (props.variant ?? "default") === "ghost" ? 8 : 11,
+          paddingHorizontal: (props.variant ?? "default") === "ghost" ? space.sm : space.md,
           paddingVertical: 0,
           borderRadius: radii.sm,
           borderCurve: "continuous",
@@ -982,13 +1044,12 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
               ? undefined
               : open()
                 ? `0 0 0 3px ${palette().accentSoft}`
-                : isLightAppearance()
-                  ? palette().shadowButton
-                  : undefined,
+                : undefined,
           flexDirection: "row",
           alignItems: "center",
-          gap: (props.variant ?? "default") === "ghost" ? 5 : 8,
+          gap: (props.variant ?? "default") === "ghost" ? space.xs : space.sm,
           cursor: props.disabled ? "not-allowed" : "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{
@@ -1014,11 +1075,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
                 : palette().buttonSecondaryHover,
         }}
         activeStyle={tactileActiveStyle(0.98)}
-        focusVisibleStyle={{
-          outlineWidth: 2,
-          outlineColor: palette().borderFocus,
-          outlineOffset: 2,
-        }}
+        focusVisibleStyle={focusRingStyle()}
         disabledStyle={{ opacity: 0.48 }}
       >
         <Text
@@ -1028,7 +1085,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
             minWidth: 0,
             color: props.options.some(opt => opt.value === props.value)
               ? palette().text
-              : palette().textMuted,
+              : palette().textElevatedMuted,
             fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
             lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.15),
             fontWeight: "500",
@@ -1041,7 +1098,7 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
         <Icon
           name={open() ? "chevron-up" : "chevron-down"}
           size={(props.size ?? "md") === "sm" ? 12 : 13}
-          color={palette().textMuted}
+          color={palette().textElevatedMuted}
         />
       </View>
 
@@ -1177,24 +1234,30 @@ export function dismissToast(id: string): void {
   toastExitTimers.set(id, exitHandle);
 }
 
+function defaultToastDurationMs(tone: ToastTone): number {
+  if (tone === "danger" || tone === "error") return 8000;
+  return 4000;
+}
+
 export function pushToast(
   message: string,
   tone: ToastTone = "neutral",
-  durationMs = 3200,
+  durationMs?: number,
 ): string {
+  const resolvedDuration = durationMs !== undefined ? durationMs : defaultToastDurationMs(tone);
   const id = `toast-${++toastSeq}`;
   const current = toasts();
   const active = current.filter(t => !t.exiting);
-  if (active.length >= 4) {
-    const dropped = active.slice(0, active.length - 3);
+  if (active.length >= 3) {
+    const dropped = active.slice(0, active.length - 2);
     for (const d of dropped) clearToastTimer(d.id);
     const dropIds = new Set(dropped.map(d => d.id));
     toasts.set([...current.filter(item => !dropIds.has(item.id)), { id, message, tone }]);
   } else {
     toasts.set([...current, { id, message, tone }]);
   }
-  if (durationMs > 0) {
-    scheduleToastTimer(id, durationMs);
+  if (resolvedDuration > 0) {
+    scheduleToastTimer(id, resolvedDuration);
   }
   return id;
 }
@@ -1240,6 +1303,7 @@ function toastToneTokens(tone: ToastTone): {
 }
 
 function ToastCard(props: { entry: InternalToastEntry }) {
+  const fromTop = compactLayout();
   const motion = createMotion({
     enter: reduceMotion()
       ? {
@@ -1249,7 +1313,11 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           ignoreReduceMotion: true,
         }
       : {
-          keyframes: { opacity: [0, 1], translateY: [10, 0], scale: [0.97, 1] },
+          keyframes: {
+            opacity: [0, 1],
+            translateY: [fromTop ? -10 : 10, 0],
+            scale: [0.97, 1],
+          },
           duration: MOTION_DURATION.toast,
           easing: MOTION_EASE_STANDARD_BEZIER,
         },
@@ -1268,7 +1336,11 @@ function ToastCard(props: { entry: InternalToastEntry }) {
               ignoreReduceMotion: true,
             }
           : {
-              keyframes: { opacity: [1, 0], translateY: [0, 6], scale: [1, 0.97] },
+              keyframes: {
+                opacity: [1, 0],
+                translateY: [0, fromTop ? -6 : 6],
+                scale: [1, 0.97],
+              },
               duration: TOAST_EXIT_MS,
               easing: MOTION_EASE_STANDARD_BEZIER,
             },
@@ -1284,9 +1356,9 @@ function ToastCard(props: { entry: InternalToastEntry }) {
         {
           flexDirection: "row",
           alignItems: "center",
-          gap: 10,
-          paddingHorizontal: 16,
-          paddingVertical: 11,
+          gap: space.sm,
+          paddingHorizontal: space.lg,
+          paddingVertical: space.md,
           borderRadius: radii.lg,
           borderCurve: "continuous",
           borderWidth: 1,
@@ -1294,7 +1366,8 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
           boxShadow: elevationShadow(2),
-          maxWidth: 380,
+          width: compactLayout() ? "100%" : undefined,
+          maxWidth: compactLayout() ? "100%" : 380,
         },
         motion.style,
       ]}
@@ -1323,7 +1396,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
       <View
         role="button"
         accessibilityLabel={`dismiss-${props.entry.id}`}
-        hitSlop={4}
+        hitSlop={touchSlop(controlHeight.xs)}
         onPress={() => dismissToast(props.entry.id)}
         style={{
           width: controlHeight.xs,
@@ -1334,15 +1407,12 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           alignItems: "center",
           justifyContent: "center",
           cursor: "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-        activeStyle={tactileActiveStyle(0.92, { backgroundColor: palette().panelHover })}
-        focusVisibleStyle={{
-          outlineWidth: 2,
-          outlineColor: palette().borderFocus,
-          outlineOffset: 2,
-        }}
+        activeStyle={tactileActiveStyle(0.96, { backgroundColor: palette().panelHover })}
+        focusVisibleStyle={focusRingStyle()}
       >
         <Icon name="close" size={12} color={palette().textElevatedMuted} />
       </View>
@@ -1365,18 +1435,31 @@ export function ToastHost() {
   return (
     <If when={toasts().length > 0}>
       <Overlay
-        style={{
-          left: 0,
-          right: 0,
-          bottom: 20,
-          alignItems: "center",
-          pointerEvents: "box-none",
-        }}
+        style={
+          compactLayout()
+            ? {
+                left: space.sm,
+                right: space.sm,
+                top: layout.phoneTopBarHeight + safeArea().top + space.sm,
+                alignItems: "stretch",
+                pointerEvents: "box-none",
+              }
+            : {
+                right: space.xl,
+                bottom: space.xl,
+                alignItems: "flex-end",
+                pointerEvents: "box-none",
+              }
+        }
       >
         <View
           onMouseEnter={() => hovered.set(true)}
           onMouseLeave={() => hovered.set(false)}
-          style={{ gap: 6, alignItems: "center", pointerEvents: "box-none" }}
+          style={{
+            gap: space.sm,
+            alignItems: compactLayout() ? "stretch" : "flex-end",
+            pointerEvents: "box-none",
+          }}
         >
           <Each of={toasts()} key={item => item.id}>
             {item => <ToastCard entry={item()} />}

@@ -9,7 +9,7 @@
 // surface; `onAccountAuthChanged` listeners refresh device lists on sign-in or
 // sign-out.
 
-import { cleanup, effect, signal, Text, untracked, View, type Signal } from "nsh";
+import { Scroll, cleanup, effect, signal, Text, untracked, View, type Signal } from "nsh";
 import { entryDeviceId } from "../bridge";
 import { fleetDeviceById, fleetDevices } from "../fleetStore";
 import {
@@ -31,7 +31,8 @@ import {
   type AccountAuthChangeListener,
 } from "../homeStore";
 import { tr } from "../i18n";
-import { layout, palette, space, textStyle } from "../theme";
+import { compactLayout, layout, palette, space, textStyle } from "../theme";
+import { deviceException } from "./fleet";
 import { ModalDialog, pushToast } from "./overlays";
 import { Button } from "./primitives";
 import { SignInView, signInStepBody, signInStepTitle, type SignInDevice, type SignInStep } from "./SignInView";
@@ -239,7 +240,7 @@ export function AccountAuthModal() {
           <Button
             label={authLoading() ? tr("signin.checking") : tr("launcher.signOut")}
             variant="danger"
-            size="sm"
+            size="md"
             loading={authLoading()}
             disabled={authLoading()}
             accessibilityLabel="account-auth-sign-out"
@@ -248,7 +249,7 @@ export function AccountAuthModal() {
           <Button
             label={tr("common.done")}
             variant="primary"
-            size="sm"
+            size="md"
             accessibilityLabel="account-auth-done"
             onPress={closeAccountAuthModal}
           />
@@ -290,8 +291,7 @@ function otherDevices(): SignInDevice[] {
       deviceId: device.deviceId,
       name: device.name,
       kind: device.hostKind,
-      exception:
-        device.state === "offline" ? "offline" : device.state === "update_required" ? "update_required" : null,
+      exception: deviceException(device.state),
     }));
 }
 
@@ -306,11 +306,13 @@ export function SignInScreen(props: SignInScreenProps) {
     if (signedIn) welcome.set("ready");
   });
   startAutoPoll(() => welcome() === null);
+  effect(() => {
+    if (accountStatus() === null) void loadAccountState();
+  });
   cleanup(() => {
     stopAutoPoll();
     unsubAuth();
   });
-  if (accountStatus() === null) void loadAccountState();
 
   const step = (): SignInStep => welcome() ?? hostStep();
   const finish = () => {
@@ -318,14 +320,17 @@ export function SignInScreen(props: SignInScreenProps) {
     props.onDone();
   };
   return (
-    <View
+    <Scroll
       accessibilityLabel="sign-in-screen"
       style={{
         flex: 1,
         minHeight: 0,
-        flexDirection: "column",
-        paddingHorizontal: layout.pageGutter,
         backgroundColor: palette().canvas,
+      }}
+      contentStyle={{
+        flexGrow: 1,
+        flexDirection: "column",
+        paddingHorizontal: compactLayout() ? layout.phoneGutter : layout.pageGutter,
       }}
     >
       <View style={{ flexGrow: SIGN_IN_TOP_SHARE, flexShrink: 1, minHeight: space.x3l }} />
@@ -347,7 +352,7 @@ export function SignInScreen(props: SignInScreenProps) {
         }}
       />
       <View style={{ flexGrow: 100 - SIGN_IN_TOP_SHARE, flexShrink: 1, minHeight: space.x3l }} />
-    </View>
+    </Scroll>
   );
 }
 

@@ -299,7 +299,7 @@ test("an older host without set_assistant_identity asks for an update instead of
   await app.type("assistant-name-input", "Muse Prime");
   await app.submit("assistant-name-input");
   await app.waitUntil(() =>
-    app.texts().some(text => text.includes("This host cannot change an assistant's identity from here.")),
+    app.texts().some(text => text.includes("This device cannot change an assistant's identity from here.")),
   );
   expect(recorded.some(item => item.action === "write_file_content")).toBe(false);
 });

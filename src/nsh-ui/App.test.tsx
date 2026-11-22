@@ -1480,7 +1480,7 @@ test("a host older than the typed settings commands says so instead of writing w
   await app.type("model-model-name", "gpt-4.1-mini");
   await app.type("model-base-url", "https://api.openai.com/v1");
   await app.press("save-model");
-  await app.waitFor("This host is older than this window and cannot apply this change. Update OpenBitFun on it.");
+  await app.waitFor("This device is older than this window and cannot apply this change. Update OpenBitFun on it.");
   // No fallback to the whole-list write the command replaced.
   expect(backend.settingsWrites.some(write => write.path === "ai.models")).toBe(false);
 
@@ -1489,7 +1489,7 @@ test("a host older than the typed settings commands says so instead of writing w
   await app.press("nav-settings-page-permissions");
   await app.waitFor("Edit rules");
   await app.press("permission-mode-auto");
-  await app.waitFor("This host is older than this window and cannot apply this change. Update OpenBitFun on it.");
+  await app.waitFor("This device is older than this window and cannot apply this change. Update OpenBitFun on it.");
   expect(backend.settingsWrites.some(write => write.path === "tool_permissions")).toBe(false);
 });
 
@@ -2089,7 +2089,7 @@ test("an older host without profile commands keeps stored profiles openable and 
   await app.press("profiles-toggle");
   await app.waitFor("Open Dev server");
   await app.press("profile-save");
-  await app.waitFor("This host cannot keep terminal profiles. Update OpenBitFun on it to save or delete profiles; profiles saved earlier still open.");
+  await app.waitFor("This device cannot keep terminal profiles. Update OpenBitFun on it to save or delete profiles; profiles saved earlier still open.");
   expect(backend.actions()).not.toContain("upsert_terminal_profile");
   // Nothing is deleted from storage while the host cannot take the rows.
   expect(app.storage()["openbitfun.nsh.terminal-profiles.v1"]).toContain("Dev server");
@@ -2422,7 +2422,7 @@ test("a host older than the activity view model asks for an update instead of ke
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
   await app.waitFor("42 requests · 120K tokens");
-  await app.waitFor("Update this host to see the activity chart; it is too old to compute it.");
+  await app.waitFor("Update OpenBitFun on this device to see the activity chart; its version is too old to compute it.");
   expect(app.texts().join("\n")).not.toContain("tokens over the window.");
 });
 
@@ -2432,7 +2432,7 @@ test("a host that offers no usage statistics says so instead of showing zeros", 
 
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
-  await app.waitFor("This host reports no usage statistics, so nothing is invented here.");
+  await app.waitFor("This device reports no usage statistics, so nothing is invented here.");
   expect(app.texts()).not.toContain("0 requests · 0 tokens");
 });
 
@@ -2593,7 +2593,7 @@ test("a host that reports no log folder says so and offers no actions", async ()
   await app.press("Settings");
   await app.press("nav-settings-page-diagnostics");
   await app.waitFor("Log files");
-  await app.waitFor("This host reports no log location.");
+  await app.waitFor("This device reports no log location.");
   expect(app.texts()).not.toContain("Effective level");
 });
 
@@ -2763,7 +2763,7 @@ test("commit attribution writes its own leaf, and external import states where i
   await app.press("nav-settings-page-external-import");
   await app.waitFor("External imports");
   await app.waitFor("Not available on this device");
-  await app.waitFor("This host does not support restoring removed source sessions. Update the serving host and retry.");
+  await app.waitFor("This device does not support restoring removed source sessions. Update OpenBitFun on it and retry.");
   await app.press("external-import-open-agents");
   // The button opens MCP servers at its external-agents section.
   await app.waitFor("acp-json-toggle");
@@ -3001,7 +3001,7 @@ test("the font baseline the host stores sets the size the whole surface draws", 
   });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  const baseline = (px: number) => `${px}px · the host's font baseline, shared with the desktop surface`;
+  const baseline = (px: number) => `${px}px · this device's font baseline`;
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
   await app.waitFor(baseline(18));
@@ -3050,7 +3050,7 @@ test("a host that stores no font baseline keeps the default size", async () => {
 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("14px · the host's font baseline, shared with the desktop surface");
+  await app.waitFor("14px · this device's font baseline");
   // Nothing is written until the user asks for another size.
   expect(backend.settingsWrites.filter(write => write.path === "font")).toHaveLength(0);
 
@@ -3060,7 +3060,7 @@ test("a host that stores no font baseline keeps the default size", async () => {
     path: "font",
     value: { uiSize: { level: "compact" } },
   });
-  await app.waitFor("12px · the host's font baseline, shared with the desktop surface");
+  await app.waitFor("12px · this device's font baseline");
 });
 
 test("MCP servers start, add through the document, and refuse a stale write", async () => {

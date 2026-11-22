@@ -6,13 +6,13 @@
 // It draws the port's answers only: which devices exist, whether each can be
 // connected and why not are the server's.
 
-import { effect, safeArea, signal, Text, untracked, View, type JSX } from "nsh";
+import { Scroll, effect, safeArea, signal, Text, untracked, View, type JSX } from "nsh";
 import { formatRelativeTime } from "../format";
 import { tr } from "../i18n";
-import { compactLayout, controlHeight, layout, motionTiming, palette, radii, space, textStyle } from "../theme";
+import { compactLayout, controlHeight, layout, motionTiming, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { Icon } from "../ui/icons";
-import { BrandSpinner, paintTransition } from "../ui/motion";
-import { DeviceGlyph, EmptyStateCard } from "../ui/primitives";
+import { BrandSpinner, pressTransition, tactileActiveStyle } from "../ui/motion";
+import { DeviceGlyph, EmptyStateCard, focusRingStyle } from "../ui/primitives";
 import { SignInView } from "../ui/SignInView";
 import type { ControllerDevice } from "./controllerPort";
 import {
@@ -143,9 +143,12 @@ function DeviceRow(props: { device: () => ControllerDevice }) {
         gap: space.md,
         borderRadius: radii.md,
         cursor: usable() ? "pointer" : "default",
-        ...paintTransition(motionTiming.hover),
+        userSelect: "none",
+        ...pressTransition(motionTiming.hover),
       }}
       hoverStyle={usable() ? { backgroundColor: palette().panelHover } : undefined}
+      activeStyle={usable() ? tactileActiveStyle(0.985) : undefined}
+      focusVisibleStyle={usable() ? focusRingStyle() : undefined}
     >
       <DeviceGlyph kind={device().kind ?? "laptop"} size={16} />
       <Text
@@ -200,14 +203,12 @@ function NoneStep() {
         }}
         style={{ paddingVertical: 0, paddingHorizontal: 0 }}
       />
-      <If when={controllerDevices()}>
-        {devices => (
-          <View style={{ gap: space.xs }}>
-            <Each of={devices()} key={device => device.deviceId}>
-              {device => <DeviceRow device={device} />}
-            </Each>
-          </View>
-        )}
+      <If when={(controllerDevices() ?? []).length > 0}>
+        <View style={{ gap: space.xs }}>
+          <Each of={controllerDevices() ?? []} key={device => device.deviceId}>
+            {device => <DeviceRow device={device} />}
+          </Each>
+        </View>
       </If>
     </View>
   );
@@ -241,9 +242,21 @@ function Footer() {
         <Text style={textStyle("caption")}>·</Text>
         <View
           role="button"
+          hitSlop={touchSlop(controlHeight.xs)}
           accessibilityLabel="controller-sign-out"
           onPress={() => void signOutController()}
-          style={{ minHeight: controlHeight.xs, justifyContent: "center", cursor: "pointer" }}
+          style={{
+            minHeight: controlHeight.xs,
+            paddingHorizontal: space.xs,
+            borderRadius: radii.xs,
+            justifyContent: "center",
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(motionTiming.hover),
+          }}
+          hoverStyle={{ backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.97)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Text style={textStyle("caption", { color: palette().textSecondary })} hoverStyle={{ color: palette().text }}>
             {tr("launcher.signOut")}
@@ -258,7 +271,7 @@ function Launcher() {
   const signingIn = () => controllerPhase() === "email" || controllerPhase() === "code";
   const topShare = () => (signingIn() || controllerPhase() === "devices" ? SIGN_IN_TOP_SHARE : OPENING_TOP_SHARE);
   return (
-    <View
+    <Scroll
       onLayout={event => {
         const width = event.bounds.size.width;
         if (width > 0 && Math.abs(width - shellWidth()) > 1) {
@@ -269,10 +282,13 @@ function Launcher() {
       style={{
         flex: 1,
         minHeight: 0,
+        backgroundColor: palette().canvas,
+      }}
+      contentStyle={{
+        flexGrow: 1,
         flexDirection: "column",
         alignItems: "stretch",
         paddingHorizontal: phone() ? space.xxl : layout.pageGutter,
-        backgroundColor: palette().canvas,
       }}
     >
       <If
@@ -293,7 +309,7 @@ function Launcher() {
       </View>
       <View style={{ flexGrow: 100 - topShare(), flexShrink: 1, minHeight: space.x3l }} />
       <Footer />
-    </View>
+    </Scroll>
   );
 }
 

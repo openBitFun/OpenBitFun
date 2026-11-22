@@ -20,6 +20,7 @@ import { Input, Tooltip } from "nsh/base";
 import { tr, type MessageKey } from "../i18n";
 import { activeScene, type SceneId } from "../state";
 import {
+  SurfaceContext,
   compactLayout,
   concentricRadius,
   controlHeight,
@@ -31,10 +32,13 @@ import {
   radii,
   space,
   springs,
+  surfaceFocusColor,
+  surfaceWorkingColor,
   textLineHeight,
   textSize,
   textTracking,
   type ControlSize,
+  type SurfacePlane,
   touchSlop,
 } from "../theme";
 import { BotCharacter, Icon, type IconName } from "./icons";
@@ -208,10 +212,10 @@ function resolveTooltip(
   return tip;
 }
 
-function focusRingStyle(): ViewStyle {
+export function focusRingStyle(surface?: SurfacePlane): ViewStyle {
   return {
     outlineWidth: 2,
-    outlineColor: palette().borderFocus,
+    outlineColor: surfaceFocusColor(surface ?? SurfaceContext()),
     outlineOffset: 2,
   };
 }
@@ -381,6 +385,7 @@ export function Button(props: ButtonProps) {
           backgroundColor: btnBg(props.variant ?? "secondary", props.surface ?? "canvas"),
           boxShadow: btnShadow(props.variant ?? "secondary"),
           cursor: props.disabled || props.loading ? "not-allowed" : "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         },
         props.style,
@@ -392,7 +397,7 @@ export function Button(props: ButtonProps) {
       activeStyle={tactileActiveStyle(0.98, {
         backgroundColor: btnPressedBg(props.variant ?? "secondary", props.surface ?? "canvas"),
       })}
-      focusVisibleStyle={focusRingStyle()}
+      focusVisibleStyle={focusRingStyle(props.surface ?? SurfaceContext())}
       disabledStyle={{
         opacity: 0.4,
       }}
@@ -513,6 +518,7 @@ export function IconButton(props: IconButtonProps) {
           alignItems: "center",
           justifyContent: "center",
           cursor: props.disabled ? "not-allowed" : "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         },
         props.style,
@@ -533,7 +539,7 @@ export function IconButton(props: IconButtonProps) {
               ? palette().chromeActive
               : palette().panelHover,
       })}
-      focusVisibleStyle={focusRingStyle()}
+      focusVisibleStyle={focusRingStyle(props.surface ?? SurfaceContext())}
       disabledStyle={{
         opacity: 0.44,
       }}
@@ -687,17 +693,18 @@ export function ConfigRow(props: ConfigRowProps) {
   const resolvedControlWidth = () =>
     props.controlWidth ?? ConfigSectionControlWidthContext();
   const isStretch = () => (props.controlAlign ?? "end") === "stretch";
+  const stacked = () => compactLayout();
   return (
     <View
       style={[
         {
-          minHeight: 56,
+          minHeight: stacked() ? undefined : 56,
           marginHorizontal: ConfigSectionInsetContext() > 0 ? -ConfigSectionInsetContext() : 0,
-          paddingHorizontal: 18,
-          paddingVertical: 14,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 32,
+          paddingHorizontal: space.lg,
+          paddingVertical: space.md,
+          flexDirection: stacked() ? "column" : "row",
+          alignItems: stacked() ? "stretch" : "center",
+          gap: stacked() ? space.sm : space.xxl,
           borderTopWidth: props.topDivider ? 1 : 0,
           borderBottomWidth: props.divider === false ? 0 : 1,
           borderColor: palette().borderSubtle,
@@ -705,11 +712,15 @@ export function ConfigRow(props: ConfigRowProps) {
         },
         props.style,
       ]}
-      hoverStyle={{
-        backgroundColor: palette().surfaceSubtle,
-      }}
+      hoverStyle={
+        stacked()
+          ? undefined
+          : {
+              backgroundColor: palette().surfaceSubtle,
+            }
+      }
     >
-      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+      <View style={{ flex: stacked() ? undefined : 1, minWidth: 0, gap: space.xs }}>
         <Text
           style={{
             color: palette().text,
@@ -742,18 +753,18 @@ export function ConfigRow(props: ConfigRowProps) {
             {
               flexDirection: "row",
               alignItems: "center",
-              justifyContent: isStretch() ? "flex-start" : "flex-end",
+              justifyContent: stacked() ? "flex-start" : isStretch() ? "flex-start" : "flex-end",
               flexShrink: 0,
               minWidth: 0,
-              width: resolvedControlWidth(),
-              maxWidth: resolvedControlWidth() !== undefined ? "60%" : undefined,
-              gap: 8,
+              width: stacked() ? "100%" : resolvedControlWidth(),
+              maxWidth: stacked() ? "100%" : resolvedControlWidth() !== undefined ? "60%" : undefined,
+              gap: space.sm,
             },
             props.controlStyle,
           ]}
         >
           <ConfigRowInRailContext.Provider
-            value={resolvedControlWidth() !== undefined && isStretch()}
+            value={stacked() || (resolvedControlWidth() !== undefined && isStretch())}
           >
             {props.children}
           </ConfigRowInRailContext.Provider>
@@ -1230,20 +1241,22 @@ export function PillChip(props: PillChipProps) {
             }
           : undefined
       }
+      hitSlop={props.onPress ? touchSlop(24) : undefined}
       style={{
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
         maxWidth: props.maxWidth ?? "100%",
-        gap: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 4,
+        gap: space.chip,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.xs,
         borderRadius: radii.pill,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: pillColors(Boolean(props.active), props.tone).border,
         backgroundColor: pillColors(Boolean(props.active), props.tone).bg,
         cursor: props.onPress ? (props.disabled ? "not-allowed" : "pointer") : "default",
+        userSelect: "none",
         ...(props.onPress ? pressTransition(MOTION_DURATION.fast) : paintTransition(MOTION_DURATION.fast)),
       }}
       hoverStyle={
@@ -1272,9 +1285,9 @@ export function PillChip(props: PillChipProps) {
           flexShrink: 1,
           minWidth: 0,
           color: pillColors(Boolean(props.active), props.tone).fg,
-          fontSize: textSize(11),
+          fontSize: textSize(12),
           fontWeight: props.active ? "600" : "500",
-          lineHeight: textLineHeight(11, 1.32),
+          lineHeight: textLineHeight(12, 1.32),
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -1358,6 +1371,7 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
         {option => (
           <View
             role="tab"
+            hitSlop={touchSlop(controlHeight[props.size ?? "md"])}
             accessibilityLabel={option().accessibilityLabel}
             accessibilityState={{ selected: option().value === props.value }}
             onPress={() => props.onChange(option().value)}
@@ -1368,8 +1382,8 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
               alignItems: "center",
               flexShrink: 1,
               minWidth: 0,
-              gap: 5,
-              paddingHorizontal: (props.size ?? "md") === "sm" ? 9 : 11,
+              gap: space.xs,
+              paddingHorizontal: (props.size ?? "md") === "sm" ? space.sm : space.md,
               paddingVertical: 0,
               borderRadius: radii.pill,
               borderCurve: "continuous",
@@ -1378,9 +1392,10 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                 option().value === props.value ? palette().segmentedThumbBg : "transparent",
               boxShadow:
                 option().value === props.value && isLightAppearance()
-                  ? palette().shadowCard
+                  ? elevationShadow(1)
                   : undefined,
               cursor: "pointer",
+              userSelect: "none",
               ...pressTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{
@@ -1411,7 +1426,7 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                   option().value === props.value ? palette().text : palette().textSecondary,
                 fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
                 fontWeight: option().value === props.value ? "500" : "400",
-                lineHeight: textLineHeight(12, 1.24),
+                lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.24),
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
@@ -1479,8 +1494,9 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
         alignItems: "center",
         flexShrink: props.label ? 1 : 0,
         minWidth: 0,
-        gap: 8,
+        gap: space.sm,
         cursor: props.disabled ? "not-allowed" : "pointer",
+        userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ opacity: props.disabled ? 0.48 : 0.94 }}
@@ -1507,8 +1523,12 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
             width: 14,
             height: 14,
             borderRadius: radii.pill,
-            backgroundColor: isChecked() ? "#ffffff" : palette().toggleThumbOff,
-            boxShadow: palette().shadowCard,
+            backgroundColor: isChecked()
+              ? isLightAppearance()
+                ? palette().panelRaised
+                : palette().text
+              : palette().toggleThumbOff,
+            boxShadow: elevationShadow(1),
             transform: [{ translateX: isChecked() ? 12 : 0 }],
             transitionProperty: reduceMotion() ? "background-color" : "transform",
             transitionDuration: reduceMotion() ? 100 : 160,
@@ -1630,7 +1650,7 @@ function dotColor(kind: StatusDotKind, surface: ControlSurface = "canvas"): stri
   if (kind === "muted") {
     return surface === "chrome" ? palette().chromeTextMuted : palette().textMuted;
   }
-  return surface === "chrome" ? palette().chromeAccent : palette().accent;
+  return surfaceWorkingColor(surface);
 }
 
 const DOT_RING_WIDTH = 1.5;
@@ -1641,7 +1661,7 @@ const DOT_RING_WIDTH = 1.5;
  */
 export function StatusDot(props: StatusDotProps) {
   const size = () => props.size ?? 6;
-  const color = () => dotColor(props.kind ?? "accent", props.surface ?? "canvas");
+  const color = () => dotColor(props.kind ?? "accent", props.surface ?? SurfaceContext());
   const variant = () => props.variant ?? "solid";
   const pulsing = () => Boolean(props.pulse) && !reduceMotion();
   return (
@@ -1790,6 +1810,7 @@ export function TapOptionRow(props: TapOptionRowProps) {
   return (
     <View
       role="button"
+      hitSlop={touchSlop(36)}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={
         props.selected !== undefined ? { selected: Boolean(props.selected) } : undefined
@@ -1798,15 +1819,16 @@ export function TapOptionRow(props: TapOptionRowProps) {
       style={{
         flexDirection: "row",
         alignItems: props.detail ? "flex-start" : "center",
-        gap: 10,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
+        gap: space.sm,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm,
         borderRadius: radii.md,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: props.selected ? palette().accentBorder : palette().border,
         backgroundColor: props.selected ? palette().accentSoft : palette().surfaceSubtle,
         cursor: "pointer",
+        userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{
@@ -1818,13 +1840,13 @@ export function TapOptionRow(props: TapOptionRowProps) {
       })}
       focusVisibleStyle={focusRingStyle()}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(12),
+            fontSize: textSize(13),
             fontWeight: props.selected ? "600" : "500",
-            lineHeight: textLineHeight(12, 1.38),
+            lineHeight: textLineHeight(13, 1.38),
           }}
         >
           {props.label}
@@ -1834,8 +1856,8 @@ export function TapOptionRow(props: TapOptionRowProps) {
             <Text
               style={{
                 color: palette().textMuted,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.42),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.42),
               }}
             >
               {detailText()}
@@ -1863,6 +1885,7 @@ export function FloatingPill(props: FloatingPillProps) {
   return (
     <View
       role={props.onPress ? "button" : undefined}
+      hitSlop={props.onPress ? touchSlop(28) : undefined}
       accessibilityLabel={props.accessibilityLabel}
       onPress={props.onPress}
       style={[
@@ -1870,9 +1893,9 @@ export function FloatingPill(props: FloatingPillProps) {
           flexDirection: "row",
           alignItems: "center",
           maxWidth: "100%",
-          gap: 8,
-          paddingHorizontal: 12,
-          paddingVertical: 5,
+          gap: space.sm,
+          paddingHorizontal: space.md,
+          paddingVertical: space.xs,
           borderRadius: radii.pill,
           borderCurve: "continuous",
           borderWidth: 1,
@@ -1880,6 +1903,7 @@ export function FloatingPill(props: FloatingPillProps) {
           backgroundColor: palette().popoverBg,
           boxShadow: elevationShadow(2),
           cursor: props.onPress ? "pointer" : "default",
+          userSelect: props.onPress ? "none" : undefined,
           ...(props.onPress ? pressTransition(MOTION_DURATION.fast) : paintTransition(MOTION_DURATION.fast)),
         },
         props.style,
@@ -1971,13 +1995,10 @@ export function IconCircleButton(props: IconCircleButtonProps) {
           borderWidth: 1,
           borderColor: circleBorder(props.variant ?? "subtle"),
           backgroundColor: circleBg(props.variant ?? "subtle"),
-          boxShadow:
-            (props.variant ?? "subtle") === "ghost"
-              ? undefined
-              : palette().shadowButton,
           alignItems: "center",
           justifyContent: "center",
           cursor: props.disabled ? "not-allowed" : "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         },
         props.style,
@@ -1994,7 +2015,7 @@ export function IconCircleButton(props: IconCircleButtonProps) {
             : palette().borderStrong,
         opacity: (props.variant ?? "subtle") === "warm" ? 0.92 : 1,
       }}
-      activeStyle={tactileActiveStyle(0.94)}
+      activeStyle={tactileActiveStyle(0.96)}
       focusVisibleStyle={focusRingStyle()}
       disabledStyle={{ opacity: (props.variant ?? "subtle") === "primary" ? 0.34 : 0.44 }}
     >
@@ -2031,13 +2052,13 @@ export function WorkbenchSwitcher() {
         borderWidth: 1,
         borderColor: palette().borderSubtle,
         backgroundColor: palette().segmentedTrackBg,
-        boxShadow: palette().shadowInset,
       }}
     >
       <Each of={WORKBENCH_ITEMS} key={item => item.id}>
         {item => (
           <View
             role="tab"
+            hitSlop={touchSlop(controlHeight.md)}
             accessibilityLabel={`workbench-switch-${item().id}`}
             accessibilityState={{ selected: activeScene() === item().id }}
             onPress={() => activeScene.set(item().id)}
@@ -2046,8 +2067,8 @@ export function WorkbenchSwitcher() {
               height: "100%",
               flexDirection: "row",
               alignItems: "center",
-              gap: 5,
-              paddingHorizontal: 10,
+              gap: space.xs,
+              paddingHorizontal: space.sm,
               paddingVertical: 0,
               borderRadius: SEGMENT_INNER_RADIUS,
               borderCurve: "continuous",
@@ -2061,10 +2082,11 @@ export function WorkbenchSwitcher() {
               backgroundColor:
                 activeScene() === item().id ? palette().panelRaised : "transparent",
               boxShadow:
-                activeScene() === item().id
-                  ? `${palette().shadowButton}, ${palette().innerHighlight}`
+                activeScene() === item().id && isLightAppearance()
+                  ? elevationShadow(1)
                   : undefined,
               cursor: "pointer",
+              userSelect: "none",
               ...pressTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{
@@ -2285,8 +2307,16 @@ export interface TextFieldProps {
  * placeholder colors, optional leading icon, trailing slot, and clear action.
  */
 export function TextField(props: TextFieldProps) {
+  const fieldHeight = () => {
+    const base = controlHeight[props.size ?? "md"];
+    return compactLayout() ? Math.max(base, 36) : base;
+  };
+  const inputFontSize = () => {
+    const base = textSize(props.monospace ? 12 : (props.size ?? "md") === "sm" ? 12 : 13);
+    return compactLayout() ? Math.max(16, base) : base;
+  };
   return (
-    <View style={[{ gap: 5, minWidth: 0 }, props.style]}>
+    <View style={[{ gap: space.xs, minWidth: 0 }, props.style]}>
       <If when={props.label ?? ""}>
         {labelText => (
           <Text
@@ -2305,13 +2335,14 @@ export function TextField(props: TextFieldProps) {
       <View
         style={{
           boxSizing: "border-box",
-          height: props.multiline ? undefined : controlHeight[props.size ?? "md"],
-          minHeight: props.multiline ? (props.minHeight ?? 84) : undefined,
+          height: props.multiline ? undefined : fieldHeight(),
+          minHeight: props.multiline ? (props.minHeight ?? 84) : fieldHeight(),
+          minWidth: 0,
           flexDirection: "row",
           alignItems: props.multiline ? "flex-start" : "center",
-          gap: 8,
-          paddingHorizontal: (props.size ?? "md") === "sm" ? 9 : 11,
-          paddingVertical: props.multiline ? 8 : 0,
+          gap: space.sm,
+          paddingHorizontal: (props.size ?? "md") === "sm" ? space.sm : space.md,
+          paddingVertical: props.multiline ? space.sm : 0,
           borderRadius: (props.size ?? "md") === "lg" ? radii.md : radii.sm,
           borderCurve: "continuous",
           borderWidth: 1,
@@ -2340,7 +2371,11 @@ export function TextField(props: TextFieldProps) {
           props.disabled
             ? undefined
             : {
-                borderColor: props.error ? palette().danger : palette().fieldFocusBorder,
+                borderColor: props.error
+                  ? palette().danger
+                  : props.surface === "chrome"
+                    ? palette().chromeAccent
+                    : palette().fieldFocusBorder,
                 boxShadow: props.error ? `0 0 0 3px ${palette().dangerSoft}` : undefined,
               }
         }
@@ -2381,15 +2416,16 @@ export function TextField(props: TextFieldProps) {
           style={{
             flex: 1,
             minWidth: 0,
-            minHeight: props.multiline ? Math.max(48, (props.minHeight ?? 84) - 16) : undefined,
+            height: props.multiline ? undefined : "100%",
+            minHeight: props.multiline
+              ? Math.max(48, (props.minHeight ?? 84) - 16)
+              : Math.max(24, fieldHeight() - 2),
             color: props.surface === "chrome" ? palette().chromeText : palette().text,
             placeholderColor:
               props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
             caretColor: palette().accent,
             fontFamily: props.monospace ? fontMono : undefined,
-            fontSize: textSize(
-              props.monospace ? 12 : (props.size ?? "md") === "sm" ? 12 : 13,
-            ),
+            fontSize: inputFontSize(),
             lineHeight: props.multiline
               ? textLineHeight(props.monospace ? 12 : 13, 1.5)
               : undefined,
@@ -2482,16 +2518,26 @@ export interface SearchInputProps {
  * shortcut/match counter.
  */
 export function SearchInput(props: SearchInputProps) {
+  const fieldHeight = () => {
+    const base = controlHeight[props.size ?? "md"];
+    return compactLayout() ? Math.max(base, 36) : base;
+  };
+  const inputFontSize = () => {
+    const base = textSize((props.size ?? "md") === "sm" ? 12 : 13);
+    return compactLayout() ? Math.max(16, base) : base;
+  };
   return (
     <View
       style={[
         {
           boxSizing: "border-box",
-          height: controlHeight[props.size ?? "md"],
+          height: fieldHeight(),
+          minHeight: fieldHeight(),
+          minWidth: 0,
           flexDirection: "row",
           alignItems: "center",
-          gap: 7,
-          paddingHorizontal: 10,
+          gap: space.sm,
+          paddingHorizontal: space.md,
           paddingVertical: 0,
           borderRadius: props.pill ? radii.pill : radii.sm,
           borderCurve: "continuous",
@@ -2509,7 +2555,8 @@ export function SearchInput(props: SearchInputProps) {
           props.surface === "chrome" ? palette().chromeBorder : palette().borderStrong,
       }}
       focusWithinStyle={{
-        borderColor: palette().fieldFocusBorder,
+        borderColor:
+          props.surface === "chrome" ? palette().chromeAccent : palette().fieldFocusBorder,
       }}
     >
       <Icon
@@ -2531,11 +2578,13 @@ export function SearchInput(props: SearchInputProps) {
         style={{
           flex: 1,
           minWidth: 0,
+          height: "100%",
+          minHeight: Math.max(24, fieldHeight() - 2),
           color: props.surface === "chrome" ? palette().chromeText : palette().text,
           placeholderColor:
             props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
           caretColor: palette().accent,
-          fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
+          fontSize: inputFontSize(),
         }}
       />
       <If when={props.countLabel ?? ""}>
@@ -2600,9 +2649,9 @@ export function SceneHeader(props: SceneHeaderProps) {
         {
           flexDirection: "row",
           alignItems: "center",
-          gap: 12,
-          paddingHorizontal: props.compact ? 14 : 24,
-          paddingVertical: props.compact ? 10 : 18,
+          gap: space.md,
+          paddingHorizontal: props.compact ? space.md : space.xl,
+          paddingVertical: props.compact ? space.sm : space.lg,
           backgroundColor: palette().canvas,
           borderBottomWidth: props.borderBottom ? 1 : 0,
           borderColor: palette().borderSubtle,
@@ -2615,40 +2664,26 @@ export function SceneHeader(props: SceneHeaderProps) {
       </If>
       <If when={props.icon ?? ""}>
         {iconName => (
-          <View
-            style={{
-              width: props.compact ? 28 : 36,
-              height: props.compact ? 28 : 36,
-              flexShrink: 0,
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().panelRaised,
-              boxShadow: palette().shadowButton,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
+          <View style={{ flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
             <Icon
               name={iconName() as IconName}
-              size={props.compact ? 15 : 17}
+              size={props.compact ? 16 : 20}
               color={palette().textSecondary}
             />
           </View>
         )}
       </If>
-      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 8 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
+        <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.sm }}>
           <Text
             style={{
               flexShrink: 1,
               minWidth: 0,
               color: palette().text,
-              fontSize: textSize(props.compact ? 15 : 22),
+              fontSize: textSize(props.compact ? 16 : 22),
               fontWeight: "600",
-              letterSpacing: textTracking(props.compact ? 15 : 22),
-              lineHeight: textLineHeight(props.compact ? 15 : 22, 1.22),
+              letterSpacing: textTracking(props.compact ? 16 : 22),
+              lineHeight: textLineHeight(props.compact ? 16 : 22, 1.22),
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
@@ -2860,7 +2895,7 @@ export interface SkeletonBlockProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Subtle pulse loading placeholder respecting `reduceMotion()`. */
+/** Static calm loading placeholder (visual spec §2.6: no infinite shimmer/pulse). */
 export function SkeletonBlock(props: SkeletonBlockProps) {
   return (
     <View
@@ -2871,10 +2906,6 @@ export function SkeletonBlock(props: SkeletonBlockProps) {
           borderRadius: props.borderRadius ?? radii.xs,
           borderCurve: "continuous",
           backgroundColor: palette().skeletonBg,
-          animationName: reduceMotion() ? "none" : "pulse",
-          animationDuration: 1500,
-          animationTimingFunction: "ease-in-out",
-          animationIterationCount: "infinite",
         },
         props.style,
       ]}
@@ -2958,11 +2989,11 @@ function KpiValueText(props: {
       style={{
         maxWidth: "100%",
         color: kpiValueColor(props.tone, props.muted),
-        fontSize: textSize(props.muted ? 14 : 20),
+        fontSize: textSize(props.muted ? 14 : 22),
         fontWeight: props.muted ? "500" : "600",
-        letterSpacing: props.muted ? 0 : textTracking(20),
+        letterSpacing: props.muted ? 0 : textTracking(22),
         fontVariant: ["tabular-nums"],
-        lineHeight: textLineHeight(props.muted ? 14 : 20, 1.2),
+        lineHeight: textLineHeight(props.muted ? 14 : 22, 1.2),
         textAlign: props.centered ? "center" : "left",
         numberOfLines: 1,
       }}
@@ -2986,9 +3017,9 @@ export function KpiCell(props: KpiCellProps) {
           minWidth: 0,
           overflow: "hidden",
           alignItems: props.align === "center" ? "center" : "stretch",
-          paddingHorizontal: 14,
-          paddingVertical: 14,
-          gap: 5,
+          paddingHorizontal: space.md,
+          paddingVertical: space.md,
+          gap: space.xs,
           borderLeftWidth: props.borderLeft ? 1 : 0,
           borderColor: palette().borderSubtle,
         },

@@ -808,7 +808,7 @@ test("an older host without the workspace navigator says so instead of merging l
   const base = createBackend({ workspaceNavigator: false });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor(
-    "Update OpenBitFun on this host to list its workspaces; it is too old to answer the workspace navigator.",
+    "Update OpenBitFun on this device to list its workspaces; its version is too old to provide workspace navigation.",
   );
   expect(base.calls.some(call => call.action === "get_opened_workspaces")).toBe(false);
 });

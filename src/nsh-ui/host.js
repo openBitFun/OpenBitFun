@@ -1451,6 +1451,70 @@ let devGithubAccount = {
   isAdmin: false,
 };
 let devAccountLoggedIn = true;
+let devAccountSyncEnabled = true;
+
+const DEV_SETTINGS_DESCRIPTOR = {
+  "ai.browser_control_auto_connect_on_startup": { constrained: true, default: false, type: "boolean" },
+  "ai.browser_control_preferred_browser": { constrained: false, default: "" },
+  "ai.computer_use_enabled": { constrained: true, default: true, type: "boolean" },
+  "ai.enable_deferred_tool_loading": { constrained: true, default: true, type: "boolean" },
+  "ai.proxy.enabled": { constrained: false, default: false },
+  "ai.proxy.password": { constrained: false, default: null },
+  "ai.proxy.url": { constrained: false, default: "" },
+  "ai.proxy.username": { constrained: false, default: null },
+  "ai.stream_idle_timeout_secs": { constrained: true, default: 600, maximum: 86400, minimum: 1, nullable: true, type: "integer" },
+  "ai.stream_ttft_timeout_secs": { constrained: true, default: 600, maximum: 86400, minimum: 1, nullable: true, type: "integer" },
+  "ai.subagent_batch_execution_policy": { constrained: true, default: "force_parallel", enum: ["safe_only", "force_parallel", "serial"], type: "string" },
+  "ai.subagent_max_concurrency": { constrained: true, default: 5, maximum: 32, minimum: 1, type: "integer" },
+  "ai.swarm_max_concurrency": { constrained: true, default: 16, maximum: 64, minimum: 1, type: "integer" },
+  "ai.tool_execution_timeout_secs": { constrained: true, default: null, maximum: 86400, minimum: 1, nullable: true, type: "integer" },
+  "ai.tool_presentation_mode": { constrained: true, default: "native", enum: ["native", "ptc", "ptc_python"], type: "string" },
+  "ai.user_question_timeout_secs": { constrained: false, default: 180 },
+  "app.ai_experience.enable_git_commit_coauthor": { constrained: false, default: true },
+  "app.ai_experience.enable_prompt_suggestion": { constrained: false, default: true },
+  "app.ai_experience.enable_session_title_generation": { constrained: false, default: true },
+  "app.ai_experience.enable_workspace_search": { constrained: false, default: false },
+  "app.ai_experience.voice_input.default_language": { constrained: false, default: "auto" },
+  "app.ai_experience.voice_input.enabled": { constrained: false, default: true },
+  "app.ai_experience.voice_input.max_recording_seconds": { constrained: false, default: 60 },
+  "app.ai_experience.voice_input.microphone_device_id": { constrained: false, default: "" },
+  "app.auto_update": { constrained: true, default: true, type: "boolean" },
+  "app.close_button_behavior": { constrained: true, default: "minimize_to_tray", enum: ["ask", "minimize_to_tray", "quit"], type: "string" },
+  "app.flow_chat.auto_show_selection_toolbar": { constrained: true, default: true, type: "boolean" },
+  "app.hooks.enabled": { constrained: false, default: true },
+  "app.hooks.project_hooks_enabled": { constrained: false, default: false },
+  "app.logging.include_sensitive_diagnostics": { constrained: true, default: false, type: "boolean" },
+  "app.logging.level": { constrained: true, default: "debug", enum: ["error", "warn", "info", "debug", "trace", "off"], type: "string" },
+  "app.notifications.dialog_completion_notify": { constrained: true, default: true, type: "boolean" },
+  "app.notifications.permission_request_notify": { constrained: true, default: true, type: "boolean" },
+  "app.prevent_sleep": { constrained: false, default: false },
+  "app.worktrees.autoDeleteEnabled": { constrained: true, default: true, type: "boolean" },
+  "app.worktrees.autoDeleteLimit": { constrained: true, default: 15, maximum: 100, minimum: 1, type: "integer" },
+  "app.worktrees.branchPrefix": { constrained: true, default: "openbitfun/", maxLength: 200, minLength: 1, type: "string" },
+  "app.worktrees.copyLocalChanges": { constrained: true, default: false, type: "boolean" },
+  "app.worktrees.rootPath": { constrained: true, default: "~/.openbitfun/worktrees", maxLength: 4096, minLength: 1, type: "string" },
+  "editor.font_size": { constrained: true, default: 14, maximum: 32, minimum: 10, type: "integer" },
+  "editor.line_numbers": { constrained: true, default: "on", enum: ["on", "off", "relative", "interval"], type: "string" },
+  "editor.minimap.enabled": { constrained: true, default: true, type: "boolean" },
+  "editor.tab_size": { constrained: true, default: 4, maximum: 8, minimum: 1, type: "integer" },
+  "editor.word_wrap": { constrained: true, default: "off", enum: ["off", "on", "wordWrapColumn", "bounded"], type: "string" },
+  "memories.consolidation_model": { constrained: false, default: null },
+  "memories.external_context_policy": { constrained: false, default: "clear_tool_results" },
+  "memories.extract_model": { constrained: false, default: null },
+  "memories.generate_for_btw_sessions": { constrained: false, default: false },
+  "memories.generate_memories": { constrained: false, default: false },
+  "memories.max_raw_memories_for_consolidation": { constrained: false, default: 64 },
+  "memories.max_rollout_age_days": { constrained: false, default: 10 },
+  "memories.max_rollouts_per_startup": { constrained: false, default: 2 },
+  "memories.max_rollouts_scan_limit": { constrained: false, default: 2000 },
+  "memories.max_unused_days": { constrained: false, default: 30 },
+  "memories.min_rollout_idle_hours": { constrained: false, default: 6 },
+  "memories.phase1_max_concurrency": { constrained: false, default: 1 },
+  "memories.use_memories": { constrained: false, default: false },
+  "terminal.cursor_style": { constrained: false, default: "block" },
+  "terminal.font_size": { constrained: false, default: 14 },
+  "terminal.scrollback": { constrained: false, default: 1000 },
+};
 
 const devInsightsReports = [
   {
@@ -2339,6 +2403,7 @@ const DEV_FIXTURES = {
     if (uIdx >= 0) devGitStatus.untracked.splice(uIdx, 1);
     return null;
   },
+  get_app_version: () => "2.0.0-dev",
   get_system_info: () => ({
     osType: "macos",
     platform: "darwin",
@@ -3310,6 +3375,42 @@ const DEV_FIXTURES = {
     devAccountLoggedIn = false;
     return null;
   },
+  account_settings_sync_status: () => ({
+    enabled: devAccountSyncEnabled,
+    phase: !devAccountLoggedIn ? "signed_out" : devAccountSyncEnabled ? "synced" : "off",
+    pending: 0,
+    lastSyncedAtMs: devAccountLoggedIn ? Date.now() - 60000 : null,
+    peers: devAccountLoggedIn ? 2 : 0,
+    peersOnline: devAccountLoggedIn ? 1 : 0,
+    active: devAccountLoggedIn && devAccountSyncEnabled,
+    groups: ["preferences", "permissions"],
+  }),
+  account_settings_sync_set: args => {
+    const req = payloadOf(args);
+    devAccountSyncEnabled = req.enabled === true;
+    return DEV_FIXTURES.account_settings_sync_status();
+  },
+  obp_get_status: () => ({
+    available: true,
+    protocol: 1,
+    webUi: true,
+    loopbackUrl: "http://127.0.0.1:47610/",
+    ownerUrl: "http://127.0.0.1:47610/?token=dev",
+    pairedClients: [],
+    ownerConnections: 1,
+    pairedConnections: 0,
+    accountDeviceConnections: devAccountLoggedIn ? 1 : 0,
+    meshPort: 47612,
+  }),
+  get_settings_schema: args => {
+    const req = payloadOf(args);
+    const paths = Array.isArray(req.paths) ? req.paths.map(String) : Object.keys(DEV_SETTINGS_DESCRIPTOR);
+    const fields = {};
+    for (const path of paths) {
+      if (DEV_SETTINGS_DESCRIPTOR[path]) fields[path] = DEV_SETTINGS_DESCRIPTOR[path];
+    }
+    return { catalogDigest: "dev", fields };
+  },
   get_latest_insights: () => devInsightsReports.map(entry => entry.meta),
   load_insights_report: args => {
     const req = payloadOf(args);
@@ -4083,19 +4184,23 @@ const devSuperagent = (() => {
   };
   const fixtures = {
     superagent_status: () => ({
-      enabled: true, signedIn: true, deviceId: "cloud-dev", name: "Super Agent", hostKind: "cloud",
+      enabled: true, signedIn: devAccountLoggedIn, deviceId: "cloud-dev", name: "Super Agent", hostKind: "cloud",
       placeholder: "Ask Super Agent…",
-      suggestions: ["Run the tests on all my devices", "Update deps", "Summarize today's work"],
-      workingNow: { needsYou: [cards["job-test-mac"]], working: [cards["job-test-linux"], cards["job-test-win"]] },
-      models: superagentModelDevices,
+      suggestions: devAccountLoggedIn ? ["Run the tests on all my devices", "Update deps", "Summarize today's work"] : [],
+      workingNow: devAccountLoggedIn
+        ? { needsYou: [cards["job-test-mac"]], working: [cards["job-test-linux"], cards["job-test-win"]] }
+        : { needsYou: [], working: [] },
+      models: devAccountLoggedIn ? superagentModelDevices : [],
     }),
     superagent_enable: () => ({ enabled: true }),
     superagent_disable: () => ({ enabled: false }),
     superagent_list_conversations: () => ({
-      groups: [
-        { id: "today", rows: [row(conversations["conv-release"]), row(conversations["conv-812"])] },
-        { id: "yesterday", rows: [row(conversations["conv-deps"]), row(conversations["conv-docs"])] },
-      ].map(group => ({ ...group, rows: group.rows.filter(item => conversations[item.id]) })).filter(group => group.rows.length > 0),
+      groups: devAccountLoggedIn
+        ? [
+            { id: "today", rows: [row(conversations["conv-release"]), row(conversations["conv-812"])] },
+            { id: "yesterday", rows: [row(conversations["conv-deps"]), row(conversations["conv-docs"])] },
+          ].map(group => ({ ...group, rows: group.rows.filter(item => conversations[item.id]) })).filter(group => group.rows.length > 0)
+        : [],
       nextCursor: null,
       timeZone: "UTC",
     }),

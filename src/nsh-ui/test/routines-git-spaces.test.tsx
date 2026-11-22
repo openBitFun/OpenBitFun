@@ -705,7 +705,7 @@ test("routines: loads schedules, renders 24h & calendar, creates/edits/toggles/d
   await app.waitFor("label:routine-name-input");
   await app.type("label:routine-name-input", "Morning Digest");
   await app.press("label:routine-schedule-kind");
-  await app.press("Cron Expression (5-field)");
+  await app.press("Custom schedule (5-field)");
   await app.clear("label:routine-cron-expr");
   await app.type("label:routine-cron-expr", "30 9 * * *");
   await app.type("label:routine-prompt-input", "Summarize overnight CI status.");
@@ -1003,7 +1003,7 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   await openLibraryTab(app, "spaces");
   await app.waitFor("Release Tracker");
   expect(app.texts()).toContain("Focus Pad");
-  expect(app.texts().some(t => t.includes("1 active workers"))).toBe(true);
+  expect(app.texts().some(t => t.includes("1 active runners"))).toBe(true);
   // A desktop shell over its own backend opens Spaces in their own window: no "unsupported" note.
   expect(app.shows("label:spaces-run-unsupported")).toBe(false);
   expect(app.shows("label:space-running-space-board")).toBe(true);
@@ -1014,14 +1014,14 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   await app.press("label:space-menu-inspect-space-board");
   await app.waitFor("Create a release readiness tracker Space.");
   expect(app.texts()).toContain("v2");
-  expect(app.texts()).toContain("Node/Bun Worker");
+  expect(app.texts()).toContain("Background runtime (Node/Bun)");
   expect(app.texts()).toContain("<div id=\"app\">Release Board</div>");
 
   const getMiniAppCall = backend.calls.find(c => c.action === "get_miniapp");
   expect(getMiniAppCall?.raw).toBe(false);
   expect(getMiniAppCall?.request).toMatchObject({ appId: "space-board" });
 
-  await app.press("Worker JS");
+  await app.press("Background JS");
   await app.waitFor("export async function status() { return { ok: true }; }");
 
   // Open in window: the desktop's MiniApp window, as the React catalog launches it.
@@ -1227,7 +1227,7 @@ test("git: an older host without live status says so instead of polling, and ref
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openToolScene(app, "git");
   await app.waitFor("Working Copy");
-  await app.waitFor("This host does not push Git changes, so the status here is not live. Update OpenBitFun on it; use Refresh meanwhile.");
+  await app.waitFor("This device does not push Git changes, so the status here is not live. Update OpenBitFun on it; use Refresh meanwhile.");
   const reads = backend.calls.filter(c => c.action === "git_get_status").length;
   await new Promise(resolve => setTimeout(resolve, 2500));
   expect(backend.calls.filter(c => c.action === "git_get_status").length).toBe(reads);
@@ -1235,7 +1235,7 @@ test("git: an older host without live status says so instead of polling, and ref
   await app.press("label:git-discard-docs/guide.md");
   await app.waitFor("Discard");
   await app.press("Discard");
-  await app.waitFor("This host cannot discard changes from here. Update OpenBitFun on it.");
+  await app.waitFor("This device cannot discard changes from here. Update OpenBitFun on it.");
   // No client-side fallback to the old primitives.
   expect(
     backend.calls.some(c => c.action === "git_reset_files" && (c.request as { staged?: boolean }).staged === false),
@@ -1321,10 +1321,10 @@ test("routines: the editor previews and validates through the host scheduler", a
   await app.press("label:routines-new");
   await app.waitFor("label:routine-name-input");
   await app.press("label:routine-schedule-kind");
-  await app.press("Cron Expression (5-field)");
+  await app.press("Custom schedule (5-field)");
   await app.clear("label:routine-cron-expr");
   await app.type("label:routine-cron-expr", "bad cron");
-  await app.waitFor("Enter a valid 5-field cron expression (e.g. 0 9 * * 1-5).");
+  await app.waitFor("Enter a valid 5-field schedule expression (e.g. 0 9 * * 1-5).");
   const draftCall = [...backend.calls].reverse().find(c => c.action === "preview_cron_occurrences" && (c.request as Record<string, unknown>)?.schedule);
   expect(draftCall?.request).toMatchObject({ schedule: { kind: "cron", expr: "bad cron" } });
 

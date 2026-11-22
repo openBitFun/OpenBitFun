@@ -4,9 +4,10 @@
 // stays inside JSX bindings because NSH component bodies run once.
 
 import { horizontalSizeClass, signal, Text, untracked, View, type Bounds } from "nsh";
-import { palette, radii, textLineHeight, textSize } from "../theme";
+import { palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon } from "./icons";
-import { MOTION_DURATION, paintTransition, tactileActiveStyle } from "./motion";
+import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "./motion";
+import { focusRingStyle } from "./primitives";
 
 /** Below this laid-out scene width a workbench scene stacks its panes. */
 export const WORKBENCH_STACK_WIDTH = 600;
@@ -59,27 +60,24 @@ export function StackBackButton(props: {
         height: WORKBENCH_TOUCH_MIN,
         flexDirection: "row",
         alignItems: "center",
-        gap: 2,
-        paddingLeft: 6,
-        paddingRight: 8,
+        gap: space.xs,
+        paddingLeft: space.xs,
+        paddingRight: space.sm,
         flexShrink: 0,
         borderRadius: radii.sm,
         borderCurve: "continuous",
         cursor: "pointer",
-        ...paintTransition(MOTION_DURATION.fast),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
       activeStyle={tactileActiveStyle(0.97)}
-      focusVisibleStyle={{
-        outlineWidth: 2,
-        outlineColor: palette().borderFocus,
-        outlineOffset: -2,
-      }}
+      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
     >
-      <Icon name="chevron-left" size={16} color={palette().accent} />
+      <Icon name="chevron-left" size={16} color={palette().textSecondary} />
       <Text
         style={{
-          color: palette().accent,
+          color: palette().textSecondary,
           fontSize: textSize(14),
           lineHeight: textLineHeight(14, 1.3),
           maxWidth: 160,

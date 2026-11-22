@@ -128,6 +128,6 @@ test("a remote workspace and an older host each say why there is no review", asy
   const second = await openSession(older);
   await second.press("thread-actions-trigger");
   await second.press("review-launch-open");
-  await second.waitFor("text:This backend cannot start a Review. Update the OpenBitFun host to use it.");
+  await second.waitFor("text:This device cannot start a Review. Update OpenBitFun on it to use it.");
   expect(second.enabled("label:review-start")).toBe(false);
 });

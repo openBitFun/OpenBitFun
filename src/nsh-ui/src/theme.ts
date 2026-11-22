@@ -12,6 +12,7 @@ import {
   Storage,
   colorScheme,
   computed,
+  context,
   setColorScheme,
   setTheme,
   signal,
@@ -257,7 +258,7 @@ const LIGHT_HARNESS_COLORS: HarnessColors = {
 const openbitfunDarkPalette: Palette = {
   chromeBg: "#0e0e10",
   chromeText: "#e8e8e8",
-  chromeTextMuted: "#94949c",
+  chromeTextMuted: "#9e9ea6",
   chromeHover: "rgba(255, 255, 255, 0.06)",
   chromeActive: "rgba(255, 255, 255, 0.1)",
   chromeBorder: "rgba(255, 255, 255, 0.1)",
@@ -282,10 +283,11 @@ const openbitfunDarkPalette: Palette = {
   userBubbleText: "#ededf0",
   brandWarm: "#3fb6c4",
   brandWarmFg: "#062a2f",
-  actionPrimaryBg: "rgba(255, 255, 255, 0.16)",
-  actionPrimaryHover: "rgba(255, 255, 255, 0.24)",
-  actionPrimaryPressed: "rgba(255, 255, 255, 0.2)",
-  actionPrimaryFg: "#f3f3f5",
+  // Crisp solid primary CTA aligned with `actionSolid` (visual spec §2.4): 4.85:1 white text.
+  actionPrimaryBg: "#0b7d8d",
+  actionPrimaryHover: "#0a6f7d",
+  actionPrimaryPressed: "#08616e",
+  actionPrimaryFg: "#ffffff",
   actionPrimaryBorder: "transparent",
   buttonSecondaryBg: "rgba(255, 255, 255, 0.07)",
   buttonSecondaryHover: "rgba(255, 255, 255, 0.12)",
@@ -300,11 +302,11 @@ const openbitfunDarkPalette: Palette = {
   fieldFocusBorder: "rgba(255, 255, 255, 0.34)",
   innerHighlight: "inset 0 1px 0 rgba(255, 255, 255, 0.05)",
   text: "#e8e8e8",
-  textSecondary: "#b0b0b0",
-  // `#94949c` preserves calm matte hierarchy while clearing WCAG AA >= 4.65:1 on
-  // `accentSoft`, `surfaceSubtle`, `panelHover`, and `surfaceElevated` (#85).
-  textMuted: "#94949c",
-  textElevatedMuted: "#9c9ca4",
+  textSecondary: "#b8b8be",
+  // `#9e9ea6` preserves calm matte hierarchy while clearing WCAG AA >= 4.59:1 across
+  // `accentSoft`, `segmentedTrackBg`, `buttonSecondaryBg`, `panelRaised`, and `surfaceElevated`.
+  textMuted: "#9e9ea6",
+  textElevatedMuted: "#a6a6ae",
   // One teal signal in both schemes (visual spec §2.4): 7.04:1 on canvas, 7.99:1 on chrome.
   accent: "#3fb6c4",
   accentHover: "#6fcbd6",
@@ -405,9 +407,9 @@ const openbitfunLightPalette: Palette = {
   accentSoft: "rgba(5, 156, 176, 0.09)",
   accentBorder: "rgba(5, 156, 176, 0.28)",
   chip: "#f1f1f3",
-  warning: "#945706",
-  warningSoft: "rgba(148, 87, 6, 0.09)",
-  warningBorder: "rgba(148, 87, 6, 0.22)",
+  warning: "#8a5005",
+  warningSoft: "rgba(138, 80, 5, 0.09)",
+  warningBorder: "rgba(138, 80, 5, 0.22)",
   danger: "#c41d1d",
   dangerSoft: "rgba(196, 29, 29, 0.085)",
   dangerHoverBg: "rgba(196, 29, 29, 0.14)",
@@ -523,19 +525,19 @@ const openbitfunSlatePalette: Palette = {
   toggleThumbOff: "#a1a8b5",
   brandWarm: "#94a3b8",
   brandWarmFg: "#0f172a",
-  actionPrimaryBg: "rgba(255, 255, 255, 0.14)",
-  actionPrimaryHover: "rgba(255, 255, 255, 0.2)",
-  actionPrimaryPressed: "rgba(255, 255, 255, 0.17)",
-  actionPrimaryFg: "#f1f5f9",
+  actionPrimaryBg: "#475569",
+  actionPrimaryHover: "#3b4759",
+  actionPrimaryPressed: "#334155",
+  actionPrimaryFg: "#f8fafc",
   actionPrimaryBorder: "transparent",
   actionSolid: "#475569",
   actionSolidHover: "#3b4759",
   actionSolidFg: "#f8fafc",
   borderFocus: "#a3b2c6",
   fieldFocusBorder: "rgba(163, 178, 198, 0.48)",
-  textSecondary: "#b8bec8",
-  textMuted: "#9ba1ae",
-  textElevatedMuted: "#a4aab8",
+  textSecondary: "#c0c6d0",
+  textMuted: "#a4aab6",
+  textElevatedMuted: "#acb2be",
 };
 
 const openbitfunMidnightPalette: Palette = {
@@ -574,16 +576,16 @@ const openbitfunMidnightPalette: Palette = {
   toggleTrackOff: "rgba(255, 255, 255, 0.11)",
   toggleThumbOff: "#a5a8b2",
   brandWarmFg: "#0b1220",
-  actionPrimaryBg: "rgba(96, 165, 250, 0.20)",
-  actionPrimaryHover: "rgba(96, 165, 250, 0.28)",
-  actionPrimaryPressed: "rgba(96, 165, 250, 0.24)",
-  actionPrimaryFg: "#a9cdf5",
+  actionPrimaryBg: "#2563eb",
+  actionPrimaryHover: "#1d4ed8",
+  actionPrimaryPressed: "#1e40af",
+  actionPrimaryFg: "#ffffff",
   actionPrimaryBorder: "transparent",
   fieldFocusBorder: "rgba(106, 168, 232, 0.50)",
   text: "#d4d4d4",
-  textSecondary: "#acacac",
-  textMuted: "#a8a8a8",
-  textElevatedMuted: "#a6a6a6",
+  textSecondary: "#bababe",
+  textMuted: "#b0b0b4",
+  textElevatedMuted: "#b4b4b8",
   chip: "#383a3d",
   borderFocus: "#6aa8e8",
   chromeAccent: "#6aa8e8",
@@ -631,9 +633,9 @@ const openbitfunChinaStylePalette: Palette = {
   accentHover: "#234a6e",
   accentSoft: "rgba(46, 94, 138, 0.10)",
   accentBorder: "rgba(46, 94, 138, 0.24)",
-  warning: "#945706",
-  warningSoft: "rgba(148, 87, 6, 0.095)",
-  warningBorder: "rgba(148, 87, 6, 0.24)",
+  warning: "#824b04",
+  warningSoft: "rgba(130, 75, 4, 0.095)",
+  warningBorder: "rgba(130, 75, 4, 0.24)",
   danger: "#c41d1d",
   dangerSoft: "rgba(196, 29, 29, 0.085)",
   dangerHoverBg: "rgba(196, 29, 29, 0.14)",
@@ -701,10 +703,10 @@ const openbitfunChinaNightPalette: Palette = {
   toggleThumbOff: "#a1a19c",
   brandWarm: "#96c6b4",
   brandWarmFg: "#0f201a",
-  actionPrimaryBg: "rgba(115, 165, 204, 0.24)",
-  actionPrimaryHover: "rgba(115, 165, 204, 0.32)",
-  actionPrimaryPressed: "rgba(115, 165, 204, 0.28)",
-  actionPrimaryFg: "#b4d5ee",
+  actionPrimaryBg: "#457499",
+  actionPrimaryHover: "#396283",
+  actionPrimaryPressed: "#2e516d",
+  actionPrimaryFg: "#ffffff",
   actionPrimaryBorder: "transparent",
   actionSolid: "#457499",
   actionSolidHover: "#396283",
@@ -712,9 +714,9 @@ const openbitfunChinaNightPalette: Palette = {
   borderFocus: "#8ebde0",
   fieldFocusBorder: "rgba(142, 189, 224, 0.50)",
   text: "#eceae4",
-  textSecondary: "#bcbab2",
-  textMuted: "#a4a49e",
-  textElevatedMuted: "#acaca6",
+  textSecondary: "#c2c0b8",
+  textMuted: "#acaca6",
+  textElevatedMuted: "#b4b4ae",
 };
 
 const openbitfunCyberPalette: Palette = {
@@ -763,11 +765,11 @@ const openbitfunCyberPalette: Palette = {
   toggleThumbOff: "#86b4d2",
   brandWarm: "#a855f7",
   brandWarmFg: "#0c0416",
-  actionPrimaryBg: "rgba(0, 230, 255, 0.18)",
-  actionPrimaryHover: "rgba(0, 230, 255, 0.25)",
-  actionPrimaryPressed: "rgba(0, 230, 255, 0.22)",
-  actionPrimaryFg: "#e0f2ff",
-  actionPrimaryBorder: "rgba(0, 230, 255, 0.40)",
+  actionPrimaryBg: "#00c4dc",
+  actionPrimaryHover: "#00d9f2",
+  actionPrimaryPressed: "#00acc2",
+  actionPrimaryFg: "#061318",
+  actionPrimaryBorder: "transparent",
   buttonSecondaryBg: "rgba(0, 230, 255, 0.065)",
   buttonSecondaryHover: "rgba(0, 230, 255, 0.12)",
   buttonSecondaryPressed: "rgba(0, 230, 255, 0.175)",
@@ -811,11 +813,11 @@ const openbitfunTokyoNightPalette: Palette = {
   textSecondary: "#a9b1d6",
   textMuted: "#a2add6",
   textElevatedMuted: "#a8b3dc",
-  actionPrimaryBg: "rgba(61, 89, 161, 0.55)",
-  actionPrimaryHover: "rgba(61, 89, 161, 0.72)",
-  actionPrimaryPressed: "rgba(61, 89, 161, 0.62)",
-  actionPrimaryFg: "#e0e6ff",
-  actionPrimaryBorder: "rgba(122, 162, 247, 0.45)",
+  actionPrimaryBg: "#4668c4",
+  actionPrimaryHover: "#3c5bb2",
+  actionPrimaryPressed: "#334d99",
+  actionPrimaryFg: "#ffffff",
+  actionPrimaryBorder: "transparent",
   buttonSecondaryBg: "rgba(192, 202, 245, 0.06)",
   buttonSecondaryHover: "rgba(192, 202, 245, 0.11)",
   buttonSecondaryPressed: "rgba(192, 202, 245, 0.16)",
@@ -924,6 +926,50 @@ export const palette = computed(() => {
   }
   return resolvedScheme() === "light" ? openbitfunLightPalette : openbitfunDarkPalette;
 });
+
+/**
+ * The visual plane a control sits on. Split-plane appearances such as
+ * Monochrome pair a dark navigation chrome (`chromeBg`) with a light canvas
+ * (`canvas`), so shared controls (focus rings, state marks, badges) read
+ * `SurfaceContext()` to pick chrome-plane tokens automatically.
+ */
+export type SurfacePlane = "canvas" | "chrome";
+
+export const SurfaceContext = context<SurfacePlane>("canvas");
+
+function hexRelativeLuminance(hex: string): number | null {
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return null;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/** True when the active palette pairs a light canvas with dark navigation chrome (Monochrome). */
+export function isSplitChromePalette(p: Palette = palette()): boolean {
+  const canvasLum = hexRelativeLuminance(p.canvas);
+  const chromeLum = hexRelativeLuminance(p.chromeBg);
+  if (canvasLum === null || chromeLum === null) return false;
+  return canvasLum > 0.5 && chromeLum < 0.15;
+}
+
+/**
+ * Working/running signal color for a given surface plane. Preserves brand teal
+ * on uniform light/dark chrome, and switches to `chromeAccent` when dark chrome
+ * sits beside a light canvas (Monochrome, where canvas `accent` is `#18181b`).
+ */
+export function surfaceWorkingColor(surface: SurfacePlane = SurfaceContext(), p: Palette = palette()): string {
+  if (surface === "chrome" && isSplitChromePalette(p)) {
+    return p.chromeAccent;
+  }
+  return p.accent;
+}
+
+/** Focus-ring color that stays high-contrast on both canvas and dark chrome planes. */
+export function surfaceFocusColor(surface: SurfacePlane = SurfaceContext(), p: Palette = palette()): string {
+  return surface === "chrome" ? p.chromeAccent : p.borderFocus;
+}
 
 function paletteToCssVars(p: Palette): Record<string, string | number> {
   return {

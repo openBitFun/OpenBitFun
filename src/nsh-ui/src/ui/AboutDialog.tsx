@@ -8,14 +8,14 @@
 
 import { Clipboard, openUrl, signal, Text, View } from "nsh";
 import { controllerAppVersion, invokeCommand } from "../bridge";
-import { tr } from "../i18n";
-import { controlHeight, layout, palette, radii, space, textStyle } from "../theme";
+import { localizeHostError, tr } from "../i18n";
+import { controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { Icon } from "./icons";
 import { ModalDialog, pushToast } from "./overlays";
-import { Button } from "./primitives";
+import { Button, SkeletonBlock, focusRingStyle } from "./primitives";
 import { BitMatrixMark } from "./SignInView";
 import { InsetGroup } from "./studio";
-import { paintTransition } from "./motion";
+import { pressTransition, tactileActiveStyle } from "./motion";
 
 export const GITHUB_REPOSITORY_URL = "https://github.com/GCWing/OpenBitFun";
 const RELEASE_NOTES_URL = `${GITHUB_REPOSITORY_URL}/releases`;
@@ -56,11 +56,25 @@ interface AboutFacts {
 
 export const aboutOpen = signal(false);
 const aboutFacts = signal<AboutFacts | null>(null);
+const aboutLoading = signal(false);
 const aboutError = signal("");
 const detailsOpen = signal(false);
 
+function formatAboutError(raw: string): string {
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("development host has no fixture") ||
+    lower.includes("not implemented") ||
+    lower.includes("unknown command")
+  ) {
+    return tr("error.unsupported");
+  }
+  return tr("shell.about.readFailed", { error: localizeHostError(raw) });
+}
+
 async function loadAboutFacts(): Promise<void> {
   aboutError.set("");
+  aboutLoading.set(true);
   try {
     const [nativeVersion, system] = await Promise.all([
       controllerAppVersion(),
@@ -79,6 +93,8 @@ async function loadAboutFacts(): Promise<void> {
   } catch (error) {
     aboutFacts.set(null);
     aboutError.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    aboutLoading.set(false);
   }
 }
 
@@ -141,7 +157,7 @@ function statusRow(): { text: string; action: { label: string; run: () => void; 
       return { text: tr("update.restart"), action: null };
     default:
       return {
-        text: failed || (source.upToDate?.() ? tr("update.upToDate") : ""),
+        text: failed || (source.upToDate?.() ? tr("update.upToDate") : tr("update.label")),
         action: { label: tr("update.check"), run: source.check, id: "about-update-check" },
       };
   }
@@ -192,6 +208,7 @@ function LinkText(props: { label: string; accessibilityLabel: string; onPress: (
   return (
     <View
       role="button"
+      hitSlop={touchSlop(controlHeight.xs)}
       accessibilityLabel={props.accessibilityLabel}
       onPress={props.onPress}
       style={{
@@ -202,9 +219,12 @@ function LinkText(props: { label: string; accessibilityLabel: string; onPress: (
         alignItems: "center",
         gap: space.xs,
         cursor: "pointer",
-        ...paintTransition(),
+        userSelect: "none",
+        ...pressTransition(),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.97)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Text style={textStyle("label", { color: palette().textSecondary })}>{props.label}</Text>
       <If when={props.trailing ?? ""}>
@@ -241,16 +261,23 @@ export function AboutDialog() {
           <Text style={{ ...textStyle("modalTitle"), marginTop: space.md, textAlign: "center" }}>
             {tr("product.name")}
           </Text>
-          <Text
-            style={{
-              ...textStyle("label", { color: palette().textSecondary }),
-              fontWeight: "400",
-              marginTop: space.xs,
-              textAlign: "center",
-            }}
+          <If
+            when={aboutLoading() && !aboutFacts()}
+            else={
+              <Text
+                style={{
+                  ...textStyle("label", { color: palette().textSecondary }),
+                  fontWeight: "400",
+                  marginTop: space.xs,
+                  textAlign: "center",
+                }}
+              >
+                {aboutFacts()?.version ? tr("about.version", { version: aboutFacts()!.version }) : tr("shell.about.notAvailable")}
+              </Text>
+            }
           >
-            {aboutFacts()?.version ? tr("about.version", { version: aboutFacts()!.version }) : tr("shell.about.notAvailable")}
-          </Text>
+            <SkeletonBlock width={96} height={14} style={{ marginTop: space.xs }} />
+          </If>
           <Text
             style={{
               ...textStyle("label", { color: palette().textMuted }),
@@ -266,7 +293,7 @@ export function AboutDialog() {
         <If when={aboutError()}>
           {message => (
             <Text style={{ ...textStyle("caption", { color: palette().danger }), marginTop: space.md, textAlign: "center" }}>
-              {tr("shell.about.readFailed", { error: message() })}
+              {formatAboutError(message())}
             </Text>
           )}
         </If>

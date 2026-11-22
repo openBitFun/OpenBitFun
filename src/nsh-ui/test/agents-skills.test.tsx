@@ -1090,7 +1090,7 @@ test("SkillsScene marketplace lists, searches, shows Installed badge, downloads,
   expect(app.enabled("skill-folder-install")).toBe(false);
 
   await openLibraryTab(app, "agents");
-  await app.waitFor("Remote workspace active: creating, editing, or deleting custom agents is unsupported on remote workspaces. You can still start threads and inspect available bots.");
+  await app.waitFor("Remote workspace active: creating, editing, or deleting custom modes is unsupported on remote workspaces. You can still start sessions and inspect available modes.");
   expect(app.enabled("agents-create-bot")).toBe(false);
 });
 

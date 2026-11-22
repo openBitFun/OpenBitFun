@@ -118,7 +118,7 @@ test("this computer's page sends a job: the target is checked before Send, and t
   // A server without the CLI keeps Send off and says why.
   await app.press("dispatch-target-select");
   await app.press("label:dispatch-target-ssh:conn-2");
-  await app.waitFor("The OpenBitFun CLI is not installed on that host.");
+  await app.waitFor("The OpenBitFun CLI is not installed on that device.");
   expect(app.enabled("dispatch-submit")).toBe(false);
 
   await app.press("dispatch-target-select");

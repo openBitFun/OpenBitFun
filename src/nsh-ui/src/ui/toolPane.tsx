@@ -3,12 +3,12 @@
 // {device}" with the device badge on the left and the tool switcher on the
 // right. In the inspector beside a session the tools draw no header of their own.
 
-import { Text, View } from "nsh";
+import { Scroll, Text, View } from "nsh";
 import { fleetDeviceById } from "../fleetStore";
 import { tr } from "../i18n";
 import { activeScene, activeWorkspace, activeWorkspaceKey, navigateScene, openDevicePage } from "../state";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
-import { DeviceBadge } from "./fleet";
+import { DeviceBadge, deviceException } from "./fleet";
 import { SegmentedTabs, type SegmentedTabOption } from "./primitives";
 
 export type ToolSceneId = "files" | "git" | "terminal" | "browser";
@@ -27,12 +27,22 @@ function currentTool(): ToolSceneId {
   return scene === "git" || scene === "terminal" || scene === "browser" ? scene : "files";
 }
 
-/** "{workspace} on {device}" (or the workspace alone on a single-device backend). */
-function headerText(): string {
-  const workspace = activeWorkspace()?.name ?? "";
-  const device = fleetDeviceById(activeWorkspaceKey()?.deviceId)?.name ?? "";
-  if (workspace && device) return tr("tools.header", { workspace, device });
-  return workspace || device;
+function currentToolLabel(): string {
+  switch (currentTool()) {
+    case "git":
+      return tr("tools.changes");
+    case "terminal":
+      return tr("tools.terminal");
+    case "browser":
+      return tr("tools.browser");
+    default:
+      return tr("tools.files");
+  }
+}
+
+/** Workspace title (or the current tool name while the workspace is still loading). */
+function headerTitle(): string {
+  return activeWorkspace()?.name || currentToolLabel();
 }
 
 export function ToolPaneHeader() {
@@ -43,15 +53,24 @@ export function ToolPaneHeader() {
       style={{
         minHeight: layout.topBarHeight,
         paddingHorizontal: compactLayout() ? layout.phoneGutter : space.xxl,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.md,
+        paddingVertical: compactLayout() ? space.sm : 0,
+        flexDirection: compactLayout() ? "column" : "row",
+        alignItems: compactLayout() ? "stretch" : "center",
+        gap: compactLayout() ? space.sm : space.md,
         borderBottomWidth: 1,
         borderColor: palette().borderSubtle,
         backgroundColor: palette().canvas,
       }}
     >
-      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+      <View
+        style={{
+          flex: compactLayout() ? undefined : 1,
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.sm,
+        }}
+      >
         <Text
           style={{
             ...textStyle("body", { color: palette().text }),
@@ -62,26 +81,44 @@ export function ToolPaneHeader() {
             textOverflow: "ellipsis",
           }}
         >
-          {headerText()}
+          {headerTitle()}
         </Text>
-        {/* The text names the device; the badge adds only its exception ("Offline", "Update needed"). */}
-        <If when={device() && device()!.state !== "online" ? device() : null}>
+        <If when={device() ?? null}>
           {row => (
             <DeviceBadge
               name={row().name}
               kind={row().hostKind}
-              exception={row().state === "offline" ? "offline" : row().state === "update_required" ? "update_required" : null}
+              exception={deviceException(row().state)}
               onPress={() => openDevicePage(row().deviceId)}
             />
           )}
         </If>
       </View>
-      <SegmentedTabs
-        options={toolOptions()}
-        value={currentTool()}
-        size="sm"
-        onChange={value => navigateScene(value)}
-      />
+      <If
+        when={compactLayout()}
+        else={
+          <SegmentedTabs
+            options={toolOptions()}
+            value={currentTool()}
+            size="sm"
+            onChange={value => navigateScene(value)}
+          />
+        }
+      >
+        <Scroll
+          horizontal
+          scrollbar={false}
+          style={{ flexShrink: 0 }}
+          contentStyle={{ flexDirection: "row", alignItems: "center" }}
+        >
+          <SegmentedTabs
+            options={toolOptions()}
+            value={currentTool()}
+            size="sm"
+            onChange={value => navigateScene(value)}
+          />
+        </Scroll>
+      </If>
     </View>
   );
 }

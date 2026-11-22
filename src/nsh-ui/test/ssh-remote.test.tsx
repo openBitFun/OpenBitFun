@@ -1108,7 +1108,7 @@ test("A host without backend link supervision gets an explicit update-the-host s
   await app.press("workspace-row-ws-staging");
   await openToolScene(app, "files");
   await app.waitFor("remote-link-host-outdated");
-  await app.waitFor("staging.example.com: this host cannot restore remote connections");
+  await app.waitFor("staging.example.com: this device cannot restore remote connections");
   expect(ssh.callsFor("ssh_connect")).toHaveLength(0);
   expect(app.shows("remote-link-reconnect")).toBe(false);
 });

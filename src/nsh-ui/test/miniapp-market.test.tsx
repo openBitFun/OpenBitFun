@@ -202,8 +202,8 @@ test("market: a host without the market says so instead of showing an empty cata
   const app = await openMarket(backend);
 
   await app.waitFor("label:market-unsupported");
-  expect(app.texts()).toContain("This host has no Space market");
-  expect(app.texts().some(text => text.includes("Update OpenBitFun on that machine"))).toBe(true);
+  expect(app.texts()).toContain("This device has no Space market");
+  expect(app.texts().some(text => text.includes("Update OpenBitFun on that device"))).toBe(true);
   expect(app.shows("label:market-empty")).toBe(false);
 });
 

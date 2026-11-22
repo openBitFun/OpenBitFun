@@ -306,11 +306,11 @@ test("an older host falls back to the legacy catalog with a read-only switch, an
   const app = await openExternalImport(backend.handlers);
 
   await app.waitFor("Claude Code");
-  expect(app.texts()).toContain("This host or settings version does not support changing automatic discovery.");
+  expect(app.texts()).toContain("This device or settings version does not support changing automatic discovery.");
   expect(app.enabled("external-discovery-toggle")).toBe(false);
   expect(app.texts()).toContain("No MCP servers were found in other apps.");
   // A host without the removed-sessions command is told apart from an empty list.
-  await app.waitFor("This host does not support restoring removed source sessions. Update the serving host and retry.");
+  await app.waitFor("This device does not support restoring removed source sessions. Update OpenBitFun on it and retry.");
   expect(recorded.some(item => item.action === "plan_external_mcp_import_command")).toBe(false);
 });
 

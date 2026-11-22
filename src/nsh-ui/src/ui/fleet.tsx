@@ -6,10 +6,29 @@
 
 import { Text, View, reduceMotion, type StyleProp, type ViewStyle } from "nsh";
 import { tr } from "../i18n";
-import { layout, palette, radii, space, textStyle, type Palette } from "../theme";
+import {
+  SurfaceContext,
+  isSplitChromePalette,
+  layout,
+  palette,
+  radii,
+  space,
+  surfaceWorkingColor,
+  textStyle,
+  touchSlop,
+  type Palette,
+  type SurfacePlane,
+} from "../theme";
 import { Icon } from "./icons";
-import { BrandSpinner, MOTION_DURATION, MOTION_EASE_STANDARD, paintTransition } from "./motion";
-import { DeviceGlyph, StatusDot, deviceGlyphIcon, type StatusDotKind } from "./primitives";
+import {
+  BrandSpinner,
+  MOTION_DURATION,
+  MOTION_EASE_STANDARD,
+  paintTransition,
+  pressTransition,
+  tactileActiveStyle,
+} from "./motion";
+import { DeviceGlyph, StatusDot, deviceGlyphIcon, focusRingStyle, type StatusDotKind } from "./primitives";
 
 export { DeviceGlyph, deviceGlyphIcon };
 
@@ -70,9 +89,16 @@ export function stateColorToken(state: MarkState, seen = false): keyof Palette {
   return STATE_VISUALS[markState(state)].color;
 }
 
-/** The state's color in the active palette. */
-export function stateColor(state: MarkState, seen = false): string {
-  return palette()[stateColorToken(state, seen)] as string;
+/** The state's color in the active palette, adapting automatically on dark split-chrome planes. */
+export function stateColor(
+  state: MarkState,
+  seen = false,
+  surface: SurfacePlane = SurfaceContext(),
+): string {
+  const token = stateColorToken(state, seen);
+  if (token === "accent") return surfaceWorkingColor(surface);
+  if (token === "textMuted" && surface === "chrome") return palette().chromeTextMuted;
+  return palette()[token] as string;
 }
 
 /** The state's word (`Working`, `Needs you`, `Waiting for {device}` ...). */
@@ -202,7 +228,11 @@ export function StateLabel(props: StateLabelProps) {
         {stateWord(props.state, props.device)}
       </Text>
       <If when={props.detail ?? ""}>
-        {detail => <Text style={{ color: palette().textMuted }}>{` · ${detail()}`}</Text>}
+        {detail => (
+          <Text style={{ color: SurfaceContext() === "chrome" ? palette().chromeTextMuted : palette().textMuted }}>
+            {` · ${detail()}`}
+          </Text>
+        )}
       </If>
     </Text>
   );
@@ -242,8 +272,11 @@ export function DeviceBadge(props: DeviceBadgeProps) {
     <View
       testID={props.testID}
       role={props.onPress ? "button" : undefined}
+      hitSlop={props.onPress ? touchSlop(16) : undefined}
       accessibilityLabel={props.accessibilityLabel ?? props.name}
       onPress={props.onPress ? () => props.onPress?.() : undefined}
+      focusVisibleStyle={props.onPress ? focusRingStyle() : undefined}
+      activeStyle={props.onPress ? tactileActiveStyle(0.97) : undefined}
       style={[
         {
           flexDirection: "row",
@@ -255,6 +288,8 @@ export function DeviceBadge(props: DeviceBadgeProps) {
           maxWidth: props.maxWidth ?? 160,
           borderRadius: radii.xs,
           cursor: props.onPress ? "pointer" : undefined,
+          userSelect: props.onPress ? "none" : undefined,
+          ...(props.onPress ? pressTransition(120) : {}),
         },
         props.style,
       ]}
@@ -362,9 +397,12 @@ export function rollupMarkState(rollup: string | null | undefined): MarkState | 
 
 /**
  * The Inbox count: 18 high, min width 18, padding 0 6, `warningSoft`, 11/600
- * `warning`. Drawn only for a count above zero.
+ * `warning`. On split dark-chrome appearances (Monochrome), grounds the soft
+ * tint over `canvas` so `warning` ink clears WCAG AA >= 4.5:1.
  */
 export function InboxCountPill(props: { count: number; testID?: string }) {
+  const needsCanvasUnderlay = () =>
+    SurfaceContext() === "chrome" && isSplitChromePalette();
   return (
     <If when={props.count > 0}>
       <View
@@ -373,18 +411,29 @@ export function InboxCountPill(props: { count: number; testID?: string }) {
         style={{
           height: 18,
           minWidth: 18,
-          paddingHorizontal: space.chip,
           borderRadius: radii.pill,
-          backgroundColor: palette().warningSoft,
+          backgroundColor: needsCanvasUnderlay() ? palette().canvas : "transparent",
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
           pointerEvents: "none",
         }}
       >
-        <Text style={{ ...textStyle("micro", { color: palette().warning }), numberOfLines: 1 }}>
-          {props.count > 99 ? "99+" : String(props.count)}
-        </Text>
+        <View
+          style={{
+            height: 18,
+            minWidth: 18,
+            paddingHorizontal: space.chip,
+            borderRadius: radii.pill,
+            backgroundColor: palette().warningSoft,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ ...textStyle("micro", { color: palette().warning }), numberOfLines: 1 }}>
+            {props.count > 99 ? "99+" : String(props.count)}
+          </Text>
+        </View>
       </View>
     </If>
   );
@@ -407,65 +456,75 @@ export interface PhoneTab {
  */
 export function PhoneTabBar(props: { tabs: PhoneTab[]; bottomInset?: number }) {
   return (
-    <View
-      accessibilityLabel="phone-tab-bar"
-      role="tablist"
-      style={{
-        flexShrink: 0,
-        flexDirection: "row",
-        height: layout.phoneTabBarHeight + (props.bottomInset ?? 0),
-        paddingBottom: props.bottomInset ?? 0,
-        borderTopWidth: 1,
-        borderColor: palette().chromeBorder,
-        backgroundColor: palette().chromeBg,
-      }}
-    >
-      <Each of={props.tabs} key={tab => tab.id}>
-        {tab => {
-          const color = () => (tab().active ? palette().accent : palette().chromeTextMuted);
-          return (
-            <View
-              role="tab"
-              accessibilityLabel={`phone-tab-${tab().id}`}
-              accessibilityState={{ selected: tab().active }}
-              onPress={() => tab().onPress()}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                alignItems: "center",
-                justifyContent: "center",
-                gap: space.hair,
-                cursor: "pointer",
-              }}
-            >
-              <View style={{ width: 20, height: 20, alignItems: "center", justifyContent: "center" }}>
-                <If
-                  when={tab().icon === "matrix"}
-                  else={<Icon name={tab().icon as never} size={20} color={color()} />}
-                >
-                  <MatrixMark size={18} color={color()} />
-                </If>
-                <If when={(tab().badge ?? 0) > 0}>
-                  <View style={{ position: "absolute", left: space.md, top: -space.xs }}>
-                    <InboxCountPill count={tab().badge ?? 0} />
-                  </View>
-                </If>
-              </View>
-              <Text
+    <SurfaceContext.Provider value="chrome">
+      <View
+        accessibilityLabel="phone-tab-bar"
+        role="tablist"
+        style={{
+          flexShrink: 0,
+          flexDirection: "row",
+          height: layout.phoneTabBarHeight + (props.bottomInset ?? 0),
+          paddingBottom: props.bottomInset ?? 0,
+          borderTopWidth: 1,
+          borderColor: palette().chromeBorder,
+          backgroundColor: palette().chromeBg,
+        }}
+      >
+        <Each of={props.tabs} key={tab => tab.id}>
+          {tab => {
+            const color = () =>
+              tab().active ? palette().chromeAccent : palette().chromeTextMuted;
+            return (
+              <View
+                role="tab"
+                accessibilityLabel={`phone-tab-${tab().id}`}
+                accessibilityState={{ selected: tab().active }}
+                onPress={() => tab().onPress()}
+                activeStyle={tactileActiveStyle(0.96)}
+                focusVisibleStyle={focusRingStyle("chrome")}
                 style={{
-                  ...textStyle("micro", { color: color() }),
-                  fontWeight: "500",
-                  fontVariant: undefined,
-                  numberOfLines: 1,
+                  flex: 1,
+                  minWidth: 0,
+                  paddingHorizontal: space.xs,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: space.hair,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
                 }}
               >
-                {tab().label}
-              </Text>
-            </View>
-          );
-        }}
-      </Each>
-    </View>
+                <View style={{ width: 20, height: 20, alignItems: "center", justifyContent: "center" }}>
+                  <If
+                    when={tab().icon === "matrix"}
+                    else={<Icon name={tab().icon as never} size={20} color={color()} />}
+                  >
+                    <MatrixMark size={18} color={color()} />
+                  </If>
+                  <If when={(tab().badge ?? 0) > 0}>
+                    <View style={{ position: "absolute", left: space.md, top: -space.xs }}>
+                      <InboxCountPill count={tab().badge ?? 0} />
+                    </View>
+                  </If>
+                </View>
+                <Text
+                  style={{
+                    ...textStyle("micro", { color: color() }),
+                    fontWeight: "500",
+                    fontVariant: undefined,
+                    maxWidth: "100%",
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {tab().label}
+                </Text>
+              </View>
+            );
+          }}
+        </Each>
+      </View>
+    </SurfaceContext.Provider>
   );
 }
 

@@ -87,8 +87,8 @@ test("the model picker offers Auto and every device's models; a new conversation
   await app.press("label:sa-model-picker");
   await app.waitFor("label:sa-model-auto");
   // The cloud node's groups, with the offline device's models not pickable.
-  expect(app.shows("text:MAC-MINI")).toBe(true);
-  expect(app.shows("text:WIN-PC · OFFLINE")).toBe(true);
+  expect(app.shows("text:mac-mini")).toBe(true);
+  expect(app.shows("text:win-pc · Offline")).toBe(true);
   expect(app.shows("label:sa-model-dev-mac-gpt")).toBe(true);
   const refused = await app.press("label:sa-model-dev-win-local").then(() => "", (error: unknown) => String(error));
   expect(refused).toContain("disabled");

@@ -20,18 +20,27 @@ import {
   type ViewRef,
   type ViewStyle,
 } from "nsh";
-import { palette, radii, textLineHeight, textSize, textTracking } from "../theme";
+import {
+  compactLayout,
+  palette,
+  radii,
+  space,
+  textLineHeight,
+  textSize,
+  textTracking,
+  typeScale,
+} from "../theme";
 import { Icon, type IconName } from "./icons";
-import { MOTION_DURATION, paintTransition } from "./motion";
+import { MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { DropdownMenu, type DropdownMenuItem } from "./overlays";
-import { EmptyStateCard, IconButton } from "./primitives";
+import { EmptyStateCard, IconButton, focusRingStyle } from "./primitives";
 import { encodeQr, type QrMatrix } from "./qr";
 
 /** The studio content column (design spec: 720). */
 export const STUDIO_CONTENT_MAX = 720;
-export const STUDIO_GUTTER = 32;
+export const STUDIO_GUTTER = space.xxl;
 /** Vertical rhythm between sections on a studio page. */
-export const STUDIO_SECTION_GAP = 36;
+export const STUDIO_SECTION_GAP = space.xxl;
 /** Below this laid-out scene width a studio page switches to its compact (phone) layout. */
 export const STUDIO_COMPACT_WIDTH = 600;
 
@@ -45,8 +54,9 @@ export function trackStudioWidth(event: { bounds: Bounds }): void {
   if (width > 0 && width !== untracked(() => studioWidth())) studioWidth.set(width);
 }
 
-/** True when the studio scene is narrower than 600 pt (phones, narrow windows). */
+/** True when on compact shell (<720) or when the studio scene itself is narrower than 600 pt. */
 export function studioCompact(): boolean {
+  if (compactLayout()) return true;
   const width = studioWidth();
   if (width > 0) return width < STUDIO_COMPACT_WIDTH;
   return horizontalSizeClass() === "compact";
@@ -54,12 +64,12 @@ export function studioCompact(): boolean {
 
 /** Page horizontal padding: 32 regular, 16 compact. */
 export function studioGutter(): number {
-  return studioCompact() ? 16 : STUDIO_GUTTER;
+  return studioCompact() ? space.lg : STUDIO_GUTTER;
 }
 
-/** Large-title size: 26 regular, 22 compact. */
+/** Page title size on the canonical type scale (visual spec §2.1: 22/600). */
 export function studioTitleSize(): number {
-  return studioCompact() ? 22 : 26;
+  return typeScale.pageTitle;
 }
 
 /** Gallery columns: `minmax(min, 1fr)` auto-fill regular, one column compact. */
@@ -86,10 +96,10 @@ export function StudioHeader(props: StudioHeaderProps) {
         width: "100%",
         maxWidth: STUDIO_CONTENT_MAX + studioGutter() * 2,
         alignSelf: "center",
-        paddingTop: studioCompact() ? 20 : 28,
+        paddingTop: studioCompact() ? space.lg : space.xl,
         paddingHorizontal: studioGutter(),
-        paddingBottom: studioCompact() ? 20 : 28,
-        gap: 16,
+        paddingBottom: studioCompact() ? space.lg : space.xl,
+        gap: space.lg,
         backgroundColor: palette().canvas,
       }}
     >
@@ -305,27 +315,29 @@ export function InsetRow(props: InsetRowProps) {
       style={{
         position: "relative",
         minHeight: STUDIO_TOUCH_MIN,
-        paddingLeft: props.indent ? 44 : 16,
-        paddingRight: 12,
-        paddingVertical: 8,
+        paddingLeft: props.indent ? 44 : space.lg,
+        paddingRight: space.md,
+        paddingVertical: space.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap: space.md,
         minWidth: 0,
         backgroundColor: props.selected ? palette().panelHover : "transparent",
         cursor: pressable() ? "pointer" : undefined,
+        userSelect: pressable() ? "none" : undefined,
         opacity: props.disabled ? 0.5 : 1,
-        ...paintTransition(MOTION_DURATION.fast),
+        ...(pressable() ? pressTransition(MOTION_DURATION.fast) : paintTransition(MOTION_DURATION.fast)),
       }}
-      hoverStyle={pressable() ? { backgroundColor: palette().panelHover } : undefined}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
+      hoverStyle={pressable() && !compactLayout() ? { backgroundColor: palette().panelHover } : undefined}
+      activeStyle={pressable() ? tactileActiveStyle(0.985) : undefined}
+      focusVisibleStyle={pressable() ? { ...focusRingStyle(), outlineOffset: -2 } : undefined}
     >
       <If when={!props.first}>
         <View
           style={{
             position: "absolute",
             top: 0,
-            left: props.indent ? 44 : 16,
+            left: props.indent ? 44 : space.lg,
             right: 0,
             height: 1,
             backgroundColor: palette().borderSubtle,
@@ -339,7 +351,7 @@ export function InsetRow(props: InsetRowProps) {
             <Icon
               name={name() as IconName}
               size={16}
-              color={props.tone === "danger" ? palette().danger : palette().textMuted}
+              color={palette().textMuted}
             />
           )}
         </If>
@@ -503,8 +515,8 @@ export function galleryCardStyle(): ViewStyle {
     borderWidth: 1,
     borderColor: palette().borderSubtle,
     backgroundColor: palette().panelRaised,
-    padding: 16,
-    gap: 10,
+    padding: space.lg,
+    gap: space.md,
     minWidth: 0,
   };
 }
@@ -513,7 +525,7 @@ export function galleryCardHoverStyle(): ViewStyle {
   return { backgroundColor: palette().panelHover };
 }
 
-/** Skeleton cards in the gallery grid, shown instead of a spinner. */
+/** Static calm skeleton cards in the gallery grid (visual spec §2.6: no infinite shimmer/pulse). */
 export function GallerySkeleton(props: { count?: number; height?: number; minColumn?: number }) {
   const items = Array.from({ length: props.count ?? 4 }, (_, index) => index);
   return (
@@ -522,7 +534,7 @@ export function GallerySkeleton(props: { count?: number; height?: number; minCol
       style={{
         display: "grid",
         gridTemplateColumns: studioGridColumns(props.minColumn ?? 300),
-        gap: 12,
+        gap: space.md,
         pointerEvents: "none",
       }}
     >
@@ -533,11 +545,7 @@ export function GallerySkeleton(props: { count?: number; height?: number; minCol
               height: props.height ?? 120,
               borderRadius: radii.lg,
               borderCurve: "continuous",
-              backgroundColor: palette().surfaceTertiary,
-              animationName: "pulse",
-              animationDuration: 1500,
-              animationTimingFunction: "ease-in-out",
-              animationIterationCount: "infinite",
+              backgroundColor: palette().skeletonBg,
             }}
           />
         )}
@@ -727,25 +735,26 @@ export function AssistantAvatar(props: AssistantAvatarProps) {
           style={{ width: size(), height: size(), pointerEvents: "none" }}
           draw={(cx, box) => {
             if (box.width <= 0 || box.height <= 0) return;
+            const p = palette();
             const scale = Math.min(box.width, box.height) / 251.4286;
             cx.save();
             cx.scale(scale, scale);
             cx.translate(-2.2857, -2.2857);
-            cx.fillStyle = "#CCD9D2";
+            cx.fillStyle = p.textMuted;
             const antenna = new Path2D();
             antenna.roundRect(116, 55, 24, 31, 12);
             cx.fill(antenna);
-            cx.fillStyle = "#323540";
+            cx.fillStyle = p.text;
             cx.fill(
               new Path2D(
                 "M128 72C188 72 234 88 234 138V178C234 220 218 238 180 238H76C38 238 22 220 22 178V138C22 88 68 72 128 72Z",
               ),
             );
-            cx.fillStyle = "#62CEB7";
+            cx.fillStyle = p.accent;
             const head = new Path2D();
             head.arc(128, 41, 23, 0, Math.PI * 2);
             cx.fill(head);
-            cx.fillStyle = "#FBF5EB";
+            cx.fillStyle = p.canvas;
             for (const eyeX of [102, 154]) {
               const eye = new Path2D();
               eye.ellipse(eyeX, 160, 10, 16, 0, 0, Math.PI * 2);

@@ -374,7 +374,7 @@ test("sessions scene repaints reactively across dark and light Tauri palettes", 
   await openSession(app, "NSH skeleton");
   // The idle shortcut hint is gone (visual spec §5); a tool row's target is muted text too.
   await app.waitFor("NavPanel.tsx");
-  expect(app.spanStyle("NavPanel.tsx").color).toBe("#94949cff");
+  expect(app.spanStyle("NavPanel.tsx").color).toBe("#9e9ea6ff");
 
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
@@ -653,7 +653,7 @@ test("a host without session commands says so instead of listing a client copy",
   await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   await app.type("composer", "/");
-  await app.waitFor("This host has no session commands. Update OpenBitFun on it to use /compact, /init and /reload.");
+  await app.waitFor("Update OpenBitFun on this device to use /compact, /init, and /reload.");
   expect(app.shows("slash-command-compact")).toBe(false);
 });
 
@@ -724,7 +724,7 @@ test("a host without a queue or submit_user_message is told to update, nothing i
   });
   await app.waitFor("Steer this session");
   // Without the host queue there is an explicit state, not a local list.
-  await app.waitFor("This host has no message queue. Update OpenBitFun on it to queue messages during a turn.");
+  await app.waitFor("This device has no message queue. Update OpenBitFun on it to queue messages during a turn.");
   await app.type("composer", "Mid-turn note");
   await app.submit("composer");
   await app.waitFor("send-host-update");
@@ -929,7 +929,7 @@ test("an older host without the transcript view says so instead of projecting tu
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
   await app.waitFor("transcript-host-update");
-  expect(app.texts().join("\n")).toContain("This host cannot show the conversation");
+  expect(app.texts().join("\n")).toContain("This device cannot show the conversation");
   // No client-side projection of the raw records, and no welcome screen either.
   expect(app.texts()).not.toContain("Port the session list.");
   expect(app.texts()).not.toContain("How can I help today?");

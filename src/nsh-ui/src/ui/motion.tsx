@@ -26,7 +26,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "nsh";
-import { palette } from "../theme";
+import { palette, radii } from "../theme";
 
 /** Standard strong ease-out cubic-bezier tuple for NSH `createMotion` / `Animated`. */
 export const MOTION_EASE_STANDARD_BEZIER: [number, number, number, number] = [0.23, 1, 0.32, 1];
@@ -68,8 +68,10 @@ export const MOTION_DURATION = {
   instant: 80,
   fast: 140,
   popover: 160,
+  drawerOut: 180,
   base: 200,
   contentSwap: 200,
+  drawerIn: 220,
   toast: 220,
   slow: 360,
   loop: 680,
@@ -255,10 +257,48 @@ export function enterMotion(
  */
 export function modalEnterMotion(): Motion {
   if (reduceMotion()) {
-    return createMotion({ enter: { keyframes: { opacity: [0, 1] }, duration: 110, easing: MOTION_EASE_STANDARD_BEZIER } });
+    return createMotion({
+      enter: {
+        keyframes: { opacity: [0, 1] },
+        duration: 110,
+        easing: MOTION_EASE_STANDARD_BEZIER,
+        ignoreReduceMotion: true,
+      },
+    });
   }
   return createMotion({
     enter: { keyframes: { opacity: [0, 1], scale: [0.98, 1] }, spring: MOTION_SPRING_SNAPPY },
+  });
+}
+
+/**
+ * Drawer / bottom-sheet slide entrance (`220ms` in, `180ms` out on the drawer
+ * deceleration curve), degrading cleanly to an opacity-only fade under
+ * `reduceMotion()`.
+ */
+export function drawerEnterMotion(edge: "left" | "right" | "bottom" = "left"): Motion {
+  if (reduceMotion()) {
+    return createMotion({
+      enter: {
+        keyframes: { opacity: [0, 1] },
+        duration: 110,
+        easing: "ease",
+        ignoreReduceMotion: true,
+      },
+    });
+  }
+  const keyframes: MotionSpec["keyframes"] =
+    edge === "bottom"
+      ? { opacity: [0, 1], translateY: [24, 0] }
+      : edge === "right"
+        ? { opacity: [0, 1], translateX: [24, 0] }
+        : { opacity: [0, 1], translateX: [-24, 0] };
+  return createMotion({
+    enter: {
+      keyframes,
+      duration: MOTION_DURATION.drawerIn,
+      easing: MOTION_EASE_DRAWER_BEZIER,
+    },
   });
 }
 
@@ -503,7 +543,7 @@ export function BrandSpinner(props: BrandSpinnerProps) {
                     idx() === 1
                       ? Math.max(8, Math.round((props.size ?? 14) * 0.85))
                       : Math.max(5, Math.round((props.size ?? 14) * 0.56)),
-                  borderRadius: 999,
+                  borderRadius: radii.pill,
                   backgroundColor: props.color ?? palette().accent,
                   animationName: reduceMotion() ? "none" : "pulse",
                   animationDuration: MOTION_DURATION.loop,
@@ -535,7 +575,7 @@ export function BrandSpinner(props: BrandSpinnerProps) {
               style={{
                 width: "100%",
                 height: "100%",
-                borderRadius: 1.5,
+                borderRadius: Math.max(1, Math.round((props.size ?? 16) * 0.08)),
                 backgroundColor: props.color ?? palette().accent,
                 // The ring pulses around the steady center (OpenBitFun among your devices).
                 animationName: reduceMotion() || cell() === 4 ? "none" : "pulse",

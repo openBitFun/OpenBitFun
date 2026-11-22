@@ -20,10 +20,11 @@ import {
   space,
   textSize,
   textStyle,
+  touchSlop,
 } from "../theme";
-import { DeviceBadge, type DeviceException } from "./fleet";
-import { enterMotion, MOTION_DURATION, paintTransition } from "./motion";
-import { Button, TextField } from "./primitives";
+import { DeviceBadge, MatrixMark, type DeviceException } from "./fleet";
+import { enterMotion, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
+import { Button, TextField, focusRingStyle } from "./primitives";
 
 /**
  * The steps, in order. `browser` is the sign-in a host without the email code
@@ -129,29 +130,8 @@ export function signInStepBody(props: Pick<SignInViewProps, "step" | "codeEmail"
 /** The static Bit Matrix: OpenBitFun's mark, a 3×3 grid in the accent. */
 export function BitMatrixMark(props: { size: number }) {
   return (
-    <View
-      accessibilityLabel={tr("product.name")}
-      style={{
-        width: props.size,
-        height: props.size,
-        flexShrink: 0,
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr 1fr",
-        gap: props.size >= space.xxl ? space.xs : space.hair,
-      }}
-    >
-      <Each of={[0, 1, 2, 3, 4, 5, 6, 7, 8]} key={cell => cell}>
-        {() => (
-          <View
-            style={{
-              width: "100%",
-              height: "100%",
-              borderRadius: radii.xs,
-              backgroundColor: palette().accent,
-            }}
-          />
-        )}
-      </Each>
+    <View accessibilityLabel={tr("product.name")} style={{ flexShrink: 0 }}>
+      <MatrixMark size={props.size} color={palette().accent} />
     </View>
   );
 }
@@ -215,10 +195,17 @@ function ErrorLine(props: { text?: string; idPrefix: string }) {
   );
 }
 
-function LinkButton(props: { label: string; accessibilityLabel: string; disabled?: boolean; onPress: () => void }) {
+function LinkButton(props: {
+  label: string;
+  accessibilityLabel: string;
+  disabled?: boolean;
+  tabular?: boolean;
+  onPress: () => void;
+}) {
   return (
     <View
       role="button"
+      hitSlop={touchSlop(controlHeight.sm)}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={{ disabled: Boolean(props.disabled) }}
       onPress={props.disabled ? undefined : props.onPress}
@@ -229,12 +216,17 @@ function LinkButton(props: { label: string; accessibilityLabel: string; disabled
         borderRadius: radii.md,
         justifyContent: "center",
         cursor: props.disabled ? "default" : "pointer",
+        userSelect: "none",
         opacity: props.disabled ? 0.4 : 1,
-        ...paintTransition(motionTiming.hover),
+        ...pressTransition(motionTiming.hover),
       }}
       hoverStyle={props.disabled ? undefined : { backgroundColor: palette().panelHover }}
+      activeStyle={props.disabled ? undefined : tactileActiveStyle(0.97)}
+      focusVisibleStyle={props.disabled ? undefined : focusRingStyle()}
     >
-      <Text style={textStyle("label", { color: palette().textSecondary })}>{props.label}</Text>
+      <Text style={textStyle("label", { color: palette().textSecondary, tabular: props.tabular })}>
+        {props.label}
+      </Text>
     </View>
   );
 }
@@ -347,12 +339,14 @@ function CodeField(outer: { p: SignInViewProps; onSubmit: () => void }) {
         style={{
           flex: 1,
           minWidth: 0,
+          height: "100%",
+          minHeight: CODE_FIELD_HEIGHT - 2,
           textAlign: "center",
           color: palette().text,
           placeholderColor: palette().textMuted,
           caretColor: palette().accent,
           fontFamily: fontMono,
-          fontSize: textSize(CODE_TEXT_SIZE),
+          fontSize: compactLayout() ? Math.max(16, textSize(CODE_TEXT_SIZE)) : textSize(CODE_TEXT_SIZE),
           fontWeight: "500",
           letterSpacing: CODE_TRACKING,
         }}
@@ -394,6 +388,7 @@ function CodeStep(outer: { p: SignInViewProps }) {
           label={remaining() > 0 ? tr("signin.resendIn", { seconds: remaining() }) : tr("signin.resend")}
           accessibilityLabel={`${props.idPrefix}-resend`}
           disabled={Boolean(props.busy) || remaining() > 0}
+          tabular
           onPress={() => props.onResend?.()}
         />
         <LinkButton

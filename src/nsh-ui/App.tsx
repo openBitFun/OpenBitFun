@@ -1,5 +1,6 @@
 import {
   cleanup,
+  Clipboard,
   computed,
   effect,
   ErrorBoundary,
@@ -134,10 +135,12 @@ import {
 } from "./src/state";
 import {
   APPEARANCE_PRESETS,
+  SurfaceContext,
   appearanceId,
   appearanceMode,
   concentricRadius,
   controlHeight,
+  elevationShadow,
   fontMono,
   isLightAppearance,
   palette,
@@ -197,6 +200,7 @@ import { Icon, type IconName } from "./src/ui/icons";
 import {
   MOTION_DURATION,
   Spinner,
+  drawerEnterMotion,
   paintTransition,
   pressTransition,
   tactileActiveStyle,
@@ -207,6 +211,7 @@ import {
   ModalDialog,
   ToastHost,
   pushToast,
+  registerEscapeDismiss,
   type DropdownMenuItem,
 } from "./src/ui/overlays";
 import {
@@ -219,6 +224,7 @@ import {
   SplitHandle,
   StatusDot,
   TooltipBubble,
+  focusRingStyle,
 } from "./src/ui/primitives";
 import {
   AccountAuthModal,
@@ -241,8 +247,14 @@ import { AllSessionsScene } from "./src/scenes/AllSessionsScene";
 import { DeviceScene } from "./src/scenes/DeviceScene";
 import { LibraryScene, LibraryScopeChip } from "./src/scenes/LibraryScene";
 import { ConversationHistory, BitMatrixGlyph } from "./src/ui/jobs";
-import { newConversation, startSuperagentStore } from "./src/superagentStore";
-import { startAttentionStore, toggleInboxSheet } from "./src/attentionStore";
+import {
+  activeConversationId,
+  newConversation,
+  startSuperagentStore,
+  superagentPhase,
+  superagentStatus,
+} from "./src/superagentStore";
+import { inboxSheetOpen, startAttentionStore, toggleInboxSheet } from "./src/attentionStore";
 import { inboxBadgeCount } from "./src/localInboxStore";
 import { fleetDeviceById, fleetUnavailable } from "./src/fleetStore";
 import { InboxCountPill, PhoneTabBar, type PhoneTab } from "./src/ui/fleet";
@@ -727,6 +739,14 @@ function NavBar() {
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
         <IconButton
+          icon="panel-left-close"
+          size="sm"
+          surface="chrome"
+          accessibilityLabel="toggle-drawer"
+          tooltip={<TooltipBubble text={tr("nav.toggleSidebar")} shortcut={shortcutLabel("mod+b", "⌘B")} />}
+          onPress={toggleDrawer}
+        />
+        <IconButton
           icon="arrow-left"
           size="sm"
           surface="chrome"
@@ -743,14 +763,6 @@ function NavBar() {
           accessibilityLabel="nav-forward"
           tooltip={tr("common.forward")}
           onPress={goForwardScene}
-        />
-        <IconButton
-          icon="panel-left-close"
-          size="sm"
-          surface="chrome"
-          accessibilityLabel="toggle-drawer"
-          tooltip={<TooltipBubble text={tr("nav.toggleSidebar")} shortcut={shortcutLabel("mod+b", "⌘B")} />}
-          onPress={toggleDrawer}
         />
       </View>
       <View
@@ -781,13 +793,14 @@ function accountLabel(): string {
 }
 
 function AccountAvatar(props: { size: number }) {
+  const onChrome = () => SurfaceContext() === "chrome";
   return (
     <View
       style={{
         width: props.size,
         height: props.size,
         borderRadius: radii.pill,
-        backgroundColor: palette().chip,
+        backgroundColor: onChrome() ? palette().chromeActive : palette().chip,
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
@@ -795,9 +808,22 @@ function AccountAvatar(props: { size: number }) {
     >
       <If
         when={accountRowSignedIn()}
-        else={<Icon name="user" size={Math.round(props.size * 0.6)} color={palette().chromeTextMuted} />}
+        else={
+          <Icon
+            name="user"
+            size={Math.round(props.size * 0.6)}
+            color={onChrome() ? palette().chromeTextMuted : palette().textMuted}
+          />
+        }
       >
-        <Text style={{ ...textStyle("micro", { color: palette().chromeText }), fontVariant: undefined }}>
+        <Text
+          style={{
+            ...textStyle("micro", {
+              color: onChrome() ? palette().chromeText : palette().text,
+            }),
+            fontVariant: undefined,
+          }}
+        >
           {firstAvatarGrapheme(accountLabel()).toUpperCase()}
         </Text>
       </If>
@@ -812,7 +838,7 @@ function AccountAvatar(props: { size: number }) {
             width: space.chip,
             height: space.chip,
             borderRadius: radii.pill,
-            backgroundColor: palette().accent,
+            backgroundColor: onChrome() ? palette().chromeAccent : palette().accent,
           }}
         />
       </If>
@@ -906,9 +932,12 @@ function AccountRow() {
           alignItems: "center",
           gap: space.sm,
           cursor: "pointer",
-          ...paintTransition(MOTION_DURATION.fast),
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{ backgroundColor: palette().chromeHover }}
+        activeStyle={tactileActiveStyle(0.985, { backgroundColor: palette().chromeActive })}
+        focusVisibleStyle={{ ...focusRingStyle("chrome"), outlineOffset: -1 }}
       >
         <AccountAvatar size={20} />
         <Text
@@ -950,16 +979,25 @@ function startNewConversation(): void {
   navigateScene("openbitfun");
 }
 
-function NavPanel() {
+function showCloudHistory(): boolean {
+  if (superagentPhase() === "signed_out") return false;
+  if (accountStatus()?.loggedIn === false && !superagentStatus()?.signedIn) return false;
+  return true;
+}
+
+function NavPanel(props: { onNavigate?: () => void }) {
   return (
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
       <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
         <SidebarRow
           label={tr("nav.superAgent")}
           leading={<BitMatrixGlyph size={14} color={palette().chromeText} />}
-          active={activeScene() === "openbitfun"}
+          active={activeScene() === "openbitfun" && !activeConversationId()}
           accessibilityLabel="nav-openbitfun"
-          onPress={() => navigateScene("openbitfun")}
+          onPress={() => {
+            navigateScene("openbitfun");
+            props.onNavigate?.();
+          }}
           trailing={
             <IconButton
               icon="edit"
@@ -967,7 +1005,10 @@ function NavPanel() {
               surface="chrome"
               accessibilityLabel="nav-new-conversation"
               tooltip={<TooltipBubble text={tr("sa.newConversation")} shortcut={shortcutLabel("mod+n", "⌘N")} />}
-              onPress={startNewConversation}
+              onPress={() => {
+                startNewConversation();
+                props.onNavigate?.();
+              }}
             />
           }
         />
@@ -976,7 +1017,10 @@ function NavPanel() {
           icon="inbox"
           active={activeScene() === "inbox"}
           accessibilityLabel="nav-inbox"
-          onPress={() => navigateScene("inbox")}
+          onPress={() => {
+            navigateScene("inbox");
+            props.onNavigate?.();
+          }}
           trailing={<InboxCountPill count={inboxBadgeCount()} testID="sidebar-inbox-count" />}
         />
         <SidebarRow
@@ -984,7 +1028,10 @@ function NavPanel() {
           icon="search"
           active={false}
           accessibilityLabel="global-search-trigger"
-          onPress={() => openGlobalSearch()}
+          onPress={() => {
+            props.onNavigate?.();
+            openGlobalSearch();
+          }}
           trailing={<KbdHint keys={shortcutLabel("mod+k", "⌘K")} surface="chrome" />}
         />
       </View>
@@ -994,7 +1041,9 @@ function NavPanel() {
         style={{ flex: 1, minHeight: 0, marginTop: space.lg }}
         contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.md }}
       >
-        <ConversationHistory />
+        <If when={showCloudHistory()}>
+          <ConversationHistory onOpen={props.onNavigate} />
+        </If>
       </Scroll>
       <View
         style={{
@@ -1011,14 +1060,20 @@ function NavPanel() {
             icon="layers"
             active={activeScene() === "all-sessions" || activeScene() === "device"}
             accessibilityLabel="nav-all-sessions"
-            onPress={() => navigateScene("all-sessions")}
+            onPress={() => {
+              navigateScene("all-sessions");
+              props.onNavigate?.();
+            }}
           />
           <SidebarRow
             label={tr("nav.library")}
             icon="package"
             active={activeScene() === "library"}
             accessibilityLabel="nav-library"
-            onPress={() => navigateScene("library")}
+            onPress={() => {
+              navigateScene("library");
+              props.onNavigate?.();
+            }}
           />
         </View>
         <AccountRow />
@@ -1167,14 +1222,17 @@ function WindowControlButton(props: {
   id: "minimize" | "maximize" | "close";
   label: string;
   onPress: () => void;
-  children: JSX.Element;
+  children: (hovered: () => boolean) => JSX.Element;
 }) {
   const wide = () => windowPlatform() === "windows";
+  const hovered = signal(false);
   return (
     <View
       role="button"
       accessibilityLabel={`window-${props.id}`}
       tooltip={<TooltipBubble text={props.label} />}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
       onPress={props.onPress}
       style={{
         width: wide() ? 46 : 28,
@@ -1185,6 +1243,7 @@ function WindowControlButton(props: {
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{
@@ -1198,13 +1257,14 @@ function WindowControlButton(props: {
         outlineOffset: -2,
       }}
     >
-      {props.children}
+      {props.children(hovered)}
     </View>
   );
 }
 
 function WindowControls() {
   const glyph = () => palette().textSecondary;
+  const wide = () => windowPlatform() === "windows";
   return (
     <If when={pageDrawsWindowControls()}>
       <View
@@ -1212,60 +1272,68 @@ function WindowControls() {
         style={{
           flexDirection: "row",
           alignItems: "center",
-          alignSelf: windowPlatform() === "windows" ? "stretch" : "center",
-          gap: windowPlatform() === "windows" ? 0 : 2,
-          marginRight: windowPlatform() === "windows" ? -10 : 0,
-          marginLeft: 4,
+          alignSelf: wide() ? "stretch" : "center",
+          gap: wide() ? 0 : space.hair,
+          marginRight: wide() ? -space.sm : 0,
+          marginLeft: space.xs,
           flexShrink: 0,
         }}
       >
         <WindowControlButton id="minimize" label={tr("shell.window.minimize")} onPress={minimizeWindow}>
-          <View style={{ width: 10, height: 1, backgroundColor: glyph() }} />
+          {() => <View style={{ width: 10, height: 1, backgroundColor: glyph() }} />}
         </WindowControlButton>
         <WindowControlButton
           id="maximize"
           label={windowMaximized() ? tr("shell.window.restore") : tr("shell.window.maximize")}
           onPress={toggleWindowMaximize}
         >
-          <If
-            when={windowMaximized()}
-            else={
-              <View
-                style={{ width: 10, height: 10, borderWidth: 1, borderColor: glyph(), borderRadius: 1.5 }}
-              />
-            }
-          >
-            <View style={{ width: 11, height: 11 }}>
-              <View
-                style={{
-                  position: "absolute",
-                  right: 0,
-                  top: 0,
-                  width: 8,
-                  height: 8,
-                  borderTopWidth: 1,
-                  borderRightWidth: 1,
-                  borderColor: glyph(),
-                  borderTopRightRadius: 1.5,
-                }}
-              />
-              <View
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  bottom: 0,
-                  width: 8,
-                  height: 8,
-                  borderWidth: 1,
-                  borderColor: glyph(),
-                  borderRadius: 1.5,
-                }}
-              />
-            </View>
-          </If>
+          {() => (
+            <If
+              when={windowMaximized()}
+              else={
+                <View
+                  style={{ width: 10, height: 10, borderWidth: 1, borderColor: glyph(), borderRadius: space.hair }}
+                />
+              }
+            >
+              <View style={{ width: 11, height: 11 }}>
+                <View
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    top: 0,
+                    width: 8,
+                    height: 8,
+                    borderTopWidth: 1,
+                    borderRightWidth: 1,
+                    borderColor: glyph(),
+                    borderTopRightRadius: space.hair,
+                  }}
+                />
+                <View
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    bottom: 0,
+                    width: 8,
+                    height: 8,
+                    borderWidth: 1,
+                    borderColor: glyph(),
+                    borderRadius: space.hair,
+                  }}
+                />
+              </View>
+            </If>
+          )}
         </WindowControlButton>
         <WindowControlButton id="close" label={tr("shell.window.close")} onPress={closeWindow}>
-          <Icon name="close" size={12} color={glyph()} />
+          {hovered => (
+            <Icon
+              name="close"
+              size={12}
+              color={hovered() && wide() ? palette().canvas : glyph()}
+            />
+          )}
         </WindowControlButton>
       </View>
     </If>
@@ -1361,18 +1429,18 @@ function CloseAskDialog() {
       accessibilityLabel="close-ask-dialog"
       onClose={() => closeAskOpen.set(false)}
       footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
           <Button
             label={tr("shell.closeDialog.minimizeToTray")}
             variant="secondary"
-            size="sm"
+            size="md"
             accessibilityLabel="close-ask-tray"
             onPress={() => choose(false)}
           />
           <Button
             label={tr("shell.closeDialog.quit")}
             variant="danger"
-            size="sm"
+            size="md"
             accessibilityLabel="close-ask-quit"
             onPress={() => choose(true)}
           />
@@ -1443,61 +1511,66 @@ function SceneErrorCard(props: { error: unknown; reset: () => void; area: "scene
   return (
     <View
       accessibilityLabel={`${props.area}-error-card`}
-      style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", padding: 24 }}
+      style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", padding: space.xl }}
     >
       <View
         style={{
           width: "100%",
           maxWidth: 420,
-          padding: 20,
-          gap: 12,
-          borderRadius: radii.lg,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().border,
-          backgroundColor: palette().panelRaised,
+          alignItems: "center",
+          gap: space.md,
         }}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Icon name="alert-circle" size={18} color={palette().danger} />
-          <Text
-            style={{
-              flex: 1,
-              color: palette().text,
-              fontSize: textSize(14),
-              lineHeight: textLineHeight(14, 1.35),
-              fontWeight: "600",
-            }}
-          >
-            {tr("shell.error.title")}
-          </Text>
-        </View>
+        <Icon name="alert-circle" size={28} color={palette().danger} />
+        <Text
+          style={{
+            ...textStyle("sectionTitle", { color: palette().text }),
+            textAlign: "center",
+          }}
+        >
+          {tr("shell.error.title")}
+        </Text>
         <Text
           style={{
             color: palette().textSecondary,
             fontFamily: fontMono,
             fontSize: textSize(12),
             lineHeight: textLineHeight(12, 1.45),
+            textAlign: "center",
             numberOfLines: 6,
             textOverflow: "ellipsis",
+            maxWidth: "100%",
           }}
         >
           {message || tr("shell.error.unknown")}
         </Text>
-        <View style={{ flexDirection: "row", gap: 8 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: space.sm, marginTop: space.xs }}>
           <Button
             label={tr("shell.error.retry")}
             variant="primary"
-            size="sm"
+            size="md"
             leadingIcon="refresh"
             accessibilityLabel={`${props.area}-error-retry`}
             onPress={props.reset}
           />
+          <Button
+            label={tr("common.copy")}
+            variant="secondary"
+            size="md"
+            leadingIcon="copy"
+            accessibilityLabel={`${props.area}-error-copy`}
+            onPress={() => {
+              void Clipboard.writeText(message || tr("shell.error.unknown")).then(
+                () => pushToast(tr("shell.about.copied"), "success"),
+                () => undefined,
+              );
+            }}
+          />
           <If when={props.area === "scene"}>
             <Button
               label={tr("shell.error.backToSessions")}
-              variant="secondary"
-              size="sm"
+              variant="ghost"
+              size="md"
               onPress={() => {
                 navigateScene("sessions");
                 props.reset();
@@ -1624,6 +1697,18 @@ function BackendConnectionBanner() {
         icon="wifi"
         text={message()}
         accessibilityLabel="backend-connection-banner"
+        action={
+          <Button
+            label={tr("common.retry")}
+            variant="ghost"
+            size="xs"
+            accessibilityLabel="backend-connection-retry"
+            onPress={() => {
+              openHostEventChannel();
+              void loadWorkspaces();
+            }}
+          />
+        }
       />
     </If>
   );
@@ -1745,6 +1830,7 @@ function SearchPanel() {
   const activeIndex = signal(0);
   searchScope.set("all");
   const itemRefs = new Map<string, ViewRef>();
+  cleanup(registerEscapeDismiss(() => closeGlobalSearch()));
 
   // Localize command items reactively and support both English (`>files`, `>settings`)
   // and localized (`>文件`, `>设置`) command queries seamlessly.
@@ -1877,13 +1963,13 @@ function SearchPanel() {
           maxHeight: "100%",
           flexShrink: 1,
           minHeight: 0,
-          borderRadius: 22,
+          borderRadius: radii.xl,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: palette().borderStrong,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(18px) saturate(1.2)",
-          boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(3),
           overflow: "hidden",
           flexDirection: "column",
         }}
@@ -1893,10 +1979,10 @@ function SearchPanel() {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 8,
-            paddingHorizontal: 20,
-            paddingTop: 20,
-            paddingBottom: 12,
+            gap: space.sm,
+            paddingHorizontal: compactLayout() ? space.lg : space.xl,
+            paddingTop: compactLayout() ? space.lg : space.xl,
+            paddingBottom: space.md,
             flexShrink: 0,
           }}
         >
@@ -1905,16 +1991,16 @@ function SearchPanel() {
               flex: 1,
               minWidth: 0,
               height: controlHeight.lg,
+              minHeight: controlHeight.lg,
               flexDirection: "row",
               alignItems: "center",
-              gap: 8,
-              paddingHorizontal: 11,
+              gap: space.sm,
+              paddingHorizontal: space.md,
               borderRadius: radii.md,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().border,
               backgroundColor: palette().inputBg,
-              boxShadow: palette().shadowInset,
               ...paintTransition(MOTION_DURATION.fast),
             }}
             focusWithinStyle={{
@@ -1932,10 +2018,12 @@ function SearchPanel() {
               style={{
                 flex: 1,
                 minWidth: 0,
+                height: "100%",
+                minHeight: controlHeight.lg - 2,
                 color: palette().text,
                 placeholderColor: palette().textMuted,
                 caretColor: palette().accent,
-                fontSize: textSize(13.5),
+                fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(14),
               }}
               onChange={event => {
                 setSearchQuery(event.value);
@@ -1978,18 +2066,22 @@ function SearchPanel() {
           />
         </View>
 
-        {/* Scope chips: one per group that has hits, so a long list narrows in one press */}
+        {/* Scope chips: horizontal strip so a long set never creates a multi-row pill wall */}
         <If when={availableKinds().length > 1}>
-          <View
+          <Scroll
+            horizontal
+            scrollbar={false}
             style={{
-              paddingHorizontal: 20,
-              paddingBottom: 10,
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 6,
+              flexShrink: 0,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
-              flexShrink: 0,
+            }}
+            contentStyle={{
+              paddingHorizontal: compactLayout() ? space.lg : space.xl,
+              paddingBottom: space.sm,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.chip,
             }}
           >
             <PillChip
@@ -2015,12 +2107,12 @@ function SearchPanel() {
                 />
               )}
             </Each>
-          </View>
+          </Scroll>
         </If>
 
         {/* Notices & Empty State (rendered only when needed — zero dead padding) */}
         <If when={hasHeaderStatus()}>
-          <View style={{ paddingHorizontal: 14, paddingTop: 10, gap: 8, flexShrink: 0 }}>
+          <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, gap: space.sm, flexShrink: 0 }}>
             <If when={searchNotice()}>
               {notice => <InlineBanner tone="warning" message={localizeHostError(notice())} />}
             </If>
@@ -2029,10 +2121,10 @@ function SearchPanel() {
             >
               <View
                 style={{
-                  paddingVertical: 20,
-                  paddingHorizontal: 16,
+                  paddingVertical: space.xl,
+                  paddingHorizontal: space.lg,
                   alignItems: "center",
-                  gap: 8,
+                  gap: space.sm,
                 }}
               >
                 <Icon name="search" size={18} color={palette().textMuted} />
@@ -2065,31 +2157,30 @@ function SearchPanel() {
           <Scroll
             scrollbar={true}
             style={{ flexShrink: 1, minHeight: 0 }}
-            contentStyle={{ paddingHorizontal: 10, paddingVertical: 8, gap: 10 }}
+            contentStyle={{ paddingHorizontal: space.sm, paddingVertical: space.sm, gap: space.md }}
           >
             <Each of={SEARCH_GROUPS} key={group => group.kind}>
               {group => (
                 <If when={groupedRows(group().kind).length > 0}>
-                  <View style={{ gap: 2 }}>
+                  <View style={{ gap: space.hair }}>
                     <View
                       style={{
                         flexDirection: "row",
                         alignItems: "center",
-                        gap: 6,
-                        paddingHorizontal: 8,
-                        paddingVertical: 3,
+                        gap: space.chip,
+                        paddingHorizontal: space.sm,
+                        paddingVertical: space.xs,
                       }}
                     >
-                      <Icon name={group().icon} size={11} color={palette().textElevatedMuted} />
+                      <Icon name={group().icon} size={12} color={palette().textElevatedMuted} />
                       <Text
                         style={{
                           flex: 1,
                           minWidth: 0,
                           color: palette().textElevatedMuted,
-                          fontSize: textSize(10.5),
-                          lineHeight: textLineHeight(10.5, 1.3),
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
                           fontWeight: "600",
-                          letterSpacing: textTracking(10.5),
                         }}
                       >
                         {tr(group().titleKey)}
@@ -2097,8 +2188,8 @@ function SearchPanel() {
                       <Text
                         style={{
                           color: palette().textElevatedMuted,
-                          fontSize: textSize(10),
-                          lineHeight: textLineHeight(10, 1.3),
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
                           fontVariant: ["tabular-nums"],
                           flexShrink: 0,
                         }}
@@ -2126,11 +2217,12 @@ function SearchPanel() {
                             }}
                             onPress={() => runShellSearchItem(item())}
                             style={{
+                              minHeight: compactLayout() ? layout.touchTarget : undefined,
                               flexDirection: "row",
                               alignItems: "center",
-                              gap: 10,
-                              paddingHorizontal: 10,
-                              paddingVertical: 7,
+                              gap: space.sm,
+                              paddingHorizontal: space.sm,
+                              paddingVertical: space.sm,
                               borderRadius: radii.sm,
                               borderCurve: "continuous",
                               borderWidth: 1,
@@ -2141,19 +2233,16 @@ function SearchPanel() {
                                 ? palette().accentSoft
                                 : "transparent",
                               cursor: "pointer",
-                              ...paintTransition(MOTION_DURATION.fast),
+                              userSelect: "none",
+                              ...pressTransition(MOTION_DURATION.fast),
                             }}
                             hoverStyle={{
                               backgroundColor: isSelected()
                                 ? palette().accentSoft
                                 : palette().panelHover,
                             }}
-                            activeStyle={{ opacity: 0.88 }}
-                            focusVisibleStyle={{
-                              outlineWidth: 2,
-                              outlineColor: palette().borderFocus,
-                              outlineOffset: -1,
-                            }}
+                            activeStyle={tactileActiveStyle(0.99)}
+                            focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                           >
                             <Icon
                               name={group().icon}
@@ -2162,12 +2251,12 @@ function SearchPanel() {
                                 isSelected() ? palette().accent : palette().textMuted
                               }
                             />
-                            <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+                            <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                               <Text
                                 style={{
                                   color: palette().text,
-                                  fontSize: textSize(12.5),
-                                  lineHeight: textLineHeight(12.5, 1.35),
+                                  fontSize: textSize(13),
+                                  lineHeight: textLineHeight(13, 1.35),
                                   fontWeight: isSelected() ? "600" : "500",
                                   numberOfLines: 1,
                                   textOverflow:
@@ -2182,8 +2271,8 @@ function SearchPanel() {
                                     style={{
                                       color: palette().textElevatedMuted,
                                       fontFamily: item().kind === "file" ? fontMono : undefined,
-                                      fontSize: textSize(11),
-                                      lineHeight: textLineHeight(11, 1.38),
+                                      fontSize: textSize(12),
+                                      lineHeight: textLineHeight(12, 1.38),
                                       numberOfLines: 1,
                                       textOverflow:
                                         item().kind === "file" ? "ellipsis-middle" : "ellipsis",
@@ -2194,7 +2283,7 @@ function SearchPanel() {
                                 )}
                               </If>
                             </View>
-                            <If when={isSelected()}>
+                            <If when={isSelected() && !compactLayout()}>
                               <KbdHint keys="↵" />
                             </If>
                           </View>
@@ -2208,72 +2297,74 @@ function SearchPanel() {
           </Scroll>
         </If>
 
-        {/* Bottom Keyboard Hint Footer */}
-        <View
-          style={{
-            minHeight: 34,
-            paddingHorizontal: 14,
-            paddingVertical: 6,
-            borderTopWidth: 1,
-            borderColor: palette().borderSubtle,
-            backgroundColor: palette().surfaceTertiary,
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-            flexShrink: 0,
-          }}
-        >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <KbdHint keys="↑↓" />
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(10.5),
-                  lineHeight: textLineHeight(10.5, 1.3),
-                }}
-              >
-                {tr("search.hintNavigate")}
-              </Text>
-            </View>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <KbdHint keys="↵" />
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(10.5),
-                  lineHeight: textLineHeight(10.5, 1.3),
-                }}
-              >
-                {tr("search.hintOpen")}
-              </Text>
-            </View>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <KbdHint keys="Esc" />
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(10.5),
-                  lineHeight: textLineHeight(10.5, 1.3),
-                }}
-              >
-                {tr("search.hintClose")}
-              </Text>
-            </View>
-          </View>
-          <Text
+        {/* Bottom Keyboard Hint Footer (desktop only) */}
+        <If when={!compactLayout()}>
+          <View
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(10.5),
-              lineHeight: textLineHeight(10.5, 1.3),
-              fontVariant: ["tabular-nums"],
+              minHeight: 34,
+              paddingHorizontal: space.lg,
+              paddingVertical: space.chip,
+              borderTopWidth: 1,
+              borderColor: palette().borderSubtle,
+              backgroundColor: palette().surfaceTertiary,
+              flexDirection: "row",
+              flexWrap: "wrap",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: space.md,
+              flexShrink: 0,
             }}
           >
-            {formatPlural(flatResults().length, "format.resultOne", "format.resultOther")}
-          </Text>
-        </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                <KbdHint keys="↑↓" />
+                <Text
+                  style={{
+                    color: palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
+                  }}
+                >
+                  {tr("search.hintNavigate")}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                <KbdHint keys="↵" />
+                <Text
+                  style={{
+                    color: palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
+                  }}
+                >
+                  {tr("search.hintOpen")}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                <KbdHint keys="Esc" />
+                <Text
+                  style={{
+                    color: palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
+                  }}
+                >
+                  {tr("search.hintClose")}
+                </Text>
+              </View>
+            </View>
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.3),
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {formatPlural(flatResults().length, "format.resultOne", "format.resultOther")}
+            </Text>
+          </View>
+        </If>
       </View>
     </Overlay>
   );
@@ -2368,6 +2459,20 @@ const sidebarDocked = computed(() => drawerOpen() && !compactShell() && !overlay
 function auxFillsScene(): boolean {
   return auxPaneMaximized() || compactShell();
 }
+
+/**
+ * When docking the aux inspector beside the canvas would push the primary
+ * canvas below `layout.canvasMinWidth` (560 px, typical on 960–1199 px medium
+ * windows), present the inspector as a 400 px overlay sheet instead.
+ */
+const auxAsSheet = computed(() => {
+  if (compactShell() || auxPaneMaximized()) return false;
+  const width = shellWidth();
+  if (width <= 0) return false;
+  const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
+  const canvasAllowance = width - navAllowance - layout.canvasInset * 2 - (auxPaneWidth() + 9);
+  return canvasAllowance < layout.canvasMinWidth;
+});
 
 /**
  * The canvas's 44 top bar on desktop: the sidebar toggle and back/forward when
@@ -2469,22 +2574,23 @@ function phoneTitle(scene: SceneId): string {
  */
 function PhoneTopBar() {
   const isTab = () => PHONE_TAB_SCENES.includes(activeScene());
+  const isLibrary = () => activeScene() === "library";
   return (
     <View
       accessibilityLabel="phone-top-bar"
       style={{
         height: layout.phoneTopBarHeight,
         flexShrink: 0,
-        paddingHorizontal: space.sm,
+        paddingHorizontal: space.xs,
         flexDirection: "row",
         alignItems: "center",
-        gap: space.sm,
+        gap: space.xs,
         backgroundColor: palette().canvas,
         borderBottomWidth: 1,
         borderColor: palette().borderSubtle,
       }}
     >
-      <View style={{ width: layout.touchTarget, alignItems: "flex-start", flexShrink: 0 }}>
+      <View style={{ minWidth: isLibrary() ? space.sm : layout.touchTarget, alignItems: "flex-start", flexShrink: 0 }}>
         <If
           when={isTab()}
           else={
@@ -2493,6 +2599,7 @@ function PhoneTopBar() {
               size="md"
               accessibilityLabel="phone-back"
               onPress={() => (canGoBack() ? goBackScene() : navigateScene("openbitfun"))}
+              style={{ width: layout.touchTarget, height: layout.touchTarget }}
             />
           }
         >
@@ -2503,6 +2610,7 @@ function PhoneTopBar() {
               accessibilityLabel="phone-history"
               tooltip={tr("nav.openHistory")}
               onPress={() => drawerOpen.set(true)}
+              style={{ width: layout.touchTarget, height: layout.touchTarget }}
             />
           </If>
         </If>
@@ -2514,24 +2622,52 @@ function PhoneTopBar() {
           fontWeight: "600",
           flex: 1,
           minWidth: 0,
-          textAlign: "center",
+          textAlign: isLibrary() ? "left" : "center",
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
       >
         {phoneTitle(activeScene())}
       </Text>
-      <View style={{ minWidth: layout.touchTarget, alignItems: "flex-end", flexShrink: 0 }}>
-        <If when={activeScene() === "library"}>
+      <View
+        style={{
+          minWidth: layout.touchTarget,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          flexShrink: 0,
+        }}
+      >
+        <If when={isLibrary()}>
           <LibraryScopeChip />
+        </If>
+        <If when={!isLibrary()}>
+          <IconButton
+            icon="search"
+            size="md"
+            accessibilityLabel="phone-search"
+            tooltip={tr("nav.search")}
+            onPress={() => openGlobalSearch()}
+            style={{ width: layout.touchTarget, height: layout.touchTarget }}
+          />
         </If>
         <If when={activeScene() === "openbitfun"}>
           <View
             role="button"
             accessibilityLabel="phone-account"
-            hitSlop={touchSlop(28)}
             onPress={() => navigateScene("settings")}
-            style={{ cursor: "pointer" }}
+            activeStyle={tactileActiveStyle(0.96)}
+            focusVisibleStyle={focusRingStyle()}
+            style={{
+              width: layout.touchTarget,
+              height: layout.touchTarget,
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: radii.md,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
           >
             <AccountAvatar size={28} />
           </View>
@@ -2576,58 +2712,176 @@ function PhoneTabs() {
   return <PhoneTabBar tabs={tabs()} bottomInset={safeArea().bottom} />;
 }
 
-/** The phone's conversation history: a drawer from the left over a scrim. */
+/** The phone's conversation history: a drawer from the left over a scrim with Escape dismiss. */
 function CompactDrawer() {
+  const motion = drawerEnterMotion("left");
+  cleanup(registerEscapeDismiss(() => drawerOpen.set(false)));
   return (
-    <View style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, flexDirection: "row" }}>
-      <View
-        accessibilityLabel="phone-history-drawer"
-        style={{
-          width: Math.min(layout.navDrawerWidth + layout.phoneGutter * 3, Math.max(layout.navMediumWidth, shellWidth() * 0.86)),
-          height: "100%",
-          minHeight: 0,
-          flexDirection: "column",
-          paddingTop: safeArea().top,
-          backgroundColor: palette().chromeBg,
-          boxShadow: palette().shadowOverlay,
-        }}
-      >
+    <Overlay
+      onCancel={() => drawerOpen.set(false)}
+      style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, flexDirection: "row" }}
+    >
+      <SurfaceContext.Provider value="chrome">
         <View
-          style={{
-            height: layout.phoneTopBarHeight,
-            flexShrink: 0,
-            paddingHorizontal: space.lg,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.sm,
-          }}
+          role="dialog"
+          accessibilityLabel="phone-history-drawer"
+          style={[
+            {
+              width: Math.min(
+                layout.navDrawerWidth + layout.phoneGutter * 3,
+                Math.max(layout.navMediumWidth, shellWidth() * 0.86),
+              ),
+              height: "100%",
+              minHeight: 0,
+              flexDirection: "column",
+              paddingTop: safeArea().top,
+              paddingBottom: safeArea().bottom,
+              backgroundColor: palette().chromeBg,
+              boxShadow: elevationShadow(3),
+            },
+            motion.style,
+          ]}
         >
-          <Text style={{ ...textStyle("prose", { color: palette().chromeText }), fontWeight: "600", flex: 1 }}>
-            {tr("nav.history")}
-          </Text>
-          <IconButton
-            icon="edit"
-            size="md"
-            surface="chrome"
-            accessibilityLabel="phone-new-conversation"
-            tooltip={tr("sa.newConversation")}
-            onPress={() => {
-              drawerOpen.set(false);
-              startNewConversation();
+          <View
+            style={{
+              height: layout.phoneTopBarHeight,
+              flexShrink: 0,
+              paddingHorizontal: space.lg,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
             }}
-          />
+          >
+            <Text style={{ ...textStyle("prose", { color: palette().chromeText }), fontWeight: "600", flex: 1 }}>
+              {tr("nav.history")}
+            </Text>
+            <IconButton
+              icon="search"
+              size="md"
+              surface="chrome"
+              accessibilityLabel="phone-drawer-search"
+              tooltip={tr("nav.search")}
+              onPress={() => {
+                drawerOpen.set(false);
+                openGlobalSearch();
+              }}
+              style={{ width: layout.touchTarget, height: layout.touchTarget }}
+            />
+            <IconButton
+              icon="edit"
+              size="md"
+              surface="chrome"
+              accessibilityLabel="phone-new-conversation"
+              tooltip={tr("sa.newConversation")}
+              onPress={() => {
+                drawerOpen.set(false);
+                startNewConversation();
+              }}
+              style={{ width: layout.touchTarget, height: layout.touchTarget }}
+            />
+          </View>
+          <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.lg }}>
+            <If when={showCloudHistory()}>
+              <ConversationHistory onOpen={() => drawerOpen.set(false)} />
+            </If>
+          </Scroll>
         </View>
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.lg }}>
-          <ConversationHistory onOpen={() => drawerOpen.set(false)} />
-        </Scroll>
-      </View>
+      </SurfaceContext.Provider>
       <View
         role="button"
         accessibilityLabel="compact-drawer-scrim"
         onPress={() => drawerOpen.set(false)}
         style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
       />
-    </View>
+    </Overlay>
+  );
+}
+
+/** 720–959 overlay navigation drawer with Escape dismiss, safeArea insets, and 220ms slide motion. */
+function OverlaySidebarDrawer() {
+  const motion = drawerEnterMotion("left");
+  cleanup(registerEscapeDismiss(() => drawerOpen.set(false)));
+  return (
+    <Overlay
+      onCancel={() => drawerOpen.set(false)}
+      style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, flexDirection: "row" }}
+    >
+      <SurfaceContext.Provider value="chrome">
+        <View
+          role="dialog"
+          accessibilityLabel="overlay-sidebar"
+          style={[
+            {
+              width: layout.navDrawerWidth,
+              height: "100%",
+              minHeight: 0,
+              flexDirection: "column",
+              paddingTop: safeArea().top,
+              paddingBottom: safeArea().bottom,
+              backgroundColor: palette().chromeBg,
+              boxShadow: elevationShadow(3),
+            },
+            motion.style,
+          ]}
+        >
+          <NavBar />
+          <NavPanel onNavigate={() => drawerOpen.set(false)} />
+        </View>
+      </SurfaceContext.Provider>
+      <View
+        role="button"
+        accessibilityLabel="overlay-sidebar-scrim"
+        onPress={() => drawerOpen.set(false)}
+        style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
+      />
+    </Overlay>
+  );
+}
+
+/** 960–1199 medium-width inspector sheet (keeps the primary canvas >= 560 px wide). */
+function AuxPaneSheet() {
+  const onLeft = () => auxPaneSide() === "left";
+  const motion = drawerEnterMotion(onLeft() ? "left" : "right");
+  cleanup(registerEscapeDismiss(() => toggleAuxPane()));
+  return (
+    <Overlay
+      onCancel={() => toggleAuxPane()}
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        flexDirection: onLeft() ? "row" : "row-reverse",
+      }}
+    >
+      <View
+        role="dialog"
+        accessibilityLabel="aux-pane-sheet"
+        style={[
+          {
+            width: Math.min(layout.inspectorSheetWidth, Math.max(320, shellWidth() - space.xxl)),
+            height: "100%",
+            minHeight: 0,
+            flexDirection: "column",
+            backgroundColor: palette().canvas,
+            borderLeftWidth: onLeft() ? 0 : 1,
+            borderRightWidth: onLeft() ? 1 : 0,
+            borderColor: palette().border,
+            boxShadow: elevationShadow(3),
+          },
+          motion.style,
+        ]}
+      >
+        <AuxPane />
+      </View>
+      <View
+        role="button"
+        accessibilityLabel="aux-pane-sheet-scrim"
+        onPress={() => toggleAuxPane()}
+        style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
+      />
+    </Overlay>
   );
 }
 
@@ -2753,6 +3007,12 @@ function StudioApp() {
 
   bindShellShortcuts();
 
+  effect(() => {
+    if (!inboxSheetOpen()) return;
+    const stop = registerEscapeDismiss(() => inboxSheetOpen.set(false));
+    cleanup(stop);
+  });
+
   // Entering a compact layout folds the sidebar away; picking a scene there closes it again.
   let wasOverlay = false;
   effect(() => compactLayout.set(compactShell()));
@@ -2764,6 +3024,7 @@ function StudioApp() {
   effect(() => {
     activeScene();
     activeSessionId();
+    activeConversationId();
     if (untracked(() => compactShell() || overlayNav())) untracked(() => drawerOpen.set(false));
   });
 
@@ -2784,49 +3045,51 @@ function StudioApp() {
     >
       {/* Left Recessed Navigation Chrome */}
       <If when={sidebarDocked()}>
-        <View
-          style={{
-            flexDirection: "row",
-            height: "100%",
-            minHeight: 0,
-            maxWidth: "58%",
-            flexShrink: 0,
-          }}
-        >
+        <SurfaceContext.Provider value="chrome">
           <View
             style={{
-              width: dockedNavWidth(),
-              flexShrink: 1,
-              minWidth: layout.navMinWidth,
-              maxWidth: layout.navMaxWidth,
+              flexDirection: "row",
+              height: "100%",
               minHeight: 0,
-              flexDirection: "column",
-              backgroundColor: palette().chromeBg,
+              maxWidth: "58%",
+              flexShrink: 0,
             }}
           >
-            <NavBar />
-            <NavPanel />
+            <View
+              style={{
+                width: dockedNavWidth(),
+                flexShrink: 1,
+                minWidth: layout.navMinWidth,
+                maxWidth: layout.navMaxWidth,
+                minHeight: 0,
+                flexDirection: "column",
+                backgroundColor: palette().chromeBg,
+              }}
+            >
+              <NavBar />
+              <NavPanel />
+            </View>
+            <SplitHandle
+              surface="chrome"
+              seam={false}
+              accessibilityLabel="nav-split-handle"
+              onDragStateChange={dragging => {
+                navDragWidth = dragging ? navWidth() : null;
+              }}
+              onDelta={delta => {
+                // The drag follows the pointer past the minimum; far enough left, it folds.
+                navDragWidth = (navDragWidth ?? navWidth()) + delta;
+                if (navDragWidth < NAV_COLLAPSE_WIDTH) {
+                  navDragWidth = null;
+                  drawerOpen.set(false);
+                  return;
+                }
+                setNavWidth(navDragWidth);
+              }}
+              onReset={() => setNavWidth(NAV_DEFAULT_WIDTH)}
+            />
           </View>
-          <SplitHandle
-            surface="chrome"
-            seam={false}
-            accessibilityLabel="nav-split-handle"
-            onDragStateChange={dragging => {
-              navDragWidth = dragging ? navWidth() : null;
-            }}
-            onDelta={delta => {
-              // The drag follows the pointer past the minimum; far enough left, it folds.
-              navDragWidth = (navDragWidth ?? navWidth()) + delta;
-              if (navDragWidth < NAV_COLLAPSE_WIDTH) {
-                navDragWidth = null;
-                drawerOpen.set(false);
-                return;
-              }
-              setNavWidth(navDragWidth);
-            }}
-            onReset={() => setNavWidth(NAV_DEFAULT_WIDTH)}
-          />
-        </View>
+        </SurfaceContext.Provider>
       </If>
 
       {/* The canvas: inset 8 top, right and bottom on desktop (radius 12, hairline); full bleed on a phone. */}
@@ -2859,7 +3122,10 @@ function StudioApp() {
             </View>
           }
         >
-          <SceneTopBar />
+          {/* Omit the empty 44 px canvas topbar slab when the docked sidebar owns nav and no custom window controls are drawn. */}
+          <If when={!sidebarDocked() || pageDrawsWindowControls()}>
+            <SceneTopBar />
+          </If>
         </If>
         <If when={!(compactShell() && activeScene() === "sessions")}>
           <BackendConnectionBanner />
@@ -2868,7 +3134,7 @@ function StudioApp() {
         <ErrorBanner />
 
         <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row" }}>
-          <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxFillsScene()}>
+          <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxFillsScene() && !auxAsSheet()}>
             <View
               style={{
                 flexDirection: "row",
@@ -2904,7 +3170,7 @@ function StudioApp() {
             </View>
           </If>
 
-          <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxFillsScene()}>
+          <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxFillsScene() && !auxAsSheet()}>
             <View
               style={{
                 flexDirection: "row",
@@ -2940,32 +3206,14 @@ function StudioApp() {
         <BrowserPageLayer />
       </View>
 
+      <If when={auxPaneOpen() && auxAsSheet()}>
+        <AuxPaneSheet />
+      </If>
       <If when={compactShell() && drawerOpen()}>
         <CompactDrawer />
       </If>
       <If when={overlayNav() && drawerOpen()}>
-        <View style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, flexDirection: "row" }}>
-          <View
-            accessibilityLabel="overlay-sidebar"
-            style={{
-              width: layout.navDrawerWidth,
-              height: "100%",
-              minHeight: 0,
-              flexDirection: "column",
-              backgroundColor: palette().chromeBg,
-              boxShadow: palette().shadowOverlay,
-            }}
-          >
-            <NavBar />
-            <NavPanel />
-          </View>
-          <View
-            role="button"
-            accessibilityLabel="overlay-sidebar-scrim"
-            onPress={() => drawerOpen.set(false)}
-            style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
-          />
-        </View>
+        <OverlaySidebarDrawer />
       </If>
       <InboxSheet />
       <If when={searchOpen()}>
