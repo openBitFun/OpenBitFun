@@ -47,6 +47,23 @@ function drop(requestId: string, deviceId: string): void {
   );
 }
 
+/**
+ * Drops all pending permission prompts for a session when the user stops the
+ * turn, a terminal turn event arrives, or the session is deleted. Mirrors
+ * `clearQuestionsForSession` so blocking cards never remain stuck behind a
+ * stopped turn.
+ */
+export function clearPermissionsForSession(sessionId: string, deviceId?: string): void {
+  if (!sessionId) return;
+  pendingPermissions.update(current =>
+    current.filter(item => {
+      if (item.sessionId !== sessionId) return true;
+      if (deviceId !== undefined && item.deviceId !== deviceId) return true;
+      return false;
+    }),
+  );
+}
+
 /** The device a request id was asked on (the first match), for answering it there. */
 function deviceOfRequest(requestId: string): string {
   return pendingPermissions().find(item => item.requestId === requestId)?.deviceId ?? "";

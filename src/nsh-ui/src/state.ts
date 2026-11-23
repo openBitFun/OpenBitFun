@@ -3,7 +3,7 @@
 
 import { batch, computed, effect, signal, Storage, untracked } from "nsh";
 import {
-  attachmentContexts,
+  buildAttachmentContexts,
   clearAttachments,
   imageAttachments,
   type ImageAttachment,
@@ -37,7 +37,8 @@ import {
 } from "./i18n";
 import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
-import { loadQuestionMailbox } from "./userQuestionStore";
+import { clearPermissionsForSession } from "./permissionStore";
+import { clearQuestionsForSession, loadQuestionMailbox } from "./userQuestionStore";
 import { superAgentUi } from "./productGates";
 import {
   archiveSession,
@@ -1134,6 +1135,8 @@ export interface PendingTurnState {
   sessionKey?: string;
   turnId?: string;
   userText: string;
+  /** Image attachments sent with this turn so the live bubble renders them before history settles. */
+  images?: ImageAttachment[];
   createdAt: number;
   baselineTurnCount: number;
 }
@@ -1158,7 +1161,12 @@ function matchesPendingSession(pending: PendingTurnState, sessionId: string, key
   return pending.sessionId === sessionId;
 }
 
-export function setPendingTurn(sessionId: string, userText: string, turnId?: string): void {
+export function setPendingTurn(
+  sessionId: string,
+  userText: string,
+  turnId?: string,
+  images?: ImageAttachment[],
+): void {
   const trimmed = userText.trim();
   if (!sessionId || !trimmed) return;
   const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
@@ -1169,6 +1177,7 @@ export function setPendingTurn(sessionId: string, userText: string, turnId?: str
     sessionKey: key,
     ...(turnId ? { turnId } : {}),
     userText: trimmed,
+    ...(images && images.length > 0 ? { images: [...images] } : {}),
     createdAt: Date.now(),
     baselineTurnCount: sessionTurns().length,
   });
@@ -1177,15 +1186,27 @@ export function setPendingTurn(sessionId: string, userText: string, turnId?: str
   }
 }
 
-export function bindPendingTurnId(sessionId: string, turnId: string, userText?: string): void {
+export function bindPendingTurnId(
+  sessionId: string,
+  turnId: string,
+  userText?: string,
+  images?: ImageAttachment[],
+): void {
   const current = pendingTurnState();
   const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
   if (current && matchesPendingSession(current, sessionId, key)) {
+    const mergedImages =
+      current.images && current.images.length > 0
+        ? current.images
+        : images && images.length > 0
+          ? [...images]
+          : undefined;
     pendingTurnState.set({
       ...current,
       sessionKey: current.sessionKey ?? key,
       turnId,
       ...(userText && !current.userText ? { userText } : {}),
+      ...(mergedImages ? { images: mergedImages } : {}),
     });
     if (activeSessionKey() === key && pendingTurn() !== (current.userText || userText || "")) {
       pendingTurn.set(current.userText || userText || "");
@@ -1193,7 +1214,7 @@ export function bindPendingTurnId(sessionId: string, turnId: string, userText?: 
     return;
   }
   if (userText && userText.trim()) {
-    setPendingTurn(sessionId, userText, turnId);
+    setPendingTurn(sessionId, userText, turnId, images);
   }
 }
 
@@ -1300,29 +1321,38 @@ export async function sendTurn(
   /** The user's explicit "Steer" / "Queue" press; omitted, the host's setting applies. */
   sendDuringTurn?: "immediate" | "queue",
   options?: {
-    onQueued?: (info: { sessionId: string; turnId: string; content: string; attachmentCount: number }) => void;
+    /** Explicit attachments for retry / edit-and-rerun; when omitted, composer `imageAttachments()` are used. */
+    attachments?: ImageAttachment[];
+    onQueued?: (info: {
+      sessionId: string;
+      turnId: string;
+      content: string;
+      attachmentCount: number;
+      attachments: ImageAttachment[];
+    }) => void;
   },
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   const sessionId = activeSessionId();
   const body = text.trim();
-  if (!sessionId || !body) return null;
+  const usesExplicitAttachments = options?.attachments !== undefined;
+  const outgoingImages = usesExplicitAttachments ? [...(options?.attachments ?? [])] : [...imageAttachments()];
+  if (!sessionId || (!body && outgoingImages.length === 0)) return null;
   // The row says which workspace owns the session. A session open in a tab whose
   // workspace is no longer listed is sent without one, so the host restores it
   // from its own binding instead of the workspace this window shows now.
   const row = sessions().find(item => item.sessionId === sessionId);
   const workspaceId = row ? row.workspaceId || activeWorkspaceId() || undefined : undefined;
   const savedDraft = composerText();
-  const fromComposer = savedDraft === text;
-  const savedAttachments = [...imageAttachments()];
-  const attachments = attachmentContexts();
+  const fromComposer = savedDraft === text && options?.attachments === undefined;
+  const attachments = buildAttachmentContexts(outgoingImages);
   const running = Boolean(runningTurnId());
   const restoreDraft = () => {
     batch(() => {
       if (fromComposer && !composerText().trim()) {
         composerText.set(savedDraft);
       }
-      if (savedAttachments.length > 0 && imageAttachments().length === 0) {
-        imageAttachments.set(savedAttachments);
+      if (!usesExplicitAttachments && outgoingImages.length > 0 && imageAttachments().length === 0) {
+        imageAttachments.set(outgoingImages);
       }
     });
   };
@@ -1333,12 +1363,12 @@ export async function sendTurn(
     turnError.set("");
     sendNotice.set("");
     if (fromComposer) composerText.set("");
-    clearAttachments();
+    if (!usesExplicitAttachments) clearAttachments();
     if (!running) {
-      // Optimistic: the pending bubble stays across TTFT until persisted turns
-      // settle (no flash back to the empty Welcome Studio on send).
+      // Optimistic: the pending bubble (with its images) stays across TTFT until
+      // persisted turns settle (no flash back to the empty Welcome Studio on send).
       clearStreamedText();
-      setPendingTurn(sessionId, body);
+      setPendingTurn(sessionId, body, undefined, outgoingImages);
     }
   });
   let outcome: SubmitUserMessageResult["outcome"] | null = null;
@@ -1354,7 +1384,7 @@ export async function sendTurn(
       });
       outcome = result.outcome;
       if (result.outcome === "started") {
-        bindPendingTurnId(sessionId, result.turnId, body);
+        bindPendingTurnId(sessionId, result.turnId, body, outgoingImages);
       } else {
         // Steered into the running turn or waiting in the host queue: either way
         // no new turn starts from this message now.
@@ -1365,6 +1395,7 @@ export async function sendTurn(
             turnId: result.turnId,
             content: body,
             attachmentCount: attachments.length,
+            attachments: outgoingImages,
           });
         }
         if (result.outcome === "steered") await loadTurns(sessionId);
@@ -1398,7 +1429,7 @@ async function sendWithLegacyHost(
   sessionId: string,
   workspaceId: string,
   body: string,
-  attachments: ReturnType<typeof attachmentContexts>,
+  attachments: ReturnType<typeof buildAttachmentContexts>,
   running: boolean,
   restoreDraft: () => void,
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
@@ -1448,6 +1479,9 @@ export async function stopRunningTurn(): Promise<void> {
     }
     // Only clear running/live/pending state if no newer turn has replaced `turnId`.
     if (runningTurnId() === turnId) runningTurnId.set(null);
+    const device = activeSessionDevice();
+    clearQuestionsForSession(sessionId, device);
+    clearPermissionsForSession(sessionId, device);
     runningTurns.update(current => {
       if (current[key] !== turnId) return current;
       const next = { ...current };
@@ -1607,6 +1641,10 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     // than waiting for a reload the user did not ask for.
     sessionTotal.update(total => Math.max(0, total - 1));
     const key = sessionKey(sessionId);
+    const device = activeSessionDevice();
+    clearQuestionsForSession(sessionId, device);
+    clearPermissionsForSession(sessionId, device);
+    clearPendingTurn(sessionId, key);
     evictTurnWindow(key);
     composerDrafts.delete(key);
     openSessionKeys.set(openSessionKeys().filter(item => item !== key));

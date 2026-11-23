@@ -369,6 +369,7 @@ export const enUSMessages = {
   "sessions.questionChooseMulti": "Choose one or more",
   "sessions.questionChooseOne": "Choose one",
   "sessions.questionOtherDetail": "Provide a custom answer",
+  "sessions.questionAutoProceed": "Auto-continuing in {{remaining}}",
   "sessions.queuedBlocked": "Blocked",
   "sessions.queuedWaiting": "Waiting: {{reason}}",
 

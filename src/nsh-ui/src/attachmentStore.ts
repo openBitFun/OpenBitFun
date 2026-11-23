@@ -181,10 +181,10 @@ export function clearAttachments(): void {
   attachmentNotice.set("");
 }
 
-/** The request field `start_dialog_turn` takes, empty when nothing is attached. */
-export function attachmentContexts() {
+/** Serializes a list of image attachments into the wire shape `submit_user_message` / `start_dialog_turn` expects. */
+export function buildAttachmentContexts(list: ReadonlyArray<ImageAttachment>) {
   const allowLocalPath = isLocalAttachmentPathAllowed();
-  return imageAttachments()
+  return list
     .filter(entry => Boolean(entry.dataUrl) || (allowLocalPath && Boolean(entry.imagePath)))
     .map(entry => ({
       id: entry.id,
@@ -197,6 +197,24 @@ export function attachmentContexts() {
       ...(entry.width ? { width: entry.width } : {}),
       ...(entry.height ? { height: entry.height } : {}),
     }));
+}
+
+/** The request field `start_dialog_turn` takes, empty when nothing is attached. */
+export function attachmentContexts() {
+  return buildAttachmentContexts(imageAttachments());
+}
+
+/**
+ * Resolves a displayable preview `src` for an image attachment or persisted
+ * `UserImage` across composer chips, rerun chips, and transcript bubbles.
+ * Never returns a local `file://` URI for remote peers or remote workspaces.
+ */
+export function attachmentPreviewSrc(entry: { dataUrl?: string; imagePath?: string }): string {
+  if (entry.dataUrl) return entry.dataUrl;
+  if (entry.imagePath && isLocalAttachmentPathAllowed()) {
+    return entry.imagePath.startsWith("file://") ? entry.imagePath : `file://${entry.imagePath}`;
+  }
+  return "";
 }
 
 export function pathOfFileUrl(url: string): string {

@@ -1184,10 +1184,12 @@ test("a question the host is waiting on is recovered from the mailbox and answer
   await app.waitFor("Port: Which port should the server use?");
   await app.waitFor("8080");
   await app.waitFor("the documented default");
-  // Showing the question is what starts the host's own deadline.
-  expect(backend.questionStarts).toEqual([{ sessionId: "session-1", toolId: "tool-q1" }]);
+  // Arrival alone must not cancel the host's unattended auto-proceed deadline.
+  expect(backend.questionStarts).toEqual([]);
 
+  // Interacting with an option signals the host to pause the auto-proceed timer.
   await app.press("question-tool-q1-0-8080");
+  expect(backend.questionStarts).toEqual([{ sessionId: "session-1", toolId: "tool-q1" }]);
   await app.press("Send answer");
   expect(backend.userAnswers).toEqual([
     { toolId: "tool-q1", answers: { "0": "8080" }, sessionId: "session-1" },

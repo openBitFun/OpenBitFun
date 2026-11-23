@@ -1441,3 +1441,245 @@ test("composer clears immediately on submit before the host RPC resolves and res
   await app.waitUntil(() => app.value("composer") === "Instant clear test");
   expect(shouldFail).toBe(true);
 });
+
+test("image attachments render immediately in live bubbles and persist across retry, edit-and-rerun, and queue edit without noisy paste toasts", async () => {
+  const sampleDataUrl =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const backend = createBackend({
+    hostQueue: true,
+    sessions: [
+      {
+        sessionId: "session-img",
+        sessionName: "Image lifecycle",
+        lastUpdated: 1763150000000,
+        messageCount: 2,
+        agentType: "Standard",
+      },
+    ],
+  });
+  withCustomTurns(backend, {
+    "session-img": [
+      {
+        id: "turn-failed-img",
+        timestamp: 1763150000000,
+        status: "error",
+        error: "provider timeout",
+        userMessage: {
+          id: "u-img-1",
+          content: "Check this screenshot",
+          metadata: {
+            images: [{ name: "bug.png", data_url: sampleDataUrl }],
+          },
+        },
+        modelRounds: [],
+      },
+    ],
+  });
+
+  const app = await open("../App.tsx", {
+    ...DESKTOP,
+    host: { handlers: backend.handlers },
+    modules: {
+      nsh: {
+        "Clipboard.readImage": () => ({
+          url: "file:///tmp/pasted-shot.png",
+          size: { width: 640, height: 480 },
+        }),
+      },
+    },
+  });
+
+  await openSession(app, "Image lifecycle");
+  await app.waitFor("Check this screenshot");
+  await app.waitFor("user-image-bug.png");
+
+  // 1. Retry preserves the failed turn's image attachments in submit_user_message
+  //    AND displays the image immediately in the live pending UserBubble.
+  await app.press("retry-turn-turn-failed-img");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "submit_user_message" &&
+        (call.request as Record<string, unknown>)?.text === "Check this screenshot",
+    ),
+  );
+  const retryCall = backend.calls.find(
+    call =>
+      call.action === "submit_user_message" &&
+      (call.request as Record<string, unknown>)?.text === "Check this screenshot",
+  );
+  const retryContexts = (retryCall?.request as Record<string, unknown>)?.attachments as
+    | Array<Record<string, unknown>>
+    | undefined;
+  expect(retryContexts).toHaveLength(1);
+  expect(retryContexts?.[0]).toMatchObject({
+    image_name: "bug.png",
+    data_url: sampleDataUrl,
+  });
+
+  // 2. While that turn is running, attaching an image produces no toast, shows a real
+  //    thumbnail for local paths, queueing keeps the image badge, and clicking Edit
+  //    restores BOTH text and image attachment to composer.
+  backend.setRunningTurn("session-img", "turn-retry");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-img", turnId: "turn-retry", userInput: "Check this screenshot" },
+  });
+  await app.waitFor("Stop");
+
+  await app.press("Attach");
+  await app.waitFor("pasted-shot.png");
+  expect(app.texts().join("\n")).not.toContain("from clipboard");
+  expect(app.texts().join("\n")).not.toContain("Attached 1 image");
+
+  await app.type("composer", "Queued follow-up with image");
+  await app.press("Send");
+  await app.waitFor("Queued follow-up with image");
+  await app.waitFor("queued-panel");
+
+  // Edit the queued message: composer gets both the text AND the image chip back.
+  await app.press("label:queued-panel >> label:Edit");
+  await app.waitUntil(() => app.value("composer") === "Queued follow-up with image");
+  await app.waitFor("pasted-shot.png");
+
+  // Settle the running turn so we can test live UserBubble image + Edit & Rerun.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-cancelled",
+    payload: { sessionId: "session-img", turnId: "turn-retry" },
+  });
+  backend.setRunningTurn("session-img", null);
+  await app.waitUntil(() => app.shows("Send"));
+
+  // Sending from composer with an image displays the image in the live UserBubble immediately.
+  await app.press("Send");
+  await app.waitFor("user-image-pasted-shot.png");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-cancelled",
+    payload: { sessionId: "session-img", turnId: "turn-live-img" },
+  });
+  backend.setRunningTurn("session-img", null);
+  await app.waitFor("Stop", { state: "gone" });
+
+  // 3. Edit & Rerun on a turn with images displays the preserved image chip and sends
+  //    it in `attachments` after rollback.
+  await app.press("edit-rerun-turn-failed-img");
+  await app.waitFor("Roll back and rerun");
+  await app.waitFor("bug.png");
+  const prevSubmitCount = backend.calls.filter(c => c.action === "submit_user_message").length;
+  await app.press("Roll back and rerun");
+  await app.waitUntil(
+    () => backend.calls.filter(c => c.action === "submit_user_message").length > prevSubmitCount,
+  );
+  const rerunCalls = backend.calls.filter(c => c.action === "submit_user_message");
+  const rerunContexts = (rerunCalls[rerunCalls.length - 1]?.request as Record<string, unknown>)
+    ?.attachments as Array<Record<string, unknown>> | undefined;
+  expect(rerunContexts).toHaveLength(1);
+  expect(rerunContexts?.[0]).toMatchObject({
+    image_name: "bug.png",
+    data_url: sampleDataUrl,
+  });
+});
+
+test("AskUserQuestion renders countdown until user interacts and disappears immediately on stop or tool termination", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Message");
+
+  // Start a live turn and emit an AskUserQuestion with a 180s host deadline.
+  backend.setRunningTurn("session-1", "turn-q-live");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-q-live", userInput: "Ask me something" },
+  });
+  await app.waitFor("Stop");
+
+  await app.host.send("openbitfun.event", {
+    event: "backend-event-toolawaitinguserinput",
+    payload: {
+      toolId: "tool-q-countdown",
+      sessionId: "session-1",
+      questions: {
+        questions: [
+          {
+            question: "Pick deployment mode",
+            header: "Deploy",
+            multiSelect: false,
+            options: [
+              { label: "Canary", description: "Roll out gradually" },
+              { label: "Full", description: "Ship everywhere" },
+            ],
+          },
+        ],
+        responseHostNowMs: 10_000,
+        responseDeadlineMs: 190_000,
+      },
+    },
+  });
+
+  await app.waitFor("Deploy: Pick deployment mode");
+  // Countdown badge and auto-proceed hint are visible, and host timeout has NOT been cancelled yet.
+  expect(app.shows("question-countdown-tool-q-countdown")).toBe(true);
+  expect(backend.questionStarts).toEqual([]);
+
+  // Selecting an option notifies the host to pause auto-proceed and hides the countdown.
+  await app.press("question-tool-q-countdown-0-Canary");
+  expect(backend.questionStarts).toEqual([{ sessionId: "session-1", toolId: "tool-q-countdown" }]);
+  expect(app.shows("question-countdown-tool-q-countdown")).toBe(false);
+
+  // Clicking Stop clears BOTH pending AskUserQuestion AND pending PermissionCard immediately.
+  await app.host.send("openbitfun.event", {
+    event: "permission://event",
+    payload: {
+      event: "asked",
+      request: {
+        requestId: "perm-stop-test",
+        action: "run_command",
+        resources: ["rm -rf /tmp/demo"],
+        sessionId: "session-1",
+        agentId: "Standard",
+      },
+    },
+  });
+  await app.waitFor("allow-once-perm-stop-test");
+
+  await app.press("Stop");
+  await app.waitFor("Deploy: Pick deployment mode", { state: "gone" });
+  await app.waitFor("allow-once-perm-stop-test", { state: "gone" });
+  expect(app.texts()).not.toContain("The agent needs an answer");
+
+  // A terminal tool event for an AskUserQuestion also clears its card immediately.
+  await app.host.send("openbitfun.event", {
+    event: "backend-event-toolawaitinguserinput",
+    payload: {
+      toolId: "tool-q-cancelled",
+      sessionId: "session-1",
+      questions: {
+        questions: [
+          {
+            question: "Confirm cleanup?",
+            header: "Cleanup",
+            multiSelect: false,
+            options: [{ label: "Yes", description: "" }],
+          },
+        ],
+        responseHostNowMs: 10_000,
+        responseDeadlineMs: 190_000,
+      },
+    },
+  });
+  await app.waitFor("Cleanup: Confirm cleanup?");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-q-live",
+      toolEvent: {
+        event_type: "Cancelled",
+        tool_id: "tool-q-cancelled",
+        tool_name: "AskUserQuestion",
+      },
+    },
+  });
+  await app.waitFor("Cleanup: Confirm cleanup?", { state: "gone" });
+});

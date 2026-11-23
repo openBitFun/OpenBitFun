@@ -60,6 +60,7 @@ import {
 } from "../ui/toolCards";
 import {
   attachmentNotice,
+  attachmentPreviewSrc,
   attachImageFromClipboard,
   attachImagesFromPicker,
   imageAttachments,
@@ -114,6 +115,7 @@ import { activeConversationId } from "../superagentStore";
 import { PromptAttention, ReviewNotesBar, type AttentionDevice } from "../ui/attention";
 import { DeviceBadge, StateMark, deviceException, type MarkState } from "../ui/fleet";
 import {
+  loadQuestionMailbox,
   type QuestionPrompt,
   type QuestionView,
   questionsForSession,
@@ -131,7 +133,7 @@ import {
   recordQueuedFromSubmit,
   removeQueued,
   sendQueuedNow,
-  takeQueued,
+  takeQueuedEntry,
 } from "../queueStore";
 import {
   activeModelId,
@@ -243,6 +245,7 @@ import {
 import {
   compactLayout,
   controlHeight,
+  elevationShadow,
   fontMono,
   layout,
   palette,
@@ -320,7 +323,6 @@ import {
   InlineConfirmBar,
   InputBox,
   StatusDot,
-  TapOptionRow,
   TooltipBubble,
   focusRingStyle as baseFocusRingStyle,
 } from "../ui/primitives";
@@ -700,12 +702,6 @@ async function attachRemoteDroppedImage(uri: string, name: string, mime: string)
     };
     imageAttachments.update(list => [...list, attachment]);
     attachmentNotice.set("");
-    pushToast(
-      tr("sessions.attachedImages", {
-        images: formatPlural(1, "format.imageOne", "format.imageOther"),
-      }),
-      "success",
-    );
     return true;
   } catch {
     return false;
@@ -763,30 +759,6 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
     composerText.set(`${current}${separator}${tags} `);
     composerInputRef?.focus();
   }
-
-  if (attachedImages > 0 && referencedNames.length > 0) {
-    pushToast(
-      tr("sessions.attachedImagesAndFiles", {
-        images: formatPlural(attachedImages, "format.imageOne", "format.imageOther"),
-        files: formatPlural(referencedNames.length, "format.fileOne", "format.fileOther"),
-      }),
-      "success",
-    );
-  } else if (attachedImages > 0) {
-    pushToast(
-      tr("sessions.attachedImages", {
-        images: formatPlural(attachedImages, "format.imageOne", "format.imageOther"),
-      }),
-      "success",
-    );
-  } else if (referencedNames.length > 0) {
-    pushToast(
-      tr("sessions.referencedFiles", {
-        files: formatPlural(referencedNames.length, "format.fileOne", "format.fileOther"),
-      }),
-      "info",
-    );
-  }
 }
 
 async function handleComposerPaste(event: PasteEvent): Promise<void> {
@@ -813,12 +785,6 @@ async function handleComposerPaste(event: PasteEvent): Promise<void> {
     }
     if (attachedImages > 0) {
       attachmentNotice.set("");
-      pushToast(
-        tr("sessions.attachedPastedImages", {
-          images: formatPlural(attachedImages, "format.imageOne", "format.imageOther"),
-        }),
-        "success",
-      );
     }
   }
   if (event.uris && event.uris.length > 0) {
@@ -1876,13 +1842,34 @@ function userImagesOf(turn: unknown): UserImage[] {
   }));
 }
 
+/** Converts persisted or live `UserImage` items back to `ImageAttachment[]` for retry / edit-and-rerun. */
+function userImagesToAttachments(images: ReadonlyArray<UserImage>): ImageAttachment[] {
+  return images.flatMap((image, index) => {
+    if (!image.dataUrl && !image.imagePath) return [];
+    const dataMime = image.dataUrl?.match(/^data:([^;,]+)[;,]/i)?.[1];
+    const mimeType = dataMime || mimeFromFilename(image.name || image.imagePath || "image.png");
+    const base64Body = image.dataUrl?.split(",")[1] ?? "";
+    const fileSize = base64Body ? Math.floor((base64Body.length * 3) / 4) : 0;
+    return [
+      {
+        id: `reused-image-${index}-${++nextDroppedAttachmentId}`,
+        name: image.name || `image-${index + 1}.png`,
+        mimeType,
+        fileSize,
+        ...(image.dataUrl ? { dataUrl: image.dataUrl } : {}),
+        ...(image.imagePath ? { imagePath: image.imagePath } : {}),
+      },
+    ];
+  });
+}
+
 function UserImageStrip(props: { images: UserImage[] }) {
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
       <Each of={props.images} key={image => image.id}>
         {image => (
           <If
-            when={image().dataUrl ?? ""}
+            when={attachmentPreviewSrc(image())}
             else={
               <View
                 style={{
@@ -2038,7 +2025,7 @@ function UserBubble(props: {
               accessibilityLabel={`edit-rerun-${turnId()}`}
               tooltip={tr("chat.editAndRerun")}
               style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-              onPress={() => beginRerun(turnId(), props.text)}
+              onPress={() => beginRerun(turnId(), props.text, props.images)}
             />
           )}
         </If>
@@ -2052,15 +2039,19 @@ function UserBubble(props: {
 
 /**
  * Edit-and-rerun from a user message: `rollback_session_to_turn` drops that turn
- * and everything after it, then the edited text starts a new turn — the order
- * the desktop's `UserMessageItem` uses. It is destructive, so it confirms first.
+ * and everything after it, then the edited text (and its preserved images) starts
+ * a new turn — the order the desktop's `UserMessageItem` uses.
  */
-const rerunTarget = signal<{ turnId: string; text: string } | null>(null);
+const rerunTarget = signal<{ turnId: string; text: string; images: ImageAttachment[] } | null>(null);
 const rerunBusy = signal(false);
 
-function beginRerun(turnId: string, text: string): void {
+function beginRerun(turnId: string, text: string, images?: UserImage[]): void {
   animateLayout();
-  rerunTarget.set({ turnId, text });
+  rerunTarget.set({
+    turnId,
+    text,
+    images: images && images.length > 0 ? userImagesToAttachments(images) : [],
+  });
 }
 
 async function confirmRerun(): Promise<void> {
@@ -2069,14 +2060,14 @@ async function confirmRerun(): Promise<void> {
   const workspaceId = activeWorkspaceId();
   if (!target || !sessionId || !workspaceId || rerunBusy()) return;
   const text = target.text.trim();
-  if (!text) return;
+  if (!text && target.images.length === 0) return;
   rerunBusy.set(true);
   try {
     await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId });
     rerunTarget.set(null);
     await loadTurns(sessionId);
     jumpToTranscriptEnd();
-    await sendTurn(text);
+    await sendTurn(text, undefined, target.images.length > 0 ? { attachments: target.images } : undefined);
   } catch (error) {
     turnError.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -2089,6 +2080,64 @@ function RerunEditor() {
     <If when={rerunTarget()}>
       {target => (
         <View style={{ gap: 8, alignSelf: "stretch" }}>
+          <If when={target().images.length > 0}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
+              <Each of={target().images} key={image => image.id}>
+                {image => (
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: space.xs,
+                      paddingLeft: space.xs,
+                      paddingRight: space.chip,
+                      paddingVertical: space.hair + 1,
+                      borderRadius: radii.sm,
+                      borderWidth: 1,
+                      borderColor: palette().borderSubtle,
+                      backgroundColor: palette().surfaceTertiary,
+                    }}
+                  >
+                    <If
+                      when={attachmentPreviewSrc(image())}
+                      else={<Icon name="image" size={12} color={palette().textSecondary} />}
+                    >
+                      {src => (
+                        <Image
+                          src={src()}
+                          style={{ width: 20, height: 20, borderRadius: radii.xs }}
+                        />
+                      )}
+                    </If>
+                    <Text
+                      style={{
+                        ...textStyle("caption", { color: palette().textSecondary }),
+                        maxWidth: 140,
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {image().name}
+                    </Text>
+                    <IconButton
+                      icon="close"
+                      size="xs"
+                      iconSize={10}
+                      accessibilityLabel={`rerun-remove-image-${image().id}`}
+                      onPress={() => {
+                        const current = rerunTarget();
+                        if (!current) return;
+                        rerunTarget.set({
+                          ...current,
+                          images: current.images.filter(entry => entry.id !== image().id),
+                        });
+                      }}
+                    />
+                  </View>
+                )}
+              </Each>
+            </View>
+          </If>
           <InputBox
             value={target().text}
             multiline={true}
@@ -2753,6 +2802,7 @@ async function resumeInterruptedTurn(turn: unknown): Promise<void> {
 function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
   const cancelled = computed(() => props.failure.status === "cancelled" || props.failure.status === "interrupted");
   const prompt = computed(() => userPartsOf(props.turn)[0]?.text ?? "");
+  const promptImages = computed(() => userImagesOf(props.turn));
   const reason = computed(() => (props.failure.message ? localizeHostError(props.failure.message) : ""));
   const raw = computed(() => {
     try {
@@ -2807,19 +2857,18 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
             onPress={() => void resumeInterruptedTurn(props.turn)}
           />
         </If>
-        <If when={prompt() && !runningTurnId() ? prompt() : ""}>
-          {text => (
-            <Button
-              label={tr("common.tryAgain")}
-              variant="ghost"
-              size="sm"
-              accessibilityLabel={`retry-turn-${turnKeyOf(props.turn)}`}
-              onPress={() => {
-                jumpToTranscriptEnd();
-                void sendTurn(text());
-              }}
-            />
-          )}
+        <If when={(prompt() || promptImages().length > 0) && !runningTurnId()}>
+          <Button
+            label={tr("common.tryAgain")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel={`retry-turn-${turnKeyOf(props.turn)}`}
+            onPress={() => {
+              jumpToTranscriptEnd();
+              const preserved = userImagesToAttachments(promptImages());
+              void sendTurn(prompt(), undefined, preserved.length > 0 ? { attachments: preserved } : undefined);
+            }}
+          />
         </If>
       </View>
     </View>
@@ -3052,6 +3101,20 @@ const optimisticUserText = computed(() => {
   return live?.turnId && live.sessionId === activeSessionId() && (live.deviceId ?? "") === activeSessionDevice()
     ? live.userText
     : "";
+});
+
+/** The images attached to the in-flight pending turn so the live UserBubble shows them immediately. */
+const pendingTurnImages = computed<UserImage[]>(() => {
+  const pending = pendingTurnState();
+  const openKey = activeSessionKey();
+  const pendingMatches = pending && (!pending.sessionKey || !openKey || pending.sessionKey === openKey);
+  if (!pendingMatches || !pending.images?.length) return [];
+  return pending.images.map((img, idx) => ({
+    id: img.id || `pending-img-${idx}`,
+    name: img.name,
+    ...(img.dataUrl ? { dataUrl: img.dataUrl } : {}),
+    ...(img.imagePath ? { imagePath: img.imagePath } : {}),
+  }));
 });
 
 
@@ -3647,18 +3710,17 @@ function Transcript() {
             {row => <TranscriptTurn turn={() => row().turn} rowKey={row().key} />}
           </Each>
 
-          <If when={Boolean(optimisticUserText()) || liveDisplayBlocks().length > 0 || liveFallbackItems().length > 0}>
+          <If when={Boolean(optimisticUserText()) || pendingTurnImages().length > 0 || liveDisplayBlocks().length > 0 || liveFallbackItems().length > 0}>
             {/* Mirrors `TranscriptTurn`'s exact `gap: space.md` and `TurnFooter` height so settling into a persisted turn causes 0px vertical jump. */}
             <View style={{ gap: space.md }}>
-              <If when={optimisticUserText()}>
-                {text => (
-                  <UserBubble
-                    partKey={`pending-${pendingTurnState()?.turnId || text()}`}
-                    text={text()}
-                    timestamp={pendingTurnState()?.createdAt}
-                    showCopy={false}
-                  />
-                )}
+              <If when={Boolean(optimisticUserText()) || pendingTurnImages().length > 0}>
+                <UserBubble
+                  partKey={`pending-${pendingTurnState()?.turnId || optimisticUserText() || pendingTurnImages().length}`}
+                  text={optimisticUserText()}
+                  images={pendingTurnImages()}
+                  timestamp={pendingTurnState()?.createdAt}
+                  showCopy={false}
+                />
               </If>
 
               <If when={liveDisplayBlocks().length > 0}>
@@ -3957,7 +4019,7 @@ async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<v
   // waits in its queue; the composer clears immediately and follows the answer.
   const outcome = await sendTurn(text, sendDuringTurn, {
     onQueued: info => {
-      recordQueuedFromSubmit(info.sessionId, info.turnId, info.content, info.attachmentCount);
+      recordQueuedFromSubmit(info.sessionId, info.turnId, info.content, info.attachmentCount, info.attachments);
       void loadQueueForSession(info.sessionId, true);
     },
   });
@@ -4379,16 +4441,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
       label: tr("chat.attach.pickImages"),
       accessibilityLabel: "attach-image-file",
       onSelect: fromPlus(() => {
-        void attachImagesFromPicker().then(count => {
-          if (count > 0) {
-            pushToast(
-              tr("sessions.attachedImages", {
-                images: formatPlural(count, "format.imageOne", "format.imageOther"),
-              }),
-              "success",
-            );
-          }
-        });
+        void attachImagesFromPicker();
       }),
     },
     {
@@ -4681,7 +4734,7 @@ function ComposerDock() {
                       backgroundColor: palette().surfaceTertiary,
                     }}
                   >
-                    <If when={entry().dataUrl ?? ""} else={<Icon name="image" size={12} color={palette().textSecondary} />}>
+                    <If when={attachmentPreviewSrc(entry())} else={<Icon name="image" size={12} color={palette().textSecondary} />}>
                       {src => (
                         <Image
                           src={src()}
@@ -4889,7 +4942,7 @@ function ComposerDock() {
                 <ContextUsageRing />
               </If>
 
-              <If when={Boolean(runningTurnId() && !composerText().trim())}>
+              <If when={Boolean(runningTurnId() && !composerText().trim() && imageAttachments().length === 0)}>
                 <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? space.hair : space.xs }}>
                   <If
                     when={compactComposer() || compactLayout()}
@@ -4962,26 +5015,26 @@ function ComposerDock() {
                 </View>
               </If>
 
-              <If when={!runningTurnId() || composerText().trim().length > 0}>
+              <If when={!runningTurnId() || composerText().trim().length > 0 || imageAttachments().length > 0}>
                 <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 0 : 4 }}>
                   <If
                     when={compactComposer()}
                     else={
                       <IconCircleButton
                         icon="arrow-up"
-                        variant={composerDisabled() || !composerText().trim() ? "subtle" : "primary"}
+                        variant={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0) ? "subtle" : "primary"}
                         size={30}
                         accessibilityLabel="Send"
                         tooltip={tr("sessions.sendMessage")}
-                        disabled={composerDisabled() || !composerText().trim()}
+                        disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0)}
                         onPress={() => void submitComposer()}
                       />
                     }
                   >
                     <TouchTargetButton
                       icon="arrow-up"
-                      tone={composerDisabled() || !composerText().trim() ? "subtle" : "primary"}
-                      disabled={composerDisabled() || !composerText().trim()}
+                      tone={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0) ? "subtle" : "primary"}
+                      disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0)}
                       accessibilityLabel="Send"
                       onPress={() => void submitComposer()}
                     />
@@ -6446,27 +6499,76 @@ function QuestionPrompts() {
   );
 }
 
+function formatQuestionCountdown(seconds: number): string {
+  const clamped = Math.max(0, Math.ceil(seconds));
+  const mins = Math.floor(clamped / 60);
+  const secs = clamped % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
 function QuestionCard(props: { prompt: () => QuestionPrompt }) {
   const prompt = props.prompt;
   const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
+  const nowMs = signal(Date.now());
+  let expiredTriggered = false;
+
+  // Live 1s countdown ticker while an unattended host deadline is active.
+  effect(() => {
+    const deadline = prompt().localDeadlineMs;
+    const started = prompt().interactionStarted;
+    if (!deadline || started) return;
+    nowMs.set(Date.now());
+    const timer = setInterval(() => {
+      const current = Date.now();
+      nowMs.set(current);
+      if (current >= deadline && !expiredTriggered) {
+        expiredTriggered = true;
+        const p = prompt();
+        void loadQuestionMailbox(p.sessionId, p.deviceId);
+      }
+    }, 1000);
+    cleanup(() => clearInterval(timer));
+  });
+
+  const remainingSeconds = computed(() => {
+    const p = prompt();
+    if (!p.localDeadlineMs || p.interactionStarted) return null;
+    return Math.max(0, Math.ceil((p.localDeadlineMs - nowMs()) / 1000));
+  });
+
+  const isUrgent = computed(() => {
+    const rem = remainingSeconds();
+    return rem !== null && rem <= 30;
+  });
+
   return (
     <View
+      accessibilityLabel={`question-card-${prompt().toolId}`}
       style={[
         {
-          paddingVertical: space.md,
-          paddingHorizontal: space.lg,
-          gap: space.md,
-          borderRadius: radii.lg,
+          borderRadius: radii.xl,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().canvas,
+          borderColor: palette().border,
+          backgroundColor: palette().surfaceElevated,
+          boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
+          overflow: "hidden",
         },
         motion.style,
       ]}
     >
-      {/* Row 1 of the attention shell (spec §3 AttentionItem): mark, device, source. */}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: 20 }}>
+      {/* Compact Header Bar */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.sm,
+          paddingHorizontal: space.lg,
+          paddingVertical: space.md,
+          borderBottomWidth: 1,
+          borderColor: palette().borderSubtle,
+        }}
+      >
         <StateMark state="needs_you" />
         <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
           <If when={sessionDeviceLabel()}>
@@ -6482,37 +6584,59 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
               </>
             )}
           </If>
-          <Text style={{ ...textStyle("label", { color: palette().text }), flexShrink: 1, minWidth: 0 }}>
+          <Text
+            style={{
+              ...textStyle("label", { color: palette().text }),
+              fontWeight: "600",
+              flexShrink: 1,
+              minWidth: 0,
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
             {tr("sessions.questionTitle")}
           </Text>
         </View>
-      </View>
-      <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: space.md }}>
-          <Each of={prompt().questions} key="index">
-            {(question, index) => (
-              <If when={prompt().questions.length <= 1 || index() === questionPageOf(prompt().toolId, prompt().questions.length)}>
-                <QuestionBlock prompt={prompt} question={question} index={index()} />
-              </If>
-            )}
-          </Each>
-        </View>
-      </Scroll>
-      <If when={prompt().error}>
-        {message => (
-          <Text
-            style={textStyle("caption", { color: palette().danger })}
+        <If when={remainingSeconds() !== null}>
+          <View
+            accessibilityLabel={`question-countdown-${prompt().toolId}`}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+              paddingHorizontal: space.sm,
+              paddingVertical: 3,
+              borderRadius: radii.pill,
+              borderWidth: 1,
+              borderColor: isUrgent() ? palette().warningBorder : palette().borderSubtle,
+              backgroundColor: isUrgent() ? palette().warningSoft : palette().surfaceSubtle,
+              flexShrink: 0,
+            }}
           >
-            {localizeHostError(message())}
-          </Text>
-        )}
-      </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <Icon
+              name="clock"
+              size={11}
+              color={isUrgent() ? palette().warning : palette().textMuted}
+            />
+            <Text
+              style={{
+                color: isUrgent() ? palette().warning : palette().textSecondary,
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.2),
+                fontWeight: "500",
+                fontFamily: fontMono,
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {formatQuestionCountdown(remainingSeconds() ?? 0)}
+            </Text>
+          </View>
+        </If>
         <If when={prompt().questions.length > 1}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
             <IconButton
               icon="chevron-left"
-              size="sm"
+              size="xs"
               accessibilityLabel={`question-prev-${prompt().toolId}`}
               tooltip={tr("chat.question.previous")}
               disabled={questionPageOf(prompt().toolId, prompt().questions.length) === 0}
@@ -6522,16 +6646,17 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
             <Text
               style={{
                 color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.3),
                 fontVariant: ["tabular-nums"],
+                paddingHorizontal: space.hair,
               }}
             >
               {`${questionPageOf(prompt().toolId, prompt().questions.length) + 1}/${prompt().questions.length}`}
             </Text>
             <IconButton
               icon="chevron-right"
-              size="sm"
+              size="xs"
               accessibilityLabel={`question-next-${prompt().toolId}`}
               tooltip={tr("chat.question.next")}
               disabled={questionPageOf(prompt().toolId, prompt().questions.length) >= prompt().questions.length - 1}
@@ -6540,6 +6665,64 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
             />
           </View>
         </If>
+      </View>
+
+      {/* Question & Clean Grouped Option Menu */}
+      <Scroll style={{ maxHeight: 420, minHeight: 0 }} scrollbar={true}>
+        <View style={{ paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.md }}>
+          <Each of={prompt().questions} key="index">
+            {(question, index) => (
+              <If when={prompt().questions.length <= 1 || index() === questionPageOf(prompt().toolId, prompt().questions.length)}>
+                <QuestionBlock prompt={prompt} question={question} index={index()} />
+              </If>
+            )}
+          </Each>
+        </View>
+      </Scroll>
+
+      {/* Footer Action Bar */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: space.md,
+          paddingHorizontal: space.lg,
+          paddingVertical: space.sm + 2,
+          borderTopWidth: 1,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().surfaceSubtle,
+        }}
+      >
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <If
+            when={prompt().error}
+            else={
+              <If when={remainingSeconds() !== null}>
+                <Text
+                  style={{
+                    color: isUrgent() ? palette().warning : palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.35),
+                    fontVariant: ["tabular-nums"],
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {tr("sessions.questionAutoProceed", {
+                    remaining: formatQuestionCountdown(remainingSeconds() ?? 0),
+                  })}
+                </Text>
+              </If>
+            }
+          >
+            {message => (
+              <Text style={textStyle("caption", { color: palette().danger })}>
+                {localizeHostError(message())}
+              </Text>
+            )}
+          </If>
+        </View>
         <Button
           label={prompt().submitting ? tr("common.sending") : tr("sessions.sendAnswer")}
           variant="primary"
@@ -6567,6 +6750,104 @@ function stepQuestionPage(toolId: string, direction: -1 | 1, total: number): voi
   questionPages.update(current => ({ ...current, [toolId]: next }));
 }
 
+function QuestionMenuRow(props: {
+  label: string;
+  detail?: string;
+  selected: boolean;
+  multiSelect: boolean;
+  first?: boolean;
+  accessibilityLabel: string;
+  onPress: () => void;
+}) {
+  return (
+    <View
+      role={props.multiSelect ? "checkbox" : "radio"}
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{ selected: props.selected, checked: props.selected }}
+      onPress={props.onPress}
+      style={{
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: space.md,
+        minHeight: compactLayout() ? layout.touchTarget : 38,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm + 1,
+        borderTopWidth: props.first ? 0 : 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: props.selected ? palette().accentSoft : "transparent",
+        cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{
+        backgroundColor: props.selected ? palette().accentSoft : palette().panelHover,
+      }}
+      activeStyle={tactileActiveStyle(0.99)}
+      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
+    >
+      {/* Crisp Radio circle or Checkbox square */}
+      <View
+        style={{
+          width: 15,
+          height: 15,
+          marginTop: 2,
+          flexShrink: 0,
+          borderRadius: props.multiSelect ? 4 : radii.pill,
+          borderWidth: 1.5,
+          borderColor: props.selected ? palette().accent : palette().borderStrong,
+          backgroundColor: props.selected ? palette().accent : "transparent",
+          alignItems: "center",
+          justifyContent: "center",
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+      >
+        <If when={props.selected}>
+          <If
+            when={props.multiSelect}
+            else={
+              <View
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().actionSolidFg,
+                }}
+              />
+            }
+          >
+            <Icon name="check" size={10} color={palette().actionSolidFg} />
+          </If>
+        </If>
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 1.38),
+            fontWeight: props.selected ? "600" : "500",
+          }}
+        >
+          {props.label}
+        </Text>
+        <If when={props.detail ?? ""}>
+          {desc => (
+            <Text
+              style={{
+                color: palette().textElevatedMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.4),
+              }}
+            >
+              {desc()}
+            </Text>
+          )}
+        </If>
+      </View>
+    </View>
+  );
+}
+
 function QuestionBlock(props: {
   prompt: () => QuestionPrompt;
   question: () => QuestionView;
@@ -6581,24 +6862,42 @@ function QuestionBlock(props: {
   const typingOther = () =>
     chosen().includes("Other") || Boolean((prompt().others[String(props.index)] ?? "").length);
   return (
-    <View style={{ gap: 8 }}>
-      <Text
-        style={textStyle("body", { color: palette().text })}
+    <View style={{ gap: space.sm }}>
+      <View style={{ gap: 3 }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: textSize(14),
+            lineHeight: textLineHeight(14, 1.45),
+            fontWeight: "500",
+          }}
+        >
+          {question().header ? `${question().header}: ${question().question}` : question().question}
+        </Text>
+        <Text style={textStyle("caption", { color: palette().textElevatedMuted })}>
+          {question().multiSelect
+            ? tr("sessions.questionChooseMulti")
+            : tr("sessions.questionChooseOne")}
+        </Text>
+      </View>
+      <View
+        style={{
+          borderRadius: radii.md,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().panelRaised,
+          overflow: "hidden",
+        }}
       >
-        {question().header ? `${question().header}: ${question().question}` : question().question}
-      </Text>
-      <Text style={textStyle("caption")}>
-        {question().multiSelect
-          ? tr("sessions.questionChooseMulti")
-          : tr("sessions.questionChooseOne")}
-      </Text>
-      <View style={{ gap: 6 }}>
         <Each of={question().options} key={option => option.label}>
-          {option => (
-            <TapOptionRow
+          {(option, optIdx) => (
+            <QuestionMenuRow
+              first={optIdx() === 0}
               label={option().label}
               detail={option().description}
               selected={chosen().includes(option().label)}
+              multiSelect={question().multiSelect}
               accessibilityLabel={`question-${prompt().toolId}-${props.index}-${option().label}`}
               onPress={() =>
                 toggleQuestionOption(prompt().toolId, props.index, option().label)
@@ -6606,25 +6905,38 @@ function QuestionBlock(props: {
             />
           )}
         </Each>
-        <TapOptionRow
+        <QuestionMenuRow
+          first={question().options.length === 0}
           label={tr("sessions.questionOther")}
-          detail={tr("sessions.questionOtherDetail")}
+          detail={typingOther() ? undefined : tr("sessions.questionOtherDetail")}
           selected={typingOther()}
+          multiSelect={question().multiSelect}
           accessibilityLabel={`question-${prompt().toolId}-${props.index}-other`}
           onPress={() =>
             toggleQuestionOption(prompt().toolId, props.index, "Other")
           }
         />
+        <If when={typingOther()}>
+          <View
+            style={{
+              paddingHorizontal: space.md,
+              paddingBottom: space.md,
+              paddingTop: space.xs,
+              backgroundColor: palette().accentSoft,
+            }}
+          >
+            <InputBox
+              autoFocus
+              size="sm"
+              accessibilityLabel={`question-${prompt().toolId}-${props.index}-text`}
+              value={prompt().others[String(props.index)] ?? ""}
+              placeholder={tr("sessions.questionPlaceholder")}
+              onChange={value => setQuestionOther(prompt().toolId, props.index, value)}
+              onSubmit={() => void submitQuestion(prompt().toolId)}
+            />
+          </View>
+        </If>
       </View>
-      <If when={typingOther()}>
-        <InputBox
-          size="sm"
-          accessibilityLabel={`question-${prompt().toolId}-${props.index}-text`}
-          value={prompt().others[String(props.index)] ?? ""}
-          placeholder={tr("sessions.questionPlaceholder")}
-          onChange={value => setQuestionOther(prompt().toolId, props.index, value)}
-        />
-      </If>
     </View>
   );
 }
@@ -6764,14 +7076,19 @@ function QueuedPanel() {
                       style={{
                         flex: 1,
                         minWidth: 0,
-                        color: palette().text,
+                        color: item().content ? palette().text : palette().textMuted,
                         fontSize: textSize(12),
                         lineHeight: textLineHeight(12, 1.4),
                         numberOfLines: 2,
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {item().content}
+                      {item().content ||
+                        formatPlural(
+                          item().attachments?.length ?? item().attachmentCount ?? 1,
+                          "format.imageOne",
+                          "format.imageOther",
+                        )}
                     </Text>
                     <View
                       style={{
@@ -6781,6 +7098,33 @@ function QueuedPanel() {
                         gap: space.hair,
                       }}
                     >
+                      <If when={(item().attachments?.length ?? item().attachmentCount ?? 0) > 0}>
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 3,
+                            paddingHorizontal: space.chip,
+                            paddingVertical: 2,
+                            borderRadius: radii.xs,
+                            backgroundColor: palette().surfaceTertiary,
+                            borderWidth: 1,
+                            borderColor: palette().borderSubtle,
+                          }}
+                        >
+                          <Icon name="image" size={11} color={palette().textMuted} />
+                          <Text
+                            style={{
+                              color: palette().textMuted,
+                              fontSize: textSize(11),
+                              lineHeight: textLineHeight(11, 1.2),
+                              fontVariant: ["tabular-nums"],
+                            }}
+                          >
+                            {String(item().attachments?.length ?? item().attachmentCount ?? 0)}
+                          </Text>
+                        </View>
+                      </If>
                       <If when={item().status !== "queued"}>
                         <Badge label={queuedStatusLabel(item().status)} tone="warning" />
                       </If>
@@ -6820,12 +7164,23 @@ function QueuedPanel() {
                         accessibilityLabel={tr("common.edit")}
                         onPress={() => {
                           const content = item().content;
+                          const queuedAttachments = [...(item().attachments ?? [])];
                           const prevDraft = composerText();
-                          const nextDraft = prevDraft.trim() ? `${prevDraft.trimEnd()}\n${content}` : content;
+                          const prevAttachments = [...imageAttachments()];
+                          const nextDraft = prevDraft.trim()
+                            ? content
+                              ? `${prevDraft.trimEnd()}\n${content}`
+                              : prevDraft
+                            : content;
                           composerText.set(nextDraft);
-                          void takeQueued(item().id).then(text => {
-                            if (!text && composerText() === nextDraft) {
-                              composerText.set(prevDraft);
+                          if (queuedAttachments.length > 0) {
+                            imageAttachments.set([...prevAttachments, ...queuedAttachments]);
+                          }
+                          composerInputRef?.focus();
+                          void takeQueuedEntry(item().id).then(taken => {
+                            if (!taken) {
+                              if (composerText() === nextDraft) composerText.set(prevDraft);
+                              if (queuedAttachments.length > 0) imageAttachments.set(prevAttachments);
                             }
                           });
                         }}

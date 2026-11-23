@@ -368,6 +368,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "sessions.questionChooseMulti": "可多選",
   "sessions.questionChooseOne": "請選擇一項",
   "sessions.questionOtherDetail": "填寫自訂回覆",
+  "sessions.questionAutoProceed": "{{remaining}} 後未選擇將自動繼續",
   "sessions.queuedBlocked": "已阻擋",
   "sessions.queuedWaiting": "等待中：{{reason}}",
 

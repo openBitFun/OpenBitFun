@@ -368,6 +368,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "sessions.questionChooseMulti": "可多选",
   "sessions.questionChooseOne": "请选择一项",
   "sessions.questionOtherDetail": "填写自定义回复",
+  "sessions.questionAutoProceed": "{{remaining}} 后未选择将自动继续",
   "sessions.queuedBlocked": "已阻塞",
   "sessions.queuedWaiting": "等待中：{{reason}}",
 

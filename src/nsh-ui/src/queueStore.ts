@@ -13,6 +13,7 @@
 // handed to the host queue once (migration) and then forgotten.
 
 import { Storage, signal } from "nsh";
+import type { ImageAttachment } from "./attachmentStore";
 import { invokeCommand } from "./bridge";
 import { queuedCounts } from "./sessionStatusStore";
 import { tr } from "./i18n";
@@ -28,6 +29,8 @@ export interface QueuedMessage {
   source: "host";
   /** How many images the host holds with the message. */
   attachmentCount?: number;
+  /** Client-cached image attachments so re-editing or starting a queued message preserves images. */
+  attachments?: ImageAttachment[];
 }
 
 interface HostQueueItem {
@@ -76,6 +79,8 @@ const listSeqBySession = new Map<string, number>();
 const sessionRevisionBySession = new Map<string, { epoch: string; revision: number }>();
 /** Turn IDs already observed in `dialog-turn-started`, so stale snapshots never resurrect them. */
 const startedTurnsBySession = new Map<string, Set<string>>();
+/** Per-row image attachments cached client-side (keyed by `idFor(sessionId, turnId)`). */
+const queuedAttachmentsById = new Map<string, ImageAttachment[]>();
 
 function bumpSessionSeq(sessionId: string): number {
   const next = (listSeqBySession.get(sessionId) ?? 0) + 1;
@@ -97,10 +102,11 @@ export function hasPendingSteeringForSession(sessionId: string | null): boolean 
 /**
  * Drops a queued row the instant its turn starts running (`dialog-turn-started`),
  * invalidating any older in-flight `list` snapshot that was captured before the
- * host dequeued it.
+ * host dequeued it, and returns any cached image attachments so the live user
+ * bubble can render them immediately.
  */
-export function markQueuedTurnStarted(sessionId: string | null, turnId: string | null): void {
-  if (!sessionId || !turnId) return;
+export function markQueuedTurnStarted(sessionId: string | null, turnId: string | null): ImageAttachment[] {
+  if (!sessionId || !turnId) return [];
   let started = startedTurnsBySession.get(sessionId);
   if (!started) {
     started = new Set<string>();
@@ -113,12 +119,15 @@ export function markQueuedTurnStarted(sessionId: string | null, turnId: string |
   started.add(turnId);
   bumpSessionSeq(sessionId);
   const targetId = idFor(sessionId, turnId);
+  const cachedAttachments = queuedAttachmentsById.get(targetId) ?? [];
+  queuedAttachmentsById.delete(targetId);
   const current = queuedMessages();
-  if (!current.some(item => item.id === targetId)) return;
+  if (!current.some(item => item.id === targetId)) return cachedAttachments;
   const next = current.filter(item => item.id !== targetId);
   queuedMessages.set(next);
   const remaining = next.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length;
   queuedCounts.update(counts => ({ ...counts, [sessionId]: remaining }));
+  return cachedAttachments;
 }
 
 /**
@@ -131,12 +140,29 @@ export function recordQueuedFromSubmit(
   turnId: string | null,
   content: string,
   attachmentCount = 0,
+  attachments: ImageAttachment[] = [],
 ): void {
   if (!sessionId || !turnId) return;
   if (startedTurnsBySession.get(sessionId)?.has(turnId)) return;
   const targetId = idFor(sessionId, turnId);
+  const cloned = attachments.length > 0 ? [...attachments] : [];
+  if (cloned.length > 0) {
+    queuedAttachmentsById.set(targetId, cloned);
+  }
+  const effectiveCount = Math.max(attachmentCount, cloned.length);
   const current = queuedMessages();
-  if (current.some(item => item.id === targetId)) return;
+  if (current.some(item => item.id === targetId)) {
+    if (cloned.length > 0) {
+      queuedMessages.set(
+        current.map(item =>
+          item.id === targetId
+            ? { ...item, attachmentCount: effectiveCount, attachments: cloned }
+            : item,
+        ),
+      );
+    }
+    return;
+  }
   const next: QueuedMessage[] = [
     ...current,
     {
@@ -145,7 +171,8 @@ export function recordQueuedFromSubmit(
       status: "queued",
       reason: "",
       source: "host",
-      ...(attachmentCount > 0 ? { attachmentCount } : {}),
+      ...(effectiveCount > 0 ? { attachmentCount: effectiveCount } : {}),
+      ...(cloned.length > 0 ? { attachments: cloned } : {}),
     },
   ];
   queuedMessages.set(next);
@@ -206,14 +233,26 @@ function adoptSnapshot(
     snapshotTurnIds.add(turnId);
     if (!HELD_STATUSES.includes(item.status ?? "queued")) continue;
     if (activeId === turnId || started?.has(turnId)) continue;
+    const rowId = idFor(sessionId, turnId);
+    const cachedAttachments = queuedAttachmentsById.get(rowId);
+    const attachmentCount = Math.max(item.attachmentCount ?? 0, cachedAttachments?.length ?? 0);
     rows.push({
-      id: idFor(sessionId, turnId),
+      id: rowId,
       content: item.displayContent ?? "",
       status: item.status ?? "queued",
       reason: item.reason ?? "",
       source: "host",
-      ...(item.attachmentCount ? { attachmentCount: item.attachmentCount } : {}),
+      ...(attachmentCount > 0 ? { attachmentCount } : {}),
+      ...(cachedAttachments && cachedAttachments.length > 0 ? { attachments: cachedAttachments } : {}),
     });
+  }
+  for (const cachedKey of [...queuedAttachmentsById.keys()]) {
+    if (cachedKey.startsWith(`${sessionId}\u0000`)) {
+      const turnId = cachedKey.slice(sessionId.length + 1);
+      if (!snapshotTurnIds.has(turnId)) {
+        queuedAttachmentsById.delete(cachedKey);
+      }
+    }
   }
   if (started) {
     for (const id of started) {
@@ -340,13 +379,24 @@ export async function removeQueued(id: string): Promise<void> {
   }
 }
 
-/** Hands a queued message back to the composer and drops it from the queue. */
-export async function takeQueued(id: string): Promise<string> {
+/** Hands a queued message (and its cached attachments) back to the composer and drops it from the queue. */
+export async function takeQueuedEntry(id: string): Promise<{ content: string; attachments: ImageAttachment[] } | null> {
   const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
-  if (!row) return "";
+  if (!row) return null;
+  const cachedAttachments = [...(row.attachments ?? queuedAttachmentsById.get(row.id) ?? [])];
   await removeQueued(row.id);
   // Only a row the host actually let go of goes back to the composer.
-  return queuedMessages().some(item => item.id === row.id) ? "" : row.content;
+  if (queuedMessages().some(item => item.id === row.id)) {
+    return null;
+  }
+  queuedAttachmentsById.delete(row.id);
+  return { content: row.content, attachments: cachedAttachments };
+}
+
+/** Hands a queued message back to the composer and drops it from the queue. */
+export async function takeQueued(id: string): Promise<string> {
+  const entry = await takeQueuedEntry(id);
+  return entry?.content ?? "";
 }
 
 /** Sends one queued message now: the host promotes it, steering a running turn. */

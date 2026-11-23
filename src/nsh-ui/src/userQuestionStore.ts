@@ -36,6 +36,13 @@ export interface QuestionPrompt {
   questions: QuestionView[];
   /** The host's own deadline, when it set one; 0 means it waits for an answer. */
   deadlineMs: number;
+  /**
+   * Local wall-clock timestamp (ms) calibrated once from `(responseDeadlineMs - responseHostNowMs)`
+   * so client/host clock skew never distorts the countdown; 0 when no countdown runs.
+   */
+  localDeadlineMs: number;
+  /** True once the user begins interacting with this prompt (pausing the host timeout). */
+  interactionStarted: boolean;
   /** A draft per question: a label, or the labels of a multi-select answer. */
   answers: Record<string, string | string[]>;
   /** Free text per question, used when the picked label is "Other". */
@@ -85,21 +92,45 @@ function readQuestions(payload: unknown): QuestionView[] {
   });
 }
 
-function readDeadline(payload: unknown): number {
+function readDeadlineTiming(
+  payload: unknown,
+  started: boolean,
+): { deadlineMs: number; localDeadlineMs: number } {
+  if (started) return { deadlineMs: 0, localDeadlineMs: 0 };
   const record = asRecord(payload);
   const deadline = record.responseDeadlineMs ?? record.response_deadline_ms;
-  return typeof deadline === "number" && Number.isFinite(deadline) ? deadline : 0;
+  if (typeof deadline !== "number" || !Number.isFinite(deadline) || deadline <= 0) {
+    return { deadlineMs: 0, localDeadlineMs: 0 };
+  }
+  const hostNow = record.responseHostNowMs ?? record.response_host_now_ms;
+  const remainingMs =
+    typeof hostNow === "number" && Number.isFinite(hostNow) && hostNow > 0
+      ? Math.max(0, deadline - hostNow)
+      : Math.max(0, deadline - Date.now());
+  return {
+    deadlineMs: deadline,
+    localDeadlineMs: Date.now() + remainingMs,
+  };
 }
 
-function toPrompt(toolId: string, sessionId: string, questions: unknown, deviceId: string): QuestionPrompt | null {
+function toPrompt(
+  toolId: string,
+  sessionId: string,
+  questions: unknown,
+  deviceId: string,
+  started = false,
+): QuestionPrompt | null {
   const views = readQuestions(questions);
   if (views.length === 0) return null;
+  const { deadlineMs, localDeadlineMs } = readDeadlineTiming(questions, started);
   return {
     toolId,
     sessionId,
     deviceId,
     questions: views,
-    deadlineMs: readDeadline(questions),
+    deadlineMs,
+    localDeadlineMs,
+    interactionStarted: started,
     answers: {},
     others: {},
     error: "",
@@ -138,10 +169,10 @@ function findPrompt(toolId: string): QuestionPrompt | undefined {
 }
 
 /**
- * The host starts an unattended-answer deadline only once a surface reports that
- * it is showing the question. Without this the question waits forever with no
- * timeout, which is worse for a remote controller than a deadline. A question can
- * be read twice — the event and the mailbox — so it is reported once per tool.
+ * Tells the host that the user began interacting with this question, which
+ * pauses/cancels the host's unattended auto-timeout deadline (`user_questions.rs::start_interaction`).
+ * Must ONLY be called on actual user interaction (selecting an option or typing),
+ * never automatically on question arrival — otherwise unattended auto-timeout breaks.
  */
 const interactionStarted = new Set<string>();
 
@@ -158,6 +189,32 @@ async function startInteraction(prompt: QuestionPrompt): Promise<void> {
   } catch {
     // An older host has no such command; the question is still answerable.
   }
+}
+
+/** Drops a single pending question prompt when its tool finishes, times out, or is cancelled. */
+export function dropQuestionByToolId(toolId: string, deviceId?: string): void {
+  if (!toolId) return;
+  questionPrompts.update(current =>
+    current.filter(item => {
+      if (item.toolId !== toolId) return true;
+      if (deviceId !== undefined && item.deviceId !== deviceId) return true;
+      interactionStarted.delete(promptKey(item));
+      return false;
+    }),
+  );
+}
+
+/** Drops every pending question prompt belonging to a session (e.g. when the turn stops or ends). */
+export function clearQuestionsForSession(sessionId: string | null | undefined, deviceId?: string): void {
+  if (!sessionId) return;
+  questionPrompts.update(current =>
+    current.filter(item => {
+      if (item.sessionId !== sessionId) return true;
+      if (deviceId !== undefined && item.deviceId !== deviceId) return true;
+      interactionStarted.delete(promptKey(item));
+      return false;
+    }),
+  );
 }
 
 /** Subscribes once, and seeds from the mailbox of whichever session is opened. */
@@ -181,10 +238,9 @@ export async function startQuestionPrompts(): Promise<void> {
           ? value.sessionId
           : "";
     if (!toolId) return;
-    const prompt = toPrompt(toolId, sessionId, value.questions, meta.origin);
+    const prompt = toPrompt(toolId, sessionId, value.questions, meta.origin, false);
     if (!prompt) return;
     upsert(prompt);
-    void startInteraction(prompt);
   });
 }
 
@@ -245,12 +301,11 @@ export async function loadQuestionMailbox(sessionId: string, deviceId?: string):
       const record = asRecord(entry);
       const toolId = readToolId(entry);
       if (!toolId) continue;
-      const prompt = toPrompt(toolId, sessionId, record.questions, device);
+      const alreadyStarted = record.interactionStarted === true || record.interaction_started === true;
+      const prompt = toPrompt(toolId, sessionId, record.questions, device, alreadyStarted);
       if (!prompt) continue;
+      if (alreadyStarted) interactionStarted.add(promptKey(prompt));
       upsert(prompt);
-      if (record.interactionStarted !== true && record.interaction_started !== true) {
-        void startInteraction(prompt);
-      }
     }
   } catch {
     // A host without the mailbox keeps the event path only.
@@ -266,7 +321,14 @@ function patch(toolId: string, change: (prompt: QuestionPrompt) => QuestionPromp
   );
 }
 
+function markUserInteracted(toolId: string): void {
+  const target = findPrompt(toolId);
+  if (!target) return;
+  void startInteraction(target);
+}
+
 export function toggleQuestionOption(toolId: string, index: number, label: string): void {
+  markUserInteracted(toolId);
   patch(toolId, prompt => {
     const question = prompt.questions[index];
     if (!question) return prompt;
@@ -276,15 +338,30 @@ export function toggleQuestionOption(toolId: string, index: number, label: strin
       const next = current.includes(label)
         ? current.filter(value => value !== label)
         : [...current, label];
-      return { ...prompt, answers: { ...prompt.answers, [key]: next }, error: "" };
+      return {
+        ...prompt,
+        interactionStarted: true,
+        localDeadlineMs: 0,
+        answers: { ...prompt.answers, [key]: next },
+        error: "",
+      };
     }
-    return { ...prompt, answers: { ...prompt.answers, [key]: label }, error: "" };
+    return {
+      ...prompt,
+      interactionStarted: true,
+      localDeadlineMs: 0,
+      answers: { ...prompt.answers, [key]: label },
+      error: "",
+    };
   });
 }
 
 export function setQuestionOther(toolId: string, index: number, text: string): void {
+  markUserInteracted(toolId);
   patch(toolId, prompt => ({
     ...prompt,
+    interactionStarted: true,
+    localDeadlineMs: 0,
     others: { ...prompt.others, [String(index)]: text },
     error: "",
   }));

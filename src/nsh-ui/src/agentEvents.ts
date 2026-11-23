@@ -40,6 +40,8 @@ import {
   queueForSession,
 } from "./queueStore";
 import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
+import { clearPermissionsForSession } from "./permissionStore";
+import { clearQuestionsForSession, dropQuestionByToolId } from "./userQuestionStore";
 import {
   activeSessionDevice,
   activeSessionId,
@@ -1833,6 +1835,23 @@ export function subscribeAgentEvents(): void {
     }
     const rawTool = payload.toolEvent ?? payload.tool_event;
     if (!rawTool || typeof rawTool !== "object") return;
+    // Drop any pending AskUserQuestion card the instant its tool call terminates
+    // (answered, timed out, failed, or cancelled) — even before the turn ends.
+    const toolRec = rawTool as Record<string, unknown>;
+    const rawEventType = String(toolRec.event_type ?? toolRec.eventType ?? "").toLowerCase();
+    const rawToolId = String(toolRec.tool_id ?? toolRec.toolId ?? "");
+    if (
+      rawToolId &&
+      (rawEventType === "completed" ||
+        rawEventType === "failed" ||
+        rawEventType === "error" ||
+        rawEventType === "cancelled" ||
+        rawEventType === "canceled" ||
+        rawEventType === "timedout" ||
+        rawEventType === "timed_out")
+    ) {
+      dropQuestionByToolId(rawToolId, eventOrigin);
+    }
     // Preserve strict causal ordering: text emitted before a tool call must
     // finish revealing before the tool card appears beneath it.
     flushStreamingBuffers();
@@ -1858,9 +1877,10 @@ export function subscribeAgentEvents(): void {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
     const queueSession = sessionId || activeSessionId() || "";
+    let dequeuedImages: ReturnType<typeof markQueuedTurnStarted> = [];
     if (queueSession && running) {
       const hadQueued = queueForSession(queueSession).length > 0;
-      markQueuedTurnStarted(queueSession, running);
+      dequeuedImages = markQueuedTurnStarted(queueSession, running);
       if (hadQueued) void loadQueueForSession(queueSession, true);
     }
     if (running && !replayingSnapshot) {
@@ -1897,7 +1917,7 @@ export function subscribeAgentEvents(): void {
     batch(() => {
       clearStreamedText();
       if (targetSession && running) {
-        bindPendingTurnId(targetSession, running, userInput);
+        bindPendingTurnId(targetSession, running, userInput, dequeuedImages);
       }
       runningTurnId.set(running);
       liveTurn.set({
@@ -1936,6 +1956,10 @@ export function subscribeAgentEvents(): void {
     }
 
     endTurn(payload);
+    if (sessionId) {
+      clearQuestionsForSession(sessionId, eventOrigin);
+      clearPermissionsForSession(sessionId, eventOrigin);
+    }
     if (kind === "failed" && rawSession) markSessionFailed(rawSession);
     if (finishOtherSessionTurn(payload, drainQueue)) return;
 
