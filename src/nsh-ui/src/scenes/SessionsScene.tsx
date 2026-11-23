@@ -1189,11 +1189,17 @@ function SessionHeaderBar(props: {
   statusState?: () => MarkState | null;
   statusLabelPrefix?: string;
   showTools?: () => boolean;
-  focusAccessibilityLabel?: string;
+  focusAccessibilityLabel?: string | (() => string | undefined);
+  focusBarTestID?: string;
   onFocus?: () => void;
   actions?: JSX.Element;
   subline?: JSX.Element;
 }) {
+  const focusLabel = () =>
+    typeof props.focusAccessibilityLabel === "function"
+      ? props.focusAccessibilityLabel()
+      : props.focusAccessibilityLabel;
+  const focusActive = () => Boolean(props.onFocus) && (props.focusAccessibilityLabel === undefined || Boolean(focusLabel()));
   return (
     <View
       testID={props.testID}
@@ -1213,6 +1219,7 @@ function SessionHeaderBar(props: {
     >
       <If when={Boolean(props.focused?.())}>
         <View
+          testID={props.focusBarTestID}
           style={{
             position: "absolute",
             top: 0,
@@ -1226,16 +1233,17 @@ function SessionHeaderBar(props: {
       </If>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
         <View
-          role={props.onFocus ? "button" : undefined}
-          accessibilityLabel={props.focusAccessibilityLabel}
-          onPress={props.onFocus}
+          role={focusActive() ? "button" : undefined}
+          accessibilityLabel={focusLabel()}
+          accessibilityState={focusActive() ? { selected: Boolean(props.focused?.()) } : undefined}
+          onPress={focusActive() ? props.onFocus : undefined}
           style={{
             flex: 1,
             minWidth: 0,
             flexDirection: "row",
             alignItems: "center",
             gap: space.sm,
-            ...(props.onFocus ? { cursor: "pointer", userSelect: "none" } : {}),
+            ...(focusActive() ? { cursor: "pointer", userSelect: "none" } : {}),
           }}
         >
           <If when={Boolean(props.leadingIcon)}>
@@ -1364,8 +1372,11 @@ function ConversationHeader() {
             focused={() => splitPaneOpen() && focusedPane() === 0}
             bordered={() => anyRightSplitOpen() || transcriptScrolled()}
             tall={() => Boolean(sessionOrigin())}
-            focusAccessibilityLabel={splitPaneOpen() ? "primary-pane-focus" : undefined}
-            onFocus={splitPaneOpen() ? () => focusPane(0) : undefined}
+            focusAccessibilityLabel={() => (splitPaneOpen() ? "primary-pane-focus" : undefined)}
+            focusBarTestID="primary-pane-active-bar"
+            onFocus={() => {
+              if (splitPaneOpen()) focusPane(0);
+            }}
             breadcrumb={
               <SessionBreadcrumb
                 device={sessionDeviceLabel}
@@ -8601,6 +8612,7 @@ function SecondaryHeader() {
       focused={() => focusedPane() === 1}
       bordered={() => true}
       focusAccessibilityLabel="secondary-pane-focus"
+      focusBarTestID="secondary-pane-active-bar"
       onFocus={() => focusPane(1)}
       breadcrumb={
         <SessionBreadcrumb
@@ -9394,9 +9406,18 @@ function SecondaryComposerDock() {
 }
 
 function SecondarySessionPane() {
+  const activateSecondary = () => {
+    if (splitPaneOpen()) focusPane(1);
+  };
   return (
     <View
       testID="secondary-session-pane"
+      focusable={false}
+      onTouchStartCapture={activateSecondary}
+      onPressDown={activateSecondary}
+      onPress={splitPaneOpen() && focusedPane() !== 1 ? activateSecondary : undefined}
+      onMouseUp={activateSecondary}
+      onKeyDown={activateSecondary}
       style={{
         flexGrow: 1 - sessionSplitRatio(),
         flexBasis: 0,
@@ -9856,6 +9877,20 @@ export function SessionsScene() {
     >
       <View
         testID="primary-session-pane"
+        focusable={false}
+        onTouchStartCapture={() => {
+          if (splitPaneOpen()) focusPane(0);
+        }}
+        onPressDown={() => {
+          if (splitPaneOpen()) focusPane(0);
+        }}
+        onPress={splitPaneOpen() && focusedPane() !== 0 ? () => focusPane(0) : undefined}
+        onMouseUp={() => {
+          if (splitPaneOpen()) focusPane(0);
+        }}
+        onKeyDown={() => {
+          if (splitPaneOpen()) focusPane(0);
+        }}
         style={{
           flex: showSplit() ? undefined : 1,
           flexGrow: showSplit() ? sessionSplitRatio() : 1,

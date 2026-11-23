@@ -82,7 +82,6 @@ import {
   focusRingStyle,
   IconButton,
   InlineBanner,
-  InlineConfirmBar,
   InputBox,
   TooltipBubble,
   type InlineBannerTone,
@@ -164,7 +163,8 @@ function TabChip(props: {
 }) {
   const hovered = signal(false);
   const innerRadius = concentricRadius(radii.sm, space.hair);
-  const tabHeight = () => (compactLayout() ? layout.touchTarget : controlHeight.md);
+  const tabHeight = () => (compactLayout() ? layout.touchTarget : 28);
+  const confirming = () => confirmingCloseTerminal() === props.tabId;
   // One status mark per tab: compact strip shows `<StateMark>` (teal pulse via ui/fleet.tsx),
   // full strip shows localized inline status text.
   const showMark = () => Boolean(props.compact) && props.status.toLowerCase() === "running";
@@ -187,12 +187,18 @@ function TabChip(props: {
         paddingRight: space.xs,
         borderRadius: radii.sm,
         borderCurve: "continuous",
-        backgroundColor: props.active ? palette().panelHover : "transparent",
+        borderWidth: 1,
+        borderColor: confirming() ? palette().dangerBorder : "transparent",
+        backgroundColor: confirming()
+          ? palette().dangerSoft
+          : props.active
+            ? palette().panelHover
+            : "transparent",
         userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={
-        compactLayout()
+        compactLayout() || confirming()
           ? undefined
           : {
               backgroundColor: palette().panelHover,
@@ -297,18 +303,82 @@ function TabChip(props: {
           </Text>
         </If>
       </View>
-      <IconButton
-        icon="close"
-        size="xs"
-        iconSize={12}
-        tooltip={tr("terminal.closeShell")}
-        accessibilityLabel={"\u00d7"}
-        style={{
-          borderRadius: innerRadius,
-          opacity: compactLayout() || props.active || hovered() ? 0.86 : 0.34,
-        }}
-        onPress={() => requestCloseTerminalTab(props.tabId)}
-      />
+      <If
+        when={confirming()}
+        else={
+          <IconButton
+            icon="close"
+            size="xs"
+            iconSize={12}
+            tooltip={tr("terminal.closeShell")}
+            accessibilityLabel={"\u00d7"}
+            style={{
+              borderRadius: innerRadius,
+              opacity: compactLayout() || props.active || hovered() ? 0.86 : 0.34,
+            }}
+            onPress={() => requestCloseTerminalTab(props.tabId)}
+          />
+        }
+      >
+        <View
+          role="alert"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 2,
+            paddingLeft: space.xs,
+            flexShrink: 0,
+          }}
+        >
+          <View
+            role="button"
+            accessibilityLabel={tr("common.cancel")}
+            onPress={() => cancelCloseTerminal()}
+            style={{
+              height: 22,
+              paddingHorizontal: space.xs + 2,
+              borderRadius: radii.xs,
+              borderCurve: "continuous",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{ backgroundColor: palette().panelHover }}
+            activeStyle={tactileActiveStyle(0.96)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}>
+              {tr("common.cancel")}
+            </Text>
+          </View>
+          <View
+            role="button"
+            accessibilityLabel={tr("terminal.closeShell")}
+            onPress={() => void closeTerminalTab(props.tabId)}
+            style={{
+              height: 22,
+              paddingHorizontal: space.xs + 2,
+              borderRadius: radii.xs,
+              borderCurve: "continuous",
+              backgroundColor: palette().danger,
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{ opacity: 0.9 }}
+            activeStyle={tactileActiveStyle(0.96)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <Text style={{ ...textStyle("caption", { color: palette().actionPrimaryFg }), fontWeight: "600" }}>
+              {tr("terminal.closeShell")}
+            </Text>
+          </View>
+        </View>
+      </If>
     </View>
   );
 }
@@ -508,9 +578,9 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
       onSelect: () => openQuickProfile(option.value),
     }));
 
-  // Narrow: the aux pane, phone compact layout, or a scene under 680 pt wide (prevents 600-680 toolbar overflow).
+  // Width-driven: wide panes (>= 680 pt, including bottom-docked AuxPane) show the full toolbar;
+  // narrow panes (< 680 pt or phone) collapse extras into the compact `+` / `⋯` menu.
   const narrow = () =>
-    Boolean(props.compact) ||
     compactLayout() ||
     sceneWidth.stacked() ||
     (measuredWidth() > 0 && measuredWidth() < 680);
@@ -538,13 +608,14 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
       <If when={!narrow()}>
         <View
           style={{
-            minHeight: layout.touchTarget,
-            paddingHorizontal: space.lg,
+            minHeight: compactLayout() ? layout.touchTarget : 38,
+            paddingHorizontal: props.compact ? space.md : space.lg,
             paddingVertical: space.xs,
             flexDirection: "row",
             flexWrap: "wrap",
             alignItems: "center",
             gap: space.sm,
+            flexShrink: 0,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvas,
@@ -649,11 +720,11 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         </View>
       </If>
 
-      {/* Narrow strip (aux pane or a scene under 680 pt): tabs, a quiet '+', and one "…" menu. 44 pt tall for touch. */}
+      {/* Narrow strip (< 680 pt or phone): tabs, a quiet '+', and one "…" menu. */}
       <If when={narrow()}>
         <View
           style={{
-            minHeight: WORKBENCH_TOUCH_MIN,
+            minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
             paddingHorizontal: space.sm,
             paddingVertical: space.xs,
             flexDirection: "row",
@@ -677,7 +748,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                     active={tab().id === terminalId()}
                     agent={Boolean(tab().agentCreated)}
                     compact={true}
-                    touch={true}
+                    touch={compactLayout()}
                   />
                 )}
               </Each>
@@ -698,7 +769,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
             <IconButton
               icon="plus"
-              size="md"
+              size={compactLayout() ? "md" : "sm"}
               disabled={deviceOffline()}
               tooltip={tr("pane.terminal.new")}
               accessibilityLabel={tr("terminal.newShell")}
@@ -707,7 +778,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             <View ref={el => compactMenuAnchor.set(el)} style={{ flexShrink: 0 }}>
               <IconButton
                 icon="more"
-                size="md"
+                size={compactLayout() ? "md" : "sm"}
                 active={compactMenuOpen() || Boolean(profileDraft())}
                 tooltip={tr("terminal.shellOptions")}
                 accessibilityLabel="terminal-compact-menu"
@@ -938,23 +1009,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           </View>
         </If>
       </ModalDialog>
-
-      <If when={confirmingCloseTerminal()}>
-        {id => (
-          <View style={{ paddingHorizontal: props.compact ? space.md : space.lg, paddingTop: space.sm, flexShrink: 0 }}>
-            <InlineConfirmBar
-              danger={true}
-              message={tr("terminal.closeRunningConfirm", {
-                name: terminalTabs().find(tab => tab.id === id())?.title ?? "",
-              })}
-              confirmLabel={tr("terminal.closeShell")}
-              cancelLabel={tr("common.cancel")}
-              onConfirm={() => void closeTerminalTab(id())}
-              onCancel={cancelCloseTerminal}
-            />
-          </View>
-        )}
-      </If>
 
       <If when={terminalMessage()}>
         {message => (

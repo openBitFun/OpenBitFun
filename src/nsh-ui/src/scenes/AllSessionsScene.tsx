@@ -44,7 +44,7 @@ import {
   workspaces,
   type AllSessionsView,
 } from "../state";
-import { selectSecondarySession } from "../splitSessionStore";
+import { createSecondarySession, selectSecondarySession } from "../splitSessionStore";
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import {
   DeviceBadge,
@@ -190,6 +190,12 @@ export function openSessionRow(sessionId: string, deviceId: string, workspaceId:
 }
 
 export async function newSessionHere(workspaceId: string, deviceId: string): Promise<void> {
+  if (splitPaneOpen() && focusedPane() === 1) {
+    const defaultMode = await loadAgentModes(workspaceId);
+    await createSecondarySession(workspaceId, fleetActive() ? deviceId : null, defaultMode ?? undefined);
+    navigateScene("sessions");
+    return;
+  }
   selectWorkspace(workspaceId, {
     ...(fleetActive() ? { deviceId } : {}),
     loadSessions: false,

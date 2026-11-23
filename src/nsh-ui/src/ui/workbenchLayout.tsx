@@ -4,7 +4,7 @@
 // stays inside JSX bindings because NSH component bodies run once.
 
 import { horizontalSizeClass, signal, Text, untracked, View, type Bounds } from "nsh";
-import { palette, radii, space, textLineHeight, textSize } from "../theme";
+import { compactLayout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon } from "./icons";
 import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "./motion";
 import { focusRingStyle } from "./primitives";
@@ -17,23 +17,32 @@ export const WORKBENCH_TOUCH_MIN = 44;
 export interface SceneWidth {
   /** `onLayout` handler for the scene root. */
   onLayout: (event: { bounds: Bounds }) => void;
-  /** True when the scene is narrower than 600 pt (phones, narrow windows, the aux pane). */
+  /** Latest laid-out width in points (0 before first layout). */
+  width: () => number;
+  /** Latest laid-out height in points (0 before first layout). */
+  height: () => number;
+  /** True when the scene is narrower than 600 pt (phones, narrow windows, narrow side aux pane). */
   stacked: () => boolean;
 }
 
 /**
- * Tracks one scene instance's own laid-out width (not the platform, not the
- * window: the navigation panel and the aux pane take part of the window). Call
- * it once in the component body; until the first layout it follows the
+ * Tracks one scene instance's own laid-out dimensions (not the platform, not
+ * the window: the navigation panel and the aux pane take part of the window).
+ * Call it once in the component body; until the first layout it follows the
  * window's horizontal size class.
  */
 export function createSceneWidth(): SceneWidth {
   const width = signal(0);
+  const height = signal(0);
   return {
     onLayout: event => {
-      const next = Math.round(event.bounds.size.width);
-      if (next > 0 && next !== untracked(() => width())) width.set(next);
+      const nextW = Math.round(event.bounds.size.width);
+      const nextH = Math.round(event.bounds.size.height);
+      if (nextW > 0 && nextW !== untracked(() => width())) width.set(nextW);
+      if (nextH > 0 && nextH !== untracked(() => height())) height.set(nextH);
     },
+    width: () => width(),
+    height: () => height(),
     stacked: () => {
       const current = width();
       if (current > 0) return current < WORKBENCH_STACK_WIDTH;
@@ -43,12 +52,14 @@ export function createSceneWidth(): SceneWidth {
 }
 
 /**
- * The back control of a pushed detail view: a chevron and the list's title,
- * as a native navigation bar draws it. 44 pt tall so it is a full touch target.
+ * The back control of a pushed detail view: a chevron and the list's title.
+ * Uses 44 pt height on touch/compact viewports and crisp 34–36 pt desktop height.
+ * When `flush` is set, sits seamlessly inside a tab strip with a hairline divider.
  */
 export function StackBackButton(props: {
   label: string;
   accessibilityLabel: string;
+  flush?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -57,30 +68,33 @@ export function StackBackButton(props: {
       accessibilityLabel={props.accessibilityLabel}
       onPress={() => props.onPress()}
       style={{
-        height: WORKBENCH_TOUCH_MIN,
+        height: compactLayout() ? WORKBENCH_TOUCH_MIN : props.flush ? 36 : 34,
         flexDirection: "row",
         alignItems: "center",
         gap: space.xs,
-        paddingLeft: space.xs,
-        paddingRight: space.sm,
+        paddingLeft: props.flush ? space.sm : space.xs,
+        paddingRight: props.flush ? space.md : space.sm,
         flexShrink: 0,
-        borderRadius: radii.sm,
+        borderRadius: props.flush ? 0 : radii.sm,
         borderCurve: "continuous",
+        borderRightWidth: props.flush ? 1 : 0,
+        borderColor: palette().borderSubtle,
         cursor: "pointer",
         userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
-      activeStyle={tactileActiveStyle(0.97)}
+      activeStyle={tactileActiveStyle(0.98)}
       focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
     >
-      <Icon name="chevron-left" size={16} color={palette().textSecondary} />
+      <Icon name="chevron-left" size={compactLayout() ? 16 : 14} color={palette().textSecondary} />
       <Text
         style={{
           color: palette().textSecondary,
-          fontSize: textSize(14),
-          lineHeight: textLineHeight(14, 1.3),
-          maxWidth: 160,
+          fontSize: textSize(compactLayout() ? 14 : 12.5),
+          lineHeight: textLineHeight(compactLayout() ? 14 : 12.5, 1.3),
+          fontWeight: "500",
+          maxWidth: 136,
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}

@@ -379,6 +379,8 @@ function QuietGitEmpty(props: { icon: IconName; title: string; subtitle?: string
 function GitUnderlineTabs(props: {
   options: ReadonlyArray<SegmentedTabOption<GitTab>>;
   value: GitTab;
+  height?: number;
+  paddingHorizontal?: number;
   onChange: (next: GitTab) => void;
 }) {
   return (
@@ -386,11 +388,11 @@ function GitUnderlineTabs(props: {
       <View
         role="tablist"
         style={{
-          height: compactLayout() ? WORKBENCH_TOUCH_MIN : 32,
+          height: compactLayout() ? WORKBENCH_TOUCH_MIN : (props.height ?? 32),
           flexDirection: "row",
           alignItems: "stretch",
           gap: space.lg,
-          paddingHorizontal: space.md,
+          paddingHorizontal: props.paddingHorizontal ?? space.md,
         }}
       >
         <Each of={props.options} key={option => option.value}>
@@ -785,26 +787,26 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
         minWidth: 0,
         minHeight: 0,
         overflow: "hidden",
-        flexDirection: props.compact ? "column" : "row",
+        flexDirection: props.stacked ? "column" : "row",
       }}
     >
       <If when={showList()}>
       <View
         style={{
-          width: props.compact ? "100%" : gitSidebarWidth(),
-          flex: props.stacked ? 1 : props.compact ? 1.08 : undefined,
+          width: props.stacked ? "100%" : props.aux ? Math.min(gitSidebarWidth(), 280) : gitSidebarWidth(),
+          flex: props.stacked ? 1 : undefined,
           minHeight: 0,
-          flexShrink: props.compact ? 1 : 0,
+          flexShrink: props.stacked ? 1 : 0,
           overflow: "hidden",
           flexDirection: "column",
           borderRightWidth: 0,
-          borderBottomWidth: props.compact && !props.stacked ? 1 : 0,
+          borderBottomWidth: 0,
           borderColor: palette().borderSubtle,
           backgroundColor: props.stacked ? palette().canvas : palette().canvasSubtle,
         }}
       >
         <If
-          when={Boolean(props.compact)}
+          when={Boolean(props.compact || props.aux)}
           else={
             <View
               style={{
@@ -860,7 +862,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             </View>
           }
         >
-          {/* Compact AuxPane: single quiet inline filter + batch action row */}
+          {/* Compact / AuxPane: single slim filter + batch action row */}
           <View
             style={{
               flexDirection: "row",
@@ -868,7 +870,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
               alignItems: "center",
               gap: space.xs,
               paddingHorizontal: space.sm,
-              paddingVertical: space.xs,
+              paddingVertical: space.xs + 2,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
             }}
@@ -881,10 +883,10 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
               value={workingFileFilter()}
               placeholder={tr("git.filterFiles")}
               accessibilityLabel="git-filter-files"
-              style={{ flex: 1, minWidth: 120 }}
+              style={{ flex: 1, minWidth: 100 }}
               onChange={value => workingFileFilter.set(value)}
             />
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
               <Button
                 label={tr("git.stageAll")}
                 size="xs"
@@ -1018,7 +1020,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 label={tr("git.mergeConflicts")}
                 count={filteredConflicts().length}
                 expanded={expanded().conflicts}
-                touch={props.stacked}
+                touch={compactLayout()}
                 tone="danger"
                 onToggle={() => toggleGroup("conflicts")}
               />
@@ -1042,7 +1044,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       discardLabel={`git-discard-${displayRepoFilePath(path())}`}
                       discardTooltip={tr("common.discardChanges")}
                       disabled={gitActionBusy()}
-                      touch={props.stacked}
+                      touch={compactLayout()}
                       onSelect={() =>
                         select({ path: path(), staged: false, kind: "conflict" })
                       }
@@ -1063,7 +1065,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 label={tr("git.stagedChanges")}
                 count={filteredStaged().length}
                 expanded={expanded().staged}
-                touch={props.stacked}
+                touch={compactLayout()}
                 tone="success"
                 onToggle={() => toggleGroup("staged")}
               />
@@ -1086,7 +1088,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       discardLabel={`git-discard-${displayRepoFilePath(file().path)}`}
                       discardTooltip={tr("common.discardChanges")}
                       disabled={gitActionBusy()}
-                      touch={props.stacked}
+                      touch={compactLayout()}
                       onSelect={() =>
                         select({ path: file().path, staged: true, kind: "staged" })
                       }
@@ -1107,7 +1109,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 label={tr("git.unstagedChanges")}
                 count={filteredUnstaged().length}
                 expanded={expanded().unstaged}
-                touch={props.stacked}
+                touch={compactLayout()}
                 tone="warning"
                 onToggle={() => toggleGroup("unstaged")}
               />
@@ -1132,7 +1134,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       discardLabel={`git-discard-${displayRepoFilePath(file().path)}`}
                       discardTooltip={tr("common.discardChanges")}
                       disabled={gitActionBusy()}
-                      touch={props.stacked}
+                      touch={compactLayout()}
                       onSelect={() =>
                         select({
                           path: file().path,
@@ -1157,7 +1159,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 label={tr("git.untracked")}
                 count={filteredUntracked().length}
                 expanded={expanded().untracked}
-                touch={props.stacked}
+                touch={compactLayout()}
                 tone="accent"
                 onToggle={() => toggleGroup("untracked")}
               />
@@ -1181,7 +1183,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       discardLabel={`git-discard-${displayRepoFilePath(path())}`}
                       discardTooltip={tr("git.deleteUntracked")}
                       disabled={gitActionBusy()}
-                      touch={props.stacked}
+                      touch={compactLayout()}
                       onSelect={() =>
                         select({
                           path: path(),
@@ -1201,24 +1203,24 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
           </If>
         </Scroll>
 
-        {/* Cohesive unified rounded Commit Composer box */}
+        {/* Cohesive unified rounded Commit Composer box (matches Session Composer craft, never clips in short bottom dock) */}
         <View
           style={{
-            padding: props.compact ? space.sm : space.md,
+            padding: props.aux || props.compact ? space.sm : space.md,
             gap: space.xs,
             borderTopWidth: 1,
             borderColor: palette().borderSubtle,
-            backgroundColor: palette().canvasSubtle,
+            backgroundColor: props.stacked ? palette().canvas : palette().canvasSubtle,
             flexShrink: 0,
           }}
         >
           <View
             style={{
-              borderRadius: radii.md,
+              borderRadius: radii.lg,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().border,
-              backgroundColor: palette().panelRaised,
+              backgroundColor: palette().inputBg,
               overflow: "hidden",
               ...paintTransition(MOTION_DURATION.fast),
             }}
@@ -1229,9 +1231,9 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
           >
             <View
               style={{
-                paddingHorizontal: space.md,
+                paddingHorizontal: space.sm + 2,
                 paddingTop: space.sm,
-                paddingBottom: space.sm,
+                paddingBottom: space.xs,
               }}
             >
               <Input
@@ -1240,8 +1242,8 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 placeholder={tr("git.commitPlaceholder")}
                 accessibilityLabel="git-commit-message"
                 style={{
-                  minHeight: compactLayout() ? 64 : 56,
-                  maxHeight: 120,
+                  minHeight: compactLayout() ? 56 : props.aux ? 34 : 44,
+                  maxHeight: 104,
                   color: palette().text,
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
@@ -1254,17 +1256,16 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             <View
               style={{
                 flexDirection: "row",
-                flexWrap: "wrap",
                 alignItems: "center",
+                justifyContent: "space-between",
                 gap: space.xs,
-                paddingHorizontal: space.sm,
-                paddingVertical: space.xs,
+                paddingHorizontal: space.sm + 2,
+                paddingVertical: space.xs + 2,
                 borderTopWidth: 1,
                 borderColor: palette().borderSubtle,
-                backgroundColor: palette().surfaceSubtle,
               }}
             >
-              <View style={{ flex: 1, minWidth: 82 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
                 <ToggleSwitch
                   value={gitCommitAmend()}
                   onChange={next => setCommitAmend(next)}
@@ -1278,7 +1279,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                   else={
                     <IconButton
                       icon="sparkles"
-                      size={props.compact ? "xs" : "sm"}
+                      size="xs"
                       disabled={gitAiGenerating() || isRemoteWorkspace() || totalWorkingChanges() === 0}
                       accessibilityLabel="git-generate-message"
                       tooltip={
@@ -1297,8 +1298,8 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                     accessibilityState={{ disabled: true, busy: true }}
                     tooltip={<TooltipBubble text={tr("git.generatingCommitMessage")} />}
                     style={{
-                      width: props.compact ? 24 : 28,
-                      height: props.compact ? 24 : 28,
+                      width: 24,
+                      height: 24,
                       flexShrink: 0,
                       borderRadius: radii.xs,
                       borderCurve: "continuous",
@@ -1315,7 +1316,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 <Button
                   label={tr("git.commit")}
                   variant="primary"
-                  size={props.compact ? "xs" : "sm"}
+                  size="xs"
                   leadingIcon="git-commit"
                   loading={gitActionBusy()}
                   disabled={
@@ -1336,6 +1337,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
           </View>
           <If
             when={
+              !props.aux &&
               !props.compact &&
               Boolean(gitCommitMessage().trim()) &&
               (gitStatus()?.staged.length ?? 0) === 0 &&
@@ -1356,10 +1358,10 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
 
       </If>
 
-      <If when={!props.compact}>
+      <If when={!props.stacked}>
         <SplitHandle
           accessibilityLabel="Resize changed files pane"
-          onReset={() => gitSidebarWidth.set(260)}
+          onReset={() => gitSidebarWidth.set(props.aux ? 268 : 260)}
           onDelta={dx =>
             gitSidebarWidth.update(w =>
               Math.max(GIT_SIDEBAR_MIN, Math.min(GIT_SIDEBAR_MAX, w + dx)),
@@ -1371,9 +1373,9 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
       <If when={showDetail()}>
       <View
         style={{
-          flex: props.stacked ? 1 : props.compact ? 0.92 : 1,
+          flex: 1,
           minWidth: 0,
-          minHeight: props.compact && !props.stacked ? 176 : 0,
+          minHeight: 0,
           overflow: "hidden",
           flexDirection: "column",
           backgroundColor: palette().canvas,
@@ -1382,51 +1384,37 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
         <If when={props.stacked}>
           <View
             style={{
-              paddingHorizontal: 4,
+              height: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
               flexDirection: "row",
-              alignItems: "center",
+              alignItems: "stretch",
             }}
           >
             <StackBackButton
               label={tr("git.tabChanges")}
               accessibilityLabel="git-stack-back"
+              flush={true}
               onPress={() => detailOpen.set(false)}
             />
           </View>
         </If>
-        <View
-          style={{
-            minHeight: props.compact ? 36 : 40,
-            paddingHorizontal: props.compact ? space.md : space.lg,
-            paddingVertical: props.compact ? space.xs : space.sm,
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
-            gap: space.sm,
-            borderBottomWidth: 1,
-            borderColor: palette().borderSubtle,
-            backgroundColor: palette().canvas,
-          }}
-        >
-          <If
-            when={selectedGitFile()}
-            else={
-              <Text
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  ...textStyle("caption", { color: palette().textMuted }),
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {tr("git.selectFileDiff")}
-              </Text>
-            }
-          >
-            {sel => (
+        <If when={selectedGitFile()}>
+          {sel => (
+            <View
+              style={{
+                minHeight: props.compact ? 36 : 40,
+                paddingHorizontal: props.compact ? space.md : space.lg,
+                paddingVertical: props.compact ? space.xs : space.sm,
+                flexDirection: "row",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: space.sm,
+                borderBottomWidth: 1,
+                borderColor: palette().borderSubtle,
+                backgroundColor: palette().canvas,
+              }}
+            >
               <View
                 tooltip={<TooltipBubble text={displayRepoFilePath(sel().path)} />}
                 style={{
@@ -1445,7 +1433,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       flex: 1,
                       minWidth: 0,
                       ...textStyle("caption", { color: palette().text }),
-                fontWeight: "600",
+                      fontWeight: "600",
                       numberOfLines: 1,
                       textOverflow: "ellipsis-middle",
                     }}
@@ -1493,19 +1481,19 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                   </If>
                 </View>
               </View>
-            )}
-          </If>
-          <If when={!props.compact}>
-            <IconButton
-              icon={gitDiffLayout() === "split" ? "list" : "panel-right"}
-              size="sm"
-              active={gitDiffLayout() === "split"}
-              tooltip={gitDiffLayout() === "split" ? tr("files.diffUnified") : tr("files.diffSplit")}
-              accessibilityLabel={gitDiffLayout() === "split" ? "git-diff-unified" : "git-diff-split"}
-              onPress={() => gitDiffLayout.set(gitDiffLayout() === "split" ? "unified" : "split")}
-            />
-          </If>
-        </View>
+              <If when={!props.compact}>
+                <IconButton
+                  icon={gitDiffLayout() === "split" ? "list" : "panel-right"}
+                  size="sm"
+                  active={gitDiffLayout() === "split"}
+                  tooltip={gitDiffLayout() === "split" ? tr("files.diffUnified") : tr("files.diffSplit")}
+                  accessibilityLabel={gitDiffLayout() === "split" ? "git-diff-unified" : "git-diff-split"}
+                  onPress={() => gitDiffLayout.set(gitDiffLayout() === "split" ? "unified" : "split")}
+                />
+              </If>
+            </View>
+          )}
+        </If>
 
         <If when={diffLoading()}>
           <View
@@ -2125,16 +2113,17 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
           <If when={props.stacked}>
             <View
               style={{
-                paddingHorizontal: space.xs,
+                height: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
                 borderBottomWidth: 1,
                 borderColor: palette().borderSubtle,
                 flexDirection: "row",
-                alignItems: "center",
+                alignItems: "stretch",
               }}
             >
               <StackBackButton
                 label={tr("git.tabHistory")}
                 accessibilityLabel="git-stack-back"
+                flush={true}
                 onPress={clearSelectedCommit}
               />
             </View>
@@ -2855,8 +2844,9 @@ function BranchSwitchBlockerBar(props: { compact?: boolean }) {
 
 export function GitScene(props: GitSceneProps = {}) {
   const sceneWidth = createSceneWidth();
-  // Narrow: the aux pane, or a scene under 600 pt wide (stacked list -> detail).
-  const narrow = () => Boolean(props.compact) || sceneWidth.stacked();
+  // Width-driven: stacked (< 600px, narrow side AuxPane or phone) stacks header & list -> detail;
+  // wide (>= 600px, including bottom-docked AuxPane & full-page) renders a single header row + side-by-side split.
+  const narrow = () => sceneWidth.stacked();
   const scopeDevice = () => fleetDeviceById(deviceContext());
   const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
   const deviceLabel = () => scopeDevice()?.name || tr("device.thisDevice");
@@ -2905,30 +2895,33 @@ export function GitScene(props: GitSceneProps = {}) {
         else={
           <View
             style={{
-              minHeight: 44,
+              height: props.compact ? 38 : 42,
               flexDirection: "row",
               alignItems: "center",
               gap: space.md,
-              paddingHorizontal: space.lg,
+              paddingHorizontal: props.compact ? space.md : space.lg,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
               backgroundColor: palette().canvas,
+              flexShrink: 0,
             }}
           >
-            <GitBranchControls />
+            <GitBranchControls compact={props.compact} />
             <ToolbarDivider />
-            <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flex: 1, minWidth: 0, alignSelf: "stretch" }}>
               <GitUnderlineTabs
                 options={gitTabs()}
                 value={gitTab()}
+                height={props.compact ? 38 : 42}
+                paddingHorizontal={0}
                 onChange={nextTab => gitTab.set(nextTab)}
               />
             </View>
-            <GitSyncActions />
+            <GitSyncActions compact={props.compact} />
           </View>
         }
       >
-        {/* Narrow (aux pane or stacked): a branch/sync strip over hairline-underline tabs */}
+        {/* Narrow (< 600px): compact branch/sync strip over hairline-underline tabs */}
         <View
           style={{
             flexDirection: "column",
@@ -2936,11 +2929,12 @@ export function GitScene(props: GitSceneProps = {}) {
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvas,
+            flexShrink: 0,
           }}
         >
           <View
             style={{
-              minHeight: sceneWidth.stacked() ? WORKBENCH_TOUCH_MIN : 36,
+              minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
               paddingHorizontal: space.sm,
               paddingVertical: space.xs,
               flexDirection: "row",
@@ -2956,6 +2950,8 @@ export function GitScene(props: GitSceneProps = {}) {
           <GitUnderlineTabs
             options={compactGitTabs()}
             value={gitTab()}
+            height={30}
+            paddingHorizontal={space.sm}
             onChange={nextTab => gitTab.set(nextTab)}
           />
         </View>

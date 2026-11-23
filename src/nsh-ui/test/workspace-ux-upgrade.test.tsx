@@ -436,3 +436,47 @@ test("Frameless ImageLightbox and FilesScene image preview share 25% step zoom, 
   await app.press("image-zoom-in");
   await app.waitFor("125%");
 });
+
+test("split pane focus switches on clicking anywhere in either pane, and bottom-docked AuxPane uses wide side-by-side Files layout", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+
+  // Open split view: Pane 1 starts focused with its top highlight bar active.
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("id:secondary-session-pane");
+  await app.waitFor("id:secondary-pane-active-bar");
+  expect(app.shows("id:primary-pane-active-bar")).toBe(false);
+
+  // Clicking Pane 0's header switches the top highlight bar immediately.
+  await app.press("primary-pane-focus");
+  await app.waitFor("id:primary-pane-active-bar");
+  expect(app.shows("id:secondary-pane-active-bar")).toBe(false);
+
+  // Clicking Pane 1's transcript content switches the top highlight bar back to Pane 1.
+  await app.press("Port the terminal.");
+  await app.waitFor("id:secondary-pane-active-bar");
+  expect(app.shows("id:primary-pane-active-bar")).toBe(false);
+
+  // Clicking Pane 0's transcript content switches the top highlight bar back to Pane 0.
+  await app.press("Port the session list.");
+  await app.waitFor("id:primary-pane-active-bar");
+  expect(app.shows("id:secondary-pane-active-bar")).toBe(false);
+
+  // Close split pane, open Files in right AuxPane -> narrow stacked mode (< 600px), then dock to bottom -> wide side-by-side.
+  await app.press("session-pane-close-1");
+  await app.waitFor("id:secondary-session-pane", { state: "gone" });
+  await app.press("session-tool-files");
+  await app.waitFor("explorer-row-README.md");
+  await app.press("explorer-row-README.md");
+  await app.waitFor("files-stack-back");
+
+  // Dock AuxPane to bottom: width >= 600px switches Files automatically to side-by-side explorer | preview!
+  await app.press("aux-dock-toggle");
+  await app.waitFor("Resize explorer pane");
+  expect(app.shows("files-stack-back")).toBe(false);
+  expect(app.shows("explorer-row-README.md")).toBe(true);
+});

@@ -693,19 +693,23 @@ export async function stopSecondaryTurn(): Promise<void> {
   });
 }
 
-export async function createSecondarySession(workspaceId?: string | null): Promise<void> {
+export async function createSecondarySession(
+  workspaceId?: string | null,
+  deviceId?: string | null,
+  agentType?: string | null,
+): Promise<void> {
   const targetWs = workspaceId || secondaryWorkspaceId() || activeWorkspaceId();
   if (!targetWs) return;
   const targetWsRoot =
     workspaces().find(item => item.id === targetWs)?.rootPath ||
     secondaryWorkspaceRoot() ||
     activeWorkspaceRoot();
-  const device = fleetActive() ? (secondarySessionDevice() || deviceContext()) : "";
+  const device = fleetActive() ? (deviceId || secondarySessionDevice() || deviceContext()) : "";
 
   await runStep(async () => {
     const created = await createSession({
       sessionName: tr("nav.newSession"),
-      agentType: chosenAgentType(),
+      agentType: agentType || chosenAgentType(),
       workspaceId: targetWs,
       ...(targetWsRoot ? { workspacePath: targetWsRoot } : {}),
     });

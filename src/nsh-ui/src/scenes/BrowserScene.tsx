@@ -372,12 +372,14 @@ function Toolbar(props: { compact: boolean }) {
     <View
       accessibilityLabel="browser-toolbar"
       style={{
+        minHeight: compactLayout() ? layout.touchTarget : 38,
         flexDirection: "row",
         flexWrap: compactLayout() ? "wrap" : "nowrap",
         alignItems: "center",
         gap: space.xs,
         paddingHorizontal: props.compact ? space.sm : space.md,
-        paddingVertical: space.sm,
+        paddingVertical: space.xs,
+        flexShrink: 0,
         borderBottomWidth: 1,
         borderColor: palette().borderSubtle,
       }}
@@ -415,7 +417,7 @@ function Toolbar(props: { compact: boolean }) {
         clearable
         clearLabel={tr("browser.clearAddress")}
         trailing={loading() ? <Spinner size={12} color={palette().textMuted} /> : undefined}
-        size="md"
+        size={compactLayout() ? "md" : "sm"}
         accessibilityLabel="browser-address"
         style={{ flex: 1, minWidth: compactLayout() ? 180 : 120, marginHorizontal: space.xs }}
       />
@@ -610,11 +612,13 @@ function PreviewBody(props: { compact: boolean }) {
     <View accessibilityLabel="browser-html-preview" style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
       <View
         style={{
-          minHeight: layout.touchTarget - space.md,
+          minHeight: compactLayout() ? layout.touchTarget : 38,
           flexDirection: "row",
           alignItems: "center",
           gap: space.sm,
           paddingHorizontal: props.compact ? space.sm : space.md,
+          paddingVertical: space.xs,
+          flexShrink: 0,
           borderBottomWidth: 1,
           borderColor: palette().borderSubtle,
         }}

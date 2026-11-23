@@ -1484,8 +1484,6 @@ function FileTree(props: {
   const treeContextTarget = signal<string | null>(null);
   let rowContextHandled = false;
 
-  // Stacked: the list is the whole view (the detail is pushed over it instead).
-  const split = () => Boolean(props.compact) && !props.stacked && Boolean(openFile());
   const rootLoaded = () => {
     const root = activeWorkspaceRoot();
     return Boolean(root && root in dirChildren());
@@ -1494,30 +1492,28 @@ function FileTree(props: {
   return (
     <View
       style={{
-        width: props.compact || props.stacked ? "100%" : props.width,
-        height: split() ? "38%" : undefined,
+        width: props.stacked ? "100%" : props.width,
         minWidth: 0,
-        minHeight: split() ? 168 : 0,
-        maxHeight: split() ? 304 : undefined,
-        flex: props.stacked || (props.compact && !openFile()) ? 1 : undefined,
-        flexShrink: props.stacked || (props.compact && !openFile()) ? 1 : 0,
+        minHeight: 0,
+        flex: props.stacked ? 1 : undefined,
+        flexShrink: props.stacked ? 1 : 0,
         overflow: "hidden",
         flexDirection: "column",
         borderRightWidth: 0,
-        borderBottomWidth: split() ? 1 : 0,
+        borderBottomWidth: 0,
         borderColor: palette().borderSubtle,
         backgroundColor: props.stacked ? palette().canvas : palette().canvasSubtle,
       }}
     >
-      {/* Explorer header: title + count + actions, full-width search field, dedicated mode row */}
+      {/* Explorer header: compact 2-row rhythm (title + actions, then search + mode toggle) */}
       <View
         style={{
-          paddingHorizontal: props.compact || props.stacked ? space.sm : space.md,
-          paddingVertical: space.sm,
-          gap: space.sm,
+          paddingHorizontal: props.stacked ? space.md : space.sm + 2,
+          paddingVertical: space.xs + 2,
+          gap: space.xs + 2,
           borderBottomWidth: 1,
           borderColor: palette().borderSubtle,
-          backgroundColor: palette().canvasSubtle,
+          backgroundColor: props.stacked ? palette().canvas : palette().canvasSubtle,
         }}
       >
         {/* Row 1: Explorer label + quiet tabular item count + New / Refresh / More */}
@@ -1598,68 +1594,69 @@ function FileTree(props: {
           </View>
         </View>
 
-        {/* Row 2: Full-width Explorer search field (never crushed by mode toggle) */}
-        <InputBox
-          size="sm"
-          leadingIcon="search"
-          clearable={true}
-          clearLabel={tr("common.clearSearch")}
-          value={searchQuery()}
-          placeholder={
-            searchMode() === "content"
-              ? tr("files.searchContentPlaceholder")
-              : tr("files.searchPlaceholder")
-          }
-          accessibilityLabel="file-search"
-          onChange={val => {
-            searchQuery.set(val);
-            if (!val.trim()) {
-              searchResults.set([]);
-              fileNotice.set("");
-            }
-            scheduleFileSearch();
-          }}
-          onSubmit={() => void runFileSearch()}
-        />
-
-        {/* Row 3: Search mode switcher (Names / Contents) + optional content match toggles */}
+        {/* Row 2: Compact search field + inline Names/Contents mode switcher */}
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.xs }}>
+          <InputBox
+            size="sm"
+            leadingIcon="search"
+            clearable={true}
+            clearLabel={tr("common.clearSearch")}
+            value={searchQuery()}
+            placeholder={
+              searchMode() === "content"
+                ? tr("files.searchContentPlaceholder")
+                : tr("files.searchPlaceholder")
+            }
+            accessibilityLabel="file-search"
+            style={{ flex: 1, minWidth: 120 }}
+            onChange={val => {
+              searchQuery.set(val);
+              if (!val.trim()) {
+                searchResults.set([]);
+                fileNotice.set("");
+              }
+              scheduleFileSearch();
+            }}
+            onSubmit={() => void runFileSearch()}
+          />
           <InlineSearchModeToggle />
-          <If when={searchMode() === "content" || searchQuery().trim()}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-              <FindToggle
-                label="Aa"
-                a11y="file-search-case"
-                tooltip={tr("files.matchCase")}
-                active={searchCaseSensitive()}
-                onPress={() => {
-                  searchCaseSensitive.set(!searchCaseSensitive());
-                  scheduleFileSearch();
-                }}
-              />
-              <FindToggle
-                label="ab"
-                a11y="file-search-word"
-                tooltip={tr("files.matchWholeWord")}
-                active={searchWholeWord()}
-                onPress={() => {
-                  searchWholeWord.set(!searchWholeWord());
-                  scheduleFileSearch();
-                }}
-              />
-              <FindToggle
-                label=".*"
-                a11y="file-search-regex"
-                tooltip={tr("files.useRegex")}
-                active={searchRegex()}
-                onPress={() => {
-                  searchRegex.set(!searchRegex());
-                  scheduleFileSearch();
-                }}
-              />
-            </View>
-          </If>
         </View>
+
+        {/* Optional content match toggles (only shown when searching or in content mode) */}
+        <If when={searchMode() === "content" || searchQuery().trim()}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+            <FindToggle
+              label="Aa"
+              a11y="file-search-case"
+              tooltip={tr("files.matchCase")}
+              active={searchCaseSensitive()}
+              onPress={() => {
+                searchCaseSensitive.set(!searchCaseSensitive());
+                scheduleFileSearch();
+              }}
+            />
+            <FindToggle
+              label="ab"
+              a11y="file-search-word"
+              tooltip={tr("files.matchWholeWord")}
+              active={searchWholeWord()}
+              onPress={() => {
+                searchWholeWord.set(!searchWholeWord());
+                scheduleFileSearch();
+              }}
+            />
+            <FindToggle
+              label=".*"
+              a11y="file-search-regex"
+              tooltip={tr("files.useRegex")}
+              active={searchRegex()}
+              onPress={() => {
+                searchRegex.set(!searchRegex());
+                scheduleFileSearch();
+              }}
+            />
+          </View>
+        </If>
 
         <If when={fileWatchState().kind === "failed"}>
           <View
@@ -1934,7 +1931,7 @@ function OpenFileTabChip(props: {
         gap: space.xs,
         paddingLeft: space.md,
         paddingRight: space.xs,
-        height: compactLayout() ? WORKBENCH_TOUCH_MIN : props.compact ? 32 : 36,
+        height: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
         borderRightWidth: 1,
         borderColor: palette().borderSubtle,
         backgroundColor: active() ? palette().canvas : "transparent",
@@ -2045,6 +2042,7 @@ function OpenFileTabStrip(props: { compact?: boolean }) {
           style={{
             flex: 1,
             minWidth: 0,
+            alignSelf: "center",
             paddingHorizontal: space.xs,
             ...textStyle("caption", { color: palette().textMuted }),
             numberOfLines: 1,
@@ -2561,25 +2559,23 @@ function PreviewBody(props: { compact?: boolean }) {
     <If
       when={openFile()}
       else={
-        <If when={!props.compact || !explorerOpen()}>
-          <View
-            style={{
-              flex: 1,
-              minHeight: 0,
-              minWidth: 0,
-              padding: props.compact ? 16 : 32,
-              alignItems: "center",
-              justifyContent: "center",
-              overflow: "hidden",
-            }}
-          >
-            <QuietEmptyPrompt
-              icon="file-code"
-              title={tr("pane.files.choose")}
-              subtitle={undefined}
-            />
-          </View>
-        </If>
+        <View
+          style={{
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            padding: props.compact ? 16 : 32,
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+          }}
+        >
+          <QuietEmptyPrompt
+            icon="file-code"
+            title={tr("pane.files.choose")}
+            subtitle={undefined}
+          />
+        </View>
       }
     >
       {file => (
@@ -2917,15 +2913,13 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
     });
   });
 
-  // The aux pane splits explorer and preview vertically; stacked views show one at a time.
-  const splitBelowTree = () =>
-    Boolean(props.compact) && !props.stacked && explorerOpen() && !openFile();
-  const narrow = () => Boolean(props.compact) || Boolean(props.stacked);
+  // Width-driven: stacked (< 600px) uses single-pane back+tabs; wide uses side-by-side explorer | preview.
+  const narrow = () => Boolean(props.stacked);
   return (
     <View
       style={{
-        flex: splitBelowTree() ? 0 : 1,
-        flexShrink: splitBelowTree() ? 0 : 1,
+        flex: 1,
+        flexShrink: 1,
         minWidth: 0,
         minHeight: 0,
         overflow: "hidden",
@@ -2933,46 +2927,53 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
         backgroundColor: palette().canvas,
       }}
     >
-      {/* Hide redundant empty preview bar in compact AuxPane until a file is open or explorer collapses */}
-      <If when={Boolean(props.stacked) || !props.compact || Boolean(openFile()) || !explorerOpen()}>
-        <View
-          style={{
-            minHeight: props.stacked ? WORKBENCH_TOUCH_MIN : props.compact ? 34 : 38,
-            paddingLeft: narrow() ? space.xs : space.md,
-            paddingRight: narrow() ? space.sm : space.md,
-            paddingVertical: narrow() ? 2 : 0,
-            flexDirection: "row",
-            flexWrap: narrow() ? "wrap" : "nowrap",
-            alignItems: "center",
-            gap: narrow() ? space.xs : space.sm,
-            borderBottomWidth: 1,
-            borderColor: palette().borderSubtle,
-            backgroundColor: palette().canvas,
-          }}
-        >
-          <If
-            when={Boolean(props.stacked)}
-            else={
+      <View
+        style={{
+          height: compactLayout() ? WORKBENCH_TOUCH_MIN : 36,
+          paddingLeft: props.stacked ? 0 : space.xs,
+          paddingRight: space.sm,
+          flexDirection: "row",
+          alignItems: "stretch",
+          gap: 0,
+          flexShrink: 0,
+          borderBottomWidth: 1,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().canvas,
+        }}
+      >
+        <If
+          when={Boolean(props.stacked)}
+          else={
+            <View
+              style={{
+                paddingRight: space.xs,
+                justifyContent: "center",
+                alignItems: "center",
+                flexShrink: 0,
+              }}
+            >
               <IconButton
                 icon="panel-left"
-                size={props.compact ? "xs" : "sm"}
+                size="xs"
                 active={explorerOpen()}
                 tooltip={tr("files.toggleExplorer")}
                 accessibilityLabel="explorer-toggle"
                 onPress={() => explorerOpen.set(!explorerOpen())}
               />
-            }
-          >
-            <StackBackButton
-              label={tr("files.explorer")}
-              accessibilityLabel="files-stack-back"
-              onPress={() => props.onBack?.()}
-            />
-          </If>
-          <OpenFileTabStrip compact={narrow()} />
-          <If when={openFile()}>
-            {file => (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+            </View>
+          }
+        >
+          <StackBackButton
+            label={tr("files.explorer")}
+            accessibilityLabel="files-stack-back"
+            flush={true}
+            onPress={() => props.onBack?.()}
+          />
+        </If>
+        <OpenFileTabStrip compact={narrow()} />
+        <If when={openFile()}>
+          {file => (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, paddingLeft: space.xs, flexShrink: 0 }}>
                 <If when={!narrow() && (file().kind === "code" || editingContent() !== null)}>
                   <IconButton
                     icon="search"
@@ -3098,8 +3099,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
               </View>
             )}
           </If>
-        </View>
-      </If>
+      </View>
 
       {/* Slim breadcrumb + edit-state + language strip (shown only when a file is open) */}
       <If when={openFile()}>
@@ -3372,7 +3372,7 @@ export function FilesScene(props: { compact?: boolean } = {}) {
           </View>
         )}
       </If>
-      {/* Narrow: the list first; opening a file pushes the preview full width with a back control. */}
+      {/* Width-driven: narrow (< 600px) stacks list -> detail; wide (>= 600px, incl. bottom dock) renders side-by-side. */}
       <If
         when={sceneWidth.stacked()}
         else={
@@ -3381,21 +3381,21 @@ export function FilesScene(props: { compact?: boolean } = {}) {
               flex: 1,
               minHeight: 0,
               minWidth: 0,
-              flexDirection: props.compact ? "column" : "row",
+              flexDirection: "row",
               backgroundColor: palette().canvas,
             }}
           >
             <If when={explorerOpen()}>
               <FileTree
                 compact={props.compact}
-                width={explorerWidth()}
+                width={props.compact ? Math.min(explorerWidth(), 240) : explorerWidth()}
                 onOpenDetail={() => filesStackDetail.set(true)}
               />
             </If>
-            <If when={explorerOpen() && !props.compact}>
+            <If when={explorerOpen()}>
               <SplitHandle
                 accessibilityLabel="Resize explorer pane"
-                onReset={() => explorerWidth.set(260)}
+                onReset={() => explorerWidth.set(props.compact ? 236 : 260)}
                 onDelta={dx =>
                   explorerWidth.update(w =>
                     Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, w + dx)),

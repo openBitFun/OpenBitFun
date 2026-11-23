@@ -1797,47 +1797,68 @@ function AuxPane() {
     >
       <View
         style={{
-          height: controlHeight.md,
+          height: compactShell() ? layout.touchTarget : 38,
           paddingHorizontal: space.md,
           flexDirection: "row",
           alignItems: "stretch",
-          gap: space.md,
+          gap: space.sm,
           flexShrink: 0,
           backgroundColor: palette().canvas,
           borderBottomWidth: 1,
           borderColor: palette().borderSubtle,
         }}
       >
-        <View role="tablist" style={{ flexShrink: 1, minWidth: 0, flexDirection: "row", alignItems: "stretch", gap: space.lg }}>
+        <View role="tablist" style={{ flexShrink: 1, minWidth: 0, flexDirection: "row", alignItems: "stretch", gap: space.md }}>
           <Each of={AUX_TABS} key={tab => tab.id}>
             {tab => {
               const active = () => auxPaneTab() === tab().id;
+              const hovered = signal(false);
               return (
                 <View
                   role="tab"
                   accessibilityLabel={`aux-tab-${tab().id}`}
                   accessibilityState={{ selected: active() }}
+                  onMouseEnter={() => hovered.set(true)}
+                  onMouseLeave={() => hovered.set(false)}
                   onPress={() => auxPaneTab.set(tab().id)}
                   style={{
+                    position: "relative",
                     flexShrink: 1,
                     minWidth: 0,
+                    paddingHorizontal: space.xs,
                     justifyContent: "center",
-                    borderBottomWidth: 2,
-                    borderColor: active() ? palette().accent : "transparent",
                     cursor: "pointer",
+                    userSelect: "none",
                     ...paintTransition(MOTION_DURATION.fast),
                   }}
                   focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
                 >
                   <Text
                     style={{
-                      ...textStyle("label", { color: active() ? palette().text : palette().textSecondary }),
+                      ...textStyle("label", {
+                        color: active() || hovered() ? palette().text : palette().textSecondary,
+                      }),
+                      fontWeight: active() ? "600" : "500",
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
                     }}
                   >
                     {tr(tab().labelKey)}
                   </Text>
+                  <If when={active()}>
+                    <View
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        height: 2,
+                        borderRadius: radii.pill,
+                        backgroundColor: palette().accent,
+                        pointerEvents: "none",
+                      }}
+                    />
+                  </If>
                 </View>
               );
             }}
