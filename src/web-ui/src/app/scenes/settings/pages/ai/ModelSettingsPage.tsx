@@ -3486,7 +3486,6 @@ const ModelSettingsPage: React.FC = () => {
     const authOptions: ComboboxOption[] = [
       { value: 'api_key', label: t('subscriptionAuth.options.apiKey') },
       { value: 'subscription:codex', label: t('subscriptionAuth.options.codex') },
-      { value: 'subscription:antigravity', label: t('subscriptionAuth.options.antigravity') },
       { value: 'subscription:grok', label: t('subscriptionAuth.options.grok') },
       { value: 'subscription:hermes', label: t('subscriptionAuth.options.hermes') },
       { value: 'subscription:zcode', label: t('subscriptionAuth.options.zcode') },

@@ -507,7 +507,7 @@
             "items": {
               "providers": "新增內建或自訂供應商、探測 Magpie 閘道器與設定獨立生圖服務",
               "credentials-endpoint": "設定 API Key、Base URL、請求格式（含即時派生 URL 預覽）與備用通道",
-              "subscription-auth": "登入 Codex、ZCode、OpenCode、Grok、Antigravity、Hermes 等訂閱帳號與多帳號訂閱池",
+              "subscription-auth": "登入 Codex、ZCode、OpenCode、Grok、Hermes 等訂閱帳號與多帳號訂閱池",
               "default-models": "選擇主模型、快速模型、經濟模型以及圖像理解、圖像生成和語音辨識預設模型",
               "reasoning": "依模型能力選擇推理預設或自訂思考預算",
               "smart-routing": "設定智慧模式路由：聯動主模型、經濟模型與路由分類模型",

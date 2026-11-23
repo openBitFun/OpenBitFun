@@ -19,11 +19,11 @@ describe('subscription service presentation', () => {
     expect(preferredZcodeProvider(accounts)).toBe('zcode_cn');
   });
 
-  it('never offers sign-in for the retired WorkBuddy products', () => {
-    for (const provider of ['workbuddy', 'workbuddy_ai'] as const) {
+  it('never offers sign-in for retired subscription products', () => {
+    for (const provider of ['antigravity', 'workbuddy', 'workbuddy_ai'] as const) {
       expect(isRetiredSubscriptionProvider(provider)).toBe(true);
     }
-    for (const provider of ['codex', 'grok', 'hermes', 'zcode', 'zcode_cn', 'opencode', 'antigravity'] as const) {
+    for (const provider of ['codex', 'grok', 'hermes', 'zcode', 'zcode_cn', 'opencode'] as const) {
       expect(isRetiredSubscriptionProvider(provider)).toBe(false);
     }
     // A retained account still groups on its own so it stays visible for removal.
