@@ -798,6 +798,143 @@ impl SnapshotCore {
         })
     }
 
+    /// Computes net per-turn file change summaries from recorded before/after
+    /// snapshots, grouped by `turn_index`. Files whose snapshot content before
+    /// and after the turn is identical (no-op edits) are omitted.
+    pub async fn get_turn_file_change_summaries_before(
+        &self,
+        session_id: &str,
+        max_turn_exclusive: Option<usize>,
+    ) -> SnapshotResult<
+        std::collections::BTreeMap<
+            usize,
+            Vec<crate::service::snapshot::types::TurnFileChangeSummary>,
+        >,
+    > {
+        let Some(session) = self.sessions.get(session_id) else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+
+        let mut ops_by_turn: std::collections::BTreeMap<usize, Vec<&FileOperation>> =
+            std::collections::BTreeMap::new();
+        for op in session.all_operations_iter() {
+            if operation_is_before(op, max_turn_exclusive)
+                && operation_is_completed_for_session_file(op)
+            {
+                ops_by_turn.entry(op.turn_index).or_default().push(op);
+            }
+        }
+
+        let mut out = std::collections::BTreeMap::new();
+        for (turn_index, mut ops) in ops_by_turn {
+            ops.sort_by_key(|op| op.seq_in_turn);
+            let mut file_order: Vec<PathBuf> = Vec::new();
+            let mut grouped: HashMap<PathBuf, Vec<&FileOperation>> = HashMap::new();
+            for op in ops {
+                if !grouped.contains_key(&op.file_path) {
+                    file_order.push(op.file_path.clone());
+                }
+                grouped.entry(op.file_path.clone()).or_default().push(op);
+            }
+
+            let mut changes = Vec::new();
+            for file_path in file_order {
+                let Some(file_ops) = grouped.get(&file_path) else {
+                    continue;
+                };
+                let Some(first) = file_ops.first() else {
+                    continue;
+                };
+                let Some(last) = file_ops.last() else {
+                    continue;
+                };
+
+                let created_in_turn = first.before_snapshot_id.is_none();
+                let deleted_in_turn = last.operation_type == OperationType::Delete
+                    && last.after_snapshot_id.is_none();
+                let renamed_in_turn = last.operation_type == OperationType::Rename;
+                if created_in_turn && deleted_in_turn {
+                    // Created and deleted within the same turn: zero net file change.
+                    continue;
+                }
+
+                let before_bytes = self
+                    .session_snapshot_recorded_size(first.before_snapshot_id.as_deref())
+                    .await;
+                let after_bytes = if deleted_in_turn {
+                    0
+                } else {
+                    self.session_snapshot_recorded_size(last.after_snapshot_id.as_deref())
+                        .await
+                };
+                let too_large = before_bytes > SESSION_FILE_DIFF_STATS_MAX_SOURCE_BYTES
+                    || after_bytes > SESSION_FILE_DIFF_STATS_MAX_SOURCE_BYTES;
+
+                let (lines_added, lines_removed) = if too_large {
+                    let mut added = 0usize;
+                    let mut removed = 0usize;
+                    for op in file_ops {
+                        added += op.diff_summary.lines_added;
+                        removed += op.diff_summary.lines_removed;
+                    }
+                    (added, removed)
+                } else {
+                    let before = match self
+                        .read_recorded_snapshot_text(first.before_snapshot_id.as_deref())
+                        .await
+                    {
+                        Ok(text) => text,
+                        Err(_) => continue,
+                    };
+                    let after = if deleted_in_turn {
+                        String::new()
+                    } else {
+                        match self
+                            .read_recorded_snapshot_text(last.after_snapshot_id.as_deref())
+                            .await
+                        {
+                            Ok(text) => text,
+                            Err(_) => continue,
+                        }
+                    };
+                    if !created_in_turn && !deleted_in_turn && !renamed_in_turn && before == after {
+                        continue;
+                    }
+                    let summary = compute_diff_summary(&before, &after);
+                    (summary.lines_added, summary.lines_removed)
+                };
+
+                let change_kind = if created_in_turn {
+                    "create"
+                } else if deleted_in_turn {
+                    "delete"
+                } else if renamed_in_turn {
+                    "rename"
+                } else {
+                    "modify"
+                };
+
+                if change_kind == "modify" && lines_added == 0 && lines_removed == 0 {
+                    continue;
+                }
+
+                changes.push(crate::service::snapshot::types::TurnFileChangeSummary {
+                    file_path: file_path.to_string_lossy().to_string(),
+                    lines_added,
+                    lines_removed,
+                    change_kind: change_kind.to_string(),
+                    operation_id: last.operation_id.clone(),
+                });
+            }
+
+            if !changes.is_empty() {
+                out.insert(turn_index, changes);
+            }
+        }
+
+        Ok(out)
+    }
+
     async fn session_snapshot_recorded_size(&self, snapshot_id: Option<&str>) -> u64 {
         let Some(snapshot_id) = snapshot_id else {
             return 0;
@@ -1946,5 +2083,227 @@ mod tests {
             tokio::fs::read_to_string(&file_path).await.unwrap(),
             "base\n"
         );
+    }
+
+    #[tokio::test]
+    async fn get_turn_file_change_summaries_before_computes_net_diffs_and_skips_noops() {
+        let mut runtime = make_test_runtime("turn-file-change-summaries").await;
+        let lib_path = runtime.workspace.join("src/lib.rs");
+        let reverted_path = runtime.workspace.join("src/reverted.rs");
+        let created_path = runtime.workspace.join("src/created.rs");
+        let temp_path = runtime.workspace.join("src/temp.rs");
+        tokio::fs::create_dir_all(lib_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&lib_path, "line1\nline2\n").await.unwrap();
+        tokio::fs::write(&reverted_path, "keep\n").await.unwrap();
+
+        // Turn 0: edit lib.rs twice (net +2 -1), edit & revert reverted.rs (no-op),
+        // create created.rs (+2), create & delete temp.rs (no-op).
+        let op1 = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                lib_path.clone(),
+                OperationType::Modify,
+                "Edit".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&lib_path, "line1\ntemp\n").await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op1, 1)
+            .await
+            .unwrap();
+
+        let op2 = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                lib_path.clone(),
+                OperationType::Modify,
+                "Edit".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&lib_path, "line1\nline2_new\nline3\n")
+            .await
+            .unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op2, 1)
+            .await
+            .unwrap();
+
+        let op_rev1 = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                reverted_path.clone(),
+                OperationType::Modify,
+                "Edit".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&reverted_path, "changed\n").await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op_rev1, 1)
+            .await
+            .unwrap();
+
+        let op_rev2 = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                reverted_path.clone(),
+                OperationType::Modify,
+                "Edit".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&reverted_path, "keep\n").await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op_rev2, 1)
+            .await
+            .unwrap();
+
+        let op_create = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                created_path.clone(),
+                OperationType::Create,
+                "Write".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&created_path, "a\nb\n").await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op_create, 1)
+            .await
+            .unwrap();
+
+        let op_tmp_create = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                temp_path.clone(),
+                OperationType::Create,
+                "Write".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&temp_path, "ephemeral\n").await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op_tmp_create, 1)
+            .await
+            .unwrap();
+
+        let op_tmp_del = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                0,
+                temp_path.clone(),
+                OperationType::Delete,
+                "Delete".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&temp_path).await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op_tmp_del, 1)
+            .await
+            .unwrap();
+
+        // Turn 1: delete created.rs (-2)
+        let op_del = runtime
+            .core
+            .start_file_operation(
+                "session-turn-diff",
+                1,
+                created_path.clone(),
+                OperationType::Delete,
+                "Delete".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&created_path).await.unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-turn-diff", &op_del, 1)
+            .await
+            .unwrap();
+
+        let all_turns = runtime
+            .core
+            .get_turn_file_change_summaries_before("session-turn-diff", None)
+            .await
+            .unwrap();
+        assert_eq!(all_turns.len(), 2);
+
+        let turn0 = all_turns.get(&0).expect("turn 0 changes");
+        assert_eq!(turn0.len(), 2);
+        let created_entry = turn0
+            .iter()
+            .find(|c| c.file_path == created_path)
+            .expect("created.rs present");
+        assert_eq!(created_entry.change_kind, "create");
+        assert_eq!(created_entry.lines_added, 2);
+        assert_eq!(created_entry.lines_removed, 0);
+
+        let lib_entry = turn0
+            .iter()
+            .find(|c| c.file_path == lib_path)
+            .expect("lib.rs present");
+        assert_eq!(lib_entry.change_kind, "modify");
+        assert_eq!(lib_entry.lines_added, 2);
+        assert_eq!(lib_entry.lines_removed, 1);
+        assert_eq!(lib_entry.operation_id, op2);
+
+        let turn1 = all_turns.get(&1).expect("turn 1 changes");
+        assert_eq!(turn1.len(), 1);
+        assert_eq!(turn1[0].file_path, created_path);
+        assert_eq!(turn1[0].change_kind, "delete");
+        assert_eq!(turn1[0].lines_added, 0);
+        assert_eq!(turn1[0].lines_removed, 2);
+
+        // Respect max_turn_exclusive rollback boundary.
+        let rolled_back = runtime
+            .core
+            .get_turn_file_change_summaries_before("session-turn-diff", Some(1))
+            .await
+            .unwrap();
+        assert_eq!(rolled_back.len(), 1);
+        assert!(rolled_back.contains_key(&0));
+        assert!(!rolled_back.contains_key(&1));
     }
 }

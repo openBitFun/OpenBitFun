@@ -221,6 +221,15 @@ export type TranscriptItemView =
   | { kind: "thinking"; id: string; roundIndex: number; text: string; reasoningKind?: "reasoning" | "summary" }
   | { kind: "tool"; roundIndex: number; tool: TranscriptToolView };
 
+export interface TranscriptTurnFileChange {
+  filePath: string;
+  linesAdded: number;
+  linesRemoved: number;
+  /** `create`, `modify`, `delete`, or `rename`. */
+  changeKind: string;
+  operationId?: string;
+}
+
 export interface TranscriptTurnView {
   turnId: string;
   turnIndex: number;
@@ -240,6 +249,8 @@ export interface TranscriptTurnView {
   assistantTimestampMs: number;
   tokenUsage?: { inputTokens: number; outputTokens?: number; cachedTokens?: number; totalTokens: number };
   recovery?: { status: string; executionGeneration: number };
+  /** Net file changes recorded by the turn's snapshots (empty when no files changed). */
+  fileChanges?: TranscriptTurnFileChange[];
 }
 
 export interface TranscriptPromptSuggestion {
@@ -288,6 +299,28 @@ export const getSessionTranscriptView = (
     workspace_id: workspaceId,
     ...(limit ? { limit } : {}),
     ...(cursor ? { cursor } : {}),
+  });
+
+export interface OperationDiffResult {
+  filePath: string;
+  originalContent: string;
+  modifiedContent: string;
+  anchorLine?: number;
+}
+
+export const getOperationDiff = (params: {
+  sessionId: string;
+  filePath: string;
+  operationId?: string;
+  workspaceId?: string;
+  workspacePath?: string;
+}) =>
+  invokeCommand<OperationDiffResult>("get_operation_diff", {
+    sessionId: params.sessionId,
+    filePath: params.filePath,
+    ...(params.operationId ? { operationId: params.operationId } : {}),
+    ...(params.workspaceId ? { workspace_id: params.workspaceId } : {}),
+    ...(params.workspacePath ? { workspace_path: params.workspacePath } : {}),
   });
 
 export const getConfigs = (paths: string[]) => invokeCommand<Record<string, unknown>>("get_configs", { paths });

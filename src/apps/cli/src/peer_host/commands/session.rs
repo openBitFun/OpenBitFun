@@ -515,6 +515,50 @@ pub(crate) async fn get_session_transcript_view(
         cursor.as_deref(),
         has_earlier,
     );
+    let snapshot_workspace_id = optional_string(request, "workspace_id")
+        .or_else(|| optional_string(request, "workspaceId"))
+        .or_else(|| {
+            metadata
+                .as_ref()
+                .and_then(|meta| meta.workspace_id.as_deref())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        });
+    if view.turns.iter().any(|turn| turn.settled) {
+        if let Some(workspace_id) = snapshot_workspace_id.as_deref() {
+            let max_turn_exclusive = turns.iter().map(|turn| turn.turn_index + 1).max();
+            if let Ok(manager) =
+                openbitfun_core::service::snapshot::open_snapshot_history_for_workspace(
+                    workspace_id,
+                )
+                .await
+            {
+                if let Ok(by_turn) = manager
+                    .get_turn_file_change_summaries_before(&session_id, max_turn_exclusive)
+                    .await
+                {
+                    for turn in &mut view.turns {
+                        if !turn.settled {
+                            continue;
+                        }
+                        if let Some(changes) = by_turn.get(&turn.turn_index) {
+                            turn.file_changes = changes
+                                .iter()
+                                .map(|entry| openbitfun_core::TranscriptTurnFileChange {
+                                    file_path: entry.file_path.clone(),
+                                    lines_added: entry.lines_added,
+                                    lines_removed: entry.lines_removed,
+                                    change_kind: entry.change_kind.clone(),
+                                    operation_id: Some(entry.operation_id.clone()),
+                                })
+                                .collect();
+                        }
+                    }
+                }
+            }
+        }
+    }
     if openbitfun_core::is_prompt_suggestion_enabled().await {
         view.prompt_suggestion =
             openbitfun_core::resolved_transcript_prompt_suggestion(metadata.as_ref(), &turns);

@@ -561,7 +561,7 @@ test("the permission pill writes the session's mode", async () => {
     mode: "full_access",
     workspaceId: "workspace-1",
   });
-  await app.waitFor("Full access");
+  await app.waitFor("permission-mode-warning");
 
   // Pressing the inline FullAccessNotice trigger opens the popover right-aligned over itself, not over "+".
   await app.press("permission-mode-warning");
@@ -1263,7 +1263,7 @@ test("composer syncs session model from get_session_model_target, omits open ske
   // Composer must reflect the session's authoritative bound model (`Fast model`),
   // not fall back to `Primary model`.
   await app.waitFor("label:bot-capsule-trigger >> text:Fast model");
-  await app.waitFor("label:reasoning-picker >> text:Reasoning: High");
+  await app.waitFor("label:reasoning-picker >> text:High");
 
   // Changing reasoning sends the session's real model (`fast-small`), never `gpt-4.1-mini`.
   await app.press("reasoning-picker");
@@ -1761,4 +1761,85 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
     payload: { sessionId: "session-1", turnId: "turn-3", userInput: "Do something else" },
   });
   await app.waitFor("accept-prompt-suggestion", { state: "gone" });
+});
+
+test("per-turn snapshot file changes start collapsed, expand on click, and open the diff review modal", async () => {
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"]!;
+  const diffRequests: Record<string, unknown>[] = [];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const req = data as { action?: string; request?: Record<string, unknown> };
+    if (req.action === "get_operation_diff") {
+      diffRequests.push(req.request ?? {});
+      return {
+        ok: true,
+        value: {
+          filePath: String(req.request?.filePath ?? ""),
+          originalContent: "const a = 1;\n",
+          modifiedContent: "const a = 1;\nconst b = 2;\n",
+        },
+      };
+    }
+    const res = baseInvoke(data) as { ok?: boolean; value?: Record<string, unknown> };
+    if (req.action === "get_session_transcript_view" && res?.ok && res.value && Array.isArray(res.value.turns)) {
+      const turns = res.value.turns.map((turn: Record<string, unknown>) =>
+        turn.turnId === "turn-2"
+          ? {
+              ...turn,
+              fileChanges: [
+                {
+                  filePath: "/repo/src/nsh-ui/src/agentEvents.ts",
+                  linesAdded: 5,
+                  linesRemoved: 1,
+                  changeKind: "modify",
+                  operationId: "op-1",
+                },
+                {
+                  filePath: "/repo/src/nsh-ui/src/state.ts",
+                  linesAdded: 11,
+                  linesRemoved: 4,
+                  changeKind: "modify",
+                  operationId: "op-2",
+                },
+              ],
+            }
+          : turn,
+      );
+      return {
+        ...res,
+        value: {
+          ...res.value,
+          turns,
+        },
+      };
+    }
+    return res;
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Add the plan and fix the imports.");
+
+  // Turn 1 has no fileChanges -> no card rendered. Turn 2 has 2 fileChanges -> collapsed by default.
+  expect(app.shows("turn-changes-card-turn-1")).toBe(false);
+  await app.waitFor("turn-changes-card-turn-2");
+  expect(app.texts()).toContain("2 files changed");
+  expect(app.texts()).toContain("+16");
+  expect(app.texts()).toContain("-5");
+  expect(app.shows("turn-change-file-turn-2-agentEvents.ts")).toBe(false);
+
+  // Clicking header expands per-file rows.
+  await app.press("turn-changes-toggle-turn-2");
+  await app.waitFor("turn-change-file-turn-2-agentEvents.ts");
+  expect(app.shows("turn-change-file-turn-2-state.ts")).toBe(true);
+
+  // Clicking a file row opens the diff review modal and requests operation diff.
+  await app.press("turn-change-file-turn-2-agentEvents.ts");
+  await app.waitFor("turn-changes-review-modal");
+  await app.waitFor("const b = 2;");
+  expect(diffRequests[0]).toMatchObject({
+    sessionId: "session-1",
+    filePath: "/repo/src/nsh-ui/src/agentEvents.ts",
+    operationId: "op-1",
+  });
 });

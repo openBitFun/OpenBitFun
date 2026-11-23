@@ -375,6 +375,12 @@ export const enUSMessages = {
   "sessions.promptSuggestionAcceptTooltip": "Accept suggestion (Tab or →)",
   "sessions.promptSuggestionUse": "Use",
   "sessions.promptSuggestionDismiss": "Dismiss suggestion",
+  "sessions.turnFilesChangedOne": "1 file changed",
+  "sessions.turnFilesChangedMany": "{{count}} files changed",
+  "sessions.turnFilesReview": "Review",
+  "sessions.turnFilesReviewTitle": "Turn file changes",
+  "sessions.turnFilesOpenFile": "Open file",
+  "sessions.turnFilesNoDiff": "No diff preview available for this snapshot.",
 
   // ── Assistants Scene ──
   "assistants.title": "Assistants",

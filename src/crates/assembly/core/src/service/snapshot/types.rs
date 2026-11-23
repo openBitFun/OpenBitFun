@@ -79,6 +79,18 @@ pub struct SessionFileDiffStats {
     pub change_kind: String,
 }
 
+/// Net file change recorded by snapshots for one file within a single dialog turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnFileChangeSummary {
+    pub file_path: String,
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    /// `create`, `modify`, `delete`, or `rename`.
+    pub change_kind: String,
+    pub operation_id: String,
+}
+
 /// File modification status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FileModificationStatus {

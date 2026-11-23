@@ -305,6 +305,22 @@ impl SnapshotManager {
             .await
     }
 
+    pub async fn get_turn_file_change_summaries_before(
+        &self,
+        session_id: &str,
+        max_turn_exclusive: Option<usize>,
+    ) -> SnapshotResult<
+        std::collections::BTreeMap<
+            usize,
+            Vec<crate::service::snapshot::types::TurnFileChangeSummary>,
+        >,
+    > {
+        let snapshot_service = self.snapshot_service.read().await;
+        snapshot_service
+            .get_turn_file_change_summaries_before(session_id, max_turn_exclusive)
+            .await
+    }
+
     pub async fn get_operation_summary(
         &self,
         session_id: &str,

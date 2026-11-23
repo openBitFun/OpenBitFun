@@ -350,7 +350,7 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
   await app.waitFor("label:bot-capsule-trigger >> text:Claude Sonnet 4.5");
 
   // Embedded reasoning presets must be available without extra `project_ai_model_reasoning_catalog` RPC!
-  await app.waitFor("Reasoning: Default");
+  await app.waitFor("label:reasoning-picker >> text:Default");
   expect(backend.actions()).not.toContain("project_ai_model_reasoning_catalog");
 
   // Picker offers `"text_chat"` enabled models and hides disabled + image-only models.

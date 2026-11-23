@@ -41,7 +41,11 @@ export function VoiceInputButtons(props: { actions: VoiceComposerActions }) {
           iconSize={15}
           accessibilityLabel="voice-call"
           tooltip={tr("voice.call")}
-          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+          style={
+            compactLayout()
+              ? { width: layout.touchTarget, height: layout.touchTarget, borderRadius: radii.pill }
+              : { borderRadius: radii.pill }
+          }
           onPress={explainVoiceCallUnsupported}
         />
       </If>
@@ -54,7 +58,11 @@ export function VoiceInputButtons(props: { actions: VoiceComposerActions }) {
           disabled={props.actions.disabled()}
           accessibilityLabel="voice-input"
           tooltip={voiceRecognizerAvailable() === false ? tr("voice.unavailable") : tr("voice.dictate")}
-          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+          style={
+            compactLayout()
+              ? { width: layout.touchTarget, height: layout.touchTarget, borderRadius: radii.pill }
+              : { borderRadius: radii.pill }
+          }
           onPress={() => {
             if (voicePhase() === "idle") startVoiceInput(text => props.actions.insert(text));
             else finishVoiceInput(text => props.actions.insert(text));

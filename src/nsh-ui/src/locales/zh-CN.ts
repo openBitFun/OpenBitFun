@@ -374,6 +374,12 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "sessions.promptSuggestionAcceptTooltip": "填入建议（按 Tab 或 →）",
   "sessions.promptSuggestionUse": "采用",
   "sessions.promptSuggestionDismiss": "忽略建议",
+  "sessions.turnFilesChangedOne": "1 个文件已更改",
+  "sessions.turnFilesChangedMany": "{{count}} 个文件已更改",
+  "sessions.turnFilesReview": "审查",
+  "sessions.turnFilesReviewTitle": "本轮文件变更",
+  "sessions.turnFilesOpenFile": "打开文件",
+  "sessions.turnFilesNoDiff": "无法加载该快照的差异预览。",
 
   // ── 助理场景 ──
   "assistants.title": "助理",

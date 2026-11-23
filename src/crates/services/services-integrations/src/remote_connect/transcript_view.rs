@@ -134,6 +134,19 @@ pub enum TranscriptItemView {
     },
 }
 
+/// Net file change recorded by snapshots for one dialog turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptTurnFileChange {
+    pub file_path: String,
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    /// `create`, `modify`, `delete`, or `rename`.
+    pub change_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptTurnView {
@@ -166,6 +179,9 @@ pub struct TranscriptTurnView {
     pub recovery: Option<TranscriptTurnRecovery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_delivery: Option<openbitfun_core_types::background_delivery::BackgroundDelivery>,
+    /// Net file changes recorded by the turn's snapshots (empty when no files changed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_changes: Vec<TranscriptTurnFileChange>,
 }
 
 impl TranscriptTurnView {
@@ -407,6 +423,7 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
         token_usage: turn.token_usage,
         recovery: turn.recovery,
         background_delivery: turn.background_delivery,
+        file_changes: Vec::new(),
     }
 }
 

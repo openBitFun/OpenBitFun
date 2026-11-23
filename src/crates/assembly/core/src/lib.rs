@@ -77,7 +77,7 @@ pub use openbitfun_services_integrations::remote_connect::{
 /// The typed transcript view every client reads (logic batch 4).
 #[cfg(feature = "remote-connect")]
 pub use openbitfun_services_integrations::remote_connect::{
-    SessionTranscriptView, TranscriptPromptSuggestion,
+    SessionTranscriptView, TranscriptPromptSuggestion, TranscriptTurnFileChange,
 };
 #[cfg(feature = "agent-runtime")]
 pub use service_agent_runtime::is_prompt_suggestion_enabled;

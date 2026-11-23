@@ -295,6 +295,11 @@ import { DropdownMenu, pushToast, registerEscapeDismiss, type DropdownMenuItem }
 import { sessionMenuItems } from "../ui/sessionActions";
 import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
 import { VoiceDictationBar, VoiceInputButtons, type VoiceComposerActions } from "../ui/VoiceInput";
+import {
+  TurnChangesDiffModal,
+  TurnFileChangesCard,
+  type TurnChangesReviewState,
+} from "../ui/TurnFileChanges";
 import { GenUIToolItem } from "../genui/GenUIView";
 import { isGenUICall } from "../genui/genuiSource";
 import { ensureVoiceSettings } from "../voiceInputStore";
@@ -345,6 +350,7 @@ const queueCollapsed = signal(false);
 const composerFileDragActive = signal(false);
 const composerComposing = signal(false);
 const composerCaretBounds = signal<Bounds | null>(null);
+const turnChangesReview = signal<TurnChangesReviewState | null>(null);
 const mentionSelectedIndex = signal(0);
 
 const threadMenuAnchor = signal<ViewRef | null>(null);
@@ -3307,6 +3313,25 @@ async function showEarlierTurns(): Promise<void> {
  * identity while unchanged (`stableTurnRows`), so a streaming chunk, a reload or
  * "Load earlier" never evaluates this subtree again.
  */
+function turnFileChangesOf(turn: unknown) {
+  if (!turn || typeof turn !== "object") return [];
+  const changes = (turn as { fileChanges?: TranscriptTurnView["fileChanges"] }).fileChanges;
+  return Array.isArray(changes) ? changes : [];
+}
+
+function openTurnChangesReview(turnId: string, changes: NonNullable<TranscriptTurnView["fileChanges"]>, initialFilePath?: string): void {
+  const sessionId = activeSessionId();
+  if (!sessionId || changes.length === 0) return;
+  turnChangesReview.set({
+    sessionId,
+    turnId,
+    workspaceId: activeWorkspaceId() ?? undefined,
+    workspacePath: activeWorkspaceRoot() || undefined,
+    changes,
+    selectedPath: initialFilePath || changes[0]!.filePath,
+  });
+}
+
 function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
   const key = computed(() => turnKeyOf(props.turn()));
   const matches = computed(() => turnMatchesSearch(props.turn(), transcriptSearchQuery()));
@@ -3361,6 +3386,14 @@ function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
 
       <If when={turnFailureOf(props.turn())}>
         {failure => <TurnFailureNotice turn={props.turn()} failure={failure()} />}
+      </If>
+
+      <If when={turnFileChangesOf(props.turn()).length > 0}>
+        <TurnFileChangesCard
+          turnId={key()}
+          changes={turnFileChangesOf(props.turn())}
+          onReview={filePath => openTurnChangesReview(key(), turnFileChangesOf(props.turn()), filePath)}
+        />
       </If>
 
       <If when={items().length > 0}>
@@ -3631,6 +3664,7 @@ function Transcript() {
       lastSessionId = id;
       resetTranscriptScrollTracking();
       rerunTarget.set(null);
+      turnChangesReview.set(null);
       // The previous transcript's rows are disposed with their keys; drop the
       // per-row state they left behind so a long day of sessions does not grow it.
       untracked(() => {
@@ -4127,7 +4161,8 @@ function permissionModeLabel(mode: "ask" | "auto" | "full_access"): string {
 
 /**
  * The permission mode lives in the "+" menu; only full access, the one mode
- * that runs every tool unasked, stays visible as quiet neutral text.
+ * that runs every tool unasked, stays visible as a compact icon-only shield
+ * pill (full label in tooltip) to keep the composer bar uncluttered.
  */
 function FullAccessNotice() {
   return (
@@ -4142,7 +4177,11 @@ function FullAccessNotice() {
         ref={el => fullAccessTriggerAnchor.set(el)}
         role="button"
         accessibilityLabel="permission-mode-warning"
-        tooltip={<TooltipBubble text={tr("chat.permissionMode.tooltip")} />}
+        tooltip={
+          <TooltipBubble
+            text={`${permissionModeLabel("full_access")} · ${tr("chat.permissionMode.tooltip")}`}
+          />
+        }
         onPress={() => {
           permissionPillAnchor.set(fullAccessTriggerAnchor());
           permissionModeAlign.set("end");
@@ -4155,34 +4194,21 @@ function FullAccessNotice() {
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
-          gap: space.xs,
-          minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : 26,
-          minWidth: compactLayout() || sessionsCompact() ? layout.touchTarget : undefined,
-          paddingHorizontal: space.chip,
-          borderRadius: radii.sm,
-          borderCurve: "continuous",
+          width: compactLayout() || sessionsCompact() ? layout.touchTarget : 28,
+          height: compactLayout() || sessionsCompact() ? layout.touchTarget : 28,
+          borderRadius: radii.pill,
+          borderWidth: 1,
+          borderColor: permissionModePickerOpen() ? palette().warning : palette().warningBorder,
+          backgroundColor: palette().warningSoft,
           cursor: "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-        activeStyle={tactileActiveStyle(0.97)}
+        hoverStyle={{ borderColor: palette().warning }}
+        activeStyle={tactileActiveStyle(0.95)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <Icon name="shield" size={14} color={palette().textMuted} />
-        <If when={!sessionsCompact()}>
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
-              fontWeight: "500",
-              numberOfLines: 1,
-            }}
-          >
-            {permissionModeLabel("full_access")}
-          </Text>
-        </If>
+        <Icon name="shield" size={14} color={palette().warning} />
       </View>
     </If>
   );
@@ -4299,8 +4325,8 @@ function ContextUsageRing() {
               contextPopoverOpen.set(next);
             }}
             style={{
-              width: 26,
-              height: 26,
+              width: 28,
+              height: 28,
               alignItems: "center",
               justifyContent: "center",
               borderRadius: radii.pill,
@@ -4309,7 +4335,7 @@ function ContextUsageRing() {
               ...pressTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-            activeStyle={tactileActiveStyle(0.97)}
+            activeStyle={tactileActiveStyle(0.95)}
             focusVisibleStyle={focusRingStyle()}
           >
             <Canvas
@@ -4932,11 +4958,10 @@ function ComposerDock() {
                       flexDirection: "row",
                       alignItems: "center",
                       justifyContent: "center",
-                      paddingHorizontal: space.chip,
+                      paddingHorizontal: space.sm,
                       height: compactLayout() ? layout.touchTarget : 22,
                       minWidth: compactLayout() ? layout.touchTarget : undefined,
-                      borderRadius: radii.xs,
-                      borderCurve: "continuous",
+                      borderRadius: radii.pill,
                       borderWidth: 1,
                       borderColor: palette().borderSubtle,
                       backgroundColor: palette().surfaceSubtle,
@@ -4948,7 +4973,7 @@ function ComposerDock() {
                       backgroundColor: palette().panelHover,
                       borderColor: palette().borderStrong,
                     }}
-                    activeStyle={tactileActiveStyle(0.96)}
+                    activeStyle={tactileActiveStyle(0.95)}
                     focusVisibleStyle={focusRingStyle()}
                   >
                     <Text
@@ -4969,6 +4994,7 @@ function ComposerDock() {
                     iconSize={11}
                     accessibilityLabel="dismiss-prompt-suggestion"
                     tooltip={tr("sessions.promptSuggestionDismiss")}
+                    style={{ borderRadius: radii.pill }}
                     onPress={() => dismissActivePromptSuggestion()}
                   />
                 </View>
@@ -5017,6 +5043,7 @@ function ComposerDock() {
                       active={composerPlusOpen()}
                       accessibilityLabel="composer-plus"
                       tooltip={tr("chat.polish.moreControls")}
+                      style={{ borderRadius: radii.pill }}
                       onPress={toggleComposerPlus}
                     />
                   }
@@ -5036,6 +5063,7 @@ function ComposerDock() {
                   iconSize={15}
                   accessibilityLabel="Attach"
                   tooltip={tr("sessions.attachImage")}
+                  style={{ borderRadius: radii.pill }}
                   onPress={() => {
                     closePickers();
                     void attachImageFromClipboard();
@@ -5047,7 +5075,7 @@ function ComposerDock() {
               <FullAccessNotice />
             </View>
 
-            {/* Right: context ring, then Send / Stop */}
+            {/* Right: context ring, then unified circular Send / Stop */}
             <View
               style={{
                 flexDirection: "row",
@@ -5073,13 +5101,10 @@ function ComposerDock() {
                         onPress={() => void stopRunningTurn()}
                         style={{
                           boxSizing: "border-box",
-                          width: 30,
-                          height: 30,
-                          borderRadius: radii.sm,
-                          borderCurve: "continuous",
-                          borderWidth: 1,
-                          borderColor: palette().dangerBorder,
-                          backgroundColor: palette().dangerSoft,
+                          width: 32,
+                          height: 32,
+                          borderRadius: radii.pill,
+                          backgroundColor: palette().actionPrimaryBg,
                           alignItems: "center",
                           justifyContent: "center",
                           cursor: "pointer",
@@ -5087,13 +5112,20 @@ function ComposerDock() {
                           ...pressTransition(MOTION_DURATION.fast),
                         }}
                         hoverStyle={{
-                          backgroundColor: palette().dangerHoverBg,
-                          borderColor: palette().danger,
+                          backgroundColor: palette().danger,
                         }}
-                        activeStyle={tactileActiveStyle(0.97)}
+                        activeStyle={tactileActiveStyle(0.94)}
                         focusVisibleStyle={focusRingStyle()}
                       >
-                        <Icon name="stop" size={13} color={palette().danger} />
+                        <View
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: 2.5,
+                            backgroundColor: palette().actionPrimaryFg,
+                            pointerEvents: "none",
+                          }}
+                        />
                       </View>
                     }
                   >
@@ -5110,7 +5142,7 @@ function ComposerDock() {
                         userSelect: "none",
                         ...pressTransition(MOTION_DURATION.fast),
                       }}
-                      activeStyle={tactileActiveStyle(0.97)}
+                      activeStyle={tactileActiveStyle(0.94)}
                       focusVisibleStyle={focusRingStyle(-4)}
                     >
                       <View
@@ -5119,15 +5151,20 @@ function ComposerDock() {
                           width: 34,
                           height: 34,
                           borderRadius: radii.pill,
-                          borderWidth: 1,
-                          borderColor: palette().dangerBorder,
-                          backgroundColor: palette().dangerSoft,
+                          backgroundColor: palette().actionPrimaryBg,
                           alignItems: "center",
                           justifyContent: "center",
                           pointerEvents: "none",
                         }}
                       >
-                        <Icon name="stop" size={14} color={palette().danger} />
+                        <View
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: 2.5,
+                            backgroundColor: palette().actionPrimaryFg,
+                          }}
+                        />
                       </View>
                     </View>
                   </If>
@@ -5135,14 +5172,15 @@ function ComposerDock() {
               </If>
 
               <If when={!runningTurnId() || composerText().trim().length > 0 || imageAttachments().length > 0}>
-                <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 0 : 4 }}>
+                <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 0 : space.xs }}>
                   <If
                     when={compactComposer()}
                     else={
                       <IconCircleButton
                         icon="arrow-up"
                         variant={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0) ? "subtle" : "primary"}
-                        size={30}
+                        size={32}
+                        iconSize={16}
                         accessibilityLabel="Send"
                         tooltip={tr("sessions.sendMessage")}
                         disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0)}
@@ -5375,13 +5413,12 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
             agentPickerOpen.set(next);
           }}
           style={{
-            height: controlHeight.sm,
-            minWidth: props.compact() ? 48 : 64,
+            height: 28,
+            minWidth: props.compact() ? 48 : 56,
             flexShrink: 1,
             maxWidth: props.compact() ? 132 : 168,
             paddingHorizontal: props.compact() ? space.chip : space.sm,
-            borderRadius: radii.sm,
-            borderCurve: "continuous",
+            borderRadius: radii.pill,
             borderWidth: 1,
             borderColor: agentPickerOpen() ? palette().border : "transparent",
             backgroundColor: agentPickerOpen() ? palette().surfaceSubtle : "transparent",
@@ -5396,7 +5433,7 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
             backgroundColor: palette().surfaceSubtle,
             borderColor: palette().borderSubtle,
           }}
-          activeStyle={tactileActiveStyle(0.97)}
+          activeStyle={tactileActiveStyle(0.96)}
           focusVisibleStyle={focusRingStyle(-1)}
         >
           <Text
@@ -5404,8 +5441,8 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
               flexShrink: 1,
               minWidth: 0,
               color: palette().textSecondary,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 18 / 13),
+              fontSize: textSize(12.5),
+              lineHeight: textLineHeight(12.5, 1.35),
               fontWeight: "500",
               numberOfLines: 1,
               textOverflow: "ellipsis",
@@ -5415,7 +5452,7 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
           </Text>
           <Icon
             name={agentPickerOpen() ? "chevron-up" : "chevron-down"}
-            size={12}
+            size={11}
             color={palette().textMuted}
           />
         </View>
@@ -5429,11 +5466,11 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
           />
         }
         style={{
-          height: controlHeight.sm,
+          height: 28,
           flexShrink: 1,
           maxWidth: props.compact() ? 132 : 168,
           paddingHorizontal: props.compact() ? space.chip : space.sm,
-          borderRadius: radii.sm,
+          borderRadius: radii.pill,
           flexDirection: "row",
           alignItems: "center",
           userSelect: "none",
@@ -5444,8 +5481,8 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
             flexShrink: 1,
             minWidth: 0,
             color: palette().textSecondary,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 18 / 13),
+            fontSize: textSize(12.5),
+            lineHeight: textLineHeight(12.5, 1.35),
             fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
@@ -5495,17 +5532,16 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
           if (next) void refreshFleetModels();
         }}
         style={{
-          height: controlHeight.sm,
+          height: 28,
           minWidth: props.compact()
             ? activeReasoningChoices().length > 0
               ? 52
               : 56
-            : 72,
+            : 64,
           flexShrink: 1,
           maxWidth: props.compact() ? 172 : 216,
           paddingHorizontal: props.compact() ? space.chip : space.sm,
-          borderRadius: radii.sm,
-          borderCurve: "continuous",
+          borderRadius: radii.pill,
           borderWidth: 1,
           borderColor: modelPickerOpen() ? palette().border : "transparent",
           flexDirection: "row",
@@ -5520,7 +5556,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
           backgroundColor: palette().surfaceSubtle,
           borderColor: palette().borderSubtle,
         }}
-        activeStyle={tactileActiveStyle(0.97)}
+        activeStyle={tactileActiveStyle(0.96)}
         focusVisibleStyle={focusRingStyle(-1)}
       >
         <Text
@@ -5528,8 +5564,8 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
             flexShrink: 1,
             minWidth: 0,
             color: palette().textSecondary,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 18 / 13),
+            fontSize: textSize(12.5),
+            lineHeight: textLineHeight(12.5, 1.35),
             fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
@@ -5539,7 +5575,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         </Text>
         <Icon
           name={modelPickerOpen() ? "chevron-up" : "chevron-down"}
-          size={12}
+          size={11}
           color={palette().textMuted}
         />
       </View>
@@ -5547,14 +5583,14 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
       <If when={activeReasoningChoices().length > 0}>
         <View
           style={{
-            minWidth: props.compact() ? 44 : 64,
+            minWidth: props.compact() ? 44 : 52,
             flexShrink: 1,
             flexDirection: "row",
             alignItems: "center",
             gap: space.hair,
           }}
         >
-          <View style={{ width: 1, height: space.md, flexShrink: 0, backgroundColor: palette().borderSubtle }} />
+          <View style={{ width: 1, height: space.sm + 2, flexShrink: 0, backgroundColor: palette().borderSubtle }} />
           <View
             ref={el => {
               reasoningTriggerRef = el;
@@ -5574,13 +5610,12 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
               reasoningPickerOpen.set(next);
             }}
             style={{
-              height: controlHeight.sm,
+              height: 28,
               minWidth: 0,
               flexShrink: 1,
-              maxWidth: props.compact() ? 92 : 156,
+              maxWidth: props.compact() ? 88 : 112,
               paddingHorizontal: props.compact() ? space.chip : space.sm,
-              borderRadius: radii.sm,
-              borderCurve: "continuous",
+              borderRadius: radii.pill,
               borderWidth: 1,
               borderColor: reasoningPickerOpen() ? palette().border : "transparent",
               flexDirection: "row",
@@ -5595,9 +5630,10 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
               backgroundColor: palette().surfaceSubtle,
               borderColor: palette().borderSubtle,
             }}
-            activeStyle={tactileActiveStyle(0.97)}
+            activeStyle={tactileActiveStyle(0.96)}
             focusVisibleStyle={focusRingStyle(-1)}
           >
+            <Icon name="bulb" size={12} color={palette().textMuted} />
             <Text
               style={{
                 flexShrink: 1,
@@ -5610,13 +5646,11 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
                 textOverflow: "ellipsis",
               }}
             >
-              {props.compact()
-                ? activeReasoningLabel()
-                : tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
+              {activeReasoningLabel()}
             </Text>
             <Icon
               name={reasoningPickerOpen() ? "chevron-up" : "chevron-down"}
-              size={12}
+              size={11}
               color={palette().textMuted}
             />
           </View>
@@ -7255,6 +7289,7 @@ function QueuedPanel() {
                           disabled={index() === 0}
                           tooltip={tr("common.up")}
                           accessibilityLabel={tr("common.up")}
+                          style={{ borderRadius: radii.pill }}
                           onPress={() => void moveQueued(item().id, -1)}
                         />
                         <IconButton
@@ -7264,6 +7299,7 @@ function QueuedPanel() {
                           disabled={index() === queuedForActive().length - 1}
                           tooltip={tr("common.down")}
                           accessibilityLabel={tr("common.down")}
+                          style={{ borderRadius: radii.pill }}
                           onPress={() => void moveQueued(item().id, 1)}
                         />
                       </If>
@@ -7273,6 +7309,7 @@ function QueuedPanel() {
                         iconSize={13}
                         tooltip={tr("sessions.sendNow")}
                         accessibilityLabel={tr("sessions.sendNow")}
+                        style={{ borderRadius: radii.pill }}
                         onPress={() => void sendQueuedNow(item().id)}
                       />
                       <IconButton
@@ -7281,6 +7318,7 @@ function QueuedPanel() {
                         iconSize={13}
                         tooltip={tr("common.edit")}
                         accessibilityLabel={tr("common.edit")}
+                        style={{ borderRadius: radii.pill }}
                         onPress={() => {
                           const content = item().content;
                           const queuedAttachments = [...(item().attachments ?? [])];
@@ -7311,6 +7349,7 @@ function QueuedPanel() {
                         tone="danger"
                         tooltip={tr("common.delete")}
                         accessibilityLabel={tr("common.delete")}
+                        style={{ borderRadius: radii.pill }}
                         onPress={() => void removeQueued(item().id)}
                       />
                     </View>
@@ -7440,6 +7479,15 @@ export function SessionsScene() {
       <BackgroundCommandsStrip />
       <ComposerDock />
       <SessionExtrasDialogs />
+      <TurnChangesDiffModal
+        review={turnChangesReview}
+        onSelectFile={filePath => {
+          const current = turnChangesReview();
+          if (current) turnChangesReview.set({ ...current, selectedPath: filePath });
+        }}
+        onOpenFile={filePath => openInAuxPane("files", filePath)}
+        onClose={() => turnChangesReview.set(null)}
+      />
     </View>
   );
 }

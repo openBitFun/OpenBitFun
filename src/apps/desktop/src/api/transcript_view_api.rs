@@ -20,9 +20,10 @@ use crate::api::agentic_api::{
 };
 use crate::host::State;
 use crate::runtime::DesktopRuntimeContext;
+use openbitfun_core::service::snapshot::open_snapshot_history_for_workspace;
 use openbitfun_core::{
     is_prompt_suggestion_enabled, resolved_transcript_prompt_suggestion,
-    session_transcript_view_from_turns, SessionTranscriptView,
+    session_transcript_view_from_turns, SessionTranscriptView, TranscriptTurnFileChange,
 };
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +84,7 @@ pub async fn get_session_transcript_view(
         return Err("session_id is required".to_string());
     }
     let limit = request.limit.filter(|limit| *limit > 0);
+    let request_workspace_id = request.workspace_id.clone();
     let scope = desktop_session_scope(
         request.workspace_id,
         request.workspace_path,
@@ -128,6 +130,48 @@ pub async fn get_session_transcript_view(
                     .any(|turn| turn.turn_id == turn_id && turn.settled)
             })
         });
+    let workspace_id_for_snapshot = request_workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            metadata
+                .as_ref()
+                .and_then(|meta| meta.workspace_id.as_deref())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        });
+    if view.turns.iter().any(|turn| turn.settled) {
+        if let Some(workspace_id) = workspace_id_for_snapshot.as_deref() {
+            let max_turn_exclusive = turns.iter().map(|turn| turn.turn_index + 1).max();
+            if let Ok(manager) = open_snapshot_history_for_workspace(workspace_id).await {
+                if let Ok(by_turn) = manager
+                    .get_turn_file_change_summaries_before(&session_id, max_turn_exclusive)
+                    .await
+                {
+                    for turn in &mut view.turns {
+                        if !turn.settled {
+                            continue;
+                        }
+                        if let Some(changes) = by_turn.get(&turn.turn_index) {
+                            turn.file_changes = changes
+                                .iter()
+                                .map(|entry| TranscriptTurnFileChange {
+                                    file_path: entry.file_path.clone(),
+                                    lines_added: entry.lines_added,
+                                    lines_removed: entry.lines_removed,
+                                    change_kind: entry.change_kind.clone(),
+                                    operation_id: Some(entry.operation_id.clone()),
+                                })
+                                .collect();
+                        }
+                    }
+                }
+            }
+        }
+    }
     if running_turn.is_none() && is_prompt_suggestion_enabled().await {
         view.prompt_suggestion = resolved_transcript_prompt_suggestion(metadata.as_ref(), &turns);
     }

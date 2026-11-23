@@ -374,6 +374,12 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "sessions.promptSuggestionAcceptTooltip": "填入建議（按 Tab 或 →）",
   "sessions.promptSuggestionUse": "採用",
   "sessions.promptSuggestionDismiss": "忽略建議",
+  "sessions.turnFilesChangedOne": "1 個檔案已變更",
+  "sessions.turnFilesChangedMany": "{{count}} 個檔案已變更",
+  "sessions.turnFilesReview": "審查",
+  "sessions.turnFilesReviewTitle": "本輪檔案變更",
+  "sessions.turnFilesOpenFile": "開啟檔案",
+  "sessions.turnFilesNoDiff": "無法載入此快照的差異預覽。",
 
   // ── 助理場景 ──
   "assistants.title": "助理",
