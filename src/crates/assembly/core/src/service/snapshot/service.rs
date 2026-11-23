@@ -56,10 +56,11 @@ impl SnapshotService {
             workspace_dir.clone(),
             runtime_context.clone(),
         )));
-        let snapshot_system = match &workspace_fs {
+        let mut snapshot_system = match &workspace_fs {
             Some(fs) => FileSnapshotSystem::with_workspace_fs(runtime_context.clone(), fs.clone()),
             None => FileSnapshotSystem::new(runtime_context.clone()),
         };
+        snapshot_system.set_capture_budget_mb(config.max_snapshot_size_mb);
         let snapshot_core = Arc::new(RwLock::new(SnapshotCore::new(
             runtime_context.clone(),
             snapshot_system,

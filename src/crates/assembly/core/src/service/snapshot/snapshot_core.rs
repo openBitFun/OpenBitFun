@@ -546,20 +546,9 @@ impl SnapshotCore {
                 "Found baseline snapshot: file_path={:?} baseline_id={}",
                 file_path, baseline_id
             );
-            match self
-                .snapshot_system
+            self.snapshot_system
                 .get_snapshot_content(&baseline_id)
-                .await
-            {
-                Ok(content) => content,
-                Err(e) => {
-                    warn!(
-                        "Failed to read baseline snapshot: baseline_id={} error={}",
-                        baseline_id, e
-                    );
-                    String::new()
-                }
-            }
+                .await?
         } else {
             debug!(
                 "No baseline snapshot found, file may not have been modified: file_path={:?}",
@@ -600,13 +589,13 @@ impl SnapshotCore {
         };
 
         let before = self
-            .load_snapshot_text(boundary.before_snapshot_id.as_deref())
-            .await;
+            .read_recorded_snapshot_text(boundary.before_snapshot_id.as_deref())
+            .await?;
         let after = if boundary.file_deleted_in_session {
             String::new()
         } else {
-            self.load_snapshot_text(boundary.after_snapshot_id.as_deref())
-                .await
+            self.read_recorded_snapshot_text(boundary.after_snapshot_id.as_deref())
+                .await?
         };
 
         debug!(
