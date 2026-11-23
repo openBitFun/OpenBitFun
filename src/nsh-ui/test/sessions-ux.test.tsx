@@ -187,8 +187,12 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
     payload: { sessionId: "session-rich", text: "Evaluating edge cases.", contentType: "thinking" },
   });
   await app.waitFor("Thinking…");
-  // Live reasoning opens by itself while the model is still thinking.
+  // Live reasoning stays collapsed from the start so transcript height never jumps on settle.
+  expect(app.texts().join("\n")).not.toContain("Evaluating edge cases.");
+  await app.press("label:thinking-live-thinking");
   await app.waitFor("Evaluating edge cases.");
+  await app.press("label:thinking-live-thinking");
+  expect(app.texts().join("\n")).not.toContain("Evaluating edge cases.");
 
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
@@ -1358,4 +1362,62 @@ test("left-side turn jump rail previews a turn on hover and jumps on press", asy
   // Clicking jumps back to turn 1 and reveals the "Latest" pill since the thread overflows.
   await app.press("turn-jump-1");
   await app.waitFor("Latest");
+});
+
+test("consecutive live explore rounds fold directly into one collapsed group without expand-then-collapse", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-explore-live" },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-explore-live",
+      roundId: "r-explore-1",
+      toolEvent: { event_type: "Started", tool_id: "read-1", tool_name: "Read", params: { file_path: "/repo/a.ts" } },
+    },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-explore-live",
+      roundId: "r-explore-1",
+      toolEvent: { event_type: "Completed", tool_id: "read-1", tool_name: "Read", result: { content: "a" } },
+    },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-explore-live",
+      roundId: "r-explore-2",
+      toolEvent: { event_type: "Started", tool_id: "read-2", tool_name: "Read", params: { file_path: "/repo/b.ts" } },
+    },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-explore-live",
+      roundId: "r-explore-2",
+      toolEvent: { event_type: "Completed", tool_id: "read-2", tool_name: "Read", result: { content: "b" } },
+    },
+  });
+
+  // Both explore-only rounds fold immediately into one collapsed ExploreGroupCard.
+  await app.waitFor("label:explore-group-explore:tool:read-1");
+  expect(app.texts()).toContain("2 files");
+  expect(app.texts().join("\n")).not.toContain("a.ts");
+  expect(app.texts().join("\n")).not.toContain("b.ts");
+
+  await app.press("label:explore-group-explore:tool:read-1");
+  await app.waitFor("a.ts");
+  await app.waitFor("b.ts");
 });

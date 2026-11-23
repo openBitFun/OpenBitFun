@@ -85,6 +85,7 @@ import {
   lineCountOf,
   markdownPreviewCut,
   groupExploreItems,
+  isExploreTool,
   pathOf,
   todosOf,
   toolCallsOf,
@@ -2150,9 +2151,9 @@ function RerunEditor() {
 }
 
 /**
- * Thinking blocks a reader opened or closed by hand. A block nobody touched
- * follows the stream: open while the model is still thinking (its tail kept in
- * view), closed once the answer starts or the block is persisted.
+ * Thinking blocks start collapsed — both while streaming and when persisted —
+ * so reasoning never expands then snaps shut and jumps the transcript height.
+ * A reader can expand or collapse any block by hand at any time.
  */
 const thinkingOverrides = signal<Record<string, boolean>>({});
 
@@ -2163,12 +2164,9 @@ function ThinkingBlock(props: {
   live?: boolean;
 }) {
   let tailRef: ScrollRef | undefined;
-  const expanded = computed(() => {
-    const override = thinkingOverrides()[props.partKey];
-    return override ?? Boolean(props.live);
-  });
+  const expanded = computed(() => thinkingOverrides()[props.partKey] === true);
   effect(() => {
-    // Tail-follow while the reasoning streams into an open block.
+    // Tail-follow while the reasoning streams into a block the reader opened.
     props.text;
     if (props.live && expanded()) tailRef?.scrollToEnd({ animated: false });
   });
@@ -2353,6 +2351,8 @@ function publishedFiguresOf(turn: unknown): InlineFigureDirective[] {
 
 /** Which oversized replies the reader opened in full, one signal per item key. */
 const fullReplySignals = new Map<string, Signal<boolean>>();
+/** Turn IDs that streamed live in the open session, so settling never collapses a reply the user just watched stream. */
+const liveStreamedTurnIds = new Set<string>();
 
 function fullReplySignal(key: string): Signal<boolean> {
   let entry = fullReplySignals.get(key);
@@ -2394,8 +2394,8 @@ function MarkdownBody(props: { text: string; live?: boolean }) {
  * opens as a preview cut at a safe paragraph break, and lays out the rest only
  * when the reader asks for it, so a session with a few huge answers opens fast.
  */
-function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string }) {
-  const large = computed(() => !props.live && props.text.length > LARGE_MARKDOWN_CHARS);
+function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string; preserveFullReply?: boolean }) {
+  const large = computed(() => !props.live && !props.preserveFullReply && props.text.length > LARGE_MARKDOWN_CHARS);
   const cut = computed(() => (large() ? markdownPreviewCut(props.text) : props.text.length));
   const collapsed = computed(
     () => large() && cut() < props.text.length && !fullReplySignal(props.itemKey ?? props.text.slice(0, 64))(),
@@ -2430,10 +2430,17 @@ type ItemOf<K extends TranscriptItem["kind"]> = Extract<TranscriptItem, { kind: 
  * branch is chosen once; the fields are read through `props` so a streamed
  * item updates in place.
  */
-function TranscriptItemView(props: { item: TranscriptItem; live?: boolean }) {
+function TranscriptItemView(props: { item: TranscriptItem; live?: boolean; preserveFullReply?: boolean }) {
   switch (props.item.kind) {
     case "text":
-      return <AnswerMarkdown text={(props.item as ItemOf<"text">).text} live={props.live} itemKey={props.item.key} />;
+      return (
+        <AnswerMarkdown
+          text={(props.item as ItemOf<"text">).text}
+          live={props.live}
+          itemKey={props.item.key}
+          preserveFullReply={props.preserveFullReply}
+        />
+      );
     case "thinking":
       return (
         <ThinkingBlock
@@ -2480,11 +2487,11 @@ function TranscriptItemView(props: { item: TranscriptItem; live?: boolean }) {
 }
 
 /** Renders an ordered item list; rows are kept by the item's key. */
-function TranscriptItems(props: { items: TranscriptItem[]; live?: boolean }) {
+function TranscriptItems(props: { items: TranscriptItem[]; live?: boolean; preserveFullReply?: boolean }) {
   return (
     <View style={{ gap: 8 }}>
       <Each of={props.items} key={item => item.key}>
-        {item => <TranscriptItemView item={item()} live={props.live} />}
+        {item => <TranscriptItemView item={item()} live={props.live} preserveFullReply={props.preserveFullReply} />}
       </Each>
     </View>
   );
@@ -2549,6 +2556,53 @@ function liveRoundItems(round: LiveModelRound, singleRound: boolean): Transcript
 }
 
 const liveRounds = computed<LiveModelRound[]>(() => liveTurn()?.rounds ?? []);
+
+type LiveDisplayBlock =
+  | { kind: "round"; key: string; round: LiveModelRound }
+  | { kind: "explore"; key: string; calls: ToolCallView[] };
+
+function isPureExploreLiveRound(round: LiveModelRound): boolean {
+  if (round.tools.length === 0) return false;
+  if (hasLiveRoundThinking(round.roundId) || hasLiveRoundText(round.roundId)) return false;
+  return round.tools.every(tool => {
+    const name = tool.effectiveToolName || tool.toolName;
+    const status = (tool.status ?? "").toLowerCase();
+    return isExploreTool(name) && !tool.error && status !== "failed" && status !== "error";
+  });
+}
+
+/**
+ * Live rounds grouped like settled history: consecutive explore-only rounds
+ * fold immediately into one collapsed `ExploreGroupCard` instead of rendering
+ * separate rows live and collapsing when the turn settles.
+ */
+const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => {
+  const rounds = liveRounds();
+  const blocks: LiveDisplayBlock[] = [];
+  let exploreRun: LiveModelRound[] = [];
+  const flushExplore = () => {
+    if (exploreRun.length === 0) return;
+    const calls = exploreRun.flatMap(round => round.tools.map(liveToolToCallView));
+    if (calls.length >= 2) {
+      blocks.push({ kind: "explore", key: `explore:tool:${calls[0]!.id}`, calls });
+    } else {
+      for (const round of exploreRun) {
+        blocks.push({ kind: "round", key: round.roundId, round });
+      }
+    }
+    exploreRun = [];
+  };
+  for (const round of rounds) {
+    if (isPureExploreLiveRound(round)) {
+      exploreRun.push(round);
+      continue;
+    }
+    flushExplore();
+    blocks.push({ kind: "round", key: round.roundId, round });
+  }
+  flushExplore();
+  return blocks;
+});
 
 /**
  * Per-round live view: each round owns its own `computed`, so when round N
@@ -3315,7 +3369,7 @@ function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
         <RerunEditor />
       </If>
 
-      <TranscriptItems items={items()} />
+      <TranscriptItems items={items()} preserveFullReply={liveStreamedTurnIds.has(key())} />
 
       <If when={publishedFiguresOf(props.turn()).length > 0}>
         <View style={{ gap: space.xs }}>
@@ -3602,6 +3656,8 @@ function Transcript() {
       untracked(() => {
         resetExpandedCards();
         fullReplySignals.clear();
+        liveStreamedTurnIds.clear();
+        thinkingOverrides.set({});
       });
     }
     if (isTranscriptEmpty()) {
@@ -3624,11 +3680,15 @@ function Transcript() {
   // Track ONLY the throttled 60fps `streamScrollTick()` and coarse structural
   // signals — never raw `streamText()`, `thinkingText()`, or full `liveTurn()`.
   effect(() => {
+    const live = liveTurn();
+    if (live?.turnId && live.sessionId === activeSessionId() && (live.deviceId ?? "") === activeSessionDevice()) {
+      liveStreamedTurnIds.add(live.turnId);
+    }
     activeSessionId();
     sessionTurns().length;
     optimisticUserText();
     streamScrollTick();
-    liveTurn()?.rounds.length;
+    live?.rounds.length;
     hasLiveContent();
     isStreamDraining();
     stickToTranscriptEnd();
@@ -3726,10 +3786,26 @@ function Transcript() {
             )}
           </If>
 
-          <If when={liveRounds().length > 0}>
+          <If when={liveDisplayBlocks().length > 0}>
             <View style={{ gap: 8 }}>
-              <Each of={liveRounds()} key={round => round.roundId}>
-                {round => <LiveRoundView round={round} singleRound={() => liveRounds().length === 1} />}
+              <Each of={liveDisplayBlocks()} key={block => block.key}>
+                {block => (
+                  <If
+                    when={block().kind === "explore"}
+                    else={
+                      <LiveRoundView
+                        round={() => (block() as Extract<LiveDisplayBlock, { kind: "round" }>).round}
+                        singleRound={() => liveRounds().length === 1}
+                      />
+                    }
+                  >
+                    <ExploreGroupCard
+                      calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
+                      cardId={block().key}
+                      stateOf={persistedToolState}
+                    />
+                  </If>
+                )}
               </Each>
             </View>
           </If>

@@ -945,8 +945,9 @@ test("a reasoning model's streamed notes never become its answer", async () => {
     event: "agentic://text-chunk",
     payload: { sessionId: "session-1", text: "Weigh the options.", contentType: "thinking" },
   });
-  // Live reasoning reads "Thinking…" with the matrix spinner (visual spec §3 Thinking).
+  // Live reasoning reads "Thinking…" with the matrix spinner and stays collapsed until opened.
   await app.waitFor("Thinking…");
+  expect(app.texts().join("\n")).not.toContain("Weigh the options.");
 
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
