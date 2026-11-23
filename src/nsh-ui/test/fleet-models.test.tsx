@@ -67,7 +67,7 @@ async function openFleet(fleetModels?: Record<string, Record<string, unknown>>) 
   const backend = createBackend();
   const host = fleetObpHost(backend, { fleet: ENTRY, navigator: navigator(), ...(fleetModels ? { fleetModels } : {}) });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   return { app, host, backend };
 }
 

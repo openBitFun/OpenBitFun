@@ -35,24 +35,13 @@ test("welcome empty state starter cards populate composer without auto-sending",
 
   await openSession(app, "Fresh studio");
   await app.waitFor("How can I help today?");
-  expect(app.texts()).toContain("Summarize workspace architecture");
-  expect(app.texts()).toContain("Review uncommitted Git changes");
-  expect(app.texts()).toContain("Plan & implement a feature");
-  expect(app.texts()).toContain("Set up a scheduled routine");
+  // Minimalist welcome screen: brand mark + prompt title only, no starter cards or extra subtitle copy.
+  expect(app.shows("OpenBitFun")).toBe(true);
+  expect(app.shows("starter-card-architecture")).toBe(false);
+  expect(app.shows("starter-card-git-review")).toBe(false);
+  expect(app.texts()).not.toContain("Summarize workspace architecture");
 
-  await app.press("starter-card-architecture");
-  expect(app.value("composer")).toBe(
-    "Summarize the workspace architecture, key modules, and data flow.",
-  );
-  // Populating a starter card must never auto-send the turn.
-  expect(backend.actions()).not.toContain("submit_user_message");
-
-  await app.press("starter-card-git-review");
-  expect(app.value("composer")).toBe(
-    "Review all uncommitted Git changes and highlight risks or missing tests.",
-  );
-  expect(backend.actions()).not.toContain("submit_user_message");
-
+  await app.type("composer", "Review all uncommitted Git changes and highlight risks or missing tests.");
   await app.press("Send");
   expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     sessionId: "session-empty",
@@ -71,10 +60,8 @@ test("welcome empty state also renders when no sessions exist yet", async () => 
   await app.hover("workspace-row-workspace-1");
   await app.press("new-session-here-workspace-1");
   await app.waitFor("How can I help today?");
-  await app.press("starter-card-plan-feature");
-  expect(app.value("composer")).toBe("Help me plan and implement a new feature step by step.");
-  // A starter card fills the composer; it never sends a turn by itself.
-  expect(backend.actions()).not.toContain("submit_user_message");
+  expect(app.shows("OpenBitFun")).toBe(true);
+  expect(app.shows("starter-card-plan-feature")).toBe(false);
 });
 
 test("tauri transcript progressively discloses thinking, compact tool strips, checklist, diff, aux file open, and live ambient status", async () => {

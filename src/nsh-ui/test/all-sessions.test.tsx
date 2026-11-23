@@ -60,7 +60,7 @@ async function openFleet(nav = navigator()) {
   const backend = createBackend();
   const host = fleetObpHost(backend, { fleet: ENTRY, navigator: nav });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   return { app, host };
 }
 
@@ -170,7 +170,7 @@ test("Recent draws the entry's served list in its order with the labels it proje
   };
   const host = fleetObpHost(backend, { fleet: ENTRY, navigator: navigator(), recentSessions: served });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await showAllSessions(app, "Build release");
   expect(host.calls.some(call => call.command === "fleet_recent_sessions")).toBe(true);
   const texts = sceneTexts(app);
@@ -181,7 +181,7 @@ test("Recent draws the entry's served list in its order with the labels it proje
 
   const older = fleetObpHost(createBackend(), { fleet: ENTRY, navigator: navigator(), recentSessions: false });
   const oldApp = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: older.handlers } });
-  await oldApp.waitFor("nav-all-sessions");
+  await oldApp.waitFor("nav-library");
   await showAllSessions(oldApp, "Fix flaky test");
   expect(oldApp.shows("text:Build release")).toBe(true);
 });

@@ -301,7 +301,7 @@ export function SessionActionDialogs(): JSX.Element {
         onClose={closeRename}
         footer={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={closeRename} />
+            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={closeRename} />
             <Button
               label={tr("common.save")}
               variant="primary"
@@ -339,7 +339,7 @@ export function SessionActionDialogs(): JSX.Element {
         onClose={() => deleteTarget.set(null)}
         footer={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => deleteTarget.set(null)} />
+            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => deleteTarget.set(null)} />
             <Button
               label={tr("common.delete")}
               variant="danger"

@@ -255,7 +255,8 @@ import {
 } from "../theme";
 import { searchRevealTurn } from "../globalSearchStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
-import { BotCharacter, Icon, type IconName } from "../ui/icons";
+import { Icon, type IconName } from "../ui/icons";
+import { OpenBitFunLogoMark } from "../ui/studio";
 import {
   STATIC_MARKDOWN_OPTIONS,
   STREAMING_MARKDOWN_OPTIONS,
@@ -364,45 +365,6 @@ let composerInputRef: InputRef | undefined;
 let nextDroppedAttachmentId = 0;
 
 const enabledQuickActions = computed(() => quickActions().filter(action => action.enabled));
-
-interface StarterPrompt {
-  id: string;
-  icon: IconName;
-  titleKey: MessageKey;
-  detailKey: MessageKey;
-  promptKey: MessageKey;
-}
-
-const STARTER_PROMPTS: ReadonlyArray<StarterPrompt> = [
-  {
-    id: "architecture",
-    icon: "layers",
-    titleKey: "sessions.starterArchTitle",
-    detailKey: "sessions.starterArchDesc",
-    promptKey: "sessions.starterArchPrompt",
-  },
-  {
-    id: "git-review",
-    icon: "git",
-    titleKey: "sessions.starterGitTitle",
-    detailKey: "sessions.starterGitDesc",
-    promptKey: "sessions.starterGitPrompt",
-  },
-  {
-    id: "plan-feature",
-    icon: "sparkles",
-    titleKey: "sessions.starterFeatureTitle",
-    detailKey: "sessions.starterFeatureDesc",
-    promptKey: "sessions.starterFeaturePrompt",
-  },
-  {
-    id: "scheduled-routine",
-    icon: "calendar",
-    titleKey: "sessions.starterRoutineTitle",
-    detailKey: "sessions.starterRoutineDesc",
-    promptKey: "sessions.starterRoutinePrompt",
-  },
-];
 
 const IMAGE_EXTENSIONS = new Set([
   "png",
@@ -2983,126 +2945,33 @@ function handleTranscriptScroll(event: ScrollEvent): void {
 }
 
 function WelcomeStudio() {
-  const heroMotion = nonUniformStaggerMotion(0, 4, "fadeInUp");
+  const heroMotion = nonUniformStaggerMotion(0, 1, "fadeInUp");
   return (
     <View
       style={{
         flexGrow: 1,
         justifyContent: "center",
         paddingVertical: space.x3l,
-        gap: space.xxl,
         alignItems: "center",
         width: "100%",
-        maxWidth: 640,
+        maxWidth: 520,
         alignSelf: "center",
       }}
     >
-      <View style={[{ alignItems: "center", gap: space.md }, heroMotion.style]}>
-        <BotCharacter
-          seed={activeWorkspace()?.name || "OpenBitFun"}
-          variant="grok"
-          size={62}
-          ringColor={palette().canvas}
-          status={runningTurnId() ? "running" : undefined}
-        />
-        <View style={{ alignItems: "center", gap: space.chip }}>
-          <Text
-            style={{
-              color: palette().text,
-              fontSize: textSize(22),
-              lineHeight: textLineHeight(22, 1.25),
-              fontWeight: "600",
-              letterSpacing: textTracking(22),
-              textAlign: "center",
-            }}
-          >
-            {tr("sessions.welcomeTitle")}
-          </Text>
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.5),
-              textAlign: "center",
-              maxWidth: 460,
-            }}
-          >
-            {activeWorkspace()?.name
-              ? tr("sessions.welcomeWorkspaceSubtitle", { name: activeWorkspace()!.name ?? "" })
-              : tr("sessions.welcomeSubtitle")}
-          </Text>
-        </View>
-      </View>
-
-      <View
-        style={{
-          display: "grid",
-          gridTemplateColumns: sessionsCompact() ? "1fr" : "repeat(auto-fit, minmax(260px, 1fr))",
-          gap: space.md,
-          width: "100%",
-        }}
-      >
-        <Each of={STARTER_PROMPTS} key={card => card.id}>
-          {(card, idx) => {
-            const cardMotion = nonUniformStaggerMotion(idx() + 1, 4, "fadeInUp");
-            return (
-              <View
-                role="button"
-                accessibilityLabel={`starter-card-${card().id}`}
-                onPress={() => {
-                  composerText.set(tr(card().promptKey));
-                  composerInputRef?.focus();
-                }}
-                style={[
-                  {
-                    padding: space.lg,
-                    minHeight: layout.touchTarget,
-                    borderRadius: radii.lg,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().borderSubtle,
-                    backgroundColor: palette().panelRaised,
-                    flexDirection: "row",
-                    alignItems: "flex-start",
-                    gap: space.md,
-                    cursor: "pointer",
-                    userSelect: "none",
-                    ...pressTransition(MOTION_DURATION.fast),
-                  },
-                  cardMotion.style,
-                ]}
-                hoverStyle={{ backgroundColor: palette().panelHover }}
-                activeStyle={tactileActiveStyle(0.98)}
-                focusVisibleStyle={focusRingStyle()}
-              >
-                <View style={{ paddingTop: space.hair, flexShrink: 0 }}>
-                  <Icon name={card().icon} size={16} color={palette().textSecondary} />
-                </View>
-                <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
-                  <Text
-                    style={{
-                      color: palette().text,
-                      fontSize: textSize(14),
-                      lineHeight: textLineHeight(14, 1.35),
-                      fontWeight: "600",
-                    }}
-                  >
-                    {tr(card().titleKey)}
-                  </Text>
-                  <Text
-                    style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(13),
-                      lineHeight: textLineHeight(13, 1.45),
-                    }}
-                  >
-                    {tr(card().detailKey)}
-                  </Text>
-                </View>
-              </View>
-            );
+      <View style={[{ alignItems: "center", gap: space.lg }, heroMotion.style]}>
+        <OpenBitFunLogoMark size={64} color={palette().text} />
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: textSize(22),
+            lineHeight: textLineHeight(22, 1.28),
+            fontWeight: "600",
+            letterSpacing: textTracking(22),
+            textAlign: "center",
           }}
-        </Each>
+        >
+          {tr("sessions.welcomeTitle")}
+        </Text>
       </View>
     </View>
   );

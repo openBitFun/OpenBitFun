@@ -10,11 +10,45 @@
 //   --shared-data    the default: the installed app's data
 // Explicit OPENBITFUN_USER_ROOT / OPENBITFUN_HOME values take precedence.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Stamps the dev NSH bundle (`target/desktop-nsh/nsh`) with OpenBitFun's app
+ * name and 1.0.x icon so running the unbundled runner (`openbitfun-nsh`) shows
+ * the real OpenBitFun Dock / taskbar icon instead of the OS generic executable icon.
+ */
+export function stampDevAppIdentity(appDir, rootDir = ROOT, platform = process.platform) {
+  const appJsonPath = path.join(appDir, 'app.json');
+  if (existsSync(appJsonPath)) {
+    const manifest = JSON.parse(readFileSync(appJsonPath, 'utf8'));
+    let changed = false;
+    if (!manifest.name) {
+      manifest.name = 'OpenBitFun';
+      changed = true;
+    }
+    if (platform === 'darwin') {
+      const macIcon = path.join(rootDir, 'src', 'apps', 'desktop', 'icons', 'openbitfun-app-icon.icns');
+      if (existsSync(macIcon) && manifest.icon !== macIcon) {
+        manifest.icon = macIcon;
+        changed = true;
+      }
+    }
+    if (changed) {
+      writeFileSync(appJsonPath, `${JSON.stringify(manifest)}\n`);
+    }
+  }
+  if (platform === 'win32') {
+    const winIcon = path.join(rootDir, 'src', 'apps', 'desktop', 'icons', 'openbitfun-app-icon.ico');
+    const destIcon = path.join(appDir, 'icon.ico');
+    if (existsSync(winIcon)) {
+      copyFileSync(winIcon, destIcon);
+    }
+  }
+}
 
 export function resolveDesktopDevDataMode(args = []) {
   if (args.includes('--shared-data') && args.includes('--isolated-data')) {
@@ -34,6 +68,11 @@ export function resolveDesktopDevStorageEnvironment(env = process.env, rootDir =
 }
 
 function main(args) {
+  const appDir = path.join(ROOT, 'target', 'desktop-nsh', 'nsh');
+  if (args.includes('--stamp-only')) {
+    stampDevAppIdentity(appDir, ROOT);
+    return;
+  }
   const dataMode = resolveDesktopDevDataMode(args);
   if (!args.includes('--no-build')) {
     const build = spawnSync('pnpm', ['run', 'desktop-nsh:build'], {
@@ -45,13 +84,13 @@ function main(args) {
     if (build.status !== 0) process.exit(build.status ?? 1);
   }
   const runner = path.join(ROOT, 'target', 'debug', process.platform === 'win32' ? 'openbitfun-nsh.exe' : 'openbitfun-nsh');
-  const appDir = path.join(ROOT, 'target', 'desktop-nsh', 'nsh');
   for (const [file, hint] of [[runner, 'pnpm run desktop-nsh:build'], [appDir, 'pnpm run desktop-nsh:bundle']]) {
     if (!existsSync(file)) {
       console.error(`[desktop-dev] Missing ${path.relative(ROOT, file)}; run ${hint} first.`);
       process.exit(1);
     }
   }
+  stampDevAppIdentity(appDir, ROOT);
   const storage = resolveDesktopDevStorageEnvironment(process.env, ROOT, dataMode);
   console.log(`[desktop-dev] Data mode: ${dataMode}${storage.OPENBITFUN_USER_ROOT ? ` (${storage.OPENBITFUN_USER_ROOT})` : ''}`);
   const child = spawn(runner, [], {

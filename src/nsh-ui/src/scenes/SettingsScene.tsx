@@ -3346,7 +3346,7 @@ function QuickActionsSection() {
                   {
                     id: "down",
                     label: tr("common.down"),
-                    icon: "chevron-down",
+                    icon: "arrow-down",
                     accessibilityLabel: `quick-action-down-${action().id}`,
                     onSelect: () => void moveQuickAction(action().id, 1),
                   },
@@ -3386,7 +3386,7 @@ function QuickActionsSection() {
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
               <Button
                 label={tr("common.cancel")}
-                variant="ghost"
+                variant="secondary"
                 size="md"
                 accessibilityLabel="quick-action-cancel"
                 onPress={() => closeQuickActionDraft()}
@@ -3785,7 +3785,7 @@ function McpSection() {
             </Text>
             <Button
               label={tr("common.discard")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               accessibilityLabel="mcp-json-cancel"
               onPress={() => closeMcpJson()}
@@ -3826,7 +3826,7 @@ function McpSection() {
         footer={
           <Button
             label={tr("common.close")}
-            variant="ghost"
+            variant="secondary"
             size="md"
             accessibilityLabel="mcp-auth-close"
             onPress={() => closeMcpAuth()}
@@ -4085,7 +4085,7 @@ function McpSection() {
             />
             <Button
               label={tr("common.close")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               accessibilityLabel="mcp-resources-close"
               onPress={() => closeMcpResources()}
@@ -4207,7 +4207,7 @@ function McpSection() {
             </If>
             <Button
               label={tr("common.cancel")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               accessibilityLabel="mcp-draft-cancel"
               onPress={() => closeMcpDraft()}
@@ -4551,7 +4551,7 @@ function AcpSection() {
               </Text>
               <Button
                 label={tr("common.discard")}
-                variant="ghost"
+                variant="secondary"
                 size="md"
                 accessibilityLabel="acp-json-discard"
                 onPress={() => closeAcpJson()}
@@ -6651,7 +6651,7 @@ function ModelSection() {
               <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
                 <Button
                   label={tr("common.cancel")}
-                  variant="ghost"
+                  variant="secondary"
                   size="md"
                   accessibilityLabel={`model-limits-cancel-${modelLimitsDraft()?.id ?? ""}`}
                   onPress={() => closeModelLimits()}
@@ -7199,7 +7199,7 @@ function PoolsSection() {
                 <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
                   <Button
                     label={tr("common.cancel")}
-                    variant="ghost"
+                    variant="secondary"
                     size="md"
                     onPress={() => closePoolDraft()}
                   />

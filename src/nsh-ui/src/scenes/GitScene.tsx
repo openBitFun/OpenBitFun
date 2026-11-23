@@ -3260,7 +3260,7 @@ export function GitScene(props: GitSceneProps = {}) {
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.cancel")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               onPress={() => closeCreateBranchModal()}
             />
@@ -3323,7 +3323,7 @@ export function GitScene(props: GitSceneProps = {}) {
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.cancel")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               onPress={() => closeAddWorktreeModal()}
             />

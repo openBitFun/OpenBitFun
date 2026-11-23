@@ -112,26 +112,29 @@ export interface ModalHeaderProps {
 }
 
 export function ModalHeader(props: ModalHeaderProps) {
+  const hasSubtitle = () => Boolean(props.subtitle);
   return (
     <View
       style={{
         flexDirection: "row",
-        alignItems: "flex-start",
+        alignItems: hasSubtitle() ? "flex-start" : "center",
         flexShrink: 0,
         gap: space.md,
         paddingHorizontal: compactLayout() ? space.lg : space.xl,
-        paddingTop: compactLayout() ? space.md : space.xl,
-        paddingBottom: space.sm,
+        paddingTop: compactLayout() ? space.md : space.lg,
+        paddingBottom: compactLayout() ? space.md : space.lg,
+        borderBottomWidth: 1,
+        borderColor: palette().borderSubtle,
       }}
     >
       <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(17),
+            fontSize: textSize(16),
             fontWeight: "600",
-            letterSpacing: textTracking(17),
-            lineHeight: textLineHeight(17, 24 / 17),
+            letterSpacing: textTracking(16),
+            lineHeight: textLineHeight(16, 22 / 16),
           }}
         >
           {props.title}
@@ -162,6 +165,8 @@ export function ModalHeader(props: ModalHeaderProps) {
           style={{
             width: controlHeight.sm,
             height: controlHeight.sm,
+            marginTop: hasSubtitle() ? -2 : 0,
+            marginRight: -space.xs,
             flexShrink: 0,
             borderRadius: radii.sm,
             borderCurve: "continuous",
@@ -193,7 +198,7 @@ export function ModalBody(props: ModalBodyProps) {
       style={[{ flexShrink: 1, minHeight: 0 }, props.style]}
       contentStyle={{
         paddingHorizontal: compactLayout() ? space.lg : space.xl,
-        paddingTop: space.md,
+        paddingTop: space.lg,
         paddingBottom: space.lg,
         gap: space.lg,
       }}
@@ -218,9 +223,11 @@ export function ModalFooter(props: ModalFooterProps) {
         justifyContent: "flex-end",
         gap: space.sm,
         paddingHorizontal: compactLayout() ? space.lg : space.xl,
-        paddingTop: space.xs,
-        paddingBottom: compactLayout() ? space.lg + safeArea().bottom : space.xl,
-        backgroundColor: "transparent",
+        paddingTop: space.md,
+        paddingBottom: compactLayout() ? space.md + safeArea().bottom : space.md,
+        borderTopWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().surfaceSubtle,
       }}
     >
       {props.children}
@@ -266,7 +273,7 @@ function ModalCard(props: ModalDialogProps) {
           borderBottomWidth: compactLayout() ? 0 : 1,
           borderColor: palette().border,
           backgroundColor: palette().surfaceElevated,
-          boxShadow: elevationShadow(3),
+          boxShadow: `${elevationShadow(3)}, ${palette().innerHighlight}`,
           overflow: "hidden",
           flexDirection: "column",
           paddingBottom: compactLayout() && !props.footer ? safeArea().bottom : 0,
@@ -377,7 +384,7 @@ export interface DropdownMenuProps {
 }
 
 const MENU_OUTER_RADIUS = radii.lg;
-const MENU_PADDING = space.xs;
+const MENU_PADDING = 5;
 const MENU_ITEM_RADIUS = concentricRadius(MENU_OUTER_RADIUS, MENU_PADDING);
 
 function MenuSurface(props: {
@@ -405,7 +412,7 @@ function MenuSurface(props: {
           borderColor: palette().border,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: elevationShadow(2),
+          boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 2,
         },
@@ -428,8 +435,8 @@ function MenuSurface(props: {
                   <View
                     style={{
                       height: 1,
-                      marginVertical: 3,
-                      marginHorizontal: 4,
+                      marginVertical: 4,
+                      marginHorizontal: 6,
                       backgroundColor: palette().borderSubtle,
                     }}
                   />
@@ -438,7 +445,7 @@ function MenuSurface(props: {
                   <View
                     style={{
                       paddingHorizontal: space.sm,
-                      paddingTop: space.chip,
+                      paddingTop: space.sm,
                       paddingBottom: space.xs,
                       pointerEvents: "none",
                     }}
@@ -446,9 +453,10 @@ function MenuSurface(props: {
                     <Text
                       style={{
                         color: palette().textElevatedMuted,
-                        fontSize: textSize(12),
+                        fontSize: textSize(11),
                         fontWeight: "600",
-                        lineHeight: textLineHeight(12, 1.3),
+                        letterSpacing: 0.2,
+                        lineHeight: textLineHeight(11, 1.3),
                         numberOfLines: 1,
                         textOverflow: "ellipsis",
                       }}
@@ -508,9 +516,11 @@ function MenuSurface(props: {
                           name={iconName() as IconName}
                           size={14}
                           color={
-                            item().active
-                              ? palette().text
-                              : palette().textSecondary
+                            item().danger
+                              ? palette().danger
+                              : item().active
+                                ? palette().text
+                                : palette().textSecondary
                           }
                         />
                       )}
@@ -732,7 +742,7 @@ export interface SelectDropdownProps<T extends string = string> {
 }
 
 const SELECT_OUTER_RADIUS = radii.lg;
-const SELECT_PADDING = space.xs;
+const SELECT_PADDING = 5;
 const SELECT_INNER_RADIUS = concentricRadius(SELECT_OUTER_RADIUS, SELECT_PADDING);
 
 function SelectPopoverSurface<T extends string>(props: {
@@ -769,7 +779,7 @@ function SelectPopoverSurface<T extends string>(props: {
           borderColor: palette().border,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: elevationShadow(2),
+          boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 6,
         },
@@ -890,10 +900,7 @@ function SelectPopoverSurface<T extends string>(props: {
                 <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                   <Text
                     style={{
-                      color:
-                        opt().value === props.value
-                          ? palette().text
-                          : palette().textSecondary,
+                      color: palette().text,
                       fontSize: textSize(13),
                       fontWeight: opt().value === props.value ? "500" : "400",
                       lineHeight: textLineHeight(13, 1.24),
@@ -926,17 +933,18 @@ function SelectPopoverSurface<T extends string>(props: {
             )}
           </Each>
           <If when={props.options.length === 0}>
-            <Text
-              style={{
-                color: palette().textElevatedMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-                paddingHorizontal: 9,
-                paddingVertical: 8,
-              }}
-            >
-              {props.emptyLabel ?? tr("common.noMatchingOptions")}
-            </Text>
+            <View style={{ alignItems: "center", paddingHorizontal: space.md, paddingVertical: space.lg }}>
+              <Text
+                style={{
+                  color: palette().textElevatedMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.4),
+                  textAlign: "center",
+                }}
+              >
+                {props.emptyLabel ?? tr("common.noMatchingOptions")}
+              </Text>
+            </View>
           </If>
         </View>
       </Scroll>

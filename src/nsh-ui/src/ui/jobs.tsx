@@ -1376,7 +1376,7 @@ export function ConversationDialogs() {
         onClose={() => renameTarget.set(null)}
         footer={
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => renameTarget.set(null)} />
+            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => renameTarget.set(null)} />
             <Button
               label={tr("common.save")}
               variant="primary"
@@ -1416,7 +1416,7 @@ export function ConversationDialogs() {
         onClose={() => deleteTarget.set(null)}
         footer={
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => deleteTarget.set(null)} />
+            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => deleteTarget.set(null)} />
             <Button
               label={tr("common.delete")}
               variant="danger"

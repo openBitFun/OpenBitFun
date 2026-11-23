@@ -102,7 +102,7 @@ function assistantHost() {
 test("the assistants list puts the primary assistant first and offers delete only for the others", async () => {
   const { backend } = assistantHost();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
 
@@ -144,7 +144,7 @@ test("the primary assistant leads the list even when the host lists it last", as
     return invoke(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.waitFor("assistant-primary-dot-asst-2");
   const texts = app.texts();
@@ -154,7 +154,7 @@ test("the primary assistant leads the list even when the host lists it last", as
 test("the assistant page edits the name in place and the avatar from the picker", async () => {
   const { backend, recorded, files } = assistantHost();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.waitFor("assistant-name-edit");
@@ -224,7 +224,7 @@ test("a failed identity write says so and the next read restores the host's valu
     return invoke(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.press("assistant-name-edit");
@@ -241,7 +241,7 @@ test("a failed identity write says so and the next read restores the host's valu
 test("the assistant page lists the assistant's own sessions and opens one in Sessions", async () => {
   const { backend, recorded } = assistantHost();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.press("assistant-tab-sessions");
@@ -273,7 +273,7 @@ test("an assistant without sessions says so, and a refused list says why", async
     return invoke(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.press("assistant-card-asst-2");
   await app.press("assistant-tab-sessions");
@@ -291,7 +291,7 @@ test("an older host without set_assistant_identity asks for an update instead of
     return invoke(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.press("assistant-name-edit");

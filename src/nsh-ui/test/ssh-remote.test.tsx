@@ -620,7 +620,7 @@ test("New Workspace modal creates Assistant and Local Project without mixing rem
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openNewWorkspaceViaUi(app);
 
   // Assistant creation flow
@@ -662,7 +662,7 @@ test("New Workspace remote SSH and Docker/WSL host selection opens via remote_op
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openNewWorkspaceViaUi(app);
   await app.press("new-workspace-choice-project");
 
@@ -711,7 +711,7 @@ test("SSH Connection modal supports ~/.ssh/config import, ssh_get_config, test r
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openSshModalViaUi(app);
 
   await app.waitFor("ssh-saved-conn-prod-1");
@@ -770,7 +770,7 @@ test("SSH Auth Prompt modal repairs password credentials after authentication re
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openSshModalViaUi(app);
   await app.waitFor("ssh-connect-conn-staging-2");
   await app.press("ssh-connect-conn-staging-2");
@@ -795,7 +795,7 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openSshModalViaUi(app);
   await app.press("ssh-browse-conn-prod-1");
   await app.waitFor("remote-file-browser-modal");
@@ -900,7 +900,7 @@ test("Port Forwarding modal detects listeners without auto-forwarding, normalize
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openSshModalViaUi(app);
   await app.press("ssh-pf-conn-prod-1");
   await app.waitFor("port-forward-modal");
@@ -980,7 +980,7 @@ test("the remote browser tolerates a host lacking remote_open_workspace", async 
     host: { handlers: deviceBackend.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openSshModalViaUi(app);
   await app.press("ssh-browse-conn-prod-1");
   await app.waitFor("remote-file-browser-modal");
@@ -998,7 +998,7 @@ test("Local Docker / WSL target discovery in the SSH Connection modal", async ()
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   await openSshModalViaUi(app);
   await app.press("Local Docker");
@@ -1020,7 +1020,7 @@ test("Remote workspace activation asks the backend to restore a dropped link and
   const ssh = createSshBackend({ openedWorkspaces: opened });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
 
@@ -1064,7 +1064,7 @@ test("Remote link state follows the backend's remote://link-state events and ask
   const ssh = createSshBackend({ openedWorkspaces: opened });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await showDevices(app);
@@ -1101,7 +1101,7 @@ test("A host without backend link supervision gets an explicit update-the-host s
   const ssh = createSshBackend({ openedWorkspaces: opened, noLinkSupervision: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await showDevices(app);
@@ -1134,7 +1134,7 @@ test("an SSH workspace of this machine uploads and downloads through the backend
     return inner(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   await showDevices(app);
   await app.press("workspace-actions-workspace-1");
@@ -1201,7 +1201,7 @@ test("the workspace icon offers the glyphs the device supports and saves against
     return inner(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await showDevices(app);
   await app.press("workspace-actions-workspace-1");
   await app.press("text:Change icon…");
@@ -1236,7 +1236,7 @@ test("an account SSH profile without its key on this device says so", async () =
     },
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openSshModalViaUi(app);
   await app.waitFor("label:ssh-needs-secret-conn-prod-1");
   expect(app.texts()).toContain("Needs a key on this device");

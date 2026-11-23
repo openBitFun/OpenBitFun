@@ -127,7 +127,7 @@ test("a session of another device is archived and renamed there, and its folder 
     },
   });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await showAllSessions(app, "Build release");
 
   await app.press("session-actions-session-9");
@@ -207,7 +207,7 @@ test("a workspace row's ⋯ keeps the old workspace menu: terminal, rename, path
 test("an archived session is deleted from Settings only after a confirmation", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await app.press("Settings");
   await app.press("nav-settings-page-archived");
   await app.waitFor("settings-archived-delete-session-3");
@@ -223,7 +223,7 @@ test("an archived session is deleted from Settings only after a confirmation", a
 test("without the fleet layer the Inbox lists this backend's approvals, answerable in place, and the turns that ended", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   // The approval waiting in session-1 shows on the sidebar pill.
   await app.waitFor("sidebar-inbox-count");
   await app.press("nav-inbox");
@@ -280,7 +280,7 @@ test("Delete all in Archived sessions asks first, then deletes the workspace's a
     ],
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await app.press("Settings");
   await app.press("nav-settings-page-archived");
   await app.press("settings-archived-delete-all");

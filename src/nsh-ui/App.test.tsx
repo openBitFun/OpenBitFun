@@ -39,16 +39,17 @@ test("shell and sessions come from the host", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("nav-all-sessions");
-  // The sidebar is New session, Search, Inbox, this device's workspaces and their
-  // sessions, then All sessions and Library; Super Agent is gated off.
+  await app.waitFor("nav-library");
+  // The streamlined sidebar keeps Search at top, Library directly below, this
+  // device's workspace/session tree, and the account row at bottom.
   expect(app.shows("nav-openbitfun")).toBe(false);
-  expect(app.shows("nav-new-session")).toBe(true);
+  expect(app.shows("nav-new-session")).toBe(false);
+  expect(app.shows("nav-inbox")).toBe(false);
+  expect(app.shows("nav-all-sessions")).toBe(false);
+  expect(app.shows("global-search-trigger")).toBe(true);
+  expect(app.shows("nav-library")).toBe(true);
   expect(app.shows("sidebar-device-tree")).toBe(true);
   await app.waitFor("id:sidebar-session-session-1");
-  expect(app.shows("nav-inbox")).toBe(true);
-  expect(app.shows("nav-all-sessions")).toBe(true);
-  expect(app.shows("nav-library")).toBe(true);
   await showAllSessions(app, "NSH skeleton");
 
   // The catalog is requested for the workspace the host reported.
@@ -1342,7 +1343,7 @@ test("settings preserves explicit zh-CN app.language override when writing sibli
   });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   // Works both before and after Wave 2 wires `initAppLocale()` into `App.tsx`.
   await app.press(app.shows("设置") ? "设置" : "Settings");
   await app.press("nav-settings-page-general");
@@ -1743,7 +1744,7 @@ test("the search field answers with sessions, messages and files, and runs what 
   expect(app.texts()).toContain("Commands");
 
   await app.type("global-search-input", "terminal");
-  await showAllSessions(app, "Terminal migration");
+  await app.waitFor("Terminal migration");
   // A session-name hit, a message hit from the host and a file hit from
   // `search_files` are grouped by kind rather than merged into one list.
   await app.waitFor("Terminal is wired to terminal_create.");

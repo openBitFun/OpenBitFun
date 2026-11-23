@@ -40,6 +40,7 @@ import {
 import { fleetDevices } from "../fleetStore";
 import { localizeHostError, tr, type MessageKey } from "../i18n";
 import { loadObpStatus, obpStatus } from "../obpStore";
+import { superAgentUi } from "../productGates";
 import * as navigation from "../state";
 import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { DeviceGlyph, deviceException, stateColor } from "../ui/fleet";
@@ -272,7 +273,7 @@ function ChannelsSection() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.done")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               onPress={closeChannelModal}
             />
@@ -322,7 +323,7 @@ function ChannelsSection() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.done")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               onPress={closeChannelModal}
             />
@@ -380,7 +381,7 @@ function ChannelsSection() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.done")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               onPress={closeChannelModal}
             />
@@ -602,7 +603,7 @@ function RemoteDisclaimerModal() {
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
           <Button
             label={remoteDisclaimerAgreed() ? tr("common.close") : tr("devices.remote.disclaimerDecline")}
-            variant="ghost"
+            variant="secondary"
             size="md"
             accessibilityLabel="remote-disclaimer-decline"
             onPress={() => declineRemoteDisclaimer()}
@@ -677,15 +678,20 @@ function RemoteDisclaimerModal() {
 }
 
 function AccountDevicesSection() {
+  const visibleDevices = () =>
+    superAgentUi()
+      ? fleetDevices()
+      : fleetDevices().filter(device => device.hostKind.toLowerCase() !== "cloud");
+
   return (
     <StudioSection title={tr("settings.devicesPage.devices")} accessibilityLabel="account-devices-section">
       <View style={{ gap: space.md, minWidth: 0 }}>
         <If
-          when={fleetDevices().length > 0}
+          when={visibleDevices().length > 0}
           else={<Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.devicesPage.none")}</Text>}
         >
           <InsetGroup accessibilityLabel="account-devices-list">
-            <Each of={fleetDevices()} key={device => device.deviceId}>
+            <Each of={visibleDevices()} key={device => device.deviceId}>
               {(device, index) => {
                 const exception = () => deviceException(device().state);
                 return (
@@ -734,7 +740,7 @@ function AccountDevicesSection() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.close")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               accessibilityLabel="account-phone-sheet-close"
               onPress={() => phoneSheetOpen.set(false)}

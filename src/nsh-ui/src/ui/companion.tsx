@@ -7,7 +7,7 @@
 // Everything it shows comes from `companionStore.ts`; colors come only from
 // the palette (the selection ring), the pet itself is its artwork.
 
-import { cleanup, effect, Image, lifecycle, reduceMotion, signal, Text, untracked, View } from "nsh";
+import { cleanup, effect, Image, reduceMotion, signal, Text, untracked, View } from "nsh";
 import { Menu } from "nsh/desktop";
 import {
   companionBusy,
@@ -130,15 +130,17 @@ export function PetSprite(props: PetSpriteProps) {
       })
       .catch(() => undefined);
   });
-  // Animated rows only; freeze at frame 0 for idle rest state, reduced motion, or hidden windows.
+  // Animate every state row (including row 0 idle breathing/blinking) even when
+  // the main window is in the background; freeze at frame 0 only under reduced motion.
   effect(() => {
-    if (props.state === "idle" || reduceMotion() || lifecycle() === "background") {
+    if (reduceMotion()) {
       frame.set(0);
       return;
     }
     const frames = PET_ROW_FRAMES[row()] ?? 1;
     frame.set(0);
-    const timer = setInterval(() => frame.set((frame() + 1) % frames), PET_FRAME_MS);
+    if (frames <= 1) return;
+    const timer = setInterval(() => frame.update(current => (current + 1) % frames), PET_FRAME_MS);
     cleanup(() => clearInterval(timer));
   });
 
@@ -155,10 +157,14 @@ export function PetSprite(props: PetSpriteProps) {
             src={src()}
             style={{
               position: "absolute",
-              left: -frame() * width(),
-              top: -row() * props.height,
+              left: 0,
+              top: 0,
               width: width() * PET_COLUMNS,
               height: props.height * rows(),
+              transform: [
+                { translateX: -frame() * width() },
+                { translateY: -row() * props.height },
+              ],
             }}
           />
         )}
@@ -207,6 +213,7 @@ export function PetWindowContent(props: PetWindowContentProps) {
       style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space.md, backgroundColor: "transparent" }}
     >
       <View
+        desktop={{ windowDrag: true }}
         role="button"
         accessibilityLabel="pet-open-inbox"
         hitSlop={touchSlop(props.height)}
@@ -216,7 +223,7 @@ export function PetWindowContent(props: PetWindowContentProps) {
         focusVisibleStyle={focusRingStyle()}
         style={{
           borderRadius: radii.md,
-          cursor: "pointer",
+          cursor: "grab",
           userSelect: "none",
           ...pressTransition(120),
         }}

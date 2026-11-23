@@ -739,7 +739,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.cancel")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               accessibilityLabel="profile-cancel"
               onPress={() => closeProfileDraft()}

@@ -116,8 +116,10 @@ test("between 720 and 959 the sidebar is an overlay drawer; at 1200 and above it
   await medium.waitUntil(() => !medium.shows("overlay-sidebar"));
 
   const wide = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host().handlers } });
-  await wide.waitFor("nav-all-sessions");
+  await wide.waitFor("nav-library");
   expect(wide.shows("phone-tab-bar")).toBe(false);
-  expect(wide.shows("nav-inbox")).toBe(true);
+  expect(wide.shows("global-search-trigger")).toBe(true);
   expect(wide.shows("nav-library")).toBe(true);
+  expect(wide.shows("nav-inbox")).toBe(false);
+  expect(wide.shows("nav-all-sessions")).toBe(false);
 });

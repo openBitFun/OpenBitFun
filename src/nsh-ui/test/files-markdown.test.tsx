@@ -127,7 +127,7 @@ function overNativeWire(harness: DocHarness): Record<string, (data: unknown) => 
 }
 
 async function openFiles(app: Awaited<ReturnType<typeof open>>): Promise<void> {
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
 }

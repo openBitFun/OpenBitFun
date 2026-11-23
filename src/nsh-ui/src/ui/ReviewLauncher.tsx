@@ -141,7 +141,7 @@ export function ReviewLauncherDialog() {
       onClose={closeReviewLauncher}
       footer={
         <View style={{ flexDirection: "row", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={closeReviewLauncher} />
+          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={closeReviewLauncher} />
           <Button
             label={tr("review.start")}
             variant="primary"

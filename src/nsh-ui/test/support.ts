@@ -4042,10 +4042,25 @@ export interface ShellNavigator {
   shows(target: string): boolean;
 }
 
+/** Navigates to All sessions (sidebar on Super Agent layout, tab bar on phone, or ⌘K command on streamlined desktop). */
+async function openAllSessionsScene(app: ShellNavigator): Promise<void> {
+  if (app.shows("nav-all-sessions")) {
+    await app.press("nav-all-sessions");
+    return;
+  }
+  if (app.shows("phone-tab-all-sessions")) {
+    await app.press("phone-tab-all-sessions");
+    return;
+  }
+  await app.waitFor("global-search-trigger");
+  await app.press("global-search-trigger");
+  await app.waitFor("label:global-search-item-command:sessions");
+  await app.press("label:global-search-item-command:sessions");
+}
+
 /** Opens All sessions › Recent and waits for `title` (a session row) to show. */
 export async function showAllSessions(app: ShellNavigator, title?: string): Promise<void> {
-  // The sidebar row on a desktop, the tab bar on a phone.
-  await app.press(app.shows("nav-all-sessions") ? "nav-all-sessions" : "phone-tab-all-sessions");
+  await openAllSessionsScene(app);
   await app.press("all-sessions-tab-recent");
   if (title) await app.waitFor(title);
 }
@@ -4069,7 +4084,7 @@ export async function openSession(app: ShellNavigator, title: string, _options: 
 
 /** Opens All sessions › By device: the account's devices (and, on an older backend, the way into one). */
 export async function showDevices(app: ShellNavigator): Promise<void> {
-  await app.press(app.shows("nav-all-sessions") ? "nav-all-sessions" : "phone-tab-all-sessions");
+  await openAllSessionsScene(app);
   await app.press("all-sessions-tab-by-device");
 }
 

@@ -37,6 +37,7 @@ import {
   type AccountAuthChangeListener,
 } from "../homeStore";
 import { tr } from "../i18n";
+import { superAgentUi } from "../productGates";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
 import { deviceException } from "./fleet";
 import { ModalDialog, pushToast } from "./overlays";
@@ -326,7 +327,12 @@ function thisDeviceName(): string {
 function otherDevices(): SignInDevice[] {
   const self = entryDeviceId();
   return fleetDevices()
-    .filter(device => device.deviceId !== self && !device.isClientDevice)
+    .filter(
+      device =>
+        device.deviceId !== self &&
+        !device.isClientDevice &&
+        (superAgentUi() || device.hostKind.toLowerCase() !== "cloud"),
+    )
     .map(device => ({
       deviceId: device.deviceId,
       name: device.name,

@@ -1188,7 +1188,7 @@ test("an agent that can load skills lists them and replaces its selection per sk
     return invoke(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openLibraryTab(app, "agents");
   await app.press("agent-configure-Standard");
   await app.waitFor("mode-skill-deploy");

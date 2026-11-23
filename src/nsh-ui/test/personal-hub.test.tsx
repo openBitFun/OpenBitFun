@@ -142,7 +142,7 @@ test("account sign-in runs the host's browser flow in the dialog, polls its stat
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   await app.press("label:account-row");
   await app.press("label:sidebar-account-sign-in");
@@ -253,7 +253,7 @@ test("Account › Activity lists insights reports, opens the reader, and generat
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   await openActivity(app);
   await app.waitFor("30-Day Insights");
@@ -367,7 +367,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   // The list sits beside the selected assistant's persona studio.
   await openAssistants(app);
@@ -534,7 +534,7 @@ test("assistants repaint when switching between dark and light color schemes", a
     colorScheme: "dark",
     host: { handlers: base.handlers },
   });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
@@ -612,7 +612,7 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
   };
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.waitFor("assistants-new");
   await app.press("assistants-new");
@@ -657,7 +657,7 @@ test("Account › Activity insights take the day range and model the desktop off
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openActivity(app);
   await app.waitFor("activity-generate-insights");
   await app.press("activity-insights-days");
@@ -699,7 +699,7 @@ test("an assistant workspace opens and closes on the host from its studio header
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-7");
   // The saved emoji is the avatar, as on the desktop.
@@ -741,7 +741,7 @@ test("assistants switch to the compact single-column layout at phone width", asy
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
 
   // Phone width: the shell's sidebar is put away.
   await app.setViewport(390, 844);
@@ -773,7 +773,7 @@ test("Account › Activity asks for an update when the device is older than the 
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openActivity(app);
   await app.waitFor("Update OpenBitFun on this device to see its activity.");
   expect(app.shows("settings-activity-heatmap")).toBe(false);
@@ -852,7 +852,7 @@ test("Account › Activity insights preserves partial_report metadata and person
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await openActivity(app);
   await app.waitFor("activity-generate-insights");
   await app.press("activity-generate-insights");

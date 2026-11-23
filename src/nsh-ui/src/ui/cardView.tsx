@@ -9,6 +9,7 @@
 // countdowns are the host's.
 
 import { cleanup, effect, lifecycle, Scroll, signal, Text, untracked, View, WebView } from "nsh";
+import { isAvailable as desktopMenusAvailable, Menu, type MenuItem } from "nsh/desktop";
 import { fleetActive, windowShellId } from "../bridge";
 import {
   cardActionError,
@@ -33,7 +34,7 @@ import { compactLayout, layout, palette, radii, space, textStyle, touchSlop, typ
 import { DeviceBadge, deviceException, stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { documentWebViewsAvailable } from "./markdownEditor";
-import { pressTransition, tactileActiveStyle } from "./motion";
+import { pressTransition, Spinner, tactileActiveStyle } from "./motion";
 import { Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, SkeletonBlock } from "./primitives";
 import { GalleryGrid, galleryCardStyle, MoreMenu, StudioEmpty, StudioSection } from "./studio";
 import type { DropdownMenuItem } from "./overlays";
@@ -623,15 +624,6 @@ export function cardMenuItems(
       onSelect: () => void setCardStacking(deviceId, card.id, false, !pinned(card)),
     });
   }
-  if (typeof card.dataSource?.kind === "string") {
-    items.push({
-      id: "refresh",
-      label: tr("cards.refresh"),
-      icon: "refresh",
-      accessibilityLabel: `card-refresh-${card.id}`,
-      onSelect: () => void refreshCard(deviceId, card.id),
-    });
-  }
   if (card.origin?.sessionId) {
     items.push({
       id: "conversation",
@@ -670,10 +662,40 @@ export interface CardViewProps {
   onOpenConversation?: () => void;
 }
 
+function toNativeMenuItems(items: ReadonlyArray<DropdownMenuItem>): MenuItem[] {
+  const out: MenuItem[] = [];
+  for (const item of items) {
+    if (item.header) continue;
+    if (item.separator && out.length > 0) out.push({ type: "separator" });
+    out.push({
+      label: item.label,
+      checked: item.active ? true : undefined,
+      disabled: item.disabled,
+      destructive: item.danger,
+      onSelect: item.onSelect,
+    });
+  }
+  return out;
+}
+
 export function CardView(props: CardViewProps) {
   const confirmDelete = signal(false);
+  const refreshing = signal(false);
+  const nativeMenuOpen = signal(false);
   const line = () => dataLine(props.card);
   const fleetDevice = () => fleetDeviceById(props.deviceId);
+  const canRefresh = () => typeof props.card.dataSource?.kind === "string";
+  const useNativeWindowMenu = () => props.placement === "window" && desktopMenusAvailable;
+  const menuItems = () =>
+    cardMenuItems(props.deviceId, props.card, {
+      onOpenConversation: props.onOpenConversation,
+      onRequestDelete: () => confirmDelete.set(true),
+    });
+  const handleRefresh = () => {
+    if (refreshing() || isCardBusy(props.deviceId, props.card.id)) return;
+    refreshing.set(true);
+    void refreshCard(props.deviceId, props.card.id).finally(() => refreshing.set(false));
+  };
   return (
     <View
       testID={`card-${props.card.id}`}
@@ -688,12 +710,12 @@ export function CardView(props: CardViewProps) {
     >
       <View
         desktop={props.placement === "window" ? { windowDrag: true } : undefined}
-        style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}
+        style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}
       >
         <If when={props.card.icon ? CARD_ICONS[props.card.icon] : undefined}>
           {icon => <Icon name={icon()} size={16} color={palette().textSecondary} />}
         </If>
-        <View style={{ flex: 1, minWidth: 0 }}>
+        <View style={{ flex: 1, minWidth: 0, paddingRight: space.xs }}>
           <Text style={{ ...textStyle("body"), fontWeight: "500", numberOfLines: 1, textOverflow: "ellipsis" }}>
             {props.card.title}
           </Text>
@@ -701,15 +723,58 @@ export function CardView(props: CardViewProps) {
             {subtitle => <Text style={{ ...metaText(), numberOfLines: 1, textOverflow: "ellipsis" }}>{subtitle()}</Text>}
           </If>
         </View>
-        <MoreMenu
-          size="xs"
-          accessibilityLabel={`card-menu-${props.card.id}`}
-          tooltip={tr("cards.actions")}
-          items={cardMenuItems(props.deviceId, props.card, {
-            onOpenConversation: props.onOpenConversation,
-            onRequestDelete: () => confirmDelete.set(true),
-          })}
-        />
+        <If when={canRefresh()}>
+          <If
+            when={refreshing()}
+            else={
+              <IconButton
+                icon="refresh"
+                size="xs"
+                iconSize={13}
+                disabled={isCardBusy(props.deviceId, props.card.id)}
+                accessibilityLabel={`card-refresh-${props.card.id}`}
+                tooltip={tr("cards.refresh")}
+                onPress={handleRefresh}
+              />
+            }
+          >
+            <View
+              accessibilityLabel={`card-refresh-${props.card.id}`}
+              style={{
+                width: 24,
+                height: 24,
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Spinner size={12} color={palette().textMuted} />
+            </View>
+          </If>
+        </If>
+        <If
+          when={useNativeWindowMenu()}
+          else={
+            <MoreMenu
+              size="xs"
+              accessibilityLabel={`card-menu-${props.card.id}`}
+              tooltip={tr("cards.actions")}
+              items={menuItems()}
+            />
+          }
+        >
+          <IconButton
+            icon="more"
+            size="xs"
+            active={nativeMenuOpen()}
+            accessibilityLabel={`card-menu-${props.card.id}`}
+            tooltip={tr("cards.actions")}
+            onPress={() => {
+              nativeMenuOpen.set(true);
+              void Menu.popup(toNativeMenuItems(menuItems())).finally(() => nativeMenuOpen.set(false));
+            }}
+          />
+        </If>
         <If when={props.onClose}>
           {close => (
             <IconButton

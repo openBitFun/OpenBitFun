@@ -1018,27 +1018,14 @@ function NavPanel(props: { onNavigate?: () => void }) {
 }
 
 /**
- * The sidebar while Super Agent is gated off (wave 23, the Tauri-era layout):
- * New session, Search and Inbox; the account's devices → workspaces →
- * sessions; then All sessions (the flat Recent list and search across every
- * device), Library (assistants, agents, skills, spaces, routines) and the
- * account row with Settings.
+ * The sidebar while Super Agent is gated off: Search and Library at the top;
+ * the account's devices → workspaces → sessions tree in the middle; and the
+ * account row with Settings anchored at the bottom.
  */
 function DeviceNavPanel(props: { onNavigate?: () => void }) {
   return (
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
       <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
-        <SidebarRow
-          label={tr("nav.newSession")}
-          icon="plus"
-          active={false}
-          accessibilityLabel="nav-new-session"
-          onPress={() => {
-            void startNewSession();
-            props.onNavigate?.();
-          }}
-          trailing={<KbdHint keys={shortcutLabel("mod+n", "⌘N")} surface="chrome" />}
-        />
         <SidebarRow
           label={tr("nav.search")}
           icon="search"
@@ -1051,15 +1038,14 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
           trailing={<KbdHint keys={shortcutLabel("mod+k", "⌘K")} surface="chrome" />}
         />
         <SidebarRow
-          label={tr("nav.inbox")}
-          icon="inbox"
-          active={activeScene() === "inbox"}
-          accessibilityLabel="nav-inbox"
+          label={tr("nav.library")}
+          icon="package"
+          active={activeScene() === "library"}
+          accessibilityLabel="nav-library"
           onPress={() => {
-            navigateScene("inbox");
+            navigateScene("library");
             props.onNavigate?.();
           }}
-          trailing={<InboxCountPill count={inboxBadgeCount()} testID="sidebar-inbox-count" />}
         />
       </View>
       <Scroll
@@ -1076,31 +1062,8 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
           borderTopWidth: 1,
           borderColor: palette().chromeBorder,
           paddingTop: space.sm,
-          gap: space.hair,
         }}
       >
-        <View style={{ paddingHorizontal: space.sm, gap: space.hair }}>
-          <SidebarRow
-            label={tr("nav.allSessions")}
-            icon="layers"
-            active={activeScene() === "all-sessions" || activeScene() === "device"}
-            accessibilityLabel="nav-all-sessions"
-            onPress={() => {
-              navigateScene("all-sessions");
-              props.onNavigate?.();
-            }}
-          />
-          <SidebarRow
-            label={tr("nav.library")}
-            icon="package"
-            active={activeScene() === "library"}
-            accessibilityLabel="nav-library"
-            onPress={() => {
-              navigateScene("library");
-              props.onNavigate?.();
-            }}
-          />
-        </View>
         <AccountRow />
       </View>
     </View>

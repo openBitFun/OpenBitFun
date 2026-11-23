@@ -122,7 +122,7 @@ export function ObpPairingCard(props: { autoload?: boolean } = {}) {
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.cancel")}
-              variant="ghost"
+              variant="secondary"
               size="md"
               accessibilityLabel="obp-revoke-cancel"
               onPress={() => pendingRevoke.set(null)}

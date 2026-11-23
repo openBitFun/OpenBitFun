@@ -134,7 +134,7 @@ const PLAN = {
 
 async function openExternalImport(handlers: Record<string, (data: unknown) => unknown>) {
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
-  await app.waitFor("nav-all-sessions");
+  await app.waitFor("nav-library");
   await app.press("Settings");
   await app.press("nav-settings-page-external-import");
   return app;

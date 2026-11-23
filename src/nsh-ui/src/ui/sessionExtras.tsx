@@ -325,7 +325,7 @@ function GoalDialog(): JSX.Element {
       onClose={() => goalDialog.set(null)}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => goalDialog.set(null)} />
+          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => goalDialog.set(null)} />
           <Button
             label={goalDialog() === "edit" ? tr("common.save") : tr("goal.start")}
             variant="primary"
@@ -388,7 +388,7 @@ function SideQuestionSheet(): JSX.Element {
       onClose={() => closeSideQuestion()}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.close")} variant="ghost" size="md" onPress={() => closeSideQuestion()} />
+          <Button label={tr("common.close")} variant="secondary" size="md" onPress={() => closeSideQuestion()} />
           <If
             when={running()}
             else={
@@ -784,7 +784,7 @@ function McpPromptDialog(): JSX.Element {
       onClose={() => closeMcpPromptForm()}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => closeMcpPromptForm()} />
+          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => closeMcpPromptForm()} />
           <Button
             label={tr("mcpPrompts.insert")}
             variant="primary"
