@@ -713,10 +713,72 @@ pub(crate) async fn restore_session(state: &PeerHostState, args: &Value) -> Resu
     Ok(restored_session_to_json(restored))
 }
 
+async fn is_assistant_workspace(
+    state: &PeerHostState,
+    workspace_id: Option<&str>,
+    workspace_path: Option<&str>,
+    remote_connection_id: Option<&str>,
+    remote_ssh_host: Option<&str>,
+) -> bool {
+    if let Some(id) = workspace_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if let Some(workspace) = state.workspace_service.get_workspace(id).await {
+            return workspace.workspace_kind
+                == openbitfun_core::service::workspace::WorkspaceKind::Assistant;
+        }
+    }
+    if let Some(path) = workspace_path.map(str::trim).filter(|p| !p.is_empty()) {
+        if let Ok(Some(workspace)) = state
+            .workspace_service
+            .resolve_legacy_workspace_reference(None, path, remote_connection_id, remote_ssh_host)
+            .await
+        {
+            return workspace.workspace_kind
+                == openbitfun_core::service::workspace::WorkspaceKind::Assistant;
+        }
+    }
+    false
+}
+
+fn resolve_peer_create_session_agent_type(
+    requested_agent_type: &str,
+    is_assistant: bool,
+) -> String {
+    openbitfun_core::agentic::session_policy::resolve_session_agent_type_for_workspace(
+        requested_agent_type,
+        is_assistant,
+    )
+}
+
+fn validate_peer_session_mode_update(
+    facts: Option<&openbitfun_core::agentic::session_policy::SessionModeFacts>,
+    requested_mode_id: &str,
+    is_assistant: bool,
+) -> Result<String, String> {
+    if let Some(facts) = facts {
+        openbitfun_core::agentic::session_policy::check_session_mode_rebind_for_workspace(
+            facts,
+            requested_mode_id,
+            is_assistant,
+        )?;
+    } else {
+        openbitfun_core::agentic::session_policy::check_assistant_workspace_mode(
+            requested_mode_id,
+            is_assistant,
+        )?;
+    }
+    Ok(
+        if openbitfun_core::agentic::session_policy::is_assistant_mode_id(requested_mode_id) {
+            openbitfun_core::agentic::session_policy::ASSISTANT_MODE_ID.to_string()
+        } else {
+            requested_mode_id.to_string()
+        },
+    )
+}
+
 pub(crate) async fn create_session(state: &PeerHostState, args: &Value) -> Result<Value, String> {
     let request = request_value(args);
     let session_name = get_string(request, "sessionName")?;
-    let agent_type = get_string(request, "agentType")?;
+    let requested_agent_type = get_string(request, "agentType")?;
     let session_id = optional_string(request, "sessionId");
     let workspace_id = optional_string(request, "workspaceId")
         .map(|id| id.trim().to_string())
@@ -730,6 +792,15 @@ pub(crate) async fn create_session(state: &PeerHostState, args: &Value) -> Resul
     };
     let remote_connection_id = optional_string(request, "remoteConnectionId");
     let remote_ssh_host = optional_string(request, "remoteSshHost");
+    let is_assistant = is_assistant_workspace(
+        state,
+        workspace_id.as_deref(),
+        workspace_path.as_deref(),
+        remote_connection_id.as_deref(),
+        remote_ssh_host.as_deref(),
+    )
+    .await;
+    let agent_type = resolve_peer_create_session_agent_type(&requested_agent_type, is_assistant);
 
     let model_id = request
         .get("config")
@@ -1149,10 +1220,40 @@ pub(crate) async fn update_session_mode(
 ) -> Result<Value, String> {
     let request = request_value(args);
     let session_id = validated_session_id(request)?;
-    let mode_id = get_string(request, "modeId")?;
+    let requested_mode_id = get_string(request, "modeId")?;
     if has_session_workspace_scope(request) {
         ensure_coordinator_session(state, args).await?;
     }
+    let loaded_session = openbitfun_core::agentic::coordination::get_global_coordinator()
+        .and_then(|coordinator| coordinator.get_session_manager().get_session(&session_id));
+    let request_workspace_id = optional_string(request, "workspaceId");
+    let request_workspace_path = optional_string(request, "workspacePath");
+    let remote_connection_id = optional_string(request, "remoteConnectionId");
+    let remote_ssh_host = optional_string(request, "remoteSshHost");
+    let session_workspace_id = loaded_session
+        .as_ref()
+        .and_then(|session| session.config.workspace_id.as_deref())
+        .or(request_workspace_id.as_deref());
+    let session_workspace_path = loaded_session
+        .as_ref()
+        .and_then(|session| session.config.workspace_path.as_deref())
+        .or(request_workspace_path.as_deref());
+    let is_assistant = is_assistant_workspace(
+        state,
+        session_workspace_id,
+        session_workspace_path,
+        remote_connection_id.as_deref(),
+        remote_ssh_host.as_deref(),
+    )
+    .await;
+    let facts = loaded_session.as_ref().map(|session| {
+        openbitfun_core::agentic::session_policy::SessionModeFacts {
+            mode_id: session.agent_type.clone(),
+            started: !session.dialog_turn_ids.is_empty(),
+        }
+    });
+    let mode_id =
+        validate_peer_session_mode_update(facts.as_ref(), &requested_mode_id, is_assistant)?;
     state
         .agent_runtime
         .update_session_mode(AgentSessionModeUpdateRequest {
@@ -1756,6 +1857,38 @@ mod tests {
                 ..
             } if current_turn_id == "turn_1"
         ));
+    }
+
+    #[test]
+    fn peer_assistant_workspace_enforces_claw_on_create_and_mode_update() {
+        assert_eq!(
+            super::resolve_peer_create_session_agent_type("Standard", true),
+            "Claw"
+        );
+        assert_eq!(
+            super::resolve_peer_create_session_agent_type("Creative", false),
+            "Creative"
+        );
+
+        let fresh_claw = openbitfun_core::agentic::session_policy::SessionModeFacts {
+            mode_id: "Claw".into(),
+            started: false,
+        };
+        assert_eq!(
+            super::validate_peer_session_mode_update(Some(&fresh_claw), "claw", true).unwrap(),
+            "Claw"
+        );
+        let err = super::validate_peer_session_mode_update(Some(&fresh_claw), "Standard", true)
+            .unwrap_err();
+        assert!(
+            err.starts_with(openbitfun_core::agentic::session_policy::SESSION_MODE_LOCKED_CODE),
+            "{err}"
+        );
+        let err = super::validate_peer_session_mode_update(None, "Ultimate", true).unwrap_err();
+        assert!(
+            err.starts_with(openbitfun_core::agentic::session_policy::SESSION_MODE_LOCKED_CODE),
+            "{err}"
+        );
     }
 }
 

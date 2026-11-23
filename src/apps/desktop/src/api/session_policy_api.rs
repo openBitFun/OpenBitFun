@@ -24,10 +24,12 @@ use openbitfun_core::agentic::coordination::{
 };
 use openbitfun_core::agentic::image_analysis::ImageContextData;
 use openbitfun_core::agentic::session_policy::{
-    build_session_mode_catalog, session_commands, SessionCommandDescriptor, SessionCommandId,
-    SessionModeCatalog, SessionModeFacts, SessionModePreference, SessionModeSource,
+    build_session_mode_catalog_for_workspace, session_commands, SessionCommandDescriptor,
+    SessionCommandId, SessionModeCatalog, SessionModeFacts, SessionModePreference,
+    SessionModeSource,
 };
 use openbitfun_core::service::config::types::{AppFlowChatConfig, ChatInputSendDuringTurn};
+use openbitfun_core::service::workspace::{WorkspaceKind, WorkspaceService};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -235,6 +237,36 @@ fn session_mode_facts(
         })
 }
 
+fn is_assistant_workspace_record(
+    workspace: Option<&openbitfun_core::service::workspace::WorkspaceInfo>,
+) -> bool {
+    workspace.is_some_and(|workspace| workspace.workspace_kind == WorkspaceKind::Assistant)
+}
+
+/// Resolves whether the referenced workspace is an assistant workspace (`WorkspaceKind::Assistant`).
+pub(crate) async fn is_assistant_workspace(
+    workspace_service: &WorkspaceService,
+    workspace_id: Option<&str>,
+    workspace_path: Option<&str>,
+    remote_connection_id: Option<&str>,
+    remote_ssh_host: Option<&str>,
+) -> bool {
+    if let Some(id) = workspace_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if let Some(workspace) = workspace_service.get_workspace(id).await {
+            return is_assistant_workspace_record(Some(&workspace));
+        }
+    }
+    if let Some(path) = workspace_path.map(str::trim).filter(|p| !p.is_empty()) {
+        if let Ok(Some(workspace)) = workspace_service
+            .resolve_legacy_workspace_reference(None, path, remote_connection_id, remote_ssh_host)
+            .await
+        {
+            return is_assistant_workspace_record(Some(&workspace));
+        }
+    }
+    false
+}
+
 /// The modes a composer offers for a workspace (and optionally a session), in
 /// display order, with which entries the session can switch to and the default
 /// a new session starts as.
@@ -247,16 +279,20 @@ pub async fn get_session_mode_catalog(
     request: GetSessionModeCatalogRequest,
 ) -> Result<SessionModeCatalog, String> {
     let session_id = trimmed(request.session_id);
+    let workspace_id = trimmed(request.workspace_id);
+    let workspace_path = trimmed(request.workspace_path);
+    let remote_connection_id = request.remote_connection_id;
+    let remote_ssh_host = request.remote_ssh_host;
     let modes = crate::api::agentic_api::get_available_modes(
         state.clone(),
         runtime.clone(),
         startup_trace,
         Some(crate::api::agentic_api::GetAvailableModesRequest {
             include_subagent_counts: None,
-            workspace_id: request.workspace_id.clone(),
-            workspace_path: request.workspace_path.clone(),
-            remote_connection_id: request.remote_connection_id.clone(),
-            remote_ssh_host: request.remote_ssh_host.clone(),
+            workspace_id: workspace_id.clone(),
+            workspace_path: workspace_path.clone(),
+            remote_connection_id: remote_connection_id.clone(),
+            remote_ssh_host: remote_ssh_host.clone(),
         }),
     )
     .await?;
@@ -271,17 +307,15 @@ pub async fn get_session_mode_catalog(
     let facts = match session_id.as_deref() {
         Some(session_id) => {
             if session_mode_facts(&coordinator, session_id).is_none() {
-                let workspace_id = trimmed(request.workspace_id);
-                let workspace_path = trimmed(request.workspace_path);
                 if workspace_id.is_some() || workspace_path.is_some() {
                     if let Err(error) = runtime
                         .session_application()
                         .ensure_session_loaded(
                             desktop_session_scope(
-                                workspace_id,
-                                workspace_path.unwrap_or_default(),
-                                request.remote_connection_id,
-                                request.remote_ssh_host,
+                                workspace_id.clone(),
+                                workspace_path.clone().unwrap_or_default(),
+                                remote_connection_id.clone(),
+                                remote_ssh_host.clone(),
                             ),
                             session_id,
                             false,
@@ -299,11 +333,35 @@ pub async fn get_session_mode_catalog(
         }
         None => None,
     };
+    let mut is_assistant = is_assistant_workspace(
+        &state.workspace_service,
+        workspace_id.as_deref(),
+        workspace_path.as_deref(),
+        remote_connection_id.as_deref(),
+        remote_ssh_host.as_deref(),
+    )
+    .await;
+    if !is_assistant {
+        if let Some(session) = session_id
+            .as_deref()
+            .and_then(|sid| coordinator.get_session_manager().get_session(sid))
+        {
+            is_assistant = is_assistant_workspace(
+                &state.workspace_service,
+                session.config.workspace_id.as_deref(),
+                session.config.workspace_path.as_deref(),
+                remote_connection_id.as_deref(),
+                remote_ssh_host.as_deref(),
+            )
+            .await;
+        }
+    }
     let preference = flow_chat_preference(&state).await;
-    Ok(build_session_mode_catalog(
+    Ok(build_session_mode_catalog_for_workspace(
         &rows,
         &preference,
         facts.as_ref(),
+        is_assistant,
     ))
 }
 
@@ -640,5 +698,61 @@ mod tests {
             SessionCommandId::parse(&command.id),
             Some(SessionCommandId::Reload)
         );
+    }
+
+    #[tokio::test]
+    async fn assistant_workspace_lookup_distinguishes_assistant_and_project_workspaces() {
+        use openbitfun_core::service::workspace::{
+            WorkspaceInfo, WorkspaceInfoRuntimeExt, WorkspaceOpenOptions,
+        };
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let project = WorkspaceInfo::new_without_worktree(
+            temp_dir.path().to_owned(),
+            WorkspaceOpenOptions::default(),
+        )
+        .await
+        .expect("project workspace");
+        let mut assistant = project.clone();
+        assistant.id = "assistant-1".into();
+        assistant.workspace_kind = WorkspaceKind::Assistant;
+
+        assert!(is_assistant_workspace_record(Some(&assistant)));
+        assert!(!is_assistant_workspace_record(Some(&project)));
+        assert!(!is_assistant_workspace_record(None));
+
+        let rows = vec![
+            SessionModeSource {
+                id: "Standard".into(),
+                name: "Standard".into(),
+                description: "Default".into(),
+            },
+            SessionModeSource {
+                id: "Claw".into(),
+                name: "Claw".into(),
+                description: "Personal assistant".into(),
+            },
+        ];
+        let assistant_catalog = build_session_mode_catalog_for_workspace(
+            &rows,
+            &SessionModePreference::default(),
+            None,
+            is_assistant_workspace_record(Some(&assistant)),
+        );
+        assert_eq!(assistant_catalog.default_mode_id, "Claw");
+        assert_eq!(assistant_catalog.entries.len(), 1);
+        assert_eq!(assistant_catalog.entries[0].id, "Claw");
+
+        let project_catalog = build_session_mode_catalog_for_workspace(
+            &rows,
+            &SessionModePreference::default(),
+            None,
+            is_assistant_workspace_record(Some(&project)),
+        );
+        assert_eq!(project_catalog.default_mode_id, "Standard");
+        assert!(project_catalog
+            .entries
+            .iter()
+            .all(|entry| !entry.id.eq_ignore_ascii_case("claw")));
     }
 }

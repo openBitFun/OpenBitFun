@@ -1707,6 +1707,12 @@ pub(crate) async fn create_desktop_session(
             })?
     };
     request.workspace_id = Some(source_workspace.id.clone());
+    let session_kind = request.session_kind.unwrap_or_default();
+    request.agent_type = enforce_assistant_workspace_create_agent_type(
+        &request.agent_type,
+        &source_workspace.workspace_kind,
+        session_kind,
+    );
     let source_is_remote = source_workspace.workspace_kind == WorkspaceKind::Remote;
     let remote_conn = if source_is_remote {
         source_workspace
@@ -2051,7 +2057,6 @@ pub(crate) async fn create_desktop_session(
             ..Default::default()
         });
 
-    let session_kind = request.session_kind.unwrap_or_default();
     let execution_workspace_path = request.workspace_path.clone();
     let worktree_recovery_path = execution_workspace_path.clone();
     let create_result = if matches!(session_kind, SessionKind::Subagent) {
@@ -2144,9 +2149,52 @@ pub(crate) async fn create_desktop_session(
     Ok(session.into())
 }
 
+fn enforce_assistant_workspace_create_agent_type(
+    requested_agent_type: &str,
+    workspace_kind: &WorkspaceKind,
+    session_kind: SessionKind,
+) -> String {
+    let is_assistant = *workspace_kind == WorkspaceKind::Assistant
+        && !matches!(
+            session_kind,
+            SessionKind::Subagent | SessionKind::EphemeralChild
+        );
+    openbitfun_core::agentic::session_policy::resolve_session_agent_type_for_workspace(
+        requested_agent_type,
+        is_assistant,
+    )
+}
+
+fn validate_desktop_session_mode_update(
+    facts: Option<&openbitfun_core::agentic::session_policy::SessionModeFacts>,
+    requested_mode_id: &str,
+    is_assistant: bool,
+) -> Result<String, String> {
+    if let Some(facts) = facts {
+        openbitfun_core::agentic::session_policy::check_session_mode_rebind_for_workspace(
+            facts,
+            requested_mode_id,
+            is_assistant,
+        )?;
+    } else {
+        openbitfun_core::agentic::session_policy::check_assistant_workspace_mode(
+            requested_mode_id,
+            is_assistant,
+        )?;
+    }
+    Ok(
+        if openbitfun_core::agentic::session_policy::is_assistant_mode_id(requested_mode_id) {
+            openbitfun_core::agentic::session_policy::ASSISTANT_MODE_ID.to_string()
+        } else {
+            requested_mode_id.to_string()
+        },
+    )
+}
+
 // @backend-command
 pub async fn update_session_mode(
     app: HostHandle,
+    app_state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: UpdateSessionModeRequest,
@@ -2155,38 +2203,58 @@ pub async fn update_session_mode(
     if session_id.is_empty() {
         return Err("session_id is required".to_string());
     }
+    let workspace_id = request.workspace_id.clone();
+    let workspace_path = request.workspace_path.clone();
+    let remote_connection_id = request.remote_connection_id.clone();
+    let remote_ssh_host = request.remote_ssh_host.clone();
     ensure_session_loaded_for_selector_update(
         runtime.inner(),
         &session_id,
-        request.workspace_id,
-        request.workspace_path,
-        request.remote_connection_id,
-        request.remote_ssh_host,
+        workspace_id.clone(),
+        workspace_path.clone(),
+        remote_connection_id.clone(),
+        remote_ssh_host.clone(),
         request.include_internal,
     )
     .await?;
-    // A started session keeps the mode its transcript was produced under; the
-    // rule used to live only in each UI, so another client could rebind it.
-    if let Some(session) = coordinator.get_session_manager().get_session(&session_id) {
-        openbitfun_core::agentic::session_policy::check_session_mode_rebind(
-            &openbitfun_core::agentic::session_policy::SessionModeFacts {
-                mode_id: session.agent_type.clone(),
-                started: !session.dialog_turn_ids.is_empty(),
-            },
-            &request.mode_id,
-        )?;
-    }
-    let mode_id = request.mode_id.clone();
+    let loaded_session = coordinator.get_session_manager().get_session(&session_id);
+    let session_workspace_id = loaded_session
+        .as_ref()
+        .and_then(|session| session.config.workspace_id.as_deref())
+        .or(workspace_id.as_deref());
+    let session_workspace_path = loaded_session
+        .as_ref()
+        .and_then(|session| session.config.workspace_path.as_deref())
+        .or(workspace_path.as_deref());
+    let is_assistant = crate::api::session_policy_api::is_assistant_workspace(
+        &app_state.workspace_service,
+        session_workspace_id,
+        session_workspace_path,
+        remote_connection_id.as_deref(),
+        remote_ssh_host.as_deref(),
+    )
+    .await;
+    // A started session keeps the mode its transcript was produced under, and
+    // assistant workspaces only support Claw; the rule lives in the backend so
+    // every client agrees.
+    let facts = loaded_session.as_ref().map(|session| {
+        openbitfun_core::agentic::session_policy::SessionModeFacts {
+            mode_id: session.agent_type.clone(),
+            started: !session.dialog_turn_ids.is_empty(),
+        }
+    });
+    let mode_id =
+        validate_desktop_session_mode_update(facts.as_ref(), &request.mode_id, is_assistant)?;
     runtime
         .agent_runtime()
         .update_session_mode(AgentSessionModeUpdateRequest {
             session_id,
-            mode_id: request.mode_id,
+            mode_id: mode_id.clone(),
             agent_route_key: None,
         })
         .await
         .map_err(|error| format!("Failed to update session mode: {}", error.into_message()))?;
-    if !request.include_internal {
+    if !request.include_internal && !is_assistant {
         crate::api::session_policy_api::remember_last_mode(&app, &mode_id).await;
     }
     Ok(())
@@ -5502,6 +5570,75 @@ mod tests {
             message,
             "Failed to restore session before selector update: \
              workspace_id is required when the session is not loaded"
+        );
+    }
+
+    #[test]
+    fn assistant_workspace_enforces_claw_on_create_and_blocks_non_claw_rebind() {
+        // Assistant workspaces always create standard user sessions as Claw.
+        assert_eq!(
+            enforce_assistant_workspace_create_agent_type(
+                "Standard",
+                &WorkspaceKind::Assistant,
+                SessionKind::Standard,
+            ),
+            "Claw"
+        );
+        assert_eq!(
+            enforce_assistant_workspace_create_agent_type(
+                "Creative",
+                &WorkspaceKind::Assistant,
+                SessionKind::Standard,
+            ),
+            "Claw"
+        );
+        // Hidden subagents retain their own agent type even in assistant workspaces.
+        assert_eq!(
+            enforce_assistant_workspace_create_agent_type(
+                "Explore",
+                &WorkspaceKind::Assistant,
+                SessionKind::Subagent,
+            ),
+            "Explore"
+        );
+        // Project workspaces preserve the requested agent type.
+        assert_eq!(
+            enforce_assistant_workspace_create_agent_type(
+                "Creative",
+                &WorkspaceKind::Normal,
+                SessionKind::Standard,
+            ),
+            "Creative"
+        );
+
+        let fresh_claw = openbitfun_core::agentic::session_policy::SessionModeFacts {
+            mode_id: "Claw".into(),
+            started: false,
+        };
+        assert_eq!(
+            validate_desktop_session_mode_update(Some(&fresh_claw), "claw", true).unwrap(),
+            "Claw"
+        );
+        let err =
+            validate_desktop_session_mode_update(Some(&fresh_claw), "Standard", true).unwrap_err();
+        assert!(
+            err.starts_with(openbitfun_core::agentic::session_policy::SESSION_MODE_LOCKED_CODE),
+            "{err}"
+        );
+        // Even an unloaded session in an assistant workspace refuses non-Claw modes.
+        let err = validate_desktop_session_mode_update(None, "Ultimate", true).unwrap_err();
+        assert!(
+            err.starts_with(openbitfun_core::agentic::session_policy::SESSION_MODE_LOCKED_CODE),
+            "{err}"
+        );
+        // Project workspace fresh sessions still allow mode switching.
+        let fresh_project = openbitfun_core::agentic::session_policy::SessionModeFacts {
+            mode_id: "Standard".into(),
+            started: false,
+        };
+        assert_eq!(
+            validate_desktop_session_mode_update(Some(&fresh_project), "Ultimate", false).unwrap(),
+            "Ultimate"
         );
     }
 }

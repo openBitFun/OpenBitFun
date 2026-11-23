@@ -1063,3 +1063,101 @@ test("/model switches models locally, bare /goal & /btw open dialogs, and visual
   expect(app.value("composer")).toBe("");
   expect(backend.actions()).not.toContain("submit_user_message");
 });
+
+test("assistant workspace exposes only Claw, locks composer switcher, and does not pollute project defaults", async () => {
+  const backend = createBackend({
+    openedWorkspaces: [
+      { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+      { id: "asst-1", name: "Muse", rootPath: "/assistants/muse", workspaceKind: "assistant" },
+    ],
+    sessions: [
+      {
+        sessionId: "proj-session",
+        sessionName: "Project thread",
+        lastUpdated: 1763100000000,
+        messageCount: 1,
+        agentType: "Creative",
+        workspaceId: "workspace-1",
+      },
+    ],
+    configs: {
+      "app.flow_chat": { default_mode_strategy: "follow_last", last_mode_id: "Creative" },
+    },
+  });
+
+  // Verify the backend catalog contract directly for assistant vs project workspaces.
+  const assistantCatalog = (
+    backend.handlers["openbitfun.invoke"]({
+      action: "get_session_mode_catalog",
+      request: { workspaceId: "asst-1", workspacePath: "/assistants/muse" },
+    }) as { ok: boolean; value: { defaultModeId: string; entries: Array<{ id: string }> } }
+  ).value;
+  expect(assistantCatalog.defaultModeId).toBe("Claw");
+  expect(assistantCatalog.entries.map(entry => entry.id)).toEqual(["Claw"]);
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  // Start in the project workspace on Creative.
+  await openSession(app, "Project thread");
+  await app.waitFor("label:agent-picker >> text:Creative");
+
+  // Switch to the assistant workspace and create a new session from All sessions › By device.
+  await showAllSessions(app, "Project thread");
+  await app.press("all-sessions-tab-by-device");
+  await app.hover("workspace-row-asst-1");
+  await app.press("new-session-here-asst-1");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call => call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "asst-1",
+    ),
+  );
+  const assistantCreate = backend.calls.find(
+    call => call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "asst-1",
+  );
+  expect(assistantCreate?.request).toMatchObject({
+    workspaceId: "asst-1",
+    agentType: "Claw",
+  });
+
+  // Composer calmly displays Claw as a non-interactive locked badge (not a mode switcher).
+  await app.waitFor("label:agent-picker >> text:Claw");
+  expect(app.shows("label:agent-picker >> text:Claw")).toBe(true);
+  await expect(app.press("agent-picker")).rejects.toThrow(/no pressable/i);
+  expect(app.shows("agent-option-Standard")).toBe(false);
+  expect(app.shows("agent-option-Ultimate")).toBe(false);
+  expect(app.shows("agent-option-Creative")).toBe(false);
+  expect(app.texts()).not.toContain("Profiles");
+
+  // Switching back to the project workspace and starting a new session keeps Creative (not Claw).
+  await showAllSessions(app);
+  await app.press("all-sessions-tab-by-device");
+  await app.hover("workspace-row-workspace-1");
+  await app.press("new-session-here-workspace-1");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "workspace-1",
+    ),
+  );
+  const projectCreate = backend.calls.find(
+    call =>
+      call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "workspace-1",
+  );
+  expect(projectCreate?.request).toMatchObject({
+    workspaceId: "workspace-1",
+    agentType: "Creative",
+  });
+  await app.waitFor("label:agent-picker >> text:Creative");
+
+  // Re-open the assistant session on a compact viewport: the `+` menu keeps Agent: Claw disabled.
+  await showAllSessions(app);
+  await app.press("all-sessions-tab-by-device");
+  await app.hover("workspace-row-asst-1");
+  await app.press("new-session-here-asst-1");
+  await app.waitFor("label:agent-picker >> text:Claw");
+  await app.setViewport(480, 900);
+  await app.waitFor("composer-plus");
+  await app.press("composer-plus");
+  await app.waitFor("label:agent-picker >> text:Agent: Claw");
+  expect(app.enabled("agent-picker")).toBe(false);
+});

@@ -40,9 +40,12 @@ pub fn resolve_user_message_route(
 
 // ── Mode catalog ────────────────────────────────────────────────────
 
-/// Mode ids a session is never switched to from the composer: Claw belongs to
-/// assistant workspaces, and `multitask` / `plan` are retired ids an older peer
-/// may still advertise.
+/// The sole agent mode allowed for assistant workspaces.
+pub const ASSISTANT_MODE_ID: &str = "Claw";
+
+/// Mode ids a project session is never switched to from the composer: Claw
+/// belongs exclusively to assistant workspaces, and `multitask` / `plan` are
+/// retired ids an older peer may still advertise.
 const INELIGIBLE_MODE_IDS: [&str; 3] = ["claw", "multitask", "plan"];
 
 /// One mode the host's agent registry reported, before the catalog rules.
@@ -105,6 +108,11 @@ fn is_ineligible(id: &str) -> bool {
     INELIGIBLE_MODE_IDS.contains(&key.as_str())
 }
 
+/// Whether `id` names the assistant-only `Claw` mode (case-insensitive).
+pub fn is_assistant_mode_id(id: &str) -> bool {
+    id.trim().eq_ignore_ascii_case(ASSISTANT_MODE_ID)
+}
+
 /// Two mode ids name the same mode when they differ only by case, spacing or a
 /// retired profile alias.
 pub fn mode_ids_match(left: &str, right: &str) -> bool {
@@ -114,9 +122,26 @@ pub fn mode_ids_match(left: &str, right: &str) -> bool {
 /// The id a mode is stored and compared under.
 pub fn canonical_mode_id(id: &str) -> String {
     let trimmed = id.trim();
-    profile_of(trimmed)
-        .map(|profile| profile.as_str().to_string())
-        .unwrap_or_else(|| trimmed.to_string())
+    if let Some(profile) = profile_of(trimmed) {
+        return profile.as_str().to_string();
+    }
+    if is_assistant_mode_id(trimmed) {
+        return ASSISTANT_MODE_ID.to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Enforces the effective agent type for a user session created in a workspace.
+/// Assistant workspaces always run as `Claw`, regardless of what a client sent.
+pub fn resolve_session_agent_type_for_workspace(
+    requested_agent_type: &str,
+    is_assistant_workspace: bool,
+) -> String {
+    if is_assistant_workspace {
+        ASSISTANT_MODE_ID.to_string()
+    } else {
+        requested_agent_type.to_string()
+    }
 }
 
 /// A stored preference value the composer may start a session as, or `None`.
@@ -136,6 +161,47 @@ pub fn build_session_mode_catalog(
     preference: &SessionModePreference,
     session: Option<&SessionModeFacts>,
 ) -> SessionModeCatalog {
+    build_session_mode_catalog_for_workspace(rows, preference, session, false)
+}
+
+/// Workspace-aware mode catalog: assistant workspaces expose and default to
+/// `Claw` exclusively, while project workspaces exclude `Claw` and apply the
+/// stored `app.flow_chat` default preference.
+pub fn build_session_mode_catalog_for_workspace(
+    rows: &[SessionModeSource],
+    preference: &SessionModePreference,
+    session: Option<&SessionModeFacts>,
+    is_assistant_workspace: bool,
+) -> SessionModeCatalog {
+    if is_assistant_workspace {
+        let claw_row = rows.iter().find(|row| is_assistant_mode_id(&row.id));
+        let label = claw_row
+            .map(|row| row.name.trim())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(ASSISTANT_MODE_ID)
+            .to_string();
+        let description = claw_row
+            .map(|row| row.description.trim().to_string())
+            .unwrap_or_default();
+        let switchable = session
+            .filter(|session| session.started)
+            .map_or(true, |session| {
+                mode_ids_match(ASSISTANT_MODE_ID, &session.mode_id)
+            });
+        return SessionModeCatalog {
+            entries: vec![SessionModeCatalogEntry {
+                id: ASSISTANT_MODE_ID.to_string(),
+                label,
+                description,
+                profile: false,
+                switchable,
+            }],
+            default_mode_id: ASSISTANT_MODE_ID.to_string(),
+            session_mode_id: session.map(|session| canonical_mode_id(&session.mode_id)),
+            session_started: session.is_some_and(|session| session.started),
+        };
+    }
+
     let mut seen = std::collections::HashSet::new();
     let mut profiles: Vec<(HarnessId, SessionModeCatalogEntry)> = Vec::new();
     let mut others = Vec::new();
@@ -218,12 +284,42 @@ fn resolve_default_mode_id(
 /// client can recognize it without parsing prose.
 pub const SESSION_MODE_LOCKED_CODE: &str = "session_mode_locked";
 
+/// Enforces that assistant workspaces only accept `Claw`.
+pub fn check_assistant_workspace_mode(
+    requested_mode_id: &str,
+    is_assistant_workspace: bool,
+) -> Result<(), String> {
+    if is_assistant_workspace && !is_assistant_mode_id(requested_mode_id) {
+        return Err(format!(
+            "{SESSION_MODE_LOCKED_CODE}: assistant workspaces only support {}; cannot switch to {}",
+            ASSISTANT_MODE_ID,
+            canonical_mode_id(requested_mode_id)
+        ));
+    }
+    Ok(())
+}
+
 /// A session that already ran a turn keeps the mode its transcript was produced
 /// under; only the same mode (any alias) is accepted.
 pub fn check_session_mode_rebind(
     session: &SessionModeFacts,
     requested_mode_id: &str,
 ) -> Result<(), String> {
+    check_session_mode_rebind_for_workspace(session, requested_mode_id, false)
+}
+
+/// Workspace-aware rebind check: assistant workspaces (and `Claw` sessions)
+/// only accept `Claw`, and any started session keeps the mode its transcript
+/// was produced under.
+pub fn check_session_mode_rebind_for_workspace(
+    session: &SessionModeFacts,
+    requested_mode_id: &str,
+    is_assistant_workspace: bool,
+) -> Result<(), String> {
+    check_assistant_workspace_mode(
+        requested_mode_id,
+        is_assistant_workspace || is_assistant_mode_id(&session.mode_id),
+    )?;
     if !session.started || mode_ids_match(&session.mode_id, requested_mode_id) {
         return Ok(());
     }
@@ -544,6 +640,113 @@ mod tests {
             started: false,
         };
         assert!(check_session_mode_rebind(&fresh, "Ultimate").is_ok());
+    }
+
+    #[test]
+    fn assistant_workspace_catalog_contains_only_claw_and_ignores_project_preferences() {
+        let rows = vec![
+            source("Minimal", "Minimal"),
+            source("Standard", "Standard"),
+            source("Ultimate", "Ultimate"),
+            SessionModeSource {
+                id: "Claw".into(),
+                name: "Claw".into(),
+                description: "Personal assistant for daily tasks".into(),
+            },
+            source("custom-agent", "Custom Agent"),
+        ];
+        let preference = SessionModePreference {
+            strategy: Some(ChatInputDefaultModeStrategy::Fixed),
+            default_mode_id: Some("Ultimate".into()),
+            last_mode_id: Some("Creative".into()),
+        };
+
+        let catalog = build_session_mode_catalog_for_workspace(&rows, &preference, None, true);
+        assert_eq!(catalog.default_mode_id, ASSISTANT_MODE_ID);
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(
+            catalog.entries[0],
+            SessionModeCatalogEntry {
+                id: ASSISTANT_MODE_ID.into(),
+                label: "Claw".into(),
+                description: "Personal assistant for daily tasks".into(),
+                profile: false,
+                switchable: true,
+            }
+        );
+
+        // Even when the host registry omits the Claw row, assistant workspaces
+        // still expose only Claw with a clean fallback entry.
+        let fallback = build_session_mode_catalog_for_workspace(
+            &[source("Standard", "Standard")],
+            &preference,
+            None,
+            true,
+        );
+        assert_eq!(fallback.default_mode_id, ASSISTANT_MODE_ID);
+        assert_eq!(fallback.entries.len(), 1);
+        assert_eq!(fallback.entries[0].id, ASSISTANT_MODE_ID);
+        assert_eq!(fallback.entries[0].label, "Claw");
+        assert_eq!(fallback.entries[0].description, "");
+        assert!(!fallback.entries[0].profile);
+        assert!(fallback.entries[0].switchable);
+
+        // Claw never pollutes project workspace defaults.
+        assert_eq!(eligible_default_mode_id(Some("claw")), None);
+        assert_eq!(eligible_default_mode_id(Some("Claw")), None);
+        assert_eq!(
+            resolve_session_agent_type_for_workspace("Standard", true),
+            ASSISTANT_MODE_ID
+        );
+        assert_eq!(
+            resolve_session_agent_type_for_workspace("Creative", false),
+            "Creative"
+        );
+    }
+
+    #[test]
+    fn assistant_workspace_and_claw_sessions_refuse_non_claw_rebind() {
+        let fresh_claw = SessionModeFacts {
+            mode_id: "Claw".into(),
+            started: false,
+        };
+        assert!(check_session_mode_rebind_for_workspace(&fresh_claw, "claw", true).is_ok());
+        assert!(check_session_mode_rebind_for_workspace(&fresh_claw, "Claw", true).is_ok());
+        let err =
+            check_session_mode_rebind_for_workspace(&fresh_claw, "Standard", true).unwrap_err();
+        assert!(err.starts_with(SESSION_MODE_LOCKED_CODE), "{err}");
+
+        // Even when workspace flag is false, a Claw session refuses non-Claw rebind.
+        let err = check_session_mode_rebind(&fresh_claw, "Ultimate").unwrap_err();
+        assert!(err.starts_with(SESSION_MODE_LOCKED_CODE), "{err}");
+
+        // An unstarted legacy assistant session can be normalized to Claw,
+        // while a started legacy session remains locked to its transcript mode.
+        let fresh_legacy = SessionModeFacts {
+            mode_id: "Standard".into(),
+            started: false,
+        };
+        assert!(check_session_mode_rebind_for_workspace(&fresh_legacy, "Claw", true).is_ok());
+        let err =
+            check_session_mode_rebind_for_workspace(&fresh_legacy, "Ultimate", true).unwrap_err();
+        assert!(err.starts_with(SESSION_MODE_LOCKED_CODE), "{err}");
+
+        let started_legacy = SessionModeFacts {
+            mode_id: "Standard".into(),
+            started: true,
+        };
+        let err =
+            check_session_mode_rebind_for_workspace(&started_legacy, "Claw", true).unwrap_err();
+        assert!(err.starts_with(SESSION_MODE_LOCKED_CODE), "{err}");
+
+        let catalog = build_session_mode_catalog_for_workspace(
+            &[source("Claw", "Claw")],
+            &Default::default(),
+            Some(&started_legacy),
+            true,
+        );
+        assert_eq!(catalog.entries.len(), 1);
+        assert!(!catalog.entries[0].switchable);
     }
 
     #[test]

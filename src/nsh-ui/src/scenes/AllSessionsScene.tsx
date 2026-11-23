@@ -162,13 +162,15 @@ export function openSessionRow(sessionId: string, deviceId: string, workspaceId:
 }
 
 export async function newSessionHere(workspaceId: string, deviceId: string): Promise<void> {
-  selectWorkspace(workspaceId, fleetActive() ? { deviceId } : undefined);
+  selectWorkspace(workspaceId, {
+    ...(fleetActive() ? { deviceId } : {}),
+    loadSessions: false,
+  });
   // backend-owned: `create_session` requires an agent type, and the host's
-  // default (`default_mode_strategy` / `last_mode_id`) arrives with its mode
-  // catalogue, so that is read first; a default applied by `create_session`
-  // itself would be better.
-  await loadAgentModes(workspaceId);
-  await createSessionInWorkspace(tr("nav.newSession"));
+  // default (`default_mode_strategy` / `last_mode_id`, or `Claw` for assistant
+  // workspaces) arrives with its mode catalogue, so that is read first.
+  const defaultMode = await loadAgentModes(workspaceId);
+  await createSessionInWorkspace(tr("nav.newSession"), defaultMode ?? undefined);
   navigateScene("sessions");
 }
 

@@ -8731,6 +8731,7 @@ fn command_update_session_mode(host: &Arc<NativeHost>, args: Value) -> DispatchF
             HostHandle::new(Arc::clone(host)),
             host.command_state("update_session_mode")?,
             host.command_state("update_session_mode")?,
+            host.command_state("update_session_mode")?,
             arg(&args, "request", "update_session_mode")?,
         ).await;
         (&result).dispatch_kind().finish(result)

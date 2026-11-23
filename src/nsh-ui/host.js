@@ -1645,6 +1645,14 @@ function devTerminalProfilesAnswer(workspaceId) {
 }
 const devTerminalBuffers = {};
 
+function isDevAssistantWorkspace(workspaceId, workspacePath) {
+  const id = String(workspaceId || "").trim();
+  const path = String(workspacePath || "").trim();
+  const all = [...devWorkspaces, ...devAssistants];
+  const match = (id ? all.find(w => w.id === id) : null) || (path ? all.find(w => w.rootPath === path) : null);
+  return Boolean(match && String(match.workspaceKind || "").toLowerCase() === "assistant");
+}
+
 const DEV_FIXTURES = {
   // Workspaces & Sessions
   get_opened_workspaces: () => devWorkspaces,
@@ -1812,14 +1820,16 @@ const DEV_FIXTURES = {
   create_session: args => {
     const req = payloadOf(args);
     const sessionId = `dev-session-${devSessionSeq++}`;
+    const workspaceId = req.workspaceId || req.workspace_id || activeWorkspaceId;
+    const assistant = isDevAssistantWorkspace(workspaceId, req.workspacePath || req.workspace_path);
     const created = {
       sessionId,
       sessionName: req.sessionName || "New thread",
       lastUpdated: Date.now(),
       createdAt: Date.now(),
       messageCount: 0,
-      workspaceId: req.workspace_id || activeWorkspaceId,
-      agentType: req.agentType || "Standard",
+      workspaceId,
+      agentType: assistant ? "Claw" : (req.agentType || "Standard"),
       modelName: "gpt-4.1-mini",
       status: "active",
     };
@@ -1981,10 +1991,32 @@ const DEV_FIXTURES = {
   // session policy (wave 3)
   get_session_mode_catalog: args => {
     const req = payloadOf(args);
-    const profiles = ["Minimal", "Standard", "Ultimate", "Creative"];
-    const rows = DEV_FIXTURES.get_available_modes(args).filter(row => row.id.toLowerCase() !== "claw");
+    const allRows = DEV_FIXTURES.get_available_modes(args);
     const session = devSessions.find(s => s.sessionId === req.sessionId);
     const started = Boolean(session) && Number(session.messageCount || 0) > 0;
+    const assistant = isDevAssistantWorkspace(
+      req.workspaceId || (session && session.workspaceId),
+      req.workspacePath,
+    );
+    if (assistant) {
+      const clawRow = allRows.find(row => String(row.id || "").toLowerCase() === "claw");
+      const switchable = !started || String((session && session.agentType) || "").toLowerCase() === "claw";
+      return {
+        entries: [
+          {
+            id: "Claw",
+            label: (clawRow && clawRow.name) || "Claw",
+            description: (clawRow && clawRow.description) || "Personal assistant for daily tasks",
+            profile: false,
+            switchable,
+          },
+        ],
+        defaultModeId: "Claw",
+        ...(session ? { sessionModeId: session.agentType || "Claw", sessionStarted: started } : {}),
+      };
+    }
+    const profiles = ["Minimal", "Standard", "Ultimate", "Creative"];
+    const rows = allRows.filter(row => row.id.toLowerCase() !== "claw");
     const entries = [
       ...profiles.flatMap(name => rows.filter(row => row.id === name)),
       ...rows.filter(row => !profiles.includes(row.id)),
@@ -2016,7 +2048,17 @@ const DEV_FIXTURES = {
   update_session_mode: args => {
     const req = payloadOf(args);
     const session = devSessions.find(s => s.sessionId === req.sessionId);
-    if (session && req.modeId) session.agentType = req.modeId;
+    const assistant = isDevAssistantWorkspace(
+      req.workspaceId || (session && session.workspaceId),
+      req.workspacePath,
+    );
+    const isClawSession = Boolean(session && String(session.agentType || "").toLowerCase() === "claw");
+    if ((assistant || isClawSession) && String(req.modeId || "").trim().toLowerCase() !== "claw") {
+      throw new Error(`session_mode_locked: assistant workspaces only support Claw; cannot switch to ${req.modeId}`);
+    }
+    if (session && req.modeId) {
+      session.agentType = String(req.modeId).trim().toLowerCase() === "claw" ? "Claw" : req.modeId;
+    }
     return null;
   },
   list_subagents: args => {

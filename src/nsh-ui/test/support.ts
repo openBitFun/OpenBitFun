@@ -28,6 +28,7 @@ export interface BackendOptions {
     persistedStatus?: string;
     modelName?: string;
     agentType?: string;
+    workspaceId?: string;
   }>;
   files?: Array<{ name: string; path: string; isDirectory: boolean; children?: unknown[] }>;
   fileContent?: Record<string, string>;
@@ -1232,6 +1233,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
   // Sessions carry their agent binding, so a switch shows up in the next read the
   // way the host reports it.
   let sessions: Array<Record<string, unknown>> = options.sessions ?? DEFAULT_SESSIONS;
+  let createdSessionSeq = 0;
   let openedWorkspaces: Array<{
     id: string;
     name: string;
@@ -1629,9 +1631,42 @@ export function createBackend(options: BackendOptions = {}): Backend {
     };
   }
 
-  /** The fixture host's mode catalog: profiles first, assistant-only ids left out. */
+  /** Whether the referenced workspace is an assistant workspace (`workspaceKind === "assistant"`). */
+  function isAssistantWorkspace(workspaceId: unknown, workspacePath?: unknown): boolean {
+    const id = typeof workspaceId === "string" ? workspaceId.trim() : "";
+    const path = typeof workspacePath === "string" ? workspacePath.trim() : "";
+    const all = [...openedWorkspaces, ...recentOnlyWorkspaces];
+    const match =
+      (id ? all.find(ws => ws.id === id) : undefined) ??
+      (path ? all.find(ws => ws.rootPath === path) : undefined);
+    return (match?.workspaceKind ?? "").toLowerCase() === "assistant";
+  }
+
+  /** The fixture host's mode catalog: assistant workspaces offer only Claw; project workspaces exclude Claw. */
   function answerModeCatalog(payload: Record<string, unknown>): unknown {
     const rows = (options.agentModes ?? DEFAULT_AGENT_MODES) as Array<{ id: string; name?: string; description?: string }>;
+    const sessionId = String(payload.sessionId ?? "");
+    const row = sessions.find(item => item.sessionId === sessionId);
+    const started = Boolean(row) && Number(row?.messageCount ?? 1) > 0;
+    const assistant = isAssistantWorkspace(payload.workspaceId ?? row?.workspaceId, payload.workspacePath);
+    if (assistant) {
+      const clawRow = rows.find(item => String(item.id ?? "").trim().toLowerCase() === "claw");
+      const sessionMode = row ? String(row.agentType ?? "Claw") : undefined;
+      const switchable = !(row && started) || String(sessionMode ?? "").toLowerCase() === "claw";
+      return {
+        entries: [
+          {
+            id: "Claw",
+            label: String(clawRow?.name ?? "").trim() || "Claw",
+            description: String(clawRow?.description ?? ""),
+            profile: false,
+            switchable,
+          },
+        ],
+        defaultModeId: "Claw",
+        ...(row ? { sessionModeId: sessionMode, sessionStarted: started } : {}),
+      };
+    }
     const profiles = ["Minimal", "Standard", "Ultimate", "Creative"];
     const aliases: Record<string, string> = { agentic: "Standard", balanced: "Standard", ultra: "Ultimate" };
     const profileOf = (id: string) =>
@@ -1651,9 +1686,6 @@ export function createBackend(options: BackendOptions = {}): Backend {
       ...profiles.flatMap(name => entries.filter(entry => entry.profile && entry.id === name)),
       ...entries.filter(entry => !entry.profile),
     ];
-    const sessionId = String(payload.sessionId ?? "");
-    const row = sessions.find(item => item.sessionId === sessionId);
-    const started = Boolean(row) && Number(row?.messageCount ?? 1) > 0;
     const sessionMode = row ? String(row.agentType ?? "Standard") : undefined;
     if (row && started) {
       for (const entry of ordered) entry.switchable = entry.id.toLowerCase() === (profileOf(sessionMode!) ?? sessionMode!).toLowerCase();
@@ -2188,18 +2220,22 @@ export function createBackend(options: BackendOptions = {}): Backend {
         if (!record) throw new Error(`Workspace not found: ${id}`);
         return { ...record };
       }
-      case "list_persisted_sessions_page":
+      case "list_persisted_sessions_page": {
+        const reqWorkspaceId = String((request as { workspace_id?: string })?.workspace_id ?? "workspace-1");
+        const scoped = sessions.filter(
+          session => !session.workspaceId || String(session.workspaceId) === reqWorkspaceId,
+        );
         return {
           // Rows belong to the workspace the list was asked for, as on the host.
-          sessions: sessions.map(session => ({
+          sessions: scoped.map(session => ({
             ...session,
-            workspaceId: String((request as { workspace_id?: string })?.workspace_id ?? "workspace-1"),
+            workspaceId: String(session.workspaceId ?? reqWorkspaceId),
           })),
-          totalTopLevelCount: sessions.length,
-          loadedTopLevelCount: sessions.length,
+          totalTopLevelCount: scoped.length,
+          loadedTopLevelCount: scoped.length,
           hasMore: false,
           // The host derives each row's read state from its unread receipt.
-          activities: sessions.map(session => ({
+          activities: scoped.map(session => ({
             sessionId: session.sessionId,
             execution: runningTurnsBySession[String(session.sessionId)] ? "running" : "idle",
             pendingApprovals: 0,
@@ -2208,6 +2244,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
             failed: session.unreadCompletion === "error",
           })),
         };
+      }
       case "load_session_turns": {
         const sessionId = (request as { session_id?: string })?.session_id ?? "";
         return TURNS[sessionId] ?? [];
@@ -2415,19 +2452,23 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return matches.map(entry => ({ path: entry.path, name: entry.name }));
       }
       case "create_session": {
-        const agentType = String(payload.agentType ?? "Standard");
+        const assistant = isAssistantWorkspace(payload.workspaceId, payload.workspacePath);
+        const agentType = assistant ? "Claw" : String(payload.agentType ?? "Standard");
+        const sessionId = createdSessionSeq === 0 ? "session-new" : `session-new-${createdSessionSeq + 1}`;
+        createdSessionSeq += 1;
         // The new session is in the catalogue the surface reloads, with no turn yet.
         sessions = [
           {
-            sessionId: "session-new",
+            sessionId,
             sessionName: String(payload.sessionName ?? "New session"),
-            lastUpdated: 1763100000000,
+            lastUpdated: 1763100000000 + createdSessionSeq,
             messageCount: 0,
             agentType,
+            ...(payload.workspaceId ? { workspaceId: String(payload.workspaceId) } : {}),
           },
           ...sessions,
         ];
-        return { sessionId: "session-new", sessionName: String(payload.sessionName ?? "New session"), agentType };
+        return { sessionId, sessionName: String(payload.sessionName ?? "New session"), agentType };
       }
       case "get_available_modes": {
         if (options.agentModes === null) {
@@ -2440,23 +2481,32 @@ export function createBackend(options: BackendOptions = {}): Backend {
         const sessionId = String(payload.sessionId ?? "");
         const modeId = String(payload.modeId ?? "");
         if (!modeId.trim()) throw new Error("session mode must not be empty");
-        // The host refuses to rebind a session that already ran a turn.
+        // The host refuses to rebind a session that already ran a turn, and
+        // assistant workspaces / Claw sessions accept only Claw.
         const bound = sessions.find(row => row.sessionId === sessionId);
+        const assistant = isAssistantWorkspace(payload.workspaceId ?? bound?.workspaceId, payload.workspacePath);
+        if (
+          (assistant || String(bound?.agentType ?? "").toLowerCase() === "claw") &&
+          modeId.trim().toLowerCase() !== "claw"
+        ) {
+          throw new Error(`session_mode_locked: assistant workspaces only support Claw; cannot switch to ${modeId}`);
+        }
         if (bound && Number(bound.messageCount ?? 0) > 0
           && String(bound.agentType ?? "Standard").toLowerCase() !== modeId.toLowerCase()) {
           throw new Error(`session_mode_locked: this session already started as ${String(bound.agentType ?? "Standard")}`);
         }
+        const canonicalMode = modeId.trim().toLowerCase() === "claw" ? "Claw" : modeId;
         sessionModeWrites.push({
           sessionId,
-          modeId,
+          modeId: canonicalMode,
           ...(payload.workspaceId ? { workspaceId: String(payload.workspaceId) } : {}),
         });
-        sessions = sessions.map(row => (row.sessionId === sessionId ? { ...row, agentType: modeId } : row));
-        // The host records the explicit pick as the next default, as the desktop does.
-        if (payload.includeInternal !== true) {
+        sessions = sessions.map(row => (row.sessionId === sessionId ? { ...row, agentType: canonicalMode } : row));
+        // The host records the explicit pick as the next default, as the desktop does (excluding Claw).
+        if (payload.includeInternal !== true && !assistant && canonicalMode.toLowerCase() !== "claw") {
           liveConfigs["app.flow_chat"] = {
             ...((liveConfigs["app.flow_chat"] ?? {}) as Record<string, unknown>),
-            last_mode_id: modeId,
+            last_mode_id: canonicalMode,
           };
         }
         return null;

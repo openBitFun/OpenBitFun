@@ -36,6 +36,7 @@ import {
   sessionKey,
   sessionStarted,
   sessions,
+  workspaces,
 } from "./state";
 
 export interface AgentChoice {
@@ -68,6 +69,17 @@ export const agentAgents = computed<AgentChoice[]>(() =>
 export const activeSessionStarted = computed(() => {
   const fromHost = catalogSessionStarted();
   return fromHost ?? sessionStarted(activeSessionId());
+});
+
+/**
+ * Whether this workspace offers only one agent (e.g. an Assistant workspace
+ * locked to Claw) and the open session or draft already uses it.
+ */
+export const agentModeLockedToSingle = computed(() => {
+  if (!agentCatalogAnswered()) return false;
+  const choices = agentChoices();
+  if (choices.length !== 1) return false;
+  return agentIdsMatch(agentTypeOf(activeSessionId()), choices[0].id);
 });
 
 /** Two agent ids name the same agent when they differ only by case or spacing. */
@@ -103,6 +115,16 @@ function keyOf(workspaceId: string, sessionId: string | null): string {
   return `${workspaceId}\u0000${sessionId ?? ""}`;
 }
 
+/** Returns the active session only when it belongs to `workspaceId`. */
+function sessionIdForWorkspace(workspaceId: string): string | null {
+  if (activeWorkspaceId() !== workspaceId) return null;
+  const sid = activeSessionId();
+  if (!sid) return null;
+  const row = sessions().find(item => item.sessionId === sid);
+  if (row?.workspaceId && row.workspaceId !== workspaceId) return null;
+  return sid;
+}
+
 /**
  * Reads the catalogue for the open workspace and session. The composer asks on
  * mount and whenever either changes; a repeated call for the same pair is free.
@@ -110,7 +132,7 @@ function keyOf(workspaceId: string, sessionId: string | null): string {
 export function ensureAgentModes(): void {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return;
-  const key = keyOf(workspaceId, activeSessionId());
+  const key = keyOf(workspaceId, sessionIdForWorkspace(workspaceId));
   if (key === catalogueKey || key === loadingKey) return;
   void loadAgentModes(workspaceId);
 }
@@ -122,35 +144,59 @@ export function reloadAgentModes(): void {
   ensureAgentModes();
 }
 
-export async function loadAgentModes(workspaceId: string): Promise<void> {
-  const sessionId = activeSessionId();
+export async function loadAgentModes(workspaceId: string): Promise<string | null> {
+  const sessionId = sessionIdForWorkspace(workspaceId);
   const key = keyOf(workspaceId, sessionId);
   loadingKey = key;
-  const root = activeWorkspaceRoot();
-  const current = () => keyOf(activeWorkspaceId() ?? "", activeSessionId()) === key;
+  const root = workspaces().find(item => item.id === workspaceId)?.rootPath || activeWorkspaceRoot();
   try {
     const catalog = await getSessionModeCatalog({
       workspaceId,
       ...(root ? { workspacePath: root } : {}),
       ...(sessionId ? { sessionId } : {}),
     });
-    // A read for a workspace or session the user already left must not publish.
-    if (!current()) return;
-    catalogueKey = key;
-    agentChoices.set((catalog.entries ?? []).map(choiceOf));
-    catalogSessionStarted.set(sessionId ? catalog.sessionStarted === true : null);
-    // The default only applies while no session is open; a session has its own agent.
-    if (!sessionId && catalog.defaultModeId && pendingModeRecord === null) {
-      chosenAgentType.set(catalog.defaultModeId);
+    // A read for a workspace the user already left must not publish.
+    if (activeWorkspaceId() !== workspaceId) return null;
+    const sameSession = sessionIdForWorkspace(workspaceId) === sessionId;
+    if (sameSession) {
+      catalogueKey = key;
+      catalogSessionStarted.set(sessionId ? catalog.sessionStarted === true : null);
+    }
+    const entries = (catalog.entries ?? []).map(choiceOf);
+    agentChoices.set(entries);
+    if (
+      pendingModeRecord !== null &&
+      !entries.some(entry => agentIdsMatch(entry.id, pendingModeRecord!))
+    ) {
+      pendingModeRecord = null;
+    }
+    const pendingSwitch = pendingAgentSession();
+    if (pendingSwitch && !entries.some(entry => agentIdsMatch(entry.id, pendingSwitch))) {
+      pendingAgentSession.set(null);
+    }
+    // Sync the default whenever no session is open without a valid draft pick,
+    // or whenever the previously chosen agent is not in this workspace's catalog
+    // (for example switching between a project workspace and an Assistant workspace).
+    if (catalog.defaultModeId) {
+      const chosenInCatalog = entries.some(entry => agentIdsMatch(entry.id, chosenAgentType()));
+      if ((!sessionId && pendingModeRecord === null) || (entries.length > 0 && !chosenInCatalog)) {
+        chosenAgentType.set(catalog.defaultModeId);
+      }
     }
     agentCatalogAnswered.set(true);
     agentCatalogNotice.set("");
+    if (agentModeLockedToSingle()) {
+      agentPickerOpen.set(false);
+    }
+    return catalog.defaultModeId ?? null;
   } catch (error) {
-    if (!current()) return;
-    catalogueKey = key;
+    if (activeWorkspaceId() !== workspaceId) return null;
+    if (sessionIdForWorkspace(workspaceId) === sessionId) {
+      catalogueKey = key;
+    }
     if (isMissingCommand(error, "get_session_mode_catalog")) {
       await loadLegacyModes(workspaceId, root);
-      return;
+      return null;
     }
     agentChoices.set([]);
     catalogSessionStarted.set(null);
@@ -158,6 +204,7 @@ export async function loadAgentModes(workspaceId: string): Promise<void> {
     agentCatalogNotice.set(
       tr("sessions.agentCatalogUnavailable", { error: error instanceof Error ? error.message : String(error) }),
     );
+    return null;
   } finally {
     if (loadingKey === key) loadingKey = null;
   }

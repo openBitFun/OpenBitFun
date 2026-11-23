@@ -160,6 +160,7 @@ import {
   agentCatalogNotice,
   agentIdsMatch,
   agentLabel,
+  agentModeLockedToSingle,
   agentNotice,
   agentPickerOpen,
   agentProfiles,
@@ -4174,18 +4175,22 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
     });
   }
   if (compact) {
+    const agentLocked = agentModeLockedToSingle();
     items.push(
       {
         id: "agent",
         icon: "bot",
         label: tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) }),
         separator: true,
+        disabled: agentLocked,
         accessibilityLabel: "agent-picker",
-        onSelect: fromPlus(() => {
-          agentPickerAnchor.set(composerPlusAnchor());
-          closePickers("agent");
-          agentPickerOpen.set(true);
-        }),
+        onSelect: agentLocked
+          ? undefined
+          : fromPlus(() => {
+              agentPickerAnchor.set(composerPlusAnchor());
+              closePickers("agent");
+              agentPickerOpen.set(true);
+            }),
       },
       {
         id: "model",
@@ -4844,7 +4849,7 @@ function ComposerDock() {
         </Overlay>
       </If>
 
-      <If when={agentPickerOpen()}>
+      <If when={agentPickerOpen() && !agentModeLockedToSingle()}>
         <Overlay
           anchor={agentPickerAnchor()}
           placement="top"
@@ -4967,70 +4972,110 @@ function ComposerDock() {
 /** Compact readable agent selector pill matching Codex / Claude Desktop composer chrome. */
 function AgentPickerTrigger(props: { compact: () => boolean }) {
   let triggerRef: ViewRef | null = null;
+  const locked = () => agentModeLockedToSingle();
   return (
-    <View
-      ref={el => {
-        triggerRef = el;
-        agentPickerAnchor.set(el);
-      }}
-      role="button"
-      accessibilityLabel="agent-picker"
-      tooltip={
-        <TooltipBubble
-          text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
-        />
+    <If
+      when={locked()}
+      else={
+        <View
+          ref={el => {
+            triggerRef = el;
+            agentPickerAnchor.set(el);
+          }}
+          role="button"
+          accessibilityLabel="agent-picker"
+          tooltip={
+            <TooltipBubble
+              text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
+            />
+          }
+          onPress={() => {
+            agentPickerAnchor.set(triggerRef);
+            const next = !agentPickerOpen();
+            closePickers(next ? "agent" : undefined);
+            agentPickerOpen.set(next);
+          }}
+          style={{
+            height: controlHeight.sm,
+            minWidth: props.compact() ? 48 : 64,
+            flexShrink: 1,
+            maxWidth: props.compact() ? 132 : 168,
+            paddingHorizontal: props.compact() ? space.chip : space.sm,
+            borderRadius: radii.sm,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            borderColor: agentPickerOpen() ? palette().border : "transparent",
+            backgroundColor: agentPickerOpen() ? palette().surfaceSubtle : "transparent",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={{
+            backgroundColor: palette().surfaceSubtle,
+            borderColor: palette().borderSubtle,
+          }}
+          activeStyle={tactileActiveStyle(0.97)}
+          focusVisibleStyle={focusRingStyle(-1)}
+        >
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 18 / 13),
+              fontWeight: "500",
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {agentLabel(agentTypeOf(activeSessionId()))}
+          </Text>
+          <Icon
+            name={agentPickerOpen() ? "chevron-up" : "chevron-down"}
+            size={12}
+            color={palette().textMuted}
+          />
+        </View>
       }
-      onPress={() => {
-        agentPickerAnchor.set(triggerRef);
-        const next = !agentPickerOpen();
-        closePickers(next ? "agent" : undefined);
-        agentPickerOpen.set(next);
-      }}
-      style={{
-        height: controlHeight.sm,
-        minWidth: props.compact() ? 48 : 64,
-        flexShrink: 1,
-        maxWidth: props.compact() ? 132 : 168,
-        paddingHorizontal: props.compact() ? space.chip : space.sm,
-        borderRadius: radii.sm,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: agentPickerOpen() ? palette().border : "transparent",
-        backgroundColor: agentPickerOpen() ? palette().surfaceSubtle : "transparent",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.xs,
-        cursor: "pointer",
-        userSelect: "none",
-        ...pressTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{
-        backgroundColor: palette().surfaceSubtle,
-        borderColor: palette().borderSubtle,
-      }}
-      activeStyle={tactileActiveStyle(0.97)}
-      focusVisibleStyle={focusRingStyle(-1)}
     >
-      <Text
+      <View
+        accessibilityLabel="agent-picker"
+        tooltip={
+          <TooltipBubble
+            text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
+          />
+        }
         style={{
+          height: controlHeight.sm,
           flexShrink: 1,
-          minWidth: 0,
-          color: palette().textSecondary,
-          fontSize: textSize(13),
-          lineHeight: textLineHeight(13, 18 / 13),
-          fontWeight: "500",
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
+          maxWidth: props.compact() ? 132 : 168,
+          paddingHorizontal: props.compact() ? space.chip : space.sm,
+          borderRadius: radii.sm,
+          flexDirection: "row",
+          alignItems: "center",
+          userSelect: "none",
         }}
       >
-        {agentLabel(agentTypeOf(activeSessionId()))}
-      </Text>
-      <Icon
-        name={agentPickerOpen() ? "chevron-up" : "chevron-down"}
-        size={12}
-        color={palette().textMuted}
-      />
-    </View>
+        <Text
+          style={{
+            flexShrink: 1,
+            minWidth: 0,
+            color: palette().textSecondary,
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 18 / 13),
+            fontWeight: "500",
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {agentLabel(agentTypeOf(activeSessionId()))}
+        </Text>
+      </View>
+    </If>
   );
 }
 
@@ -5546,30 +5591,36 @@ function AgentPickerSurface(props: { placement: Placement }) {
     >
       <Scroll style={{ maxHeight: 332, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.chip }}>
-          <View style={{ gap: space.hair }}>
-            <Text
-              style={{
-                color: palette().textElevatedMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
-                fontWeight: "600",
-                paddingHorizontal: space.sm,
-                paddingVertical: space.xs,
-              }}
-            >
-              {tr("sessions.profiles")}
-            </Text>
-            <Each of={agentProfiles()} key={choice => choice.id}>
-              {choice => <AgentRow choice={choice()} />}
-            </Each>
-          </View>
+          <If when={agentProfiles().length > 0}>
+            <View style={{ gap: space.hair }}>
+              <Text
+                style={{
+                  color: palette().textElevatedMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.3),
+                  fontWeight: "600",
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.xs,
+                }}
+              >
+                {tr("sessions.profiles")}
+              </Text>
+              <Each of={agentProfiles()} key={choice => choice.id}>
+                {choice => <AgentRow choice={choice()} />}
+              </Each>
+            </View>
+          </If>
           <If when={agentAgents().length > 0}>
             <View
               style={{
                 gap: space.hair,
-                paddingTop: space.chip,
-                borderTopWidth: 1,
-                borderColor: palette().borderSubtle,
+                ...(agentProfiles().length > 0
+                  ? {
+                      paddingTop: space.chip,
+                      borderTopWidth: 1,
+                      borderColor: palette().borderSubtle,
+                    }
+                  : {}),
               }}
             >
               <Text
