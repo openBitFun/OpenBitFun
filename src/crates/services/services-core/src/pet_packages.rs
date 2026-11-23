@@ -10,10 +10,18 @@ use std::{
 };
 
 const MANIFEST_LIMIT: u64 = 64 * 1024;
-const IMAGE_LIMIT: u64 = 32 * 1024 * 1024;
+/// The largest spritesheet a package may carry; hosts that read one back use the same bound.
+pub const IMAGE_LIMIT: u64 = 32 * 1024 * 1024;
 const ARCHIVE_LIMIT: u64 = 64 * 1024 * 1024;
 const RECEIPT: &str = ".openbitfun-import.json";
 const MAX_PACKAGES: usize = 128;
+const IMAGE_PIXEL_LIMIT: u64 = 16_000_000;
+/// Every sheet has this many frames to a row.
+const COLUMNS: u32 = 8;
+/// A still is one Petdex cell, which stays sharp at 3x in a picker tile.
+const STILL_SIZE: (u32, u32) = (192, 208);
+/// A review candidate's preview travels inside the catalog, so it is smaller.
+const PREVIEW_SIZE: (u32, u32) = (96, 104);
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,17 +138,67 @@ fn manifest(bytes: &[u8]) -> Result<(serde_json::Value, PathBuf, u32)> {
     )?;
     Ok((value, path, version))
 }
+fn sheet_rows(version: u32) -> u32 {
+    if version == 2 {
+        11
+    } else {
+        9
+    }
+}
+
+/// The rest pose (first row, first frame) as a PNG no larger than `max`.
+fn rest_frame_png(sheet: &image::DynamicImage, version: u32, max: (u32, u32)) -> Result<Vec<u8>> {
+    let (width, height) = (
+        sheet.width() / COLUMNS,
+        sheet.height() / sheet_rows(version),
+    );
+    if width == 0 || height == 0 {
+        return Err("Pet image is smaller than one frame".into());
+    }
+    let mut frame = sheet.crop_imm(0, 0, width, height);
+    if width > max.0 || height > max.1 {
+        frame = frame.thumbnail(max.0, max.1);
+    }
+    let mut png = Cursor::new(Vec::new());
+    frame
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(png.into_inner())
+}
+
+/// A package directory's manifest and spritesheet, confined to that directory.
+fn read_package_dir(path: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    let root = dunce::canonicalize(path).map_err(|e| e.to_string())?;
+    let bytes = read_file(&root.join("pet.json"), MANIFEST_LIMIT)?;
+    let (_, relative, _) = manifest(&bytes)?;
+    let sprite = root.join(relative);
+    let resolved = dunce::canonicalize(&sprite).map_err(|e| e.to_string())?;
+    if !resolved.starts_with(&root) {
+        return Err("Pet resource escapes its package".into());
+    }
+    Ok((bytes, read_file(&sprite, IMAGE_LIMIT)?))
+}
+
+/// An installed package's rest pose as a small PNG, for a picker tile. It is
+/// looser than [`import`]: a package an older version installed still shows as
+/// long as its sheet decodes within the pixel bound.
+pub fn still(dir: &Path) -> Result<Vec<u8>> {
+    let (manifest_bytes, bytes) = read_package_dir(dir)?;
+    let (_, _, version) = manifest(&manifest_bytes)?;
+    let format = image::guess_format(&bytes).map_err(|e| e.to_string())?;
+    let (width, height) = image::ImageReader::with_format(Cursor::new(&bytes), format)
+        .into_dimensions()
+        .map_err(|e| e.to_string())?;
+    if u64::from(width) * u64::from(height) > IMAGE_PIXEL_LIMIT {
+        return Err("Pet image has too many pixels".into());
+    }
+    let sheet = image::load_from_memory_with_format(&bytes, format).map_err(|e| e.to_string())?;
+    rest_frame_png(&sheet, version, STILL_SIZE)
+}
+
 fn load(path: &Path, preview: bool) -> Result<Loaded> {
     let (manifest_bytes, image_bytes) = if path.is_dir() {
-        let root = dunce::canonicalize(path).map_err(|e| e.to_string())?;
-        let bytes = read_file(&root.join("pet.json"), MANIFEST_LIMIT)?;
-        let (_, relative, _) = manifest(&bytes)?;
-        let sprite = root.join(relative);
-        let resolved = dunce::canonicalize(&sprite).map_err(|e| e.to_string())?;
-        if !resolved.starts_with(&root) {
-            return Err("Pet resource escapes its package".into());
-        }
-        (bytes, read_file(&sprite, IMAGE_LIMIT)?)
+        read_package_dir(path)?
     } else {
         let bytes = read_file(path, ARCHIVE_LIMIT)?;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
@@ -201,12 +259,12 @@ fn decode(manifest_bytes: &[u8], image_bytes: Vec<u8>, preview: bool) -> Result<
     };
     let reader = image::ImageReader::with_format(Cursor::new(&image_bytes), format);
     let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
-    let rows = if version == 2 { 11 } else { 9 };
+    let rows = sheet_rows(version);
     if width == 0
         || height == 0
-        || width % 8 != 0
+        || width % COLUMNS != 0
         || height % rows != 0
-        || u64::from(width) * u64::from(height) > 16_000_000
+        || u64::from(width) * u64::from(height) > IMAGE_PIXEL_LIMIT
     {
         return Err("Pet image dimensions do not match its sprite version".into());
     }
@@ -214,16 +272,13 @@ fn decode(manifest_bytes: &[u8], image_bytes: Vec<u8>, preview: bool) -> Result<
     let decoded =
         image::load_from_memory_with_format(&image_bytes, format).map_err(|e| e.to_string())?;
     let preview = if preview {
-        let thumb = decoded
-            .crop_imm(0, 0, width / 8, height / rows)
-            .thumbnail(96, 104);
-        let mut png = Cursor::new(Vec::new());
-        thumb
-            .write_to(&mut png, image::ImageFormat::Png)
-            .map_err(|e| e.to_string())?;
         format!(
             "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+            base64::engine::general_purpose::STANDARD.encode(rest_frame_png(
+                &decoded,
+                version,
+                PREVIEW_SIZE
+            )?)
         )
     } else {
         String::new()
@@ -524,7 +579,8 @@ mod tests {
         let fixture = fixture(temp.path(), "owl", Some(2));
         let manifest = fs::read(fixture.join("pet.json")).unwrap();
         let image = fs::read(fixture.join("sprite.png")).unwrap();
-        let native = temp.path().join("native");
+        // Import answers canonical paths; macOS temp directories sit behind a symlink.
+        let native = dunce::canonicalize(temp.path()).unwrap().join("native");
         let identity = "codex:builtin:owl";
         let reviewed = candidate_from_bytes(
             &native,
@@ -690,6 +746,42 @@ mod tests {
             pet.package_path
         );
     }
+    #[test]
+    fn still_is_the_first_cell_of_either_version_and_reads_legacy_sheets() {
+        let temp = tempfile::tempdir().unwrap();
+        let red = image::Rgba([255, 0, 0, 255]);
+        // Version, sheet size, and the one cell the still must show.
+        for (version, width, height, cell) in [
+            (None, 1536, 1872, (192, 208)),
+            (Some(2), 1536, 2288, (192, 208)),
+            (None, 2048, 2304, (192, 192)),
+            // Installed before import checked that the grid divides exactly.
+            (None, 85, 100, (10, 11)),
+        ] {
+            let dir = fixture(temp.path(), &format!("pet{version:?}{width}"), version);
+            let mut sheet = image::RgbaImage::new(width, height);
+            let rows = sheet_rows(version.unwrap_or(1));
+            for (x, y, pixel) in sheet.enumerate_pixels_mut() {
+                if x < width / COLUMNS && y < height / rows {
+                    *pixel = red;
+                }
+            }
+            sheet.save(dir.join("sprite.png")).unwrap();
+            let frame = image::load_from_memory(&still(&dir).unwrap())
+                .unwrap()
+                .to_rgba8();
+            assert_eq!(frame.dimensions(), cell);
+            assert!(frame.pixels().all(|pixel| *pixel == red));
+        }
+        let escaping = fixture(temp.path(), "escaping", None);
+        fs::write(
+            escaping.join("pet.json"),
+            br#"{"spritesheetPath":"../sprite.png"}"#,
+        )
+        .unwrap();
+        assert!(still(&escaping).is_err());
+    }
+
     #[test]
     fn rejects_escaping_paths_bad_images_and_unknown_versions() {
         let temp = tempfile::tempdir().unwrap();

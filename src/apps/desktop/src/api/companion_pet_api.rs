@@ -1,5 +1,6 @@
 //! Agent companion pets: the built-in sprite sets shipped with the backend and
-//! the spritesheet reads the desktop pet window needs.
+//! the pictures of them: the still a picker tile shows and the spritesheet
+//! the desktop pet window animates.
 //!
 //! Pet packages come from two places behind [`PetPackageStore`]: the
 //! built-in sets in the backend's resources (`resources/agent-companion-pets`)
@@ -28,10 +29,12 @@ use crate::api::commands::AgentCompanionPetPackageDto;
 use crate::api::commands::{companion_user_packages_dir, pet_package_dto_from_dir};
 use crate::host::State;
 
-/// Upper bound for a single pet spritesheet. A spritesheet is a small sprite
-/// atlas; a larger file is not a pet package asset and is not sent over the
-/// protocol.
-const MAX_SPRITESHEET_BYTES: u64 = 16 * 1024 * 1024;
+/// Upper bound for a single pet spritesheet, the one import accepts: every
+/// sheet that could be imported can also be shown.
+const MAX_SPRITESHEET_BYTES: u64 = openbitfun_services_core::pet_packages::IMAGE_LIMIT;
+/// A still decodes a whole sheet (about 11 MB of RGBA) and keeps one cell. A
+/// picker asks for every pet at once, so only a few sheets are decoded at a time.
+static STILL_DECODES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
 const BUILTIN_DIR: &str = "agent-companion-pets";
 
 /// Where pet packages are listed and their spritesheets resolved.
@@ -40,6 +43,10 @@ pub(crate) trait PetPackageStore {
     /// The file a selection's spritesheet path names, confined to the pet
     /// directories.
     fn resolve_spritesheet(&self, spritesheet_path: &str) -> Result<PathBuf, String>;
+    /// The directory a listed pet's package path names, confined to the pet
+    /// directories. A picture of one pet never stands in for another, so a
+    /// built-in that does not ship is an error here.
+    fn resolve_package(&self, package_path: &str) -> Result<PathBuf, String>;
 }
 
 /// The device's pet packages: built-in resources plus the user's imports.
@@ -65,27 +72,30 @@ impl LocalPetPackages {
             .builtin_root
             .as_ref()
             .ok_or("The built-in companion pets are not installed with this app")?;
-        let valid = |part: &str| {
-            !part.is_empty()
-                && part != "."
-                && part != ".."
-                && part
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-        };
-        let (id, file) = if valid(id) && valid(file) && root.join(id).join(file).is_file() {
-            (id.to_string(), file.to_string())
-        } else {
-            log::debug!(
-                "Built-in companion pet not shipped, using the default: id={}",
-                id
-            );
-            let dir = root.join(AGENT_COMPANION_DEFAULT_PET_ID);
-            let default_file = builtin_spritesheet_name(&dir)?;
-            (AGENT_COMPANION_DEFAULT_PET_ID.to_string(), default_file)
-        };
+        let (id, file) =
+            if valid_path_part(id) && valid_path_part(file) && root.join(id).join(file).is_file() {
+                (id.to_string(), file.to_string())
+            } else {
+                log::debug!(
+                    "Built-in companion pet not shipped, using the default: id={}",
+                    id
+                );
+                let dir = root.join(AGENT_COMPANION_DEFAULT_PET_ID);
+                let default_file = builtin_spritesheet_name(&dir)?;
+                (AGENT_COMPANION_DEFAULT_PET_ID.to_string(), default_file)
+            };
         Ok(root.join(id).join(file))
     }
+}
+
+/// One plain component of a logical built-in path.
+fn valid_path_part(part: &str) -> bool {
+    !part.is_empty()
+        && part != "."
+        && part != ".."
+        && part
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
 fn builtin_spritesheet_name(dir: &Path) -> Result<String, String> {
@@ -174,6 +184,34 @@ impl PetPackageStore for LocalPetPackages {
         if !requested.starts_with(&root) {
             return Err(format!(
                 "Refused to read {spritesheet_path} outside the companion pet directory"
+            ));
+        }
+        Ok(requested)
+    }
+
+    fn resolve_package(&self, package_path: &str) -> Result<PathBuf, String> {
+        if let Some(id) = package_path.strip_prefix(AGENT_COMPANION_BUILTIN_PREFIX) {
+            return self
+                .builtin_root
+                .as_ref()
+                .filter(|_| valid_path_part(id))
+                .map(|root| root.join(id))
+                .filter(|dir| dir.is_dir())
+                .ok_or_else(|| format!("Built-in companion pet is not shipped: {package_path}"));
+        }
+        let root = self.user_root.canonicalize().map_err(|error| {
+            format!(
+                "Companion pet directory is unavailable ({}): {}",
+                self.user_root.display(),
+                error
+            )
+        })?;
+        let requested = Path::new(package_path)
+            .canonicalize()
+            .map_err(|error| format!("Failed to resolve {package_path}: {error}"))?;
+        if requested.parent() != Some(root.as_path()) {
+            return Err(format!(
+                "Refused to read {package_path} outside the companion pet directory"
             ));
         }
         Ok(requested)
@@ -283,6 +321,51 @@ pub async fn load_agent_companion_pet_spritesheet(
         .map_err(|error| error.to_string())?
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadAgentCompanionPetStillRequest {
+    pub package_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCompanionPetStill {
+    pub mime_type: String,
+    pub base64: String,
+}
+
+fn read_still(
+    store: &impl PetPackageStore,
+    package_path: &str,
+) -> Result<AgentCompanionPetStill, String> {
+    let png = openbitfun_services_core::pet_packages::still(&store.resolve_package(package_path)?)?;
+    Ok(AgentCompanionPetStill {
+        mime_type: "image/png".to_string(),
+        base64: base64::engine::general_purpose::STANDARD.encode(png),
+    })
+}
+
+/// A listed pet's rest pose as a small image, so a picker shows every pet
+/// without each client decoding a whole spritesheet per tile.
+// @backend-command
+pub async fn load_agent_companion_pet_still(
+    state: State<'_, AppState>,
+    request: LoadAgentCompanionPetStillRequest,
+) -> Result<AgentCompanionPetStill, String> {
+    let permit = STILL_DECODES
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    let store = LocalPetPackages::for_state(&state);
+    tokio::task::spawn_blocking(move || {
+        // Held by the decode itself: a cancelled caller does not free the slot early.
+        let _permit = permit;
+        read_still(&store, &request.package_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +393,48 @@ mod tests {
             assert!(pet.spritesheet_path.starts_with(&pet.package_path));
             assert!(store.resolve_spritesheet(&pet.spritesheet_path).is_ok());
         }
+    }
+
+    #[test]
+    fn every_listed_pet_has_a_small_still_with_the_pet_drawn_on_it() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(BUILTIN_DIR);
+        let store = LocalPetPackages::new(Some(root), temp_dir("stills"));
+        for pet in store.builtin_pets() {
+            let still = read_still(&store, &pet.package_path).unwrap();
+            assert_eq!(still.mime_type, "image/png");
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(still.base64)
+                .unwrap();
+            let frame = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert!(frame.width() <= 192 && frame.height() <= 208, "{}", pet.id);
+            assert!(
+                frame.pixels().any(|pixel| pixel.0[3] > 0),
+                "{} has an empty rest pose",
+                pet.id
+            );
+        }
+        for bad in ["builtin:no-such-pet", "builtin:..", "builtin:"] {
+            assert!(store.resolve_package(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_imported_package_is_resolved_only_inside_the_user_pet_directory() {
+        let user = temp_dir("packages");
+        std::fs::create_dir_all(user.join("cat").join("nested")).unwrap();
+        let store = LocalPetPackages::new(None, user.clone());
+        assert!(store
+            .resolve_package(user.join("cat").to_str().unwrap())
+            .is_ok());
+        for outside in [user.clone(), user.join("cat").join("nested")] {
+            assert!(store
+                .resolve_package(outside.to_str().unwrap())
+                .unwrap_err()
+                .contains("outside"));
+        }
+        let _ = std::fs::remove_dir_all(user);
     }
 
     #[test]

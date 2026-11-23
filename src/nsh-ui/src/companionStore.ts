@@ -2,7 +2,8 @@
 // attention on the desktop app. Its settings are this device's
 // `app.ai_experience` values (`enable_agent_companion`, `agent_companion_pet`,
 // `enable_desktop_cards`), its characters come from `list_agent_companion_pets`
-// (built-in sets plus the user's imports) and its frames from
+// (built-in sets plus the user's imports), their pictures in a picker from
+// `load_agent_companion_pet_still` and the shown pet's frames from
 // `load_agent_companion_pet_spritesheet`.
 //
 // What the pet shows is the Inbox's own state: the first non-empty group the
@@ -11,7 +12,7 @@
 // that needs you on another machine wakes the pet on this one. The store maps
 // that state onto a sprite row and draws nothing else into it.
 
-import { computed, signal } from "nsh";
+import { computed, signal, untracked } from "nsh";
 import { attentionGroups } from "./attentionStore";
 import { errorMessageOf } from "./backendConnection";
 import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "./bridge";
@@ -208,9 +209,36 @@ export async function deleteCompanionPet(pet: CompanionPet): Promise<void> {
   }
 }
 
+// ── Pictures ────────────────────────────────────────────────────────────────
+
+/** Rest-pose stills as data URLs, by package path: a few KB each, read once per run. */
+export const petStills = signal<Record<string, string>>({});
+export const petStillErrors = signal<Record<string, string>>({});
+const loadingStills = new Set<string>();
+
+/** Reads one pet's still through the host. */
+export async function loadPetStill(packagePath: string): Promise<void> {
+  if (petStills()[packagePath] || loadingStills.has(packagePath)) return;
+  loadingStills.add(packagePath);
+  try {
+    const answer = await invokeCommand<{ mimeType?: string; base64?: string }>("load_agent_companion_pet_still", {
+      packagePath,
+    });
+    if (!answer?.base64) throw new Error("The pet still is empty");
+    petStills.set({ ...petStills(), [packagePath]: `data:${answer.mimeType ?? "image/png"};base64,${answer.base64}` });
+  } catch (error) {
+    petStillErrors.set({ ...petStillErrors(), [packagePath]: errorMessageOf(error) });
+  } finally {
+    loadingStills.delete(packagePath);
+  }
+}
+
 // ── Frames ──────────────────────────────────────────────────────────────────
 
-/** Spritesheets as data URLs, by spritesheet path (read once per run). */
+/**
+ * Spritesheets as data URLs, by spritesheet path. Only the pet window draws
+ * them, so only the chosen pet's is kept (a decoded sheet is about 11 MB).
+ */
 export const petSheets = signal<Record<string, string>>({});
 export const petSheetErrors = signal<Record<string, string>>({});
 const loadingSheets = new Set<string>();
@@ -224,12 +252,23 @@ export async function loadPetSheet(spritesheetPath: string): Promise<void> {
       spritesheetPath,
     });
     if (!answer?.base64) throw new Error("The spritesheet is empty");
-    petSheets.set({ ...petSheets(), [spritesheetPath]: `data:${answer.mimeType ?? "image/webp"};base64,${answer.base64}` });
+    const next = { [spritesheetPath]: `data:${answer.mimeType ?? "image/webp"};base64,${answer.base64}` };
+    const chosen = selectedPet()?.spritesheetPath;
+    const kept = chosen ? petSheets()[chosen] : undefined;
+    if (chosen && kept) next[chosen] = kept;
+    petSheets.set(next);
   } catch (error) {
     petSheetErrors.set({ ...petSheetErrors(), [spritesheetPath]: errorMessageOf(error) });
   } finally {
     loadingSheets.delete(spritesheetPath);
   }
+}
+
+/** Frees the spritesheets once no pet is to be shown. */
+export function releasePetSheets(): void {
+  untracked(() => {
+    if (Object.keys(petSheets()).length > 0) petSheets.set({});
+  });
 }
 
 // ── What the pet shows ───────────────────────────────────────────────────────
@@ -260,4 +299,7 @@ export function resetCompanionForTests(): void {
   petSheets.set({});
   petSheetErrors.set({});
   loadingSheets.clear();
+  petStills.set({});
+  petStillErrors.set({});
+  loadingStills.clear();
 }
