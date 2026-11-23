@@ -22,7 +22,7 @@ import { SubscriptionProviderBrowser } from './SubscriptionProviderBrowser';
 import { ProductBrandIcon } from '@/shared/ui/ProductBrandIcon';
 import { getProductBrandIcon } from '@/shared/ui/productBrandIcons';
 import { SubscriptionAccountList, SubscriptionServiceGroup } from './SubscriptionServiceGroup';
-import { managedSubscriptionAccounts, modelsUsingSubscriptionAccount, groupSubscriptionServices, isRetiredSubscriptionProvider, isZcodeProvider, preferredZcodeProvider, subscriptionManagerAccounts, subscriptionAccountBadge, subscriptionAccountLabel, countSubscriptionServices, subscriptionLoginPlaceholder, subscriptionRemovalKeys } from './subscriptionServices';
+import { managedSubscriptionAccounts, modelsUsingSubscriptionAccount, groupSubscriptionServices, isRetiredSubscriptionProvider, isZcodeProvider, preferredZcodeProvider, subscriptionManagerAccounts, subscriptionAccountBadge, subscriptionAccountLabel, countSubscriptionServices, subscriptionLoginPlaceholder, subscriptionRemovalKeys, retainedSubscriptionAccountId } from './subscriptionServices';
 import { aiApi, systemAPI } from '@/infrastructure/api';
 import { agentAPI, type ModelRoutingStatus } from '@/infrastructure/api/service-api/AgentAPI';
 import type {
@@ -4364,9 +4364,15 @@ const ModelSettingsPage: React.FC = () => {
       const hasAccount = managed.some(item => item.account.provider === target);
       const retrySlot = importing && subscriptionLoginPanel?.provider === target && subscriptionLoginPanel.status === 'failed'
         ? subscriptionLoginAccountId : null;
+      // A provider-card login reauthenticates a retained signed-out slot. The
+      // account manager's explicit Add account action remains the path for a
+      // genuinely new slot.
+      const retainedSlot = importing ? retainedSubscriptionAccountId(managed, target) : undefined;
       void handleSubscriptionLogin(target, retrySlot
         ? (retrySlot === target ? undefined : retrySlot)
-        : canAdd && hasAccount ? newAccountSlotId(target) : undefined);
+        : retainedSlot
+          ? (retainedSlot === target ? undefined : retainedSlot)
+          : canAdd && hasAccount ? newAccountSlotId(target) : undefined);
     };
     const renderAccount = (account: SubscriptionAccount, groupedRegion = false, slot: string = account.provider, enabled = true) => {
       const retiredAccount = isRetiredSubscriptionProvider(account.provider);

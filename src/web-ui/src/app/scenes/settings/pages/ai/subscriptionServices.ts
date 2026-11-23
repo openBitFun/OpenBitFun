@@ -114,6 +114,17 @@ export interface ManagedSubscriptionAccount {
   upstreamIdentity?: string | null;
 }
 
+/** Reuses a signed-out slot that still retains the upstream account identity. */
+export function retainedSubscriptionAccountId(
+  accounts: ManagedSubscriptionAccount[],
+  provider: SubscriptionProvider,
+): string | undefined {
+  const retained = accounts.find(item => item.account.provider === provider
+    && !item.account.connected
+    && Boolean(item.upstreamIdentity || item.account.account));
+  return retained?.accountId;
+}
+
 /**
  * Placeholder slot shown while an authorization is in flight, so a new account
  * is visible before the host stores it. A failed attempt keeps no placeholder:

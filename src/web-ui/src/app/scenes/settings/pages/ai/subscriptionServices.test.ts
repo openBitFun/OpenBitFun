@@ -93,6 +93,7 @@ import {
   subscriptionLoginPlaceholder,
   subscriptionProductOf,
   subscriptionRemovalKeys,
+  retainedSubscriptionAccountId,
 } from './subscriptionServices';
 
 const zcodeAccount = (overrides: Partial<SubscriptionAccount> = {}): SubscriptionAccount => ({
@@ -143,6 +144,24 @@ describe('subscription service counting and labels', () => {
     expect(subscriptionLoginPlaceholder(null, slot)).toBeNull();
     expect(subscriptionLoginPlaceholder({ provider: 'codex', status: 'pending' }, null))
       .toEqual({ provider: 'codex', accountId: 'codex' });
+  });
+
+  it('reuses a retained signed-out slot for provider-card reauthentication', () => {
+    const named = 'codex-account-3f2a1b9c-0000-4000-8000-000000000000';
+    const retained = {
+      account: { ...account('codex'), account: 'codex@example.invalid' },
+      accountId: named,
+      enabled: true,
+      upstreamIdentity: 'seat-one',
+    };
+    expect(retainedSubscriptionAccountId([retained], 'codex')).toBe(named);
+    expect(retainedSubscriptionAccountId([{
+      ...retained,
+      accountId: 'codex',
+    }], 'codex')).toBe('codex');
+    expect(retainedSubscriptionAccountId([{
+      account: account('codex'), accountId: 'codex', enabled: true,
+    }], 'codex')).toBeUndefined();
   });
 
   it('confirms removal with copy that matches what the click will do', () => {
