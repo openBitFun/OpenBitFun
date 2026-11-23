@@ -6,9 +6,12 @@
 //! full context snapshot while still flowing through the normal agentic event
 //! pipeline.
 
+use crate::api::agentic_api::desktop_session_scope;
 use crate::api::app_state::AppState;
 use crate::host::State;
+use crate::runtime::DesktopRuntimeContext;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use openbitfun_core::agentic::coordination::{
@@ -16,9 +19,17 @@ use openbitfun_core::agentic::coordination::{
 };
 use openbitfun_core::agentic::image_analysis::ImageContextData;
 use openbitfun_core::agentic::side_question::{BtwTurnWatch, BTW_TURN_POLL_INTERVAL};
+use openbitfun_core::service::workspace::WorkspaceKind;
 
 fn desktop_btw_submission_policy() -> DialogSubmissionPolicy {
     DialogSubmissionPolicy::for_source(DialogTriggerSource::DesktopUi)
+}
+
+fn trimmed_opt(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +37,14 @@ fn desktop_btw_submission_policy() -> DialogSubmissionPolicy {
 pub struct BtwAskStreamRequest {
     pub request_id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
     pub question: String,
     pub child_session_id: String,
     pub child_session_name: Option<String>,
@@ -90,9 +109,114 @@ pub async fn btw_cancel(
     Ok(())
 }
 
+async fn ensure_btw_parent_session_loaded(
+    state: &AppState,
+    runtime: &DesktopRuntimeContext,
+    coordinator: &ConversationCoordinator,
+    request: &BtwAskStreamRequest,
+) -> Result<(), String> {
+    if coordinator
+        .get_session_manager()
+        .get_session(&request.session_id)
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let workspace_id = trimmed_opt(request.workspace_id.as_deref());
+    let workspace_path = trimmed_opt(request.workspace_path.as_deref());
+    if workspace_id.is_some() || workspace_path.is_some() {
+        let scope = desktop_session_scope(
+            workspace_id.clone(),
+            workspace_path.unwrap_or_default(),
+            trimmed_opt(request.remote_connection_id.as_deref()),
+            trimmed_opt(request.remote_ssh_host.as_deref()),
+        );
+        match runtime
+            .session_application()
+            .ensure_session_loaded(scope, &request.session_id, false)
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // Fall through to opened/assistant workspace scan if the caller
+                // supplied a stale or mismatched workspace hint; otherwise keep
+                // the original error when no fallback workspace owns the session.
+                if coordinator
+                    .get_session_manager()
+                    .get_session(&request.session_id)
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                let _ = error;
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(current) = state.workspace_service.get_current_workspace().await {
+        if seen.insert(current.id.clone()) {
+            candidates.push(current);
+        }
+    }
+    let mut opened = state.workspace_service.get_opened_workspaces().await;
+    opened.sort_by_key(|ws| std::cmp::Reverse(ws.last_accessed));
+    for ws in opened {
+        if seen.insert(ws.id.clone()) {
+            candidates.push(ws);
+        }
+    }
+    for ws in state.workspace_service.get_assistant_workspaces().await {
+        if seen.insert(ws.id.clone()) {
+            candidates.push(ws);
+        }
+    }
+
+    for workspace in candidates {
+        let is_remote = workspace.workspace_kind == WorkspaceKind::Remote;
+        let remote_connection_id = if is_remote {
+            workspace.remote_ssh_connection_id().map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        let remote_ssh_host = if is_remote {
+            workspace
+                .metadata
+                .get("sshHost")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        let scope = desktop_session_scope(
+            Some(workspace.id),
+            workspace.root_path.to_string_lossy().into_owned(),
+            remote_connection_id,
+            remote_ssh_host,
+        );
+        if runtime
+            .session_application()
+            .ensure_session_loaded(scope, &request.session_id, false)
+            .await
+            .is_ok()
+            && coordinator
+                .get_session_manager()
+                .get_session(&request.session_id)
+                .is_some()
+        {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
 // @backend-command
 pub async fn btw_ask_stream(
     state: State<'_, AppState>,
+    runtime: State<'_, DesktopRuntimeContext>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: BtwAskStreamRequest,
 ) -> Result<BtwAskStreamResponse, String> {
@@ -109,6 +233,15 @@ pub async fn btw_ask_stream(
     if child_session_id.is_empty() {
         return Err("childSessionId is required".to_string());
     }
+
+    ensure_btw_parent_session_loaded(
+        state.inner(),
+        runtime.inner(),
+        coordinator.inner(),
+        &request,
+    )
+    .await?;
+
     let child_session_id = child_session_id.to_string();
     let child_session_name = request.child_session_name.clone();
     let model_id = request.model_id.clone();

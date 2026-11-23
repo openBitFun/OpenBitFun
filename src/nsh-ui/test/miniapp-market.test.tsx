@@ -223,9 +223,9 @@ test("submissions: lists the account's submissions and withdraws one after confi
   expect(app.texts().some(text => text.includes("publish new releases from the OpenBitFun market website"))).toBe(true);
 
   await app.press("label:submission-withdraw-sub-1");
-  await app.waitFor("Withdraw Focus Timer from review?");
+  await app.waitFor("label:submission-withdraw-confirm-sub-1");
   expect(marketCalls(backend, "miniapp_market_withdraw_submission")).toHaveLength(0);
-  await app.press("Withdraw >> nth=1");
+  await app.press("label:submission-withdraw-confirm-sub-1");
   await app.waitUntil(() => marketCalls(backend, "miniapp_market_withdraw_submission").length === 1);
   expect(marketCalls(backend, "miniapp_market_withdraw_submission")[0].request).toMatchObject({
     submissionId: "sub-1",

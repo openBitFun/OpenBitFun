@@ -751,11 +751,11 @@ test("SSH Connection modal supports ~/.ssh/config import, ssh_get_config, test r
     payload: { connectionId: "conn-staging-2" },
   });
 
-  // Delete Staging Box via inline confirm
+  // Delete Staging Box via in-place Cancel | Confirm
   await app.press("Saved Connections");
   await app.press("ssh-delete-conn-staging-2");
-  await app.waitFor("Confirm Delete");
-  await app.press("Confirm Delete");
+  await app.waitFor("ssh-delete-confirm-conn-staging-2");
+  await app.press("ssh-delete-confirm-conn-staging-2");
   await app.waitUntil(() => ssh.callsFor("ssh_delete_connection").length === 1);
   expect(ssh.callsFor("ssh_delete_connection")[0]).toMatchObject({
     raw: true,
@@ -832,10 +832,10 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
     },
   });
 
-  // Delete renamed folder -> calls positional remote_remove
+  // Delete renamed folder -> in-place Cancel | Confirm calls positional remote_remove
   await app.press("Delete renamed-dir");
-  await app.waitFor('Delete "renamed-dir" on remote host?');
-  await app.press("text:Delete");
+  await app.waitFor("remote-delete-confirm-renamed-dir");
+  await app.press("remote-delete-confirm-renamed-dir");
   await app.waitUntil(() => ssh.callsFor("remote_remove").length === 1);
   expect(ssh.callsFor("remote_remove")[0]).toMatchObject({
     raw: true,

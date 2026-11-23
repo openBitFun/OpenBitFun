@@ -548,7 +548,7 @@ import {
   openConfigImport,
   pickConfigFile,
 } from "../configTransferStore";
-import { openSessionDelete } from "../ui/sessionActions";
+import { deleteSessionTarget } from "../ui/sessionActions";
 import {
   ActionButton,
   Badge,
@@ -556,6 +556,7 @@ import {
   IconButton,
   InlineBanner,
   InlineConfirmBar,
+  InlineDeleteConfirm,
   InlineFieldSaveGroup,
   InputBox,
   SearchInput,
@@ -3722,26 +3723,17 @@ function McpSection() {
                     label: tr("common.delete"),
                     icon: "trash",
                     danger: true,
+                    confirmDelete: true,
+                    confirmAccessibilityLabel: `mcp-delete-confirm-${row().id}`,
                     accessibilityLabel: `mcp-delete-${row().id}`,
-                    onSelect: () => mcpDeletePending.set(row().id),
+                    onSelect: () => {
+                      mcpDeletePending.set(null);
+                      void deleteMcpServer(row().id);
+                    },
                   },
                 ]}
                 onClose={() => rowMenuId.set(null)}
               />
-              <If when={mcpDeletePending() === row().id}>
-                <View testID={`mcp-delete-confirm-${row().id}`} style={{ paddingTop: 10 }}>
-                  <InlineConfirmBar
-                    message={tr("settings.mcp.deleteConfirm", { name: row().name || row().id })}
-                    confirmLabel={tr("common.delete")}
-                    danger={true}
-                    onConfirm={() => {
-                      mcpDeletePending.set(null);
-                      void deleteMcpServer(row().id);
-                    }}
-                    onCancel={() => mcpDeletePending.set(null)}
-                  />
-                </View>
-              </If>
             </View>
           )}
         </Each>
@@ -5547,33 +5539,18 @@ function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number];
               label: tr("settings.models.removeModel"),
               icon: "trash",
               danger: true,
+              confirmDelete: true,
+              confirmAccessibilityLabel: `model-delete-confirm-${props.model().id}`,
               accessibilityLabel: `remove-model-${props.model().id}`,
               onSelect: () => {
                 rowMenuId.set(null);
-                requestModelDelete(props.model().id);
+                requestModelDelete(null);
+                void deleteModel(props.model().id);
               },
             },
           ]}
         />
       </View>
-      <If when={modelDeletePending() === props.model().id}>
-        <View testID={`model-delete-confirm-${props.model().id}`}>
-        <InlineConfirmBar
-          message={
-            defaultModelReferences(props.model().id) > 0
-              ? tr("settings.models.deleteConfirmReferenced", {
-                  name: modelOptionText(props.model()),
-                  count: defaultModelReferences(props.model().id),
-                })
-              : tr("settings.models.deleteConfirm", { name: modelOptionText(props.model()) })
-          }
-          confirmLabel={tr("common.delete")}
-          danger={true}
-          onConfirm={() => void deleteModel(props.model().id)}
-          onCancel={() => requestModelDelete(null)}
-        />
-        </View>
-      </If>
     </View>
   );
 }
@@ -7870,27 +7847,19 @@ function MemoryActionsRow() {
           accessibilityLabel="memory-open-folder"
           onPress={() => void openMemoryFolder()}
         />
-        <Button
+        <InlineDeleteConfirm
+          confirming={memoryResetPending()}
+          onConfirmingChange={next => memoryResetPending.set(next)}
           label={tr("settings.memory.reset")}
           variant="danger"
           size="sm"
           loading={memoryActionBusy() === "reset"}
           disabled={memoryActionBusy() !== null}
           accessibilityLabel="memory-reset"
-          onPress={() => memoryResetPending.set(true)}
+          confirmAccessibilityLabel="memory-reset-confirm"
+          onConfirm={() => void resetMemory()}
         />
       </SettingsRow>
-      <If when={memoryResetPending()}>
-        <View testID="memory-reset-confirm" style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
-          <InlineConfirmBar
-            message={tr("settings.memory.resetConfirm")}
-            confirmLabel={tr("settings.memory.reset")}
-            danger={true}
-            onConfirm={() => void resetMemory()}
-            onCancel={() => memoryResetPending.set(false)}
-          />
-        </View>
-      </If>
     </View>
   );
 }
@@ -8282,45 +8251,23 @@ function OpenBitFunSection() {
           </SettingsGroup>
           <SettingsGroup id="openbitfun-data" title={tr("obf.deleteData")} hideTitle={true}>
             <SettingsRow label={tr("obf.deleteData")} description={tr("obf.deleteBody")} first={true}>
-              <Button
+              <InlineDeleteConfirm
+                confirming={obfDeleteOpen()}
+                onConfirmingChange={next => obfDeleteOpen.set(next)}
                 label={tr("common.delete")}
                 variant="secondary"
                 size="sm"
+                loading={obfBusy()}
                 disabled={obfBusy()}
                 accessibilityLabel="obf-delete-data"
-                onPress={() => obfDeleteOpen.set(true)}
+                confirmAccessibilityLabel="obf-delete-confirm"
+                cancelAccessibilityLabel="obf-delete-cancel"
+                onConfirm={() => void deleteSuperagentData()}
               />
             </SettingsRow>
           </SettingsGroup>
         </View>
       </If>
-      <ModalDialog
-        open={obfDeleteOpen()}
-        title={tr("obf.deleteTitle")}
-        subtitle={tr("obf.deleteBody")}
-        size="sm"
-        accessibilityLabel="obf-delete-dialog"
-        onClose={() => obfDeleteOpen.set(false)}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
-            <Button
-              label={tr("common.cancel")}
-              variant="secondary"
-              size="md"
-              accessibilityLabel="obf-delete-cancel"
-              onPress={() => obfDeleteOpen.set(false)}
-            />
-            <Button
-              label={tr("common.delete")}
-              variant="danger"
-              size="md"
-              loading={obfBusy()}
-              accessibilityLabel="obf-delete-confirm"
-              onPress={() => void deleteSuperagentData()}
-            />
-          </View>
-        }
-      />
     </View>
   );
 }
@@ -8848,39 +8795,19 @@ function ArchivedSessionsSection() {
       </If>
       <If when={rows().length > 1}>
         <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
-          <Button
+          <InlineDeleteConfirm
+            confirming={archivedDeleteAllOpen()}
+            onConfirmingChange={next => archivedDeleteAllOpen.set(next)}
             label={tr("settings.archived.deleteAll")}
             variant="ghost"
             size="sm"
+            loading={archivedDeletingAll()}
             accessibilityLabel="settings-archived-delete-all"
-            onPress={() => archivedDeleteAllOpen.set(true)}
+            confirmAccessibilityLabel="settings-archived-delete-all-confirm"
+            onConfirm={() => void deleteAllArchived()}
           />
         </View>
       </If>
-      <ModalDialog
-        open={archivedDeleteAllOpen()}
-        size="sm"
-        title={tr("settings.archived.deleteAllTitle")}
-        accessibilityLabel="settings-archived-delete-all-modal"
-        onClose={() => archivedDeleteAllOpen.set(false)}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => archivedDeleteAllOpen.set(false)} />
-            <Button
-              label={tr("common.delete")}
-              variant="danger"
-              size="md"
-              loading={archivedDeletingAll()}
-              accessibilityLabel="settings-archived-delete-all-confirm"
-              onPress={() => void deleteAllArchived()}
-            />
-          </View>
-        }
-      >
-        <Text style={textStyle("body", { color: palette().textSecondary })}>
-          {tr("settings.archived.deleteAllBody", { count: rows().length })}
-        </Text>
-      </ModalDialog>
       <If
         when={rows().length > 0}
         else={
@@ -8896,13 +8823,15 @@ function ArchivedSessionsSection() {
             {(row, index) => (
               <SettingsRow label={row().sessionName || row().sessionId} first={index() === 0}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                  <Button
+                  <InlineDeleteConfirm
                     label={tr("session.delete")}
                     variant="ghost"
                     size="sm"
                     accessibilityLabel={`settings-archived-delete-${row().sessionId}`}
-                    onPress={() =>
-                      openSessionDelete({
+                    confirmAccessibilityLabel="session-delete-confirm"
+                    cancelAccessibilityLabel="session-delete-cancel"
+                    onConfirm={() =>
+                      void deleteSessionTarget({
                         sessionId: row().sessionId,
                         deviceId: deviceContext(),
                         workspaceId: row().workspaceId || activeWorkspace()?.id || "",

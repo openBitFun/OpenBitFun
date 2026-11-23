@@ -194,10 +194,13 @@ function buildAssistantMenuItems(assistant: AssistantWorkspaceView): DropdownMen
       label: tr("assistants.deleteAssistant"),
       icon: "trash",
       danger: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: `assistant-delete-confirm-${assistant.id}`,
       disabled: isPrimary || assistantsBusy(),
       accessibilityLabel: `assistant-delete-${assistant.id}`,
       onSelect: () => {
         requestAssistantConfirm(assistant.id, "delete");
+        void executeAssistantConfirm();
       },
     },
   ];

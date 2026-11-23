@@ -757,11 +757,11 @@ test("routines: loads schedules, renders 24h & calendar, creates/edits/toggles/d
   );
   expect(toggleCall?.request).toMatchObject({ jobId: "cron-1", enabled: false });
 
-  // Delete routine via more DropdownMenu + InlineConfirmBar
+  // Delete routine via more DropdownMenu in-place Cancel | Confirm
   await app.press("label:routine-more-cron-session-1");
   await app.press("label:routine-delete-cron-session-1");
-  await app.waitFor("Delete routine");
-  await app.press("Delete routine");
+  await app.waitFor("label:routine-delete-confirm-cron-session-1");
+  await app.press("label:routine-delete-confirm-cron-session-1");
   const deleteCall = backend.calls.find(c => c.action === "delete_cron_job");
   expect(deleteCall?.request).toMatchObject({ jobId: "cron-session-1" });
   expect(app.texts()).not.toContain("Session Watcher Updated");
@@ -930,7 +930,8 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
 
   await app.press("label:git-checkout-main");
   await app.press("label:git-delete-branch-feat/studio");
-  await app.press("Delete branch");
+  await app.waitFor("label:git-delete-branch-confirm-feat/studio");
+  await app.press("label:git-delete-branch-confirm-feat/studio");
   expect(backend.calls.find(c => c.action === "git_delete_branch")?.request).toMatchObject({
     branchName: "feat/studio",
     force: false,
@@ -953,8 +954,8 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   });
 
   await app.press("label:git-remove-worktree-/repo-wt-hotfix");
-  await app.waitFor("Remove worktree");
-  await app.press("Remove worktree");
+  await app.waitFor("label:git-remove-worktree-confirm-/repo-wt-hotfix");
+  await app.press("label:git-remove-worktree-confirm-/repo-wt-hotfix");
   expect(backend.calls.find(c => c.action === "git_remove_worktree")?.request).toMatchObject({
     workspaceId: "workspace-1",
     repositoryPath: "/repo",
@@ -1041,11 +1042,11 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   });
   await app.press("label:space-inspector-close");
 
-  // Delete Space via card more DropdownMenu + InlineConfirmBar, then inspect remaining Space
+  // Delete Space via card more DropdownMenu in-place Cancel | Confirm, then inspect remaining Space
   await app.press("label:space-more-space-board");
   await app.press("label:space-menu-delete-space-board");
-  await app.waitFor("Delete");
-  await app.press("Delete");
+  await app.waitFor("label:space-delete-confirm-space-board");
+  await app.press("label:space-delete-confirm-space-board");
   expect(backend.calls.find(c => c.action === "delete_miniapp")?.request).toMatchObject({
     appId: "space-board",
   });

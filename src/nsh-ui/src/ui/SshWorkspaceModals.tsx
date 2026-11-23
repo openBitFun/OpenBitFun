@@ -219,6 +219,7 @@ import {
   IconButton,
   InlineBanner,
   InlineConfirmBar,
+  InlineDeleteConfirm,
   InputBox,
   SearchInput,
   SegmentedTabs,
@@ -1159,21 +1160,6 @@ function SshConnectionModal() {
             onChange={v => sshSavedSearch.set(v)}
           />
 
-          <If when={Boolean(confirmingDeleteId())}>
-            <InlineConfirmBar
-              danger
-              message={tr("ssh.deleteProfileConfirm")}
-              confirmLabel={tr("ssh.confirmDeleteTitleCase")}
-              cancelLabel={tr("common.cancel")}
-              onConfirm={() => {
-                const id = confirmingDeleteId();
-                confirmingDeleteId.set(null);
-                if (id) void deleteSavedSshConnection(id);
-              }}
-              onCancel={() => confirmingDeleteId.set(null)}
-            />
-          </If>
-
           <ConfigSection flush title={tr("ssh.savedProfiles")}>
             <If
               when={filteredSavedConnections().length > 0}
@@ -1249,8 +1235,10 @@ function SshConnectionModal() {
                         icon: "trash" as IconName,
                         danger: true,
                         separator: true,
+                        confirmDelete: true,
+                        confirmAccessibilityLabel: `ssh-delete-confirm-${conn().id}`,
                         accessibilityLabel: `ssh-delete-${conn().id}`,
-                        onSelect: () => confirmingDeleteId.set(conn().id),
+                        onSelect: () => void deleteSavedSshConnection(conn().id),
                       },
                     ];
                     return (
@@ -1420,13 +1408,20 @@ function SshConnectionModal() {
                                     sshConnectionView.set("new");
                                   }}
                                 />
-                                <IconButton
+                                <InlineDeleteConfirm
+                                  confirming={confirmingDeleteId() === conn().id}
+                                  onConfirmingChange={next =>
+                                    confirmingDeleteId.set(next ? conn().id : null)
+                                  }
                                   icon="trash"
                                   size="xs"
-                                  tone="danger"
                                   tooltip={tr("ssh.deleteProfile")}
                                   accessibilityLabel={`ssh-delete-${conn().id}`}
-                                  onPress={() => confirmingDeleteId.set(conn().id)}
+                                  confirmAccessibilityLabel={`ssh-delete-confirm-${conn().id}`}
+                                  onConfirm={() => {
+                                    confirmingDeleteId.set(null);
+                                    void deleteSavedSshConnection(conn().id);
+                                  }}
                                 />
                               </>
                             }
@@ -2428,8 +2423,11 @@ function RemoteFileBrowserModal() {
         icon: "trash",
         danger: true,
         separator: true,
+        confirmDelete: true,
+        confirmAccessibilityLabel: `remote-delete-confirm-${entry.name}`,
         onSelect: () => {
           browserConfirmDeleteEntry.set(entry);
+          void confirmRemoteDelete();
         },
       },
     ];
@@ -2832,20 +2830,6 @@ function RemoteFileBrowserModal() {
         )}
       </If>
 
-      {/* Delete Confirm Bar */}
-      <If when={browserConfirmDeleteEntry()}>
-        {entry => (
-          <InlineConfirmBar
-            danger
-            message={tr("ssh.deleteEntryConfirm", { name: entry().name })}
-            confirmLabel={tr("common.delete")}
-            cancelLabel={tr("common.cancel")}
-            onConfirm={() => void confirmRemoteDelete()}
-            onCancel={() => browserConfirmDeleteEntry.set(null)}
-          />
-        )}
-      </If>
-
       {/* Remote File List */}
       <View
         style={{
@@ -3007,13 +2991,20 @@ function RemoteFileBrowserModal() {
                               browserRenameValue.set(entry().name);
                             }}
                           />
-                          <IconButton
+                          <InlineDeleteConfirm
+                            confirming={browserConfirmDeleteEntry()?.path === entry().path}
+                            onConfirmingChange={next =>
+                              browserConfirmDeleteEntry.set(next ? entry() : null)
+                            }
                             icon="trash"
                             size={compactLayout() ? "sm" : "xs"}
-                            tone="danger"
                             tooltip={tr("common.delete")}
                             accessibilityLabel={`Delete ${entry().name}`}
-                            onPress={() => browserConfirmDeleteEntry.set(entry())}
+                            confirmAccessibilityLabel={`remote-delete-confirm-${entry().name}`}
+                            onConfirm={() => {
+                              browserConfirmDeleteEntry.set(entry());
+                              void confirmRemoteDelete();
+                            }}
                           />
                         </View>
                       </View>

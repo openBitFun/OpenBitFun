@@ -378,6 +378,8 @@ import {
   openSideQuestion,
   runExtrasCommand,
   SessionExtrasDialogs,
+  sideQuestionOpen,
+  SideQuestionSplitPane,
   useSessionExtras,
 } from "../ui/sessionExtras";
 import {
@@ -396,7 +398,13 @@ import {
 
 const renaming = signal(false);
 const renameValue = signal("");
-const confirmingSessionDelete = signal<string | null>(null);
+const permissionModeTarget = signal<{
+  sessionId: string;
+  workspaceId?: string | null;
+  workspacePath?: string | null;
+  turnId?: string | null;
+} | null>(null);
+const anyRightSplitOpen = computed(() => !compactLayout() && (splitPaneOpen() || sideQuestionOpen()));
 const threadMenuOpen = signal(false);
 const transcriptSearchOpen = signal(false);
 const transcriptSearchQuery = signal("");
@@ -1199,16 +1207,31 @@ function ConversationHeader() {
           <View
             testID="session-header"
             style={{
+              position: "relative",
+              height: sessionOrigin() ? 64 : layout.topBarHeight,
               minHeight: sessionOrigin() ? 64 : layout.topBarHeight,
-              paddingHorizontal: sessionsCompact() ? space.lg : space.xxl,
+              paddingHorizontal: anyRightSplitOpen() || sessionsCompact() ? space.lg : space.xxl,
               justifyContent: "center",
               gap: space.hair,
               backgroundColor: palette().canvas,
               borderBottomWidth: 1,
-              borderColor: transcriptScrolled() ? palette().borderSubtle : "transparent",
+              borderColor: anyRightSplitOpen() || transcriptScrolled() ? palette().borderSubtle : "transparent",
               ...paintTransition(MOTION_DURATION.fast),
             }}
           >
+            <If when={splitPaneOpen() && focusedPane() === 0}>
+              <View
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: 2,
+                  backgroundColor: palette().accent,
+                  pointerEvents: "none",
+                }}
+              />
+            </If>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
               <View
                 role={splitPaneOpen() ? "button" : undefined}
@@ -1525,33 +1548,6 @@ function ConversationHeader() {
           </View>
         </View>
       </If>
-
-      {/* Inline Delete Confirmation */}
-      <If when={Boolean(activeSession() && confirmingSessionDelete() === activeSession()!.sessionId)}>
-        <View
-          style={{
-            paddingHorizontal: sessionsPadX(),
-            paddingVertical: 8,
-            borderBottomWidth: 1,
-            borderColor: palette().borderSubtle,
-            backgroundColor: palette().canvasSubtle,
-          }}
-        >
-          <View style={{ width: "100%", maxWidth: contentWidth(), alignSelf: "center" }}>
-            <InlineConfirmBar
-              message={tr("sessions.deleteConfirm", { title: sessionTitle(activeSession()!) })}
-              confirmLabel={tr("common.confirmDelete")}
-              danger={true}
-              onConfirm={() => {
-                const id = activeSession()!.sessionId;
-                confirmingSessionDelete.set(null);
-                void deleteSessionRow(id);
-              }}
-              onCancel={() => confirmingSessionDelete.set(null)}
-            />
-          </View>
-        </View>
-      </If>
     </View>
   );
 }
@@ -1575,6 +1571,7 @@ function ThreadActionsSurface(props: {
   splitOpen?: boolean;
 }) {
   const motion = usePopoverMotion(() => props.placement, "end", closeThreadMenu);
+  const confirmingDelete = signal(false);
   return (
     <View
       role="menu"
@@ -1717,15 +1714,83 @@ function ThreadActionsSurface(props: {
 
             <ThreadMenuDivider />
 
-            <ThreadMenuAction
-              icon="trash"
-              label={tr("common.delete")}
-              danger={true}
-              onPress={() => {
-                closeThreadMenu();
-                confirmingSessionDelete.set(session().sessionId);
-              }}
-            />
+            <If
+              when={confirmingDelete()}
+              else={
+                <ThreadMenuAction
+                  icon="trash"
+                  label={tr("common.delete")}
+                  danger={true}
+                  accessibilityLabel="session-delete-trigger"
+                  onPress={() => confirmingDelete.set(true)}
+                />
+              }
+            >
+              <View
+                accessibilityLabel="session-delete-inline-confirm"
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : 30,
+                  paddingHorizontal: space.xs,
+                  gap: space.xs,
+                  borderRadius: radii.xs,
+                  borderCurve: "continuous",
+                  backgroundColor: palette().dangerSoft,
+                }}
+              >
+                <View
+                  role="button"
+                  accessibilityLabel="session-delete-cancel"
+                  onPress={() => confirmingDelete.set(false)}
+                  style={{
+                    flex: 1,
+                    height: compactLayout() ? 32 : 24,
+                    borderRadius: radii.xs,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  activeStyle={tactileActiveStyle(0.96)}
+                  focusVisibleStyle={focusRingStyle(-1)}
+                >
+                  <Text style={{ ...textStyle("caption", { color: palette().text }), fontWeight: "500" }}>
+                    {tr("common.cancel")}
+                  </Text>
+                </View>
+                <View style={{ width: 1, height: 14, backgroundColor: palette().borderSubtle }} />
+                <View
+                  role="button"
+                  accessibilityLabel="session-delete-confirm"
+                  onPress={() => {
+                    confirmingDelete.set(false);
+                    closeThreadMenu();
+                    void deleteSessionRow(session().sessionId);
+                  }}
+                  style={{
+                    flex: 1,
+                    height: compactLayout() ? 32 : 24,
+                    borderRadius: radii.xs,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: palette().danger,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{ opacity: 0.92 }}
+                  activeStyle={tactileActiveStyle(0.96)}
+                  focusVisibleStyle={focusRingStyle(-1)}
+                >
+                  <Text style={{ ...textStyle("caption", { color: palette().actionPrimaryFg }), fontWeight: "600" }}>
+                    {tr("common.confirm")}
+                  </Text>
+                </View>
+              </View>
+            </If>
           </>
         )}
       </If>
@@ -3606,7 +3671,9 @@ const hoveredRailEntry = computed(() => {
  */
 function TurnJumpRail() {
   const rows = computed(() => visibleTurnRows());
-  const visible = computed(() => !compactLayout() && !sessionsCompact() && rows().length >= 2);
+  const visible = computed(
+    () => !compactLayout() && !sessionsCompact() && !splitPaneOpen() && !sideQuestionOpen() && rows().length >= 2,
+  );
   const dense = computed(() => rows().length > 24);
   const resolvedActiveKey = computed(() => {
     const current = activeRailTurnKey();
@@ -4589,6 +4656,7 @@ function FullAccessNotice() {
           />
         }
         onPress={() => {
+          permissionModeTarget.set(null);
           permissionPillAnchor.set(fullAccessTriggerAnchor());
           permissionModeAlign.set("end");
           const next = !permissionModePickerOpen();
@@ -4621,8 +4689,10 @@ function FullAccessNotice() {
 function PermissionModeSurface(props: { placement: Placement; align: "start" | "end" }) {
   const motion = usePopoverMotion(() => props.placement, props.align, () => {
     permissionModePickerOpen.set(false);
+    permissionModeTarget.set(null);
     permissionModePlacement.set("top");
   });
+  const targetSessionId = () => permissionModeTarget()?.sessionId ?? activeSessionId();
   return (
     <View
       testID="permission-mode-surface"
@@ -4644,7 +4714,11 @@ function PermissionModeSurface(props: { placement: Placement; align: "start" | "
           <View
             role="button"
             accessibilityLabel={`permission-mode-${row().mode ?? "default"}`}
-            onPress={() => void chooseSessionPermissionMode(row().mode)}
+            onPress={() => {
+              const target = permissionModeTarget();
+              permissionModeTarget.set(null);
+              void chooseSessionPermissionMode(row().mode, target ?? undefined);
+            }}
             style={{
               flexDirection: "row",
               alignItems: "flex-start",
@@ -4657,10 +4731,10 @@ function PermissionModeSurface(props: { placement: Placement; align: "start" | "
               cursor: "pointer",
               userSelect: "none",
               backgroundColor:
-                (row().mode === null && followsDefaultMode(activeSessionId())) ||
+                (row().mode === null && followsDefaultMode(targetSessionId())) ||
                 (row().mode !== null &&
-                  !followsDefaultMode(activeSessionId()) &&
-                  effectivePermissionMode(activeSessionId()) === row().mode)
+                  !followsDefaultMode(targetSessionId()) &&
+                  effectivePermissionMode(targetSessionId()) === row().mode)
                   ? palette().surfaceSubtle
                   : "transparent",
               ...paintTransition(MOTION_DURATION.fast),
@@ -4936,6 +5010,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
       trailingHint: permissionModeLabel(effectivePermissionMode(activeSessionId())),
       accessibilityLabel: "permission-mode-pill",
       onSelect: fromPlus(() => {
+        permissionModeTarget.set(null);
         permissionPillAnchor.set(composerPlusAnchor());
         permissionModeAlign.set("start");
         closePickers();
@@ -5020,6 +5095,332 @@ const composerVoiceActions: VoiceComposerActions = {
   disabled: () => composerDisabled(),
 };
 
+const DOC_FILE_EXTENSIONS = new Set(["MD", "DOC", "DOCX", "PDF", "RTF", "RST"]);
+const CODE_FILE_EXTENSIONS = new Set([
+  "TS",
+  "TSX",
+  "JS",
+  "JSX",
+  "MJS",
+  "CJS",
+  "RS",
+  "PY",
+  "GO",
+  "JAVA",
+  "KT",
+  "SWFT",
+  "JSON",
+  "YAML",
+  "YML",
+  "TOML",
+  "CSS",
+  "SCSS",
+  "HTML",
+  "XML",
+  "SQL",
+  "SH",
+  "ZSH",
+  "BASH",
+  "C",
+  "CPP",
+  "H",
+  "HPP",
+]);
+
+function fileExtensionBadge(name: string): { label: string; tone: "doc" | "code" | "neutral" } {
+  const dot = name.lastIndexOf(".");
+  if (dot > 0 && dot < name.length - 1) {
+    const raw = name.slice(dot + 1).replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    if (raw.length > 0) {
+      const label = raw.length > 4 ? raw.slice(0, 4) : raw;
+      if (DOC_FILE_EXTENSIONS.has(label)) return { label, tone: "doc" };
+      if (CODE_FILE_EXTENSIONS.has(label)) return { label, tone: "code" };
+      return { label, tone: "neutral" };
+    }
+  }
+  return { label: "FILE", tone: "neutral" };
+}
+
+function fileChipDisplayName(entry: FileAttachment): string {
+  if (entry.isDirectory) return entry.name;
+  const dot = entry.name.lastIndexOf(".");
+  if (dot > 0 && dot < entry.name.length - 1) {
+    const ext = entry.name.slice(dot + 1);
+    if (/^[a-zA-Z0-9]{1,4}$/.test(ext)) {
+      return entry.name.slice(0, dot);
+    }
+  }
+  return entry.name;
+}
+
+/**
+ * Unified Antigravity-style attachment strip shared by Pane 0 and Pane 1.
+ * Keeps images (36x36) and file/folder chips (36px height) on one clean baseline
+ * above a hairline divider, without hover tooltips, drop-hint text, or line counts.
+ */
+function ComposerAttachmentStrip(props: {
+  images: () => ReadonlyArray<ImageAttachment>;
+  files: () => ReadonlyArray<FileAttachment>;
+  notice?: () => string;
+  onRemoveImage: (id: string) => void;
+  onRemoveFile: (id: string) => void;
+  idPrefix?: string;
+}) {
+  const prefix = props.idPrefix ?? "";
+  const noticeText = () => props.notice?.() ?? "";
+  return (
+    <If when={props.images().length > 0 || props.files().length > 0 || noticeText().length > 0}>
+      <View
+        style={{
+          paddingHorizontal: space.md,
+          paddingTop: space.sm,
+          paddingBottom: space.sm,
+          borderBottomWidth: 1,
+          borderColor: palette().borderSubtle,
+          flexDirection: "row",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: space.chip,
+        }}
+      >
+        <Each of={props.images()} key={entry => entry.id}>
+          {entry => (
+            <View
+              style={{
+                position: "relative",
+                width: 36,
+                height: 36,
+                borderRadius: radii.md,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                borderColor: palette().borderSubtle,
+                backgroundColor: palette().surfaceTertiary,
+                overflow: "hidden",
+                flexShrink: 0,
+              }}
+            >
+              <If
+                when={attachmentPreviewSrc(entry())}
+                else={
+                  <View
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Icon name="image" size={14} color={palette().textSecondary} />
+                  </View>
+                }
+              >
+                {src => (
+                  <View
+                    role="button"
+                    accessibilityLabel={`${prefix}attachment-preview-${entry().id}`}
+                    onPress={() => openImageLightbox({ src: src(), title: entry().name })}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      cursor: "pointer",
+                      ...pressTransition(MOTION_DURATION.fast),
+                    }}
+                    hoverStyle={{ opacity: 0.9 }}
+                    activeStyle={tactileActiveStyle(0.96)}
+                    focusVisibleStyle={focusRingStyle(-1)}
+                  >
+                    <Image
+                      src={src()}
+                      accessibilityLabel={`${prefix}attachment-thumb-${entry().id}`}
+                      style={{ width: 36, height: 36, objectFit: "cover" }}
+                    />
+                  </View>
+                )}
+              </If>
+              <View
+                role="button"
+                hitSlop={compactLayout() ? 6 : 4}
+                accessibilityLabel={`${prefix}remove-attachment-${entry().id}`}
+                onPress={() => props.onRemoveImage(entry().id)}
+                style={{
+                  position: "absolute",
+                  top: 2,
+                  right: 2,
+                  width: 15,
+                  height: 15,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().scrimBg,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().danger }}
+                activeStyle={tactileActiveStyle(0.92)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <Icon name="close" size={9} color={palette().actionPrimaryFg} />
+              </View>
+            </View>
+          )}
+        </Each>
+
+        <Each of={props.files()} key={entry => entry.id}>
+          {entry => {
+            const badge = () => fileExtensionBadge(entry().name);
+            return (
+              <View
+                accessibilityLabel={`${prefix}file-attachment-${entry().name}`}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  maxWidth: 224,
+                  height: 36,
+                  gap: space.chip,
+                  paddingLeft: space.chip,
+                  paddingRight: space.xs,
+                  borderRadius: radii.md,
+                  borderCurve: "continuous",
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().surfaceTertiary,
+                  flexShrink: 0,
+                }}
+              >
+                <View
+                  role="button"
+                  accessibilityLabel={`${prefix}file-attachment-open-${entry().id}`}
+                  onPress={() => {
+                    if (!entry().isDirectory && entry().path) {
+                      openInAuxPane("files", entry().path);
+                    } else {
+                      openInAuxPane("files");
+                    }
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.chip,
+                    flexShrink: 1,
+                    minWidth: 0,
+                    cursor: "pointer",
+                    userSelect: "none",
+                  }}
+                >
+                  <If
+                    when={Boolean(entry().isDirectory)}
+                    else={
+                      <View
+                        style={{
+                          height: 20,
+                          minWidth: 26,
+                          paddingHorizontal: 5,
+                          borderRadius: radii.xs,
+                          borderCurve: "continuous",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                          backgroundColor:
+                            badge().tone === "doc"
+                              ? palette().accentSoft
+                              : badge().tone === "code"
+                                ? palette().successSoft
+                                : palette().chip,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontSize: textSize(9.5),
+                            lineHeight: textLineHeight(9.5, 1.15),
+                            fontWeight: "700",
+                            letterSpacing: 0.3,
+                            color:
+                              badge().tone === "doc"
+                                ? palette().accent
+                                : badge().tone === "code"
+                                  ? palette().success
+                                  : palette().textSecondary,
+                          }}
+                        >
+                          {badge().label}
+                        </Text>
+                      </View>
+                    }
+                  >
+                    <View
+                      style={{
+                        width: 22,
+                        height: 20,
+                        borderRadius: radii.xs,
+                        borderCurve: "continuous",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        backgroundColor: palette().accentSoft,
+                      }}
+                    >
+                      <Icon name="folder" size={12} color={palette().accent} />
+                    </View>
+                  </If>
+                  <Text
+                    style={{
+                      flexShrink: 1,
+                      minWidth: 0,
+                      color: palette().text,
+                      fontSize: textSize(12.5),
+                      lineHeight: textLineHeight(12.5, 1.3),
+                      fontWeight: "500",
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {fileChipDisplayName(entry())}
+                  </Text>
+                </View>
+                <View
+                  role="button"
+                  hitSlop={compactLayout() ? 6 : 4}
+                  accessibilityLabel={`${prefix}remove-file-attachment-${entry().id}`}
+                  onPress={() => props.onRemoveFile(entry().id)}
+                  style={{
+                    flexShrink: 0,
+                    width: 18,
+                    height: 18,
+                    borderRadius: radii.pill,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  activeStyle={tactileActiveStyle(0.92)}
+                  focusVisibleStyle={focusRingStyle()}
+                >
+                  <Icon name="close" size={11} color={palette().textMuted} />
+                </View>
+              </View>
+            );
+          }}
+        </Each>
+
+        <If when={noticeText().length > 0}>
+          <Text
+            style={{
+              color: palette().warning,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.35),
+            }}
+          >
+            {localizeHostError(noticeText())}
+          </Text>
+        </If>
+      </View>
+    </If>
+  );
+}
+
 function ComposerDock() {
   ensureModelsLoaded();
   ensureQuickActions();
@@ -5041,7 +5442,7 @@ function ComposerDock() {
     const wsId = activeWorkspaceId();
     const wsRoot = activeWorkspaceRoot();
     const modeId = agentTypeOf(id);
-    if (id) void loadSlashSkills(modeId, wsId, wsRoot);
+    if (id && composerText().startsWith("/")) void loadSlashSkills(modeId, wsId, wsRoot);
   });
   effect(() => {
     activeSessionId();
@@ -5147,276 +5548,14 @@ function ComposerDock() {
             boxShadow: palette().shadowComposerFocus,
           }}
         >
-          {/* Attachment Chips & Drag-Drop Strip (seamlessly integrated inside card top) */}
-          <If
-            when={
-              composerFileDragActive() ||
-              imageAttachments().length > 0 ||
-              fileAttachments().length > 0 ||
-              attachmentNotice().length > 0
-            }
-          >
-            <View
-              style={{
-                paddingHorizontal: space.md,
-                paddingTop: space.sm,
-                paddingBottom: space.hair,
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: space.chip,
-              }}
-            >
-              <If when={composerFileDragActive()}>
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: space.chip,
-                    paddingHorizontal: space.sm,
-                    paddingVertical: space.xs,
-                    borderRadius: radii.sm,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().accentBorder,
-                    backgroundColor: palette().accentSoft,
-                  }}
-                >
-                  <Icon name="upload" size={12} color={palette().accent} />
-                  <Text
-                    style={{
-                      color: palette().accent,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.3),
-                      fontWeight: "600",
-                    }}
-                  >
-                    {tr("sessions.composerDropHint")}
-                  </Text>
-                </View>
-              </If>
-
-              <Each of={imageAttachments()} key={entry => entry.id}>
-                {entry => (
-                  <View
-                    style={{
-                      position: "relative",
-                      width: 56,
-                      height: 56,
-                      borderRadius: radii.md,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      backgroundColor: palette().surfaceTertiary,
-                      overflow: "hidden",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <If
-                      when={attachmentPreviewSrc(entry())}
-                      else={
-                        <View
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Icon name="image" size={18} color={palette().textSecondary} />
-                        </View>
-                      }
-                    >
-                      {src => (
-                        <View
-                          role="button"
-                          accessibilityLabel={`attachment-preview-${entry().id}`}
-                          tooltip={
-                            <TooltipBubble
-                              text={
-                                entry().fileSize > 0
-                                  ? `${entry().name} · ${formatBytes(entry().fileSize)}`
-                                  : entry().name
-                              }
-                            />
-                          }
-                          onPress={() => openImageLightbox({ src: src(), title: entry().name })}
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            cursor: "pointer",
-                            ...pressTransition(MOTION_DURATION.fast),
-                          }}
-                          hoverStyle={{ opacity: 0.9 }}
-                          activeStyle={tactileActiveStyle(0.96)}
-                          focusVisibleStyle={focusRingStyle(-1)}
-                        >
-                          <Image
-                            src={src()}
-                            accessibilityLabel={`attachment-thumb-${entry().id}`}
-                            style={{ width: 56, height: 56, objectFit: "cover" }}
-                          />
-                        </View>
-                      )}
-                    </If>
-                    <View
-                      role="button"
-                      hitSlop={compactLayout() ? 6 : 4}
-                      accessibilityLabel={`remove-attachment-${entry().id}`}
-                      tooltip={<TooltipBubble text={tr("common.remove")} />}
-                      onPress={() => removeAttachment(entry().id)}
-                      style={{
-                        position: "absolute",
-                        top: 3,
-                        right: 3,
-                        width: 18,
-                        height: 18,
-                        borderRadius: radii.pill,
-                        backgroundColor: palette().scrimBg,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        ...pressTransition(MOTION_DURATION.fast),
-                      }}
-                      hoverStyle={{ backgroundColor: palette().danger }}
-                      activeStyle={tactileActiveStyle(0.92)}
-                      focusVisibleStyle={focusRingStyle()}
-                    >
-                      <Icon name="close" size={10} color={palette().actionPrimaryFg} />
-                    </View>
-                  </View>
-                )}
-              </Each>
-
-              <Each of={fileAttachments()} key={entry => entry.id}>
-                {entry => (
-                  <View
-                    accessibilityLabel={`file-attachment-${entry().name}`}
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      maxWidth: 260,
-                      height: 30,
-                      gap: space.chip,
-                      paddingLeft: space.sm,
-                      paddingRight: space.xs,
-                      borderRadius: radii.md,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
-                      borderColor:
-                        entry().source === "pasted-text" ? palette().accentBorder : palette().borderSubtle,
-                      backgroundColor:
-                        entry().source === "pasted-text" ? palette().accentSoft : palette().surfaceTertiary,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <View
-                      role="button"
-                      accessibilityLabel={`file-attachment-open-${entry().id}`}
-                      tooltip={
-                        <TooltipBubble
-                          text={
-                            entry().relativePath
-                              ? `${entry().relativePath} · ${tr("sessions.fileChipOpenHint")}`
-                              : entry().path
-                          }
-                        />
-                      }
-                      onPress={() => {
-                        if (!entry().isDirectory && entry().path) {
-                          openInAuxPane("files", entry().path);
-                        } else {
-                          openInAuxPane("files");
-                        }
-                      }}
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: space.chip,
-                        flexShrink: 1,
-                        minWidth: 0,
-                        cursor: "pointer",
-                        userSelect: "none",
-                      }}
-                    >
-                      <Icon
-                        name={fileAttachmentIcon(entry())}
-                        size={13}
-                        color={
-                          entry().source === "pasted-text" || entry().isDirectory
-                            ? palette().accent
-                            : palette().textSecondary
-                        }
-                      />
-                      <Text
-                        style={{
-                          flexShrink: 1,
-                          minWidth: 0,
-                          color: palette().text,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.3),
-                          fontWeight: "500",
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis-middle",
-                        }}
-                      >
-                        {entry().name}
-                      </Text>
-                      <If when={entry().lineCount && entry().lineCount! > 0}>
-                        <Text
-                          style={{
-                            flexShrink: 0,
-                            color: palette().textMuted,
-                            fontSize: textSize(11),
-                            lineHeight: textLineHeight(11, 1.25),
-                            fontVariant: ["tabular-nums"],
-                          }}
-                        >
-                          {tr("sessions.pastedLines", { count: entry().lineCount ?? 0 })}
-                        </Text>
-                      </If>
-                    </View>
-                    <View
-                      role="button"
-                      hitSlop={compactLayout() ? 6 : 4}
-                      accessibilityLabel={`remove-file-attachment-${entry().id}`}
-                      tooltip={<TooltipBubble text={tr("common.remove")} />}
-                      onPress={() => removeFileAttachment(entry().id)}
-                      style={{
-                        flexShrink: 0,
-                        width: 18,
-                        height: 18,
-                        borderRadius: radii.pill,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        ...pressTransition(MOTION_DURATION.fast),
-                      }}
-                      hoverStyle={{ backgroundColor: palette().panelHover }}
-                      activeStyle={tactileActiveStyle(0.92)}
-                      focusVisibleStyle={focusRingStyle()}
-                    >
-                      <Icon name="close" size={11} color={palette().textMuted} />
-                    </View>
-                  </View>
-                )}
-              </Each>
-
-              <If when={attachmentNotice().length > 0}>
-                <Text
-                  style={{
-                    color: palette().warning,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                  }}
-                >
-                  {localizeHostError(attachmentNotice())}
-                </Text>
-              </If>
-            </View>
-          </If>
+          {/* Attachment Strip (uniform 36px images & file chips above a hairline divider) */}
+          <ComposerAttachmentStrip
+            images={imageAttachments}
+            files={fileAttachments}
+            notice={attachmentNotice}
+            onRemoveImage={id => removeAttachment(id)}
+            onRemoveFile={id => removeFileAttachment(id)}
+          />
 
           <VoiceDictationBar actions={composerVoiceActions} />
 
@@ -5886,10 +6025,12 @@ function ComposerDock() {
           onPosition={pos => permissionModePlacement.set(pos.placement)}
           onPressOutside={() => {
             permissionModePickerOpen.set(false);
+            permissionModeTarget.set(null);
             permissionModePlacement.set("top");
           }}
           onCancel={() => {
             permissionModePickerOpen.set(false);
+            permissionModeTarget.set(null);
             permissionModePlacement.set("top");
           }}
         >
@@ -6265,62 +6406,36 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            justifyContent: "space-between",
             gap: space.xs,
           }}
         >
-          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
-            <If when={mentionBrowseDir().length > 0}>
-              <IconButton
-                icon="arrow-left"
-                size="xs"
-                accessibilityLabel="mention-browse-up"
-                tooltip={tr("common.back")}
-                onPress={browseMentionParent}
-              />
-            </If>
-            <Icon name="folder" size={12} color={palette().textElevatedMuted} />
-            <Text
-              style={{
-                flexShrink: 1,
-                minWidth: 0,
-                color: palette().textElevatedMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-                fontWeight: "500",
-                numberOfLines: 1,
-                textOverflow: "ellipsis-middle",
-              }}
-            >
-              {mentionBrowseDir()
-                ? toRelativeWorkspacePath(mentionBrowseDir(), activeWorkspaceRoot()) || mentionBrowseDir()
-                : activeWorkspace()?.name || tr("sessions.mentionRootLabel")}
-            </Text>
-          </View>
+          <If when={mentionBrowseDir().length > 0}>
+            <IconButton
+              icon="arrow-left"
+              size="xs"
+              accessibilityLabel="mention-browse-up"
+              tooltip={tr("common.back")}
+              onPress={browseMentionParent}
+            />
+          </If>
+          <Icon name="folder" size={12} color={palette().textElevatedMuted} />
           <Text
             style={{
-              flexShrink: 0,
+              flexShrink: 1,
+              minWidth: 0,
               color: palette().textElevatedMuted,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.3),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.35),
+              fontWeight: "500",
+              numberOfLines: 1,
+              textOverflow: "ellipsis-middle",
             }}
           >
-            {mentionInline() ? tr("sessions.mentionInlineHint") : tr("sessions.mentionPickerHint")}
+            {mentionBrowseDir()
+              ? toRelativeWorkspacePath(mentionBrowseDir(), activeWorkspaceRoot()) || mentionBrowseDir()
+              : activeWorkspace()?.name || tr("sessions.mentionRootLabel")}
           </Text>
         </View>
-      </If>
-      <If when={mentionQuery().trim().length > 0}>
-        <Text
-          style={{
-            color: palette().textElevatedMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.35),
-          }}
-        >
-          {mentionInline()
-            ? tr("sessions.mentionInlineHint")
-            : tr("sessions.mentionPickerHint")}
-        </Text>
       </If>
       <If when={mentionLoading()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
@@ -8153,6 +8268,105 @@ const secondaryVisibleTurnRows = computed(() => {
   }));
 });
 
+const secondaryDeviceLabel = computed<AttentionDevice | null>(() => {
+  const device = fleetDeviceById(secondarySessionDevice());
+  if (!device) return null;
+  return {
+    name: device.name,
+    kind: device.hostKind,
+    exception: deviceException(device.state),
+    onPress: () => openDevicePage(device.deviceId),
+  };
+});
+
+function SecondaryDeviationChip() {
+  const mode = () => {
+    const id = secondarySessionId();
+    if (!id || permissionModeSupported() === false || followsDefaultMode(id)) return null;
+    const current = effectivePermissionMode(id);
+    return current === permissionMode() ? null : current;
+  };
+  return (
+    <If when={mode()}>
+      {current => (
+        <View
+          accessibilityLabel="secondary-session-permission-deviation"
+          style={{
+            height: 20,
+            justifyContent: "center",
+            paddingHorizontal: space.chip,
+            borderRadius: radii.sm,
+            borderCurve: "continuous",
+            backgroundColor: palette().chip,
+            flexShrink: 0,
+          }}
+        >
+          <Text style={textStyle("caption", { color: palette().textSecondary })}>
+            {current() === "ask" ? tr("session.askFirst") : permissionModeLabel(current())}
+          </Text>
+        </View>
+      )}
+    </If>
+  );
+}
+
+function SecondarySessionBreadcrumb() {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flexShrink: 1 }}>
+      <If when={secondaryDeviceLabel()}>
+        {device => (
+          <DeviceBadge
+            name={device().name}
+            kind={device().kind}
+            exception={device().exception}
+            onPress={device().onPress}
+          />
+        )}
+      </If>
+      <If when={!compactLayout() ? secondaryWorkspaceName() : ""}>
+        {name => (
+          <>
+            <If
+              when={secondaryDeviceLabel()}
+              else={<Text style={textStyle("caption", { color: palette().textMuted })}>·</Text>}
+            >
+              <Icon name="chevron-right" size={12} color={palette().textMuted} />
+            </If>
+            <View
+              role="button"
+              onPress={() => openAllSessions("by-device")}
+              style={{
+                minWidth: 0,
+                flexShrink: 1,
+                borderRadius: radii.xs,
+                paddingHorizontal: space.hair,
+                cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
+              }}
+              hoverStyle={{ backgroundColor: palette().panelHover }}
+              activeStyle={tactileActiveStyle(0.98)}
+              focusVisibleStyle={focusRingStyle()}
+            >
+              <Text
+                style={{
+                  ...textStyle("caption", { color: palette().textSecondary }),
+                  fontWeight: "500",
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {name()}
+              </Text>
+            </View>
+          </>
+        )}
+      </If>
+    </View>
+  );
+}
+
 function SecondaryHeader() {
   const menuOpen = signal(false);
   const menuAnchor = signal<ViewRef | null>(null);
@@ -8191,18 +8405,31 @@ function SecondaryHeader() {
     <View
       testID="secondary-session-header"
       style={{
+        position: "relative",
+        height: layout.topBarHeight,
         minHeight: layout.topBarHeight,
         paddingHorizontal: space.lg,
         justifyContent: "center",
         backgroundColor: palette().canvas,
-        borderTopWidth: 2,
-        borderTopColor: focusedPane() === 1 ? palette().accent : "transparent",
         borderBottomWidth: 1,
-        borderBottomColor: palette().borderSubtle,
+        borderColor: palette().borderSubtle,
         ...paintTransition(MOTION_DURATION.fast),
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: layout.topBarHeight - space.lg }}>
+      <If when={focusedPane() === 1}>
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 2,
+            backgroundColor: palette().accent,
+            pointerEvents: "none",
+          }}
+        />
+      </If>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
         <View
           role="button"
           accessibilityLabel="secondary-pane-focus"
@@ -8212,30 +8439,11 @@ function SecondaryHeader() {
             minWidth: 0,
             flexDirection: "row",
             alignItems: "center",
-            gap: space.xs,
+            gap: space.md,
             cursor: "pointer",
             userSelect: "none",
           }}
         >
-          <If when={secondaryWorkspaceName()}>
-            {ws => (
-              <>
-                <Text
-                  style={{
-                    ...textStyle("caption", { color: palette().textMuted }),
-                    fontWeight: "500",
-                    flexShrink: 0,
-                    maxWidth: 130,
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {ws()}
-                </Text>
-                <Text style={textStyle("caption", { color: palette().textMuted })}>/</Text>
-              </>
-            )}
-          </If>
           <Text
             testID="secondary-session-title"
             style={{
@@ -8250,13 +8458,15 @@ function SecondaryHeader() {
           >
             {secondarySessionTitle()}
           </Text>
+          <SecondarySessionBreadcrumb />
+          <SecondaryDeviationChip />
         </View>
 
         <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
           <If when={secondaryHeaderState()}>
             {state => (
               <View accessibilityLabel={`secondary-session-status-${state()}`} style={{ marginRight: space.xs }}>
-                <StateMark state={state()} />
+                <StateMark state={state()} withWord={true} />
               </View>
             )}
           </If>
@@ -8625,8 +8835,111 @@ function SecondaryTranscript() {
 
 function SecondaryComposerDock() {
   let inputRef: InputRef | undefined;
+  let secModelTriggerRef: ViewRef | null = null;
+  let secReasoningTriggerRef: ViewRef | null = null;
+  let secFullAccessTriggerRef: ViewRef | null = null;
   const dragActive = signal(false);
   const composing = signal(false);
+  const plusOpen = signal(false);
+  const plusAnchor = signal<ViewRef | null>(null);
+  const paneWidth = signal(0);
+
+  effect(() => {
+    const id = secondarySessionId();
+    const wsId = secondaryWorkspaceId();
+    const wsRoot = secondaryWorkspaceRoot();
+    if (id) {
+      void loadSessionPermissionMode(id, {
+        workspaceId: wsId,
+        workspacePath: wsRoot,
+        turnId: secondaryRunningTurnId(),
+      });
+    }
+  });
+
+  const compactSecondary = computed(() => paneWidth() > 0 && paneWidth() < 420);
+  const secAgentType = computed(() => agentTypeOf(secondarySessionId()));
+  const reasoningElevated = computed(() => {
+    const id = activeReasoningId();
+    return Boolean(id && id !== "default");
+  });
+
+  const openSecondaryPermissionPicker = (anchor: ViewRef | null, align: "start" | "end") => {
+    const id = secondarySessionId();
+    if (!id) return;
+    focusPane(1);
+    permissionModeTarget.set({
+      sessionId: id,
+      workspaceId: secondaryWorkspaceId(),
+      workspacePath: secondaryWorkspaceRoot(),
+      turnId: secondaryRunningTurnId(),
+    });
+    permissionPillAnchor.set(anchor);
+    permissionModeAlign.set(align);
+    const next = !permissionModePickerOpen();
+    closePickers();
+    permissionModePickerOpen.set(next);
+  };
+
+  const secondaryPlusItems = computed<DropdownMenuItem[]>(() => {
+    const fromPlus = (action: () => void) => () => {
+      plusOpen.set(false);
+      action();
+    };
+    const items: DropdownMenuItem[] = [
+      {
+        id: "sec-pick-images",
+        icon: "image",
+        label: tr("chat.attach.pickImages"),
+        accessibilityLabel: "secondary-attach-image-file",
+        onSelect: fromPlus(() => {
+          focusPane(1);
+          void attachImagesFromPicker(addSecondaryImageAttachment);
+        }),
+      },
+    ];
+    if (permissionModeSupported() !== false && secondarySessionId()) {
+      items.push({
+        id: "sec-permission",
+        icon: "shield",
+        label: tr("chat.permissionMode.tooltip"),
+        trailingHint: permissionModeLabel(effectivePermissionMode(secondarySessionId())),
+        accessibilityLabel: "secondary-permission-mode-pill",
+        onSelect: fromPlus(() => openSecondaryPermissionPicker(plusAnchor(), "start")),
+      });
+    }
+    if (compactSecondary()) {
+      items.push({
+        id: "sec-model",
+        icon: "cpu",
+        label: tr("sessions.modelLabel", { name: activeModelLabel() }),
+        separator: true,
+        accessibilityLabel: "secondary-bot-capsule-trigger",
+        onSelect: fromPlus(() => {
+          focusPane(1);
+          modelPickerAnchor.set(plusAnchor());
+          closePickers("model");
+          modelPickerOpen.set(true);
+          void refreshFleetModels();
+        }),
+      });
+      if (activeReasoningChoices().length > 0) {
+        items.push({
+          id: "sec-reasoning",
+          icon: "bulb",
+          label: tr("sessions.reasoningLabel", { name: activeReasoningLabel() }),
+          accessibilityLabel: "secondary-reasoning-picker",
+          onSelect: fromPlus(() => {
+            focusPane(1);
+            reasoningPickerAnchor.set(plusAnchor());
+            closePickers("reasoning");
+            reasoningPickerOpen.set(true);
+          }),
+        });
+      }
+    }
+    return items;
+  });
 
   const insertSecondaryText = (text: string) => {
     if (!text) return;
@@ -8750,11 +9063,27 @@ function SecondaryComposerDock() {
 
   const submitSecondary = () => {
     if (!canSend()) return;
+    const text = secondaryComposerText().trim();
+    if (text && secondaryImageAttachments().length === 0 && secondaryFileAttachments().length === 0) {
+      if (isReviewCommand(text)) {
+        secondaryComposerText.set("");
+        void launchReviewFromCommand(text);
+        return;
+      }
+      if (runExtrasCommand(text)) {
+        secondaryComposerText.set("");
+        return;
+      }
+    }
     void sendSecondaryTurn(secondaryComposerText());
   };
 
   return (
     <View
+      onLayout={event => {
+        const w = event.bounds.size.width;
+        if (w > 0 && Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
+      }}
       onFileDragEnter={() => dragActive.set(true)}
       onFileDragLeave={() => dragActive.set(false)}
       onFileDrop={event => {
@@ -8782,133 +9111,23 @@ function SecondaryComposerDock() {
           overflow: "hidden",
           ...paintTransition(MOTION_DURATION.fast),
         }}
+        hoverStyle={{
+          borderColor: dragActive() ? palette().accent : palette().borderStrong,
+        }}
         focusWithinStyle={{
           borderColor: palette().fieldFocusBorder,
           boxShadow: palette().shadowComposerFocus,
         }}
       >
-        <If when={secondaryImageAttachments().length > 0 || secondaryFileAttachments().length > 0}>
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: space.chip,
-              paddingHorizontal: space.md,
-              paddingTop: space.sm,
-            }}
-          >
-            <Each of={secondaryImageAttachments()} key={entry => entry.id}>
-              {entry => (
-                <View
-                  style={{
-                    position: "relative",
-                    width: 56,
-                    height: 56,
-                    borderRadius: radii.md,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().borderSubtle,
-                    backgroundColor: palette().surfaceTertiary,
-                    overflow: "hidden",
-                    flexShrink: 0,
-                  }}
-                >
-                  <If
-                    when={attachmentPreviewSrc(entry())}
-                    else={
-                      <View style={{ width: "100%", height: "100%", alignItems: "center", justifyContent: "center" }}>
-                        <Icon name="image" size={18} color={palette().textSecondary} />
-                      </View>
-                    }
-                  >
-                    {src => (
-                      <View
-                        role="button"
-                        accessibilityLabel={`secondary-attachment-preview-${entry().id}`}
-                        onPress={() => openImageLightbox({ src: src(), title: entry().name })}
-                        style={{ width: "100%", height: "100%", cursor: "pointer" }}
-                      >
-                        <Image src={src()} style={{ width: 56, height: 56, objectFit: "cover" }} />
-                      </View>
-                    )}
-                  </If>
-                  <View
-                    role="button"
-                    accessibilityLabel={`secondary-remove-attachment-${entry().id}`}
-                    onPress={() => removeSecondaryImageAttachment(entry().id)}
-                    style={{
-                      position: "absolute",
-                      top: 3,
-                      right: 3,
-                      width: 18,
-                      height: 18,
-                      borderRadius: radii.pill,
-                      backgroundColor: palette().scrimBg,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <Icon name="close" size={10} color={palette().actionPrimaryFg} />
-                  </View>
-                </View>
-              )}
-            </Each>
-            <Each of={secondaryFileAttachments()} key={entry => entry.id}>
-              {entry => (
-                <View
-                  accessibilityLabel={`secondary-file-attachment-${entry().name}`}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: space.xs,
-                    maxWidth: 240,
-                    paddingLeft: space.sm,
-                    paddingRight: space.xs,
-                    paddingVertical: space.xs,
-                    borderRadius: radii.md,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().borderSubtle,
-                    backgroundColor: palette().surfaceTertiary,
-                  }}
-                >
-                  <Icon name={entry().isDirectory ? "folder" : "file"} size={13} color={palette().accent} />
-                  <Text
-                    style={{
-                      ...textStyle("caption"),
-                      fontWeight: "500",
-                      flexShrink: 1,
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {entry().name}
-                  </Text>
-                  <View
-                    role="button"
-                    accessibilityLabel={`secondary-remove-file-${entry().id}`}
-                    onPress={() => removeSecondaryFileAttachment(entry().id)}
-                    style={{
-                      width: 18,
-                      height: 18,
-                      borderRadius: radii.sm,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                    }}
-                    hoverStyle={{ backgroundColor: palette().panelHover }}
-                  >
-                    <Icon name="close" size={11} color={palette().textMuted} />
-                  </View>
-                </View>
-              )}
-            </Each>
-          </View>
-        </If>
+        <ComposerAttachmentStrip
+          images={secondaryImageAttachments}
+          files={secondaryFileAttachments}
+          onRemoveImage={id => removeSecondaryImageAttachment(id)}
+          onRemoveFile={id => removeSecondaryFileAttachment(id)}
+          idPrefix="secondary-"
+        />
 
-        <View style={{ paddingHorizontal: space.md, paddingTop: space.sm, paddingBottom: space.xs }}>
+        <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs }}>
           <Input
             ref={el => {
               inputRef = el;
@@ -8931,44 +9150,332 @@ function SecondaryComposerDock() {
               if (!composing()) submitSecondary();
             }}
             style={{
-              minHeight: 36,
+              minHeight: controlHeight.sm,
               maxHeight: 160,
               color: palette().text,
               placeholderColor: palette().textMuted,
               caretColor: palette().accent,
-              fontSize: textSize(14),
-              lineHeight: textLineHeight(14, 1.5),
+              fontSize: textSize(15),
+              lineHeight: textLineHeight(15, 24 / 15),
             }}
           />
         </View>
 
+        {/* Bottom Action Bar — matches primary ComposerDock UI/UX */}
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
             justifyContent: "space-between",
-            paddingHorizontal: space.sm,
+            paddingHorizontal: compactSecondary() ? space.sm : space.md,
+            paddingTop: space.xs,
             paddingBottom: space.sm,
-            gap: space.xs,
+            gap: space.chip,
           }}
         >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flex: 1 }}>
-            <Badge
-              label={agentLabel(agentTypeOf(secondarySessionId()))}
-              tone="neutral"
-            />
-          </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-            <If when={Boolean(secondaryRunningTurnId())}>
-              <IconCircleButton
-                icon="stop"
-                variant="primary"
-                size={32}
-                iconSize={14}
-                accessibilityLabel="secondary-stop-turn"
-                tooltip={tr("common.stop")}
-                onPress={() => void stopSecondaryTurn()}
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+              overflow: "hidden",
+            }}
+          >
+            <View ref={el => plusAnchor.set(el)} style={{ flexShrink: 0 }}>
+              <IconButton
+                icon="plus"
+                size="sm"
+                iconSize={15}
+                active={plusOpen()}
+                accessibilityLabel="secondary-composer-plus"
+                tooltip={tr("chat.polish.moreControls")}
+                style={{ borderRadius: radii.pill }}
+                onPress={() => {
+                  focusPane(1);
+                  plusOpen.update(v => !v);
+                }}
               />
+            </View>
+            <If when={!compactSecondary()}>
+              <View
+                style={{
+                  width: 1,
+                  height: 14,
+                  marginHorizontal: space.hair,
+                  flexShrink: 0,
+                  backgroundColor: palette().borderSubtle,
+                }}
+              />
+              {/* Agent Mode Pill (reflects Pane 1's own session agentType) */}
+              <View
+                accessibilityLabel="secondary-agent-picker"
+                tooltip={
+                  <TooltipBubble
+                    text={tr("sessions.agentLabel", { name: agentLabel(secAgentType()) })}
+                  />
+                }
+                style={{
+                  height: 28,
+                  minWidth: 0,
+                  flexShrink: 1,
+                  maxWidth: 132,
+                  paddingHorizontal: space.sm,
+                  borderRadius: radii.pill,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.chip,
+                  userSelect: "none",
+                }}
+              >
+                <Icon name={agentModeIcon(secAgentType())} size={13} color={palette().textMuted} />
+                <Text
+                  style={{
+                    flexShrink: 1,
+                    minWidth: 0,
+                    color: palette().textSecondary,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.35),
+                    fontWeight: "500",
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {agentLabel(secAgentType())}
+                </Text>
+              </View>
+
+              {/* Model + Reasoning Capsule (reuses shared ModelPickerSurface / ReasoningPickerSurface) */}
+              <View
+                style={{
+                  flexShrink: 1,
+                  minWidth: 64,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.xs,
+                }}
+              >
+                <View
+                  ref={el => {
+                    secModelTriggerRef = el;
+                  }}
+                  role="button"
+                  accessibilityLabel="secondary-bot-capsule-trigger"
+                  tooltip={
+                    <TooltipBubble
+                      text={tr("sessions.modelLabel", {
+                        name: activeModelDetail()
+                          ? `${activeModelLabel()} · ${activeModelDetail()}`
+                          : activeModelLabel(),
+                      })}
+                    />
+                  }
+                  onPress={() => {
+                    focusPane(1);
+                    modelPickerAnchor.set(secModelTriggerRef);
+                    const next = !modelPickerOpen();
+                    closePickers(next ? "model" : undefined);
+                    modelPickerOpen.set(next);
+                    if (next) void refreshFleetModels();
+                  }}
+                  style={{
+                    height: 28,
+                    minWidth: 56,
+                    flexShrink: 1,
+                    maxWidth: 196,
+                    paddingHorizontal: space.sm,
+                    borderRadius: radii.pill,
+                    borderWidth: 1,
+                    borderColor: modelPickerOpen() ? palette().border : "transparent",
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.chip,
+                    backgroundColor: modelPickerOpen() ? palette().surfaceSubtle : "transparent",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{
+                    backgroundColor: palette().surfaceSubtle,
+                    borderColor: palette().borderSubtle,
+                  }}
+                  activeStyle={tactileActiveStyle(0.96)}
+                  focusVisibleStyle={focusRingStyle(-1)}
+                >
+                  <Icon name="cpu" size={13} color={palette().textMuted} />
+                  <Text
+                    style={{
+                      flexShrink: 1,
+                      minWidth: 0,
+                      color: palette().text,
+                      fontSize: textSize(12.5),
+                      lineHeight: textLineHeight(12.5, 1.35),
+                      fontWeight: "500",
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {activeModelLabel()}
+                  </Text>
+                  <Icon
+                    name={modelPickerOpen() ? "chevron-up" : "chevron-down"}
+                    size={10}
+                    color={palette().textMuted}
+                  />
+                </View>
+
+                <If when={activeReasoningChoices().length > 0}>
+                  <View
+                    ref={el => {
+                      secReasoningTriggerRef = el;
+                    }}
+                    role="button"
+                    accessibilityLabel="secondary-reasoning-picker"
+                    tooltip={
+                      <TooltipBubble
+                        text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
+                      />
+                    }
+                    onPress={() => {
+                      focusPane(1);
+                      reasoningPickerAnchor.set(secReasoningTriggerRef);
+                      const next = !reasoningPickerOpen();
+                      closePickers(next ? "reasoning" : undefined);
+                      reasoningPickerOpen.set(next);
+                    }}
+                    style={{
+                      height: 28,
+                      width: reasoningElevated() ? undefined : 28,
+                      minWidth: 28,
+                      flexShrink: 0,
+                      maxWidth: 96,
+                      paddingHorizontal: reasoningElevated() ? space.sm : 0,
+                      borderRadius: radii.pill,
+                      borderWidth: 1,
+                      borderColor: reasoningPickerOpen()
+                        ? palette().border
+                        : reasoningElevated()
+                          ? palette().accentBorder
+                          : "transparent",
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: space.xs,
+                      backgroundColor: reasoningPickerOpen()
+                        ? palette().surfaceSubtle
+                        : reasoningElevated()
+                          ? palette().accentSoft
+                          : "transparent",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...pressTransition(MOTION_DURATION.fast),
+                    }}
+                    hoverStyle={{
+                      backgroundColor: reasoningElevated() ? palette().accentSoft : palette().surfaceSubtle,
+                      borderColor: reasoningElevated() ? palette().accent : palette().borderSubtle,
+                    }}
+                    activeStyle={tactileActiveStyle(0.95)}
+                    focusVisibleStyle={focusRingStyle(-1)}
+                  >
+                    <Icon
+                      name="bulb"
+                      size={reasoningElevated() ? 12 : 14}
+                      color={reasoningElevated() ? palette().accent : palette().textMuted}
+                    />
+                    <If when={reasoningElevated()}>
+                      <Text
+                        style={{
+                          flexShrink: 1,
+                          minWidth: 0,
+                          color: palette().accent,
+                          fontSize: textSize(11.5),
+                          lineHeight: textLineHeight(11.5, 1.3),
+                          fontWeight: "600",
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {activeReasoningLabel()}
+                      </Text>
+                    </If>
+                  </View>
+                </If>
+              </View>
+            </If>
+          </View>
+
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+            <If
+              when={
+                permissionModeSupported() !== false &&
+                Boolean(secondarySessionId()) &&
+                effectivePermissionMode(secondarySessionId()) === "full_access"
+              }
+            >
+              <View
+                ref={el => {
+                  secFullAccessTriggerRef = el;
+                }}
+                role="button"
+                accessibilityLabel="secondary-permission-mode-warning"
+                tooltip={
+                  <TooltipBubble
+                    text={`${permissionModeLabel("full_access")} · ${tr("chat.permissionMode.tooltip")}`}
+                  />
+                }
+                onPress={() => openSecondaryPermissionPicker(secFullAccessTriggerRef, "end")}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: radii.pill,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: permissionModePickerOpen() ? palette().warningSoft : "transparent",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().warningSoft }}
+                activeStyle={tactileActiveStyle(0.95)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <Icon name="shield" size={15} color={palette().warning} />
+              </View>
+            </If>
+
+            <If when={Boolean(secondaryRunningTurnId()) && !canSend()}>
+              <View
+                role="button"
+                accessibilityLabel="secondary-stop-turn"
+                tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
+                onPress={() => void stopSecondaryTurn()}
+                style={{
+                  boxSizing: "border-box",
+                  width: 32,
+                  height: 32,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().actionPrimaryBg,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().danger }}
+                activeStyle={tactileActiveStyle(0.94)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <View
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2.5,
+                    backgroundColor: palette().actionPrimaryFg,
+                    pointerEvents: "none",
+                  }}
+                />
+              </View>
             </If>
             <If when={!secondaryRunningTurnId() || canSend()}>
               <IconCircleButton
@@ -8985,6 +9492,15 @@ function SecondaryComposerDock() {
           </View>
         </View>
       </View>
+
+      <DropdownMenu
+        open={plusOpen()}
+        anchor={plusAnchor()}
+        items={secondaryPlusItems()}
+        placement="top"
+        align="start"
+        onClose={() => plusOpen.set(false)}
+      />
     </View>
   );
 }
@@ -9016,7 +9532,14 @@ function SecondarySessionPane() {
 export function SessionsScene() {
   followSearchRevealRequests();
   useSessionExtras(); // wave22-p5
-  const showSplit = () => splitPaneOpen() && !compactLayout();
+  effect(() => {
+    if (sideQuestionOpen() && splitPaneOpen()) {
+      closeSplitPane(1);
+    }
+  });
+  const showSecondarySplit = () => splitPaneOpen() && !compactLayout();
+  const showBtwSplit = () => !showSecondarySplit() && sideQuestionOpen() && !compactLayout();
+  const showSplit = () => showSecondarySplit() || showBtwSplit();
   let splitDragStartRatio: number | null = null;
   let splitDragAccumPx = 0;
 
@@ -9045,8 +9568,6 @@ export function SessionsScene() {
           minWidth: showSplit() ? 260 : 0,
           minHeight: 0,
           flexDirection: "column",
-          borderTopWidth: showSplit() ? 2 : 0,
-          borderTopColor: showSplit() && focusedPane() === 0 ? palette().accent : "transparent",
           backgroundColor: palette().canvas,
         }}
       >
@@ -9085,7 +9606,9 @@ export function SessionsScene() {
           }}
           onReset={() => setSessionSplitRatio(SESSION_SPLIT_DEFAULT_RATIO)}
         />
-        <SecondarySessionPane />
+        <If when={showSecondarySplit()} else={<SideQuestionSplitPane />}>
+          <SecondarySessionPane />
+        </If>
       </If>
 
       <SessionExtrasDialogs />

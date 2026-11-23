@@ -639,6 +639,8 @@ export function cardMenuItems(
     icon: "trash",
     danger: true,
     separator: true,
+    confirmDelete: !options.onRequestDelete,
+    confirmAccessibilityLabel: `card-delete-confirm-${card.id}`,
     accessibilityLabel: `card-delete-${card.id}`,
     onSelect: () => {
       if (options.onRequestDelete) options.onRequestDelete();
@@ -689,7 +691,7 @@ export function CardView(props: CardViewProps) {
   const menuItems = () =>
     cardMenuItems(props.deviceId, props.card, {
       onOpenConversation: props.onOpenConversation,
-      onRequestDelete: () => confirmDelete.set(true),
+      ...(useNativeWindowMenu() ? { onRequestDelete: () => confirmDelete.set(true) } : {}),
     });
   const handleRefresh = () => {
     if (refreshing() || isCardBusy(props.deviceId, props.card.id)) return;

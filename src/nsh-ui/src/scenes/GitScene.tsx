@@ -147,6 +147,7 @@ import {
   IconButton,
   InlineBanner,
   InlineConfirmBar,
+  InlineDeleteConfirm,
   InputBox,
   SectionCard,
   SplitHandle,
@@ -1623,18 +1624,6 @@ function BranchesView(props: { compact?: boolean }) {
           onChange={value => branchFilter.set(value)}
         />
 
-        <If when={confirmingDeleteBranch()}>
-          {branch => (
-            <InlineConfirmBar
-              danger
-              message={tr("git.deleteBranchConfirm", { name: branch() })}
-              confirmLabel={tr("git.deleteBranch")}
-              cancelLabel={tr("common.cancel")}
-              onConfirm={() => void deleteGitBranch(branch())}
-              onCancel={() => confirmingDeleteBranch.set(null)}
-            />
-          )}
-        </If>
         <If when={confirmingForceDeleteBranch()}>
           {branch => (
             <InlineConfirmBar
@@ -1755,14 +1744,18 @@ function BranchesView(props: { compact?: boolean }) {
                           accessibilityLabel={`git-checkout-${branch().name}`}
                           onPress={() => void checkoutGitBranch(branch().name)}
                         />
-                        <IconButton
+                        <InlineDeleteConfirm
+                          confirming={confirmingDeleteBranch() === branch().name}
+                          onConfirmingChange={next =>
+                            confirmingDeleteBranch.set(next ? branch().name : null)
+                          }
                           icon="trash"
                           size="xs"
-                          tone="danger"
                           disabled={gitActionBusy()}
-                          accessibilityLabel={`git-delete-branch-${branch().name}`}
                           tooltip={tr("git.deleteBranch")}
-                          onPress={() => confirmingDeleteBranch.set(branch().name)}
+                          accessibilityLabel={`git-delete-branch-${branch().name}`}
+                          confirmAccessibilityLabel={`git-delete-branch-confirm-${branch().name}`}
+                          onConfirm={() => void deleteGitBranch(branch().name)}
                         />
                       </View>
                     </If>
@@ -2570,19 +2563,6 @@ function WorktreesView(props: { compact?: boolean }) {
           />
         </If>
 
-        <If when={confirmingRemoveWorktree()}>
-          {worktreePath => (
-            <InlineConfirmBar
-              danger
-              message={tr("git.removeWorktreeConfirm", { path: worktreePath() })}
-              confirmLabel={tr("git.removeWorktree")}
-              cancelLabel={tr("common.cancel")}
-              onConfirm={() => void removeGitWorktree(worktreePath())}
-              onCancel={() => cancelRemoveWorktree()}
-            />
-          )}
-        </If>
-
         <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingBottom: space.lg }}>
           <If when={gitWorktrees().length === 0 && !gitWorktreeRemoteUnsupported() && !gitWorktreeNote()}>
             <EmptyStateCard
@@ -2669,14 +2649,19 @@ function WorktreesView(props: { compact?: boolean }) {
                     </View>
 
                     <If when={!wt().isMain}>
-                      <IconButton
+                      <InlineDeleteConfirm
+                        confirming={confirmingRemoveWorktree() === wt().path}
+                        onConfirmingChange={next => {
+                          if (next) requestRemoveWorktree(wt().path);
+                          else cancelRemoveWorktree();
+                        }}
                         icon="trash"
                         size="xs"
-                        tone="danger"
                         disabled={gitActionBusy() || isRemoteWorkspace()}
                         accessibilityLabel={`git-remove-worktree-${wt().path}`}
+                        confirmAccessibilityLabel={`git-remove-worktree-confirm-${wt().path}`}
                         tooltip={tr("git.removeWorktree")}
-                        onPress={() => requestRemoveWorktree(wt().path)}
+                        onConfirm={() => void removeGitWorktree(wt().path)}
                       />
                     </If>
                   </View>

@@ -300,8 +300,10 @@ function routineMenuItems(job: CronJobRecord): DropdownMenuItem[] {
       label: tr("routines.deleteRoutine"),
       icon: "trash",
       danger: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: `routine-delete-confirm-${job.id}`,
       accessibilityLabel: `routine-delete-${job.id}`,
-      onSelect: () => requestDeleteRoutine(job.id),
+      onSelect: () => void confirmDeleteRoutine(job.id),
     },
   ];
 }
@@ -483,18 +485,6 @@ function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
           items={routineMenuItems(props.job())}
         />
       </View>
-      <If when={confirmingDeleteRoutineId() === props.job().id}>
-        <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md }}>
-          <InlineConfirmBar
-            danger
-            message={tr("routines.deleteConfirm", { name: props.job().name })}
-            confirmLabel={tr("routines.deleteRoutine")}
-            cancelLabel={tr("common.cancel")}
-            onConfirm={() => void confirmDeleteRoutine(props.job().id)}
-            onCancel={() => cancelDeleteRoutine()}
-          />
-        </View>
-      </If>
     </View>
   );
 }

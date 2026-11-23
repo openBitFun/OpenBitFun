@@ -130,9 +130,11 @@ test("long text paste (>50 lines or >1000 chars) auto-saves to .openbitfun/paste
   const writeReq = sent.write_file_content![0]!;
   expect(String(writeReq.filePath)).toMatch(/^\/repo\/\.openbitfun\/pasted\/pasted-\d{8}-\d{6}-[0-9a-f]{4}\.txt$/);
   expect(writeReq.content).toBe(longText);
-  // Composer input stays clean (not flooded with 55 lines) and shows a styled chip with line count.
+  // Composer input stays clean (not flooded with 55 lines) and renders the pasted file identically to normal file chips (TXT badge + filename, no line-count badge).
   expect(app.value("composer")).toBe("");
-  expect(app.texts().some(t => /^pasted-\d{8}-\d{6}-[0-9a-f]{4}\.txt$/.test(t))).toBe(true);
+  expect(app.texts()).toContain("TXT");
+  expect(app.texts().some(t => /^pasted-\d{8}-\d{6}-[0-9a-f]{4}$/.test(t))).toBe(true);
+  expect(app.texts().some(t => /lines|行/.test(t))).toBe(false);
 
   // Sending serializes the styled chip as `#file:.openbitfun/pasted/...`.
   await app.type("composer", "Analyze these logs");
@@ -209,15 +211,15 @@ test("slash menu includes /goal, /btw, /review, /usage and searchable Skills ins
 
   await openSession(app, "NSH skeleton");
   await app.waitFor("Message");
-  await app.waitUntil(() => (sent.get_mode_skill_configs ?? []).length > 0);
 
-  // Typing `/` lists built-in commands + enabled skills (excluding disabled skills).
+  // Typing `/` loads slash skills lazily and lists built-in commands + enabled skills (excluding disabled skills).
   await app.type("composer", "/");
+  await app.waitUntil(() => (sent.get_mode_skill_configs ?? []).length > 0);
   await app.waitFor("slash-command-goal");
+  await app.waitFor("slash-skill-code-review");
   expect(app.shows("slash-command-btw")).toBe(true);
   expect(app.shows("slash-command-review")).toBe(true);
   expect(app.shows("slash-command-usage")).toBe(true);
-  expect(app.shows("slash-skill-code-review")).toBe(true);
   expect(app.shows("slash-skill-disabled-skill")).toBe(false);
 
   // Filtering by skill name narrows and inserts `[$code-review] ` into the composer.
@@ -298,4 +300,111 @@ test("@ mention immediately lists workspace files & folders, drills into folders
   await app.press("Send");
   const submitted = backend.calls.find(c => c.action === "submit_user_message")?.request as Record<string, unknown>;
   expect(submitted?.text).toBe("Check #dir:docs");
+});
+
+test("split view hides TurnJumpRail and renders full Pane 1 composer parity", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("turn-jump-rail");
+
+  // Open dual-session split: TurnJumpRail hides immediately, Pane 1 has full composer controls.
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("id:secondary-session-pane");
+  await app.waitFor("turn-jump-rail", { state: "gone" });
+  expect(app.shows("id:secondary-session-header")).toBe(true);
+  expect(app.shows("secondary-composer-plus")).toBe(true);
+  expect(app.shows("secondary-agent-picker")).toBe(true);
+  expect(app.shows("secondary-bot-capsule-trigger")).toBe(true);
+  expect(app.shows("secondary-send-turn")).toBe(true);
+
+  // Closing split view restores TurnJumpRail.
+  await app.press("session-pane-close-1");
+  await app.waitFor("id:secondary-session-pane", { state: "gone" });
+  await app.waitFor("turn-jump-rail");
+});
+
+test("/btw opens right-side ephemeral split pane, sends workspace context, supports multi-turn, and hides TurnJumpRail", async () => {
+  const backend = createBackend();
+  const btwRequests: Array<Record<string, unknown>> = [];
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> };
+    if (args.action === "btw_ask_stream") {
+      btwRequests.push(args.request ?? {});
+      return { ok: true, value: { ok: true }, transport: "dev" };
+    }
+    if (args.action === "btw_cancel") {
+      return { ok: true, value: { ok: true }, transport: "dev" };
+    }
+    return baseInvoke(data);
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("turn-jump-rail");
+
+  // Trigger /btw with a question -> opens side-by-side split pane (NOT a modal),
+  // hides TurnJumpRail, and immediately dispatches `btw_ask_stream` with workspace context.
+  await app.type("composer", "/btw What does this session do?");
+  await app.press("Send");
+  await app.waitFor("id:side-question-pane");
+  await app.waitFor("turn-jump-rail", { state: "gone" });
+  expect(app.shows("id:primary-session-pane")).toBe(true);
+  expect(app.shows("side-question-compact-sheet")).toBe(false);
+
+  await app.waitUntil(() => btwRequests.length === 1);
+  expect(btwRequests[0]).toMatchObject({
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+    workspacePath: "/repo",
+    question: "What does this session do?",
+  });
+  const firstChildId = String(btwRequests[0]?.childSessionId ?? "");
+  expect(firstChildId).toMatch(/^btw_session_/);
+
+  // Stream a reply into the ephemeral split pane.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: firstChildId, text: "It ports the session list to NSH." },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-completed",
+    payload: { sessionId: firstChildId },
+  });
+  await app.waitFor("It ports the session list to NSH.");
+
+  // Multi-turn follow-up reuses the same ephemeral child session ID.
+  await app.type("side-question-input", "Any blockers?");
+  await app.press("side-question-ask");
+  await app.waitUntil(() => btwRequests.length === 2);
+  expect(btwRequests[1]?.childSessionId).toBe(firstChildId);
+
+  // Closing the split pane discards ephemeral state and restores TurnJumpRail.
+  await app.press("side-question-close");
+  await app.waitFor("id:side-question-pane", { state: "gone" });
+  await app.waitFor("turn-jump-rail");
+});
+
+test("ImageLightbox supports copy button and FilesScene renders compact explorer rows without tooltip clutter", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Message");
+
+  // Paste an image and open lightbox -> header Copy button is present.
+  await app.paste("composer", { uris: ["file:///tmp/shot.png"] });
+  await app.waitFor("attachment-preview-attachment-drop-1");
+  await app.press("attachment-preview-attachment-drop-1");
+  await app.waitFor("image-lightbox-dialog");
+  expect(app.shows("image-lightbox-copy")).toBe(true);
+  await app.press("image-lightbox-close");
+  await app.waitFor("image-lightbox-dialog", { state: "gone" });
+
+  // Open Files inspector -> explorer rows render cleanly without giant phone heights.
+  await app.press("session-tool-files");
+  await app.waitFor("explorer-row-README.md");
 });

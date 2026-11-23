@@ -90,7 +90,7 @@ import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { pressTransition, Spinner, tactileActiveStyle } from "./motion";
 import { ModalDialog, pushToast, SelectDropdown, type SelectDropdownOption } from "./overlays";
-import { Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, InputBox, SearchInput } from "./primitives";
+import { Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, InlineDeleteConfirm, InputBox, SearchInput } from "./primitives";
 import {
   GalleryGrid,
   GallerySkeleton,
@@ -959,32 +959,24 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
               {submissionStatusLabel(props.item().status)}
             </Text>
             <If when={canWithdrawSubmission(props.item().status)}>
-              <Button
+              <InlineDeleteConfirm
+                confirming={confirmingWithdrawId() === props.item().submissionId}
+                onConfirmingChange={next =>
+                  confirmingWithdrawId.set(next ? props.item().submissionId : null)
+                }
                 label={tr("market.submissions.withdraw")}
                 variant="ghost"
                 size={compactLayout() ? "md" : "sm"}
                 loading={withdrawingSubmissionId() === props.item().submissionId}
                 disabled={Boolean(withdrawingSubmissionId())}
                 accessibilityLabel={`submission-withdraw-${props.item().submissionId}`}
-                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-                onPress={() => confirmingWithdrawId.set(props.item().submissionId)}
+                confirmAccessibilityLabel={`submission-withdraw-confirm-${props.item().submissionId}`}
+                onConfirm={() => void withdrawSubmission(props.item().submissionId)}
               />
             </If>
           </View>
         }
       />
-      <If when={confirmingWithdrawId() === props.item().submissionId}>
-        <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md }}>
-          <InlineConfirmBar
-            danger
-            message={tr("market.submissions.withdrawConfirm", { name: props.item().name })}
-            confirmLabel={tr("market.submissions.withdraw")}
-            cancelLabel={tr("common.cancel")}
-            onConfirm={() => void withdrawSubmission(props.item().submissionId)}
-            onCancel={() => confirmingWithdrawId.set(null)}
-          />
-        </View>
-      </If>
     </View>
   );
 }

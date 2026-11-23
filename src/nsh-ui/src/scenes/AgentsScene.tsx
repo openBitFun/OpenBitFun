@@ -266,9 +266,12 @@ function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
       icon: "trash",
       danger: true,
       separator: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: "agent-delete-confirm",
+      cancelAccessibilityLabel: "agent-delete-cancel",
       disabled: !agentCanDelete(item),
       accessibilityLabel: `agent-menu-delete-${item.id}`,
-      onSelect: () => confirmDeleteAgentUid.set(item.uid),
+      onSelect: () => void deleteCatalogAgent(item),
     });
   }
   return items;
@@ -1075,53 +1078,6 @@ function ToolListText(props: { empty: string }) {
   );
 }
 
-function AgentDeleteModal() {
-  return (
-    <ModalDialog
-      open={Boolean(pendingDeleteAgent())}
-      title={tr("agents.deleteBot")}
-      size="sm"
-      accessibilityLabel="agent-delete-dialog"
-      onClose={() => confirmDeleteAgentUid.set(null)}
-      footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Button
-            label={tr("common.cancel")}
-            variant="secondary"
-            size="md"
-            accessibilityLabel="agent-delete-cancel"
-            onPress={() => confirmDeleteAgentUid.set(null)}
-          />
-          <Button
-            label={tr("common.confirmDelete")}
-            variant="danger"
-            size="md"
-            accessibilityLabel="agent-delete-confirm"
-            onPress={() => {
-              const target = pendingDeleteAgent();
-              if (target) void deleteCatalogAgent(target);
-            }}
-          />
-        </View>
-      }
-    >
-      <If when={pendingDeleteAgent()}>
-        {target => (
-          <Text
-            style={{
-              color: palette().textSecondary,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.5),
-            }}
-          >
-            {tr("agents.deleteConfirmBody", { name: target().name })}
-          </Text>
-        )}
-      </If>
-    </ModalDialog>
-  );
-}
-
 /** The skills one primary agent runs with; each switch rewrites that agent's selection. */
 function ModeSkillsSection() {
   const visible = () =>
@@ -1531,7 +1487,6 @@ export function AgentsScene(props: { embedded?: boolean }) {
       </Scroll>
 
       <AgentBuilderModal />
-      <AgentDeleteModal />
     </View>
   );
 }

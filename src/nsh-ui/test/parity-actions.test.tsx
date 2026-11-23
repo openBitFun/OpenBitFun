@@ -56,15 +56,16 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
     workspace_id: "workspace-1",
   });
 
-  // Delete asks first; Cancel sends nothing.
+  // Delete asks in-place inside the menu ("Cancel | Confirm"); Cancel sends nothing and no modal opens.
   await app.press("session-actions-session-2");
   await app.press("session-menu-delete-session-2");
-  await app.waitFor("session-delete-modal");
-  await app.press("Cancel");
-  await app.waitFor("session-delete-modal", { state: "gone" });
+  await app.waitFor("session-delete-confirm");
+  expect(app.shows("session-delete-modal")).toBe(false);
+  await app.press("session-delete-cancel");
+  await app.waitFor("session-delete-confirm", { state: "gone" });
   expect(callsOf(backend, "delete_persisted_session")).toHaveLength(0);
-  await app.press("session-actions-session-2");
   await app.press("session-menu-delete-session-2");
+  await app.waitFor("session-delete-confirm");
   await app.press("session-delete-confirm");
   await app.waitUntil(() => callsOf(backend, "delete_persisted_session").length === 1);
   expect(callsOf(backend, "delete_persisted_session")[0]?.request).toMatchObject({
@@ -212,7 +213,8 @@ test("an archived session is deleted from Settings only after a confirmation", a
   await app.press("nav-settings-page-archived");
   await app.waitFor("settings-archived-delete-session-3");
   await app.press("settings-archived-delete-session-3");
-  await app.waitFor("session-delete-modal");
+  await app.waitFor("session-delete-confirm");
+  expect(app.shows("session-delete-modal")).toBe(false);
   expect(callsOf(backend, "delete_persisted_session")).toHaveLength(0);
   await app.press("session-delete-confirm");
   await app.waitUntil(() => callsOf(backend, "delete_persisted_session").length === 1);
@@ -284,7 +286,8 @@ test("Delete all in Archived sessions asks first, then deletes the workspace's a
   await app.press("Settings");
   await app.press("nav-settings-page-archived");
   await app.press("settings-archived-delete-all");
-  await app.waitFor("settings-archived-delete-all-modal");
+  await app.waitFor("settings-archived-delete-all-confirm");
+  expect(app.shows("settings-archived-delete-all-modal")).toBe(false);
   expect(callsOf(backend, "delete_all_archived_sessions")).toHaveLength(0);
   await app.press("settings-archived-delete-all-confirm");
   await app.waitUntil(() => callsOf(backend, "delete_all_archived_sessions").length === 1);

@@ -1,13 +1,15 @@
 // Full-screen image preview lightbox for composer thumbnails, user message images,
-// assistant Markdown images, and tool output images.
+// assistant Markdown images, and tool output images. Supports right-click copy
+// (`Menu.popup` -> `Clipboard.writeImage`) and header copy button.
 
-import { Image, Text, View, cleanup, signal } from "nsh";
+import { Clipboard, Image, Text, View, cleanup, signal } from "nsh";
 import { Dialog } from "nsh/base";
+import { Menu } from "nsh/desktop";
 import { tr } from "../i18n";
 import { elevationShadow, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon } from "./icons";
 import { modalEnterMotion } from "./motion";
-import { registerEscapeDismiss } from "./overlays";
+import { pushToast, registerEscapeDismiss } from "./overlays";
 import { IconButton } from "./primitives";
 
 export interface LightboxImage {
@@ -30,8 +32,31 @@ export function closeImageLightbox(): void {
 function ImageLightboxCard(props: { image: LightboxImage }) {
   const naturalSize = signal<{ width: number; height: number } | null>(null);
   const loadFailed = signal(false);
+  const copied = signal(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   const motion = modalEnterMotion();
+  cleanup(() => {
+    if (copiedTimer) {
+      clearTimeout(copiedTimer);
+      copiedTimer = null;
+    }
+  });
   cleanup(registerEscapeDismiss(() => closeImageLightbox()));
+
+  const copyImage = async () => {
+    try {
+      await Clipboard.writeImage(props.image.src);
+      copied.set(true);
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => {
+        copiedTimer = null;
+        copied.set(false);
+      }, 1500);
+      pushToast(tr("sessions.imageCopied"), "success");
+    } catch {
+      pushToast(tr("sessions.imageCopyFailed"), "error");
+    }
+  };
 
   return (
     <View
@@ -100,16 +125,32 @@ function ImageLightboxCard(props: { image: LightboxImage }) {
             )}
           </If>
         </View>
-        <IconButton
-          icon="close"
-          size="xs"
-          accessibilityLabel="image-lightbox-close"
-          tooltip={tr("common.close")}
-          onPress={closeImageLightbox}
-        />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+          <IconButton
+            icon={copied() ? "check" : "copy"}
+            size="xs"
+            accessibilityLabel="image-lightbox-copy"
+            tooltip={tr("sessions.copyImage")}
+            onPress={() => void copyImage()}
+          />
+          <IconButton
+            icon="close"
+            size="xs"
+            accessibilityLabel="image-lightbox-close"
+            tooltip={tr("common.close")}
+            onPress={closeImageLightbox}
+          />
+        </View>
       </View>
 
       <View
+        accessibilityLabel="image-lightbox-stage"
+        onContextMenu={event => {
+          void Menu.popup(
+            [{ label: tr("sessions.copyImage"), onSelect: () => void copyImage() }],
+            event.pagePosition,
+          );
+        }}
         style={{
           flex: 1,
           minHeight: 240,
@@ -161,7 +202,7 @@ export function ImageLightboxHost() {
         <Dialog
           open={true}
           animation="none"
-          accessibilityLabel="image-lightbox"
+          accessibilityLabel="image-lightbox-modal"
           closeOnBackdropPress={true}
           closeOnEscape={true}
           onOpenChange={event => {
@@ -183,7 +224,7 @@ export function ImageLightboxHost() {
             top: 0,
             right: 0,
             bottom: 0,
-            padding: space.xl,
+            padding: space.xxl,
             alignItems: "center",
             justifyContent: "center",
             pointerEvents: "box-none",

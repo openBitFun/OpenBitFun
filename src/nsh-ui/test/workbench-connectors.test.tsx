@@ -462,8 +462,8 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
 
   await app.press("file-actions-menu");
   await app.press("Delete");
-  await app.waitFor("Confirm delete");
-  await app.press("Confirm delete");
+  await app.waitFor("file-delete-confirm");
+  await app.press("file-delete-confirm");
 
   // A session's inspector mounts FilesScene in compact mode when its tool toggle is pressed.
   await openSession(app, "NSH skeleton");

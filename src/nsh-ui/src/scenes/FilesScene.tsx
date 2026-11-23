@@ -628,11 +628,13 @@ function fileMenuItems(target: string | null = selectedPath()): DropdownMenuItem
       label: tr("common.delete"),
       icon: "trash",
       danger: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: "file-delete-confirm",
       disabled: !hasSelection,
       accessibilityLabel: "Delete",
       onSelect: () => {
         if (target) selectedPath.set(target);
-        requestDelete();
+        void removeSelected(target ?? selectedPath() ?? undefined);
       },
     },
   );
@@ -1306,13 +1308,13 @@ function renderExplorerRow(
     return (
       <View
         style={{
-          minHeight: 28,
+          minHeight: 24,
           flexDirection: "row",
           alignItems: "center",
           gap: space.xs,
           paddingLeft: explorerIndentLeft(entry.depth) + 18,
           paddingRight: space.sm,
-          paddingVertical: space.xs,
+          paddingVertical: 0,
         }}
       >
         <Spinner size={12} />
@@ -1327,18 +1329,18 @@ function renderExplorerRow(
 
   return (
     <View
-      tooltip={<TooltipBubble text={relativeDisplayPath(entry.id, activeWorkspaceRoot())} />}
       accessibilityLabel={`explorer-row-${entry.label}`}
       onContextMenu={event => onContext(entry.id, event.pagePosition)}
       style={{
         position: "relative",
-        minHeight: touch ? WORKBENCH_TOUCH_MIN : 28,
+        height: touch ? WORKBENCH_TOUCH_MIN : 26,
+        minHeight: touch ? WORKBENCH_TOUCH_MIN : 26,
         flexDirection: "row",
         alignItems: "center",
         gap: space.xs,
         paddingLeft: explorerIndentLeft(entry.depth),
         paddingRight: space.sm,
-        paddingVertical: 2,
+        paddingVertical: 0,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         backgroundColor: selectedPath() === entry.id ? palette().accentSoft : "transparent",
@@ -1520,7 +1522,7 @@ function FileTree(props: {
         {/* Row 1: Explorer label + quiet tabular item count + New / Refresh / More */}
         <View
           style={{
-            minHeight: props.stacked ? WORKBENCH_TOUCH_MIN : 24,
+            minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : 24,
             flexDirection: "row",
             alignItems: "center",
             gap: space.xs,
@@ -1567,16 +1569,16 @@ function FileTree(props: {
           <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
             <IconButton
               icon="plus"
-              size={props.stacked ? "md" : "xs"}
-              iconSize={props.stacked ? undefined : 12}
+              size={compactLayout() ? "md" : "xs"}
+              iconSize={compactLayout() ? undefined : 12}
               tooltip={tr("files.newFile")}
               accessibilityLabel="file-quick-new"
               onPress={() => startCreate("file")}
             />
             <IconButton
               icon="refresh"
-              size={props.stacked ? "md" : "xs"}
-              iconSize={props.stacked ? undefined : 12}
+              size={compactLayout() ? "md" : "xs"}
+              iconSize={compactLayout() ? undefined : 12}
               tooltip={tr("files.refreshExplorer")}
               accessibilityLabel="Refresh"
               onPress={() => void refreshDirectory(activeWorkspaceRoot())}
@@ -1584,8 +1586,8 @@ function FileTree(props: {
             <View ref={el => fileActionsAnchor.set(el)} style={{ flexShrink: 0 }}>
               <IconButton
                 icon="more"
-                size={props.stacked ? "md" : "xs"}
-                iconSize={props.stacked ? undefined : 12}
+                size={compactLayout() ? "md" : "xs"}
+                iconSize={compactLayout() ? undefined : 12}
                 active={fileActionsMenuOpen()}
                 tooltip={tr("files.fileActions")}
                 accessibilityLabel="file-actions-menu"
@@ -1807,7 +1809,7 @@ function FileTree(props: {
               selected={selectedPath()}
               reveal={false}
               renderItem={entry =>
-                renderExplorerRow(entry, Boolean(props.stacked), (path, pos) => {
+                renderExplorerRow(entry, compactLayout(), (path, pos) => {
                   rowContextHandled = true;
                   treeContextTarget.set(path);
                   treeContextPos.set(pos);
@@ -1815,8 +1817,14 @@ function FileTree(props: {
                 })
               }
               itemClass="group rounded-md focus-visible:outline-2 focus-visible:outline-ring"
-              itemStyle={{ color: palette().text, fontSize: textSize(13) }}
-              listStyle={{ padding: space.xs, gap: 2 }}
+              itemStyle={{
+                color: palette().text,
+                fontSize: textSize(13),
+                paddingVertical: 0,
+                paddingHorizontal: 0,
+                minHeight: 0,
+              }}
+              listStyle={{ padding: space.xs, gap: 1 }}
               style={{ flex: 1, minHeight: 0 }}
               onExpandedChange={event => {
                 const next = new Set(event.expanded);

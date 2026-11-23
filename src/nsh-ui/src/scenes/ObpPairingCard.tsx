@@ -5,7 +5,7 @@
 // Errors are sanitized through `localizeHostError` and destructive revocations
 // require explicit confirmation.
 
-import { signal, Text, View } from "nsh";
+import { Text, View } from "nsh";
 import { formatRelativeTime } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
@@ -19,8 +19,7 @@ import {
 } from "../obpStore";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
 import { InsetGroup, InsetRow, StudioSection } from "../ui/studio";
-import { ModalDialog } from "../ui/overlays";
-import { Button, InlineBanner } from "../ui/primitives";
+import { Button, InlineBanner, InlineDeleteConfirm } from "../ui/primitives";
 
 function errorText(code: string): string {
   if (code === "obp_update_host") return tr("devices.obp.updateHost");
@@ -37,7 +36,6 @@ function clientDetail(client: ObpPairedClient): string {
 }
 
 export function ObpPairingCard(props: { autoload?: boolean } = {}) {
-  const pendingRevoke = signal<ObpPairedClient | null>(null);
   if (props.autoload !== false) void loadObpStatus();
   return (
     <StudioSection
@@ -95,14 +93,15 @@ export function ObpPairingCard(props: { autoload?: boolean } = {}) {
                     label={client().name || tr("devices.obp.unnamedClient")}
                     detail={clientDetail(client())}
                     trailing={
-                      <Button
+                      <InlineDeleteConfirm
                         label={tr("devices.obp.revoke")}
                         variant="danger"
                         size={compactLayout() ? "md" : "sm"}
                         disabled={obpBusy()}
                         accessibilityLabel={`obp-revoke-${client().id}`}
-                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-                        onPress={() => pendingRevoke.set(client())}
+                        confirmAccessibilityLabel="obp-revoke-confirm"
+                        cancelAccessibilityLabel="obp-revoke-cancel"
+                        onConfirm={() => void revokeObpClient(client().id)}
                       />
                     }
                   />
@@ -112,40 +111,6 @@ export function ObpPairingCard(props: { autoload?: boolean } = {}) {
           )}
         </If>
       </View>
-      <ModalDialog
-        open={pendingRevoke() !== null}
-        title={tr("devices.obp.revoke")}
-        size="sm"
-        accessibilityLabel="obp-revoke-confirm-dialog"
-        onClose={() => pendingRevoke.set(null)}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
-            <Button
-              label={tr("common.cancel")}
-              variant="secondary"
-              size="md"
-              accessibilityLabel="obp-revoke-cancel"
-              onPress={() => pendingRevoke.set(null)}
-            />
-            <Button
-              label={tr("devices.obp.revoke")}
-              variant="danger"
-              size="md"
-              disabled={obpBusy()}
-              accessibilityLabel="obp-revoke-confirm"
-              onPress={() => {
-                const target = pendingRevoke();
-                pendingRevoke.set(null);
-                if (target) void revokeObpClient(target.id);
-              }}
-            />
-          </View>
-        }
-      >
-        <Text style={textStyle("body", { color: palette().textSecondary })}>
-          {pendingRevoke()?.name || tr("devices.obp.unnamedClient")}
-        </Text>
-      </ModalDialog>
     </StudioSection>
   );
 }

@@ -161,9 +161,8 @@ async function close(target: WorkspaceActionTarget): Promise<void> {
   }
 }
 
-async function runAssistantAction(): Promise<void> {
-  const target = assistantTarget();
-  if (!target || assistantBusy()) return;
+async function executeAssistantAction(target: WorkspaceActionTarget & { action: "reset" | "delete" }): Promise<void> {
+  if (assistantBusy()) return;
   assistantBusy.set(true);
   try {
     const command = target.action === "reset" ? "reset_assistant_workspace" : "delete_assistant_workspace";
@@ -182,6 +181,12 @@ async function runAssistantAction(): Promise<void> {
   } finally {
     assistantBusy.set(false);
   }
+}
+
+async function runAssistantAction(): Promise<void> {
+  const target = assistantTarget();
+  if (!target) return;
+  await executeAssistantAction(target);
 }
 
 /**
@@ -332,8 +337,10 @@ export function workspaceMenuItems(
         label: tr("shell.ws.deleteAssistant"),
         icon: "trash",
         danger: true,
+        confirmDelete: true,
+        confirmAccessibilityLabel: "assistant-action-confirm",
         accessibilityLabel: `workspace-menu-delete-assistant-${key}`,
-        onSelect: () => assistantTarget.set({ ...target, action: "delete" }),
+        onSelect: () => void executeAssistantAction({ ...target, action: "delete" }),
       },
     );
   }

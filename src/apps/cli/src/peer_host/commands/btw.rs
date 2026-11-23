@@ -5,9 +5,11 @@
 //! a side question on a Desktop host. Peer ownership follows the dialog turn
 //! contract: it is registered before submission and released if that fails.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
 
+use openbitfun_agent_runtime::sdk::AgentSessionRestoreRequest;
 use openbitfun_core::agentic::coordination::{
     btw_turn_id, get_global_coordinator, ConversationCoordinator, DialogSubmissionPolicy,
     DialogTriggerSource,
@@ -17,6 +19,7 @@ use openbitfun_core::agentic::image_analysis::ImageContextData;
 use openbitfun_core::agentic::side_question::{
     BtwTurnWatch, SideQuestionRuntime, BTW_TURN_POLL_INTERVAL,
 };
+use openbitfun_core::service::workspace::WorkspaceKind;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -28,6 +31,14 @@ use crate::peer_host::state::{PeerHostState, PeerTurnKey, PeerTurnTracker};
 struct BtwAskStreamRequest {
     request_id: String,
     session_id: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_path: Option<String>,
+    #[serde(default)]
+    remote_connection_id: Option<String>,
+    #[serde(default)]
+    remote_ssh_host: Option<String>,
     question: String,
     child_session_id: String,
     child_session_name: Option<String>,
@@ -92,6 +103,108 @@ where
     Ok(generation)
 }
 
+async fn ensure_peer_btw_parent_session_loaded(
+    state: &PeerHostState,
+    coordinator: &ConversationCoordinator,
+    request: &BtwAskStreamRequest,
+) {
+    if coordinator
+        .get_session_manager()
+        .get_session(&request.session_id)
+        .is_some()
+    {
+        return;
+    }
+
+    let workspace_id = request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let workspace_path = request
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    if workspace_id.is_some() || workspace_path.is_some() {
+        let _ = state
+            .agent_runtime
+            .restore_session(AgentSessionRestoreRequest {
+                workspace_id,
+                workspace_path: workspace_path.unwrap_or_default(),
+                session_id: request.session_id.clone(),
+                include_internal: false,
+                remote_connection_id: request.remote_connection_id.clone(),
+                remote_ssh_host: request.remote_ssh_host.clone(),
+            })
+            .await;
+        if coordinator
+            .get_session_manager()
+            .get_session(&request.session_id)
+            .is_some()
+        {
+            return;
+        }
+    }
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(current) = state.workspace_service.get_current_workspace().await {
+        if seen.insert(current.id.clone()) {
+            candidates.push(current);
+        }
+    }
+    let mut opened = state.workspace_service.get_opened_workspaces().await;
+    opened.sort_by_key(|ws| std::cmp::Reverse(ws.last_accessed));
+    for ws in opened {
+        if seen.insert(ws.id.clone()) {
+            candidates.push(ws);
+        }
+    }
+    for ws in state.workspace_service.get_assistant_workspaces().await {
+        if seen.insert(ws.id.clone()) {
+            candidates.push(ws);
+        }
+    }
+
+    for workspace in candidates {
+        let is_remote = workspace.workspace_kind == WorkspaceKind::Remote;
+        let _ = state
+            .agent_runtime
+            .restore_session(AgentSessionRestoreRequest {
+                workspace_id: Some(workspace.id.clone()),
+                workspace_path: workspace.root_path.to_string_lossy().into_owned(),
+                session_id: request.session_id.clone(),
+                include_internal: false,
+                remote_connection_id: if is_remote {
+                    workspace.remote_ssh_connection_id().map(ToOwned::to_owned)
+                } else {
+                    None
+                },
+                remote_ssh_host: if is_remote {
+                    workspace
+                        .metadata
+                        .get("sshHost")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                } else {
+                    None
+                },
+            })
+            .await;
+        if coordinator
+            .get_session_manager()
+            .get_session(&request.session_id)
+            .is_some()
+        {
+            return;
+        }
+    }
+}
+
 pub(crate) async fn btw_ask_stream(state: &PeerHostState, args: &Value) -> Result<Value, String> {
     let raw = request_value(args);
     let request = parse_ask_request(raw)?;
@@ -102,6 +215,7 @@ pub(crate) async fn btw_ask_stream(state: &PeerHostState, args: &Value) -> Resul
         Some(_) => Some(Value::Object(super::dialog::peer_dialog_metadata(raw)?)),
     };
     let coordinator = coordinator()?;
+    ensure_peer_btw_parent_session_loaded(state, &coordinator, &request).await;
     let child_session_id = request.child_session_id.trim().to_string();
     let turn_id = btw_turn_id(&request.request_id);
     let turn = PeerTurnKey::new(child_session_id.clone(), turn_id.clone());

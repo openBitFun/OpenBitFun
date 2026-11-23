@@ -319,9 +319,8 @@ test("the history slot draws the backend's groups and marks; rename and delete u
   await app.hover("id:conversation-conv-deps");
   await app.press("label:conversation-menu-conv-deps");
   await app.press("label:Delete conversation…");
-  await app.waitFor("text:Delete “Bump deps”?");
-  expect(app.shows("text:Jobs it started keep running on their devices.")).toBe(true);
-  await app.press("text:Delete");
+  await app.waitFor("label:sa-delete-confirm-conv-deps");
+  await app.press("label:sa-delete-confirm-conv-deps");
   await app.waitFor("id:conversation-conv-deps", { state: "gone" });
   expect(backend.callsOf("superagent_delete_conversation")[0]?.request).toEqual({ conversationId: "conv-deps" });
 });

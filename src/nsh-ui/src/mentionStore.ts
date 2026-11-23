@@ -521,9 +521,11 @@ export async function loadSlashSkills(
         workspacePath: workspacePath || undefined,
       });
     } catch {
-      raw = await invokeCommand<unknown>("get_skill_configs", {
-        ...(workspaceId ? { workspaceId } : {}),
-        ...(workspacePath ? { workspacePath } : {}),
+      raw = await invokeRawCommand<unknown>("get_skill_configs", {
+        forceRefresh: force,
+        includeDiagnostics: false,
+        workspaceId: workspaceId ?? null,
+        workspacePath: workspacePath || null,
       });
     }
     if (skillsKey !== key) return;

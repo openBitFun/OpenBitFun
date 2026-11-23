@@ -297,7 +297,9 @@ export async function attachImageFromClipboard(): Promise<void> {
  * to this machine's file system (a remote or Peer host could not open a local
  * path anyway). A runtime without the `picker` capability says so.
  */
-export async function attachImagesFromPicker(): Promise<number> {
+export async function attachImagesFromPicker(
+  onAdd?: (attachment: ImageAttachment) => void,
+): Promise<number> {
   attachmentNotice.set("");
   let picked: Array<{ file: File; size: { width: number; height: number } }> = [];
   try {
@@ -309,12 +311,13 @@ export async function attachImagesFromPicker(): Promise<number> {
     );
     return 0;
   }
+  const addTarget = onAdd ?? addAttachment;
   let added = 0;
   for (const image of picked) {
     try {
       const bytes = new Uint8Array(await image.file.arrayBuffer());
       const mimeType = image.file.type || "image/png";
-      addAttachment({
+      addTarget({
         id: `attachment-${++nextId}`,
         name: image.file.name || `image-${nextId}.${extensionOf(mimeType)}`,
         mimeType,

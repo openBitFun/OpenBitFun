@@ -54,24 +54,27 @@ function adopt(sessionId: string, reply: unknown): void {
   }));
 }
 
-function scope(): Record<string, unknown> {
-  const workspaceId = activeWorkspaceId();
-  const workspacePath = activeWorkspaceRoot();
+function scope(options?: { workspaceId?: string | null; workspacePath?: string | null }): Record<string, unknown> {
+  const workspaceId = options?.workspaceId !== undefined ? options.workspaceId : activeWorkspaceId();
+  const workspacePath = options?.workspacePath !== undefined ? options.workspacePath : activeWorkspaceRoot();
   return {
     ...(workspaceId ? { workspaceId } : {}),
     ...(workspacePath ? { workspacePath } : {}),
   };
 }
 
-export async function loadSessionPermissionMode(sessionId: string | null): Promise<void> {
+export async function loadSessionPermissionMode(
+  sessionId: string | null,
+  options?: { workspaceId?: string | null; workspacePath?: string | null; turnId?: string | null },
+): Promise<void> {
   if (!sessionId) return;
   ensurePermissions();
   try {
-    const turnId = runningTurnId();
+    const turnId = options?.turnId !== undefined ? options.turnId : runningTurnId();
     const reply = await invokeCommand<unknown>("get_session_permission_mode", {
       sessionId,
       ...(turnId ? { turnId } : {}),
-      ...scope(),
+      ...scope(options),
     });
     adopt(sessionId, reply);
     permissionModeSupported.set(true);
@@ -92,12 +95,15 @@ export function followsDefaultMode(sessionId: string | null): boolean {
   return !state?.mode && !state?.turnMode;
 }
 
-export async function chooseSessionPermissionMode(mode: PermissionMode | null): Promise<void> {
-  const sessionId = activeSessionId();
+export async function chooseSessionPermissionMode(
+  mode: PermissionMode | null,
+  options?: { sessionId?: string | null; workspaceId?: string | null; workspacePath?: string | null; turnId?: string | null },
+): Promise<void> {
+  const sessionId = options?.sessionId !== undefined ? options.sessionId : activeSessionId();
   if (!sessionId) return;
   permissionModePickerOpen.set(false);
   permissionModeNotice.set("");
-  const turnId = runningTurnId();
+  const turnId = options?.turnId !== undefined ? options.turnId : runningTurnId();
   try {
     adopt(
       sessionId,
@@ -105,7 +111,7 @@ export async function chooseSessionPermissionMode(mode: PermissionMode | null): 
         sessionId,
         mode,
         ...(turnId ? { turnId } : {}),
-        ...scope(),
+        ...scope(options),
       }),
     );
     if (turnId) {
@@ -115,7 +121,7 @@ export async function chooseSessionPermissionMode(mode: PermissionMode | null): 
           sessionId,
           turnId,
           mode,
-          ...scope(),
+          ...scope(options),
         }),
       );
     }

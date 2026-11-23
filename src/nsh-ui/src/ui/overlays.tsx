@@ -367,6 +367,14 @@ export interface DropdownMenuItem {
   separator?: boolean;
   /** Non-interactive section group header label (e.g. "Peer Devices", "SSH Hosts"). */
   header?: boolean;
+  /** Transforms this menu row in-place into "Cancel | Confirm" instead of popping a modal. */
+  confirmDelete?: boolean;
+  /** Optional label for the in-place confirm button (defaults to `tr("common.confirm")`). */
+  confirmLabel?: string;
+  /** Optional accessibilityLabel for the in-place confirm button. */
+  confirmAccessibilityLabel?: string;
+  /** Optional accessibilityLabel for the in-place cancel button. */
+  cancelAccessibilityLabel?: string;
   accessibilityLabel?: string;
   onSelect?: () => void;
 }
@@ -396,6 +404,7 @@ function MenuSurface(props: {
   onClose: () => void;
 }) {
   const motion = popoverEnterMotion(props.placement, props.align, MOTION_DURATION.popover);
+  const confirmingId = signal<string | null>(null);
   cleanup(registerEscapeDismiss(() => props.onClose()));
   return (
     <View
@@ -466,133 +475,222 @@ function MenuSurface(props: {
                   </View>
                 </If>
                 <If when={!item().header && Boolean(item().label)}>
-                  <View
-                    role="menuitem"
-                    disabled={item().disabled}
-                    accessibilityLabel={item().accessibilityLabel ?? item().label}
-                    accessibilityState={{
-                      disabled: Boolean(item().disabled),
-                      selected: Boolean(item().active),
-                    }}
-                    onPress={() => {
-                      if (item().disabled) return;
-                      props.onClose();
-                      item().onSelect?.();
-                    }}
-                    style={{
-                      minHeight: compactLayout() ? layout.touchTarget : 30,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: space.sm,
-                      paddingHorizontal: space.sm,
-                      paddingVertical: space.chip,
-                      borderRadius: MENU_ITEM_RADIUS,
-                      borderCurve: "continuous",
-                      backgroundColor: item().active
-                        ? palette().surfaceSubtle
-                        : "transparent",
-                      cursor: item().disabled ? "not-allowed" : "pointer",
-                      userSelect: "none",
-                      ...pressTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{
-                      backgroundColor: item().disabled
-                        ? "transparent"
-                        : item().danger
-                          ? palette().dangerSoft
-                          : palette().panelHover,
-                    }}
-                    activeStyle={tactileActiveStyle(0.985, {
-                      backgroundColor: item().danger
-                        ? palette().dangerHoverBg
-                        : palette().panelHover,
-                    })}
-                    focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
-                    disabledStyle={{ opacity: 0.45 }}
-                  >
-                    <If when={item().icon ?? ""}>
-                      {iconName => (
-                        <Icon
-                          name={iconName() as IconName}
-                          size={14}
-                          color={
-                            item().danger
-                              ? palette().danger
-                              : item().active
-                                ? palette().text
-                                : palette().textSecondary
-                          }
-                        />
-                      )}
-                    </If>
-                    <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                      <Text
-                        style={{
-                          color: item().danger ? palette().danger : palette().text,
-                          fontSize: textSize(13),
-                          fontWeight: item().active ? "500" : "400",
-                          lineHeight: textLineHeight(13, 1.24),
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis",
+                  <If
+                    when={Boolean(item().confirmDelete && confirmingId() === item().id)}
+                    else={
+                      <View
+                        role="menuitem"
+                        disabled={item().disabled}
+                        accessibilityLabel={item().accessibilityLabel ?? item().label}
+                        accessibilityState={{
+                          disabled: Boolean(item().disabled),
+                          selected: Boolean(item().active),
                         }}
+                        onPress={() => {
+                          if (item().disabled) return;
+                          if (item().confirmDelete) {
+                            confirmingId.set(item().id);
+                            return;
+                          }
+                          props.onClose();
+                          item().onSelect?.();
+                        }}
+                        style={{
+                          minHeight: compactLayout() ? layout.touchTarget : 30,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: space.sm,
+                          paddingHorizontal: space.sm,
+                          paddingVertical: space.chip,
+                          borderRadius: MENU_ITEM_RADIUS,
+                          borderCurve: "continuous",
+                          backgroundColor: item().active
+                            ? palette().surfaceSubtle
+                            : "transparent",
+                          cursor: item().disabled ? "not-allowed" : "pointer",
+                          userSelect: "none",
+                          ...pressTransition(MOTION_DURATION.fast),
+                        }}
+                        hoverStyle={{
+                          backgroundColor: item().disabled
+                            ? "transparent"
+                            : item().danger
+                              ? palette().dangerSoft
+                              : palette().panelHover,
+                        }}
+                        activeStyle={tactileActiveStyle(0.985, {
+                          backgroundColor: item().danger
+                            ? palette().dangerHoverBg
+                            : palette().panelHover,
+                        })}
+                        focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
+                        disabledStyle={{ opacity: 0.45 }}
                       >
-                        {item().label}
-                      </Text>
-                      <If when={item().hint ?? ""}>
-                        {hintText => (
+                        <If when={item().icon ?? ""}>
+                          {iconName => (
+                            <Icon
+                              name={iconName() as IconName}
+                              size={14}
+                              color={
+                                item().danger
+                                  ? palette().danger
+                                  : item().active
+                                    ? palette().text
+                                    : palette().textSecondary
+                              }
+                            />
+                          )}
+                        </If>
+                        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                           <Text
                             style={{
-                              color: palette().textElevatedMuted,
-                              fontSize: textSize(12),
-                              lineHeight: textLineHeight(12, 1.35),
-                              numberOfLines: 2,
+                              color: item().danger ? palette().danger : palette().text,
+                              fontSize: textSize(13),
+                              fontWeight: item().active ? "500" : "400",
+                              lineHeight: textLineHeight(13, 1.24),
+                              numberOfLines: 1,
                               textOverflow: "ellipsis",
                             }}
                           >
-                            {hintText()}
+                            {item().label}
                           </Text>
-                        )}
-                      </If>
+                          <If when={item().hint ?? ""}>
+                            {hintText => (
+                              <Text
+                                style={{
+                                  color: palette().textElevatedMuted,
+                                  fontSize: textSize(12),
+                                  lineHeight: textLineHeight(12, 1.35),
+                                  numberOfLines: 2,
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {hintText()}
+                              </Text>
+                            )}
+                          </If>
+                        </View>
+                        <If when={item().trailingHint ?? ""}>
+                          {trailingText => (
+                            <Text
+                              style={{
+                                flexShrink: 0,
+                                maxWidth: 120,
+                                color: palette().textElevatedMuted,
+                                fontSize: textSize(11),
+                                fontWeight: "500",
+                                lineHeight: textLineHeight(11, 1.24),
+                                numberOfLines: 1,
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {trailingText()}
+                            </Text>
+                          )}
+                        </If>
+                        <If when={item().shortcut ?? ""}>
+                          {shortcutText => (
+                            <Text
+                              style={{
+                                flexShrink: 0,
+                                color: palette().textElevatedMuted,
+                                fontFamily: fontMono,
+                                fontSize: textSize(11),
+                                fontWeight: "500",
+                                fontVariant: ["tabular-nums"],
+                                lineHeight: textLineHeight(11, 1.24),
+                              }}
+                            >
+                              {shortcutText()}
+                            </Text>
+                          )}
+                        </If>
+                        <If when={Boolean(item().active)}>
+                          <Icon name="check" size={13} color={palette().accent} />
+                        </If>
+                      </View>
+                    }
+                  >
+                    <View
+                      accessibilityLabel={`${item().id}-inline-confirm`}
+                      style={{
+                        minHeight: compactLayout() ? layout.touchTarget : 30,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.xs,
+                        paddingHorizontal: space.xs,
+                        paddingVertical: 3,
+                        borderRadius: MENU_ITEM_RADIUS,
+                        borderCurve: "continuous",
+                        backgroundColor: palette().dangerSoft,
+                      }}
+                    >
+                      <View
+                        role="button"
+                        accessibilityLabel={item().cancelAccessibilityLabel ?? `${item().id}-cancel`}
+                        onPress={() => confirmingId.set(null)}
+                        style={{
+                          flex: 1,
+                          height: compactLayout() ? 32 : 24,
+                          borderRadius: radii.xs,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                          userSelect: "none",
+                          ...pressTransition(MOTION_DURATION.fast),
+                        }}
+                        hoverStyle={{ backgroundColor: palette().panelHover }}
+                        activeStyle={tactileActiveStyle(0.96)}
+                        focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
+                      >
+                        <Text
+                          style={{
+                            color: palette().text,
+                            fontSize: textSize(12),
+                            lineHeight: textLineHeight(12, 1.25),
+                            fontWeight: "500",
+                          }}
+                        >
+                          {tr("common.cancel")}
+                        </Text>
+                      </View>
+                      <View style={{ width: 1, height: 14, backgroundColor: palette().borderSubtle }} />
+                      <View
+                        role="button"
+                        accessibilityLabel={item().confirmAccessibilityLabel ?? `${item().id}-confirm`}
+                        onPress={() => {
+                          confirmingId.set(null);
+                          props.onClose();
+                          item().onSelect?.();
+                        }}
+                        style={{
+                          flex: 1,
+                          height: compactLayout() ? 32 : 24,
+                          borderRadius: radii.xs,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          backgroundColor: palette().danger,
+                          cursor: "pointer",
+                          userSelect: "none",
+                          ...pressTransition(MOTION_DURATION.fast),
+                        }}
+                        hoverStyle={{ opacity: 0.92 }}
+                        activeStyle={tactileActiveStyle(0.96)}
+                        focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
+                      >
+                        <Text
+                          style={{
+                            color: palette().actionPrimaryFg,
+                            fontSize: textSize(12),
+                            lineHeight: textLineHeight(12, 1.25),
+                            fontWeight: "600",
+                          }}
+                        >
+                          {item().confirmLabel ?? tr("common.confirm")}
+                        </Text>
+                      </View>
                     </View>
-                    <If when={item().trailingHint ?? ""}>
-                      {trailingText => (
-                        <Text
-                          style={{
-                            flexShrink: 0,
-                            maxWidth: 120,
-                            color: palette().textElevatedMuted,
-                            fontSize: textSize(11),
-                            fontWeight: "500",
-                            lineHeight: textLineHeight(11, 1.24),
-                            numberOfLines: 1,
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {trailingText()}
-                        </Text>
-                      )}
-                    </If>
-                    <If when={item().shortcut ?? ""}>
-                      {shortcutText => (
-                        <Text
-                          style={{
-                            flexShrink: 0,
-                            color: palette().textElevatedMuted,
-                            fontFamily: fontMono,
-                            fontSize: textSize(11),
-                            fontWeight: "500",
-                            fontVariant: ["tabular-nums"],
-                            lineHeight: textLineHeight(11, 1.24),
-                          }}
-                        >
-                          {shortcutText()}
-                        </Text>
-                      )}
-                    </If>
-                    <If when={Boolean(item().active)}>
-                      <Icon name="check" size={13} color={palette().accent} />
-                    </If>
-                  </View>
+                  </If>
                 </If>
               </View>
             )}

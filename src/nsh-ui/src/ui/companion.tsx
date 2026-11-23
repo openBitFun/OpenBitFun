@@ -34,7 +34,7 @@ import { compactLayout, palette, radii, space, textStyle, touchSlop } from "../t
 import { stateWord, type MarkState } from "./fleet";
 import { Icon } from "./icons";
 import { pressTransition, tactileActiveStyle } from "./motion";
-import { focusRingStyle, InlineConfirmBar, SkeletonBlock, TooltipBubble } from "./primitives";
+import { focusRingStyle, SkeletonBlock, TooltipBubble } from "./primitives";
 import { MoreMenu } from "./studio";
 
 /** Petdex cells are 192 × 208; a sheet whose size is unknown yet uses that shape. */
@@ -236,7 +236,6 @@ export function PetWindowContent(props: PetWindowContentProps) {
 
 /** Settings › Pet: the characters to pick from, the chosen one ringed. */
 export function PetCharacterGrid() {
-  const pendingDelete = signal<CompanionPet | null>(null);
   const busy = () => companionBusy() !== null;
   const isSelected = (pet: CompanionPet) => {
     const current = selectedPet();
@@ -326,9 +325,11 @@ export function PetCharacterGrid() {
                           label: tr("pet.delete"),
                           icon: "trash",
                           danger: true,
+                          confirmDelete: true,
+                          confirmAccessibilityLabel: `pet-delete-confirm-${pet().id}`,
                           disabled: busy(),
                           accessibilityLabel: `pet-delete-${pet().id}`,
-                          onSelect: () => pendingDelete.set(pet()),
+                          onSelect: () => void deleteCompanionPet(pet()),
                         },
                       ]}
                     />
@@ -338,22 +339,6 @@ export function PetCharacterGrid() {
             )}
           </Each>
         </View>
-      </If>
-      <If when={pendingDelete()}>
-        {target => (
-          <InlineConfirmBar
-            danger
-            message={target().displayName}
-            confirmLabel={tr("pet.delete")}
-            cancelLabel={tr("common.cancel")}
-            onConfirm={() => {
-              const current = target();
-              pendingDelete.set(null);
-              void deleteCompanionPet(current);
-            }}
-            onCancel={() => pendingDelete.set(null)}
-          />
-        )}
       </If>
     </View>
   );

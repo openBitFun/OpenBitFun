@@ -118,9 +118,9 @@ test("deleting a session drops its row and the catalog count with it", async () 
 
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.press("thread-actions-trigger");
-  await app.press("Delete");
-  await app.waitFor("Delete NSH skeleton? This cannot be undone.");
-  await app.press("Confirm delete");
+  await app.press("session-delete-trigger");
+  await app.waitFor("session-delete-confirm");
+  await app.press("session-delete-confirm");
 
   expect(backend.calls.find(call => call.action === "delete_persisted_session")?.request).toMatchObject({
     session_id: "session-1",
@@ -836,7 +836,8 @@ test("files scene creates, renames and deletes through the workspace commands", 
   await app.press("renamed.txt");
   await app.press("file-actions-menu");
   await app.press("Delete");
-  await app.press("Confirm delete");
+  await app.waitFor("file-delete-confirm");
+  await app.press("file-delete-confirm");
   expect(backend.calls.some(call => call.action === "delete_file")).toBe(true);
 });
 
@@ -1521,13 +1522,12 @@ test("settings scene lists the configured models and appends one", async () => {
   // One typed intent, not a whole list this page read earlier.
   expect(backend.calls.filter(call => call.action === "ai_model_upsert")).toHaveLength(1);
 
-  // Removing asks first, and says the default slot that names the model.
+  // Removing asks in-place inside the menu ("Cancel | Confirm") before calling delete.
   await app.press("model-actions-model-1");
   await app.press("remove-model-model-1");
-  // Named as every list names it: the model, then its provider.
-  await app.waitFor("Remove gpt-4.1-mini · Configured model? 1 default slot(s) name it and will be cleared.");
+  await app.waitFor("model-delete-confirm-model-1");
   expect(backend.settingsWrites.filter(entry => entry.path === "ai.models")).toHaveLength(1);
-  await app.press("id:model-delete-confirm-model-1 >> Delete");
+  await app.press("model-delete-confirm-model-1");
   await app.waitFor("Removed Configured model");
   const removals = backend.settingsWrites.filter(entry => entry.path === "ai.models");
   expect((removals.pop()?.value as unknown[]).length).toBe(1);
@@ -3017,7 +3017,7 @@ test("typing @ in the message opens the picker and is replaced by the tag", asyn
   // and the search follows what is being written.
   await app.type("composer", "Explain @readme");
   await app.waitFor("README.md");
-  expect(app.texts()).toContain("A press replaces the @ you typed with the tag");
+  expect(app.texts()).not.toContain("A press replaces the @ you typed with the tag");
   expect(app.texts()).not.toContain("Search workspace file names");
   expect(backend.calls.find(call => call.action === "search_files")?.request).toMatchObject({
     workspaceId: "workspace-1",
@@ -3563,9 +3563,9 @@ test("MCP enable flips the stored flag, and delete asks first", async () => {
 
   await app.press("mcp-actions-fs-server");
   await app.press("mcp-delete-fs-server");
-  await app.waitFor("Delete Filesystem? It stops and is removed from the stored configuration.");
+  await app.waitFor("mcp-delete-confirm-fs-server");
   expect(backend.actions()).not.toContain("delete_mcp_server");
-  await app.press("id:mcp-delete-confirm-fs-server >> Delete");
+  await app.press("mcp-delete-confirm-fs-server");
   await waitForCalls(backend, "delete_mcp_server");
 });
 
@@ -3597,9 +3597,9 @@ test("memory folder opens on the host and clearing memories asks first", async (
   expect(backend.reveals).toContain("/tmp/openbitfun/memories");
 
   await app.press("memory-reset");
-  await app.waitFor("Clear every stored memory and the extraction state? This cannot be undone.");
+  await app.waitFor("memory-reset-confirm");
   expect(resets).toBe(0);
-  await app.press("id:memory-reset-confirm >> Clear memories");
+  await app.press("memory-reset-confirm");
   await app.waitFor("Cleared the stored memories");
   expect(resets).toBe(1);
 });

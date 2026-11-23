@@ -155,8 +155,8 @@ test("Account › OpenBitFun turns the agent off and deletes its data through th
   expect(superagentCalls.some(call => call.action === "superagent_enable")).toBe(false);
 
   await app.press("obf-delete-data");
-  await app.waitFor("obf-delete-dialog");
-  await app.waitFor("Delete Super Agent data?");
+  await app.waitFor("obf-delete-confirm");
+  expect(app.shows("obf-delete-dialog")).toBe(false);
   await app.press("obf-delete-confirm");
   await app.waitUntil(() => superagentCalls.some(call => call.action === "superagent_delete_data"));
   expect(superagentCalls.find(call => call.action === "superagent_delete_data")?.request).toEqual({ cancelJobs: true });

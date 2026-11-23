@@ -547,8 +547,11 @@ function InstalledSkillRow(props: { skill: SkillRecord; first: boolean }) {
                   icon: "trash" as const,
                   danger: true,
                   separator: true,
+                  confirmDelete: true,
+                  confirmAccessibilityLabel: "skill-delete-confirm",
+                  cancelAccessibilityLabel: "skill-delete-cancel",
                   accessibilityLabel: `skill-menu-delete-${props.skill.key}`,
-                  onSelect: () => confirmDeleteSkillKey.set(props.skill.key),
+                  onSelect: () => void removeInstalledSkill(props.skill),
                 },
               ]
             : []),
@@ -786,53 +789,6 @@ function SkillInspectModal() {
               </If>
             </View>
           </View>
-        )}
-      </If>
-    </ModalDialog>
-  );
-}
-
-function SkillDeleteModal() {
-  return (
-    <ModalDialog
-      open={Boolean(pendingDeleteSkill())}
-      title={tr("skills.deleteSkill")}
-      size="sm"
-      accessibilityLabel="skill-delete-dialog"
-      onClose={() => confirmDeleteSkillKey.set(null)}
-      footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Button
-            label={tr("common.cancel")}
-            variant="secondary"
-            size="md"
-            accessibilityLabel="skill-delete-cancel"
-            onPress={() => confirmDeleteSkillKey.set(null)}
-          />
-          <Button
-            label={tr("common.confirmDelete")}
-            variant="danger"
-            size="md"
-            accessibilityLabel="skill-delete-confirm"
-            onPress={() => {
-              const target = pendingDeleteSkill();
-              if (target) void removeInstalledSkill(target);
-            }}
-          />
-        </View>
-      }
-    >
-      <If when={pendingDeleteSkill()}>
-        {skill => (
-          <Text
-            style={{
-              color: palette().textSecondary,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.5),
-            }}
-          >
-            {tr("skills.deleteConfirmBody", { name: skill().name })}
-          </Text>
         )}
       </If>
     </ModalDialog>
@@ -1498,7 +1454,6 @@ export function SkillsScene(props: { embedded?: boolean }) {
 
       <FolderInstallModal />
       <SkillInspectModal />
-      <SkillDeleteModal />
     </View>
   );
 }

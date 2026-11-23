@@ -1891,6 +1891,7 @@ fn command_btw_ask_stream(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
         let result = crate::api::btw_api::btw_ask_stream(
             host.command_state("btw_ask_stream")?,
             host.command_state("btw_ask_stream")?,
+            host.command_state("btw_ask_stream")?,
             arg(&args, "request", "btw_ask_stream")?,
         ).await;
         (&result).dispatch_kind().finish(result)

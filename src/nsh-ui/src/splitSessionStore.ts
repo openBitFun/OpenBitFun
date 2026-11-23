@@ -23,6 +23,7 @@ import {
   type ImageAttachment,
 } from "./attachmentStore";
 import { fleetActive, invokeCommand } from "./bridge";
+import { closeSideQuestion, sideQuestionOpen } from "./btwStore";
 import { fleetDeviceById, fleetSessionRow, fleetWorkspaceByKey } from "./fleetStore";
 import { isCommandUnavailable } from "./hostCommands";
 import { tr } from "./i18n";
@@ -331,6 +332,7 @@ export function selectSecondarySession(
     activeWorkspaceId() ||
     null;
 
+  if (sideQuestionOpen()) closeSideQuestion();
   batch(() => {
     splitPaneOpen.set(true);
     focusedPane.set(1);
@@ -378,6 +380,7 @@ export function openSplitPane(target?: {
     selectSecondarySession(candidate.sessionId, candidate.deviceId, candidate.workspaceId);
     return;
   }
+  if (sideQuestionOpen()) closeSideQuestion();
   batch(() => {
     splitPaneOpen.set(true);
     focusedPane.set(1);

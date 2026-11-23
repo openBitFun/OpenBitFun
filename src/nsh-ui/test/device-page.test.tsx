@@ -84,8 +84,7 @@ test("the ⋯ menu removes a device only after a confirmation named by its verb"
   const { app, backend } = await openDevice("dev-b");
   await app.press("device-menu");
   await app.press("device-menu-remove");
-  await app.waitFor("text:Remove linux-box from your account?");
-  expect(app.shows("text:It stops appearing on your other devices. Its sessions and files stay on it.")).toBe(true);
+  await app.waitFor("device-remove-confirm");
   expect(backend.actions()).not.toContain("account_delete_device");
   await app.press("device-remove-confirm");
   await app.waitUntil(() => backend.actions().includes("account_delete_device"));

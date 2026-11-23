@@ -1318,7 +1318,6 @@ export function conversationMark(row: ConversationSummary): MarkState | null {
 
 const renameTarget = signal<{ id: string; title: string } | null>(null);
 const renameDraft = signal("");
-const deleteTarget = signal<{ id: string; title: string } | null>(null);
 const conversationDialogBusy = signal(false);
 const conversationDialogError = signal("");
 
@@ -1329,17 +1328,23 @@ export function requestRenameConversation(id: string, title: string): void {
   renameTarget.set({ id, title });
 }
 
-/** Opens the delete confirmation for a conversation. */
-export function requestDeleteConversation(id: string, title: string): void {
-  conversationDialogError.set("");
-  deleteTarget.set({ id, title });
-}
-
 /** The ⋯ menu items of a conversation (header and history row). */
 export function conversationMenuItems(id: string, title: string) {
   return [
     { id: "rename", label: tr("sa.menuRename"), icon: "edit" as const, onSelect: () => requestRenameConversation(id, title) },
-    { id: "delete", label: tr("sa.menuDelete"), icon: "trash" as const, danger: true, onSelect: () => requestDeleteConversation(id, title) },
+    {
+      id: "delete",
+      label: tr("sa.menuDelete"),
+      icon: "trash" as const,
+      danger: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: `sa-delete-confirm-${id}`,
+      onSelect: () => {
+        void deleteConversation(id).catch(error => {
+          pushToast(error instanceof Error ? error.message : String(error), "error");
+        });
+      },
+    },
   ];
 }
 
@@ -1347,8 +1352,8 @@ let dialogHostSeq = 0;
 const dialogHosts = signal<number[]>([]);
 
 /**
- * The rename and delete dialogs. Mount it wherever the menus appear; only the
- * first mounted instance draws, so the dialogs never show twice.
+ * The rename dialog. Mount it wherever the menus appear; only the
+ * first mounted instance draws, so the dialog never shows twice.
  */
 export function ConversationDialogs() {
   const id = ++dialogHostSeq;
@@ -1404,34 +1409,6 @@ export function ConversationDialogs() {
               }
             }}
           />
-          <If when={conversationDialogError()}>
-            {error => <Text style={textStyle("caption", { color: palette().danger })}>{error()}</Text>}
-          </If>
-        </View>
-      </ModalDialog>
-      <ModalDialog
-        open={Boolean(deleteTarget())}
-        size="sm"
-        title={tr("sa.deleteTitle", { title: deleteTarget()?.title ?? "" })}
-        onClose={() => deleteTarget.set(null)}
-        footer={
-          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => deleteTarget.set(null)} />
-            <Button
-              label={tr("common.delete")}
-              variant="danger"
-              size="md"
-              loading={conversationDialogBusy()}
-              onPress={() => {
-                const target = deleteTarget();
-                if (target) void run(() => deleteConversation(target.id), () => deleteTarget.set(null));
-              }}
-            />
-          </View>
-        }
-      >
-        <View style={{ gap: space.sm }}>
-          <Text style={textStyle("body", { color: palette().textSecondary })}>{tr("sa.deleteBody")}</Text>
           <If when={conversationDialogError()}>
             {error => <Text style={textStyle("caption", { color: palette().danger })}>{error()}</Text>}
           </If>

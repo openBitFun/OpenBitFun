@@ -28,6 +28,7 @@ import {
   controlHeight,
   elevationShadow,
   fontMono,
+  layout,
   isLightAppearance,
   motionTiming,
   palette,
@@ -2289,6 +2290,169 @@ export function InlineConfirmBar(props: InlineConfirmBarProps) {
         />
       </View>
     </View>
+  );
+}
+
+export interface InlineDeleteConfirmProps {
+  /** Controlled confirming state; omit to manage state locally. */
+  confirming?: boolean;
+  onConfirmingChange?: (next: boolean) => void;
+  /** Custom idle trigger (receives `startConfirm`); if omitted renders a danger/ghost Button or IconButton. */
+  trigger?: (startConfirm: () => void) => JSX.Element;
+  label?: string;
+  icon?: IconName;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  disabled?: boolean;
+  loading?: boolean;
+  tooltip?: string;
+  accessibilityLabel?: string;
+  confirmAccessibilityLabel?: string;
+  cancelAccessibilityLabel?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  onConfirm: () => void;
+}
+
+/**
+ * In-place delete secondary confirmation: transforms the delete button at its
+ * exact location into a compact "Cancel | Confirm" control without opening a
+ * detached popup or banner.
+ */
+export function InlineDeleteConfirm(props: InlineDeleteConfirmProps) {
+  const localConfirming = signal(false);
+  const isConfirming = () => (props.confirming !== undefined ? props.confirming : localConfirming());
+  const setConfirming = (next: boolean) => {
+    if (props.confirming === undefined) localConfirming.set(next);
+    props.onConfirmingChange?.(next);
+  };
+  const controlH = () => {
+    if (compactLayout()) return layout.touchTarget;
+    if (props.size === "xs") return 24;
+    if (props.size === "md") return controlHeight.md;
+    return controlHeight.sm;
+  };
+  return (
+    <If
+      when={isConfirming()}
+      else={
+        props.trigger ? (
+          props.trigger(() => {
+            if (!props.disabled && !props.loading) setConfirming(true);
+          })
+        ) : props.label ? (
+          <Button
+            label={props.label}
+            leadingIcon={props.icon}
+            variant={props.variant ?? "danger"}
+            size={props.size ?? "sm"}
+            disabled={props.disabled}
+            loading={props.loading}
+            accessibilityLabel={props.accessibilityLabel}
+            onPress={() => setConfirming(true)}
+          />
+        ) : (
+          <IconButton
+            icon={props.icon ?? "trash"}
+            size={props.size === "md" ? "md" : props.size === "xs" ? "xs" : "sm"}
+            tone="danger"
+            disabled={props.disabled}
+            tooltip={props.tooltip}
+            accessibilityLabel={props.accessibilityLabel}
+            onPress={() => setConfirming(true)}
+          />
+        )
+      }
+    >
+      <View
+        accessibilityLabel={
+          props.accessibilityLabel ? `${props.accessibilityLabel}-inline-confirm` : "delete-inline-confirm"
+        }
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          flexShrink: 0,
+          height: controlH(),
+          paddingHorizontal: 2,
+          gap: 3,
+          borderRadius: radii.md,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().dangerBorder,
+          backgroundColor: palette().dangerSoft,
+        }}
+      >
+        <View
+          role="button"
+          accessibilityLabel={
+            props.cancelAccessibilityLabel ??
+            (props.accessibilityLabel ? `${props.accessibilityLabel}-cancel` : "delete-inline-cancel")
+          }
+          onPress={() => setConfirming(false)}
+          style={{
+            height: Math.max(20, controlH() - 6),
+            paddingHorizontal: space.sm,
+            borderRadius: radii.sm,
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={{ backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.96)}
+          focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
+        >
+          <Text
+            style={{
+              color: palette().text,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.2),
+              fontWeight: "500",
+            }}
+          >
+            {props.cancelLabel ?? tr("common.cancel")}
+          </Text>
+        </View>
+        <View style={{ width: 1, height: 12, backgroundColor: palette().borderSubtle }} />
+        <View
+          role="button"
+          accessibilityLabel={
+            props.confirmAccessibilityLabel ??
+            (props.accessibilityLabel ? `${props.accessibilityLabel}-confirm` : "delete-inline-confirm-ok")
+          }
+          onPress={() => {
+            setConfirming(false);
+            props.onConfirm();
+          }}
+          style={{
+            height: Math.max(20, controlH() - 6),
+            paddingHorizontal: space.sm,
+            borderRadius: radii.sm,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: palette().danger,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={{ opacity: 0.92 }}
+          activeStyle={tactileActiveStyle(0.96)}
+          focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
+        >
+          <Text
+            style={{
+              color: palette().actionPrimaryFg,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.2),
+              fontWeight: "600",
+            }}
+          >
+            {props.confirmLabel ?? tr("common.confirm")}
+          </Text>
+        </View>
+      </View>
+    </If>
   );
 }
 

@@ -44,8 +44,6 @@ const renameTarget = signal<SessionActionTarget | null>(null);
 const renameDraft = signal("");
 const renameBusy = signal(false);
 const renameError = signal("");
-const deleteTarget = signal<SessionActionTarget | null>(null);
-const deleteBusy = signal(false);
 
 function errorText(error: unknown): string {
   return localizeHostError(error instanceof Error ? error.message : String(error ?? ""));
@@ -185,10 +183,6 @@ export function openSessionRename(target: SessionActionTarget): void {
   renameTarget.set(target);
 }
 
-export function openSessionDelete(target: SessionActionTarget): void {
-  deleteTarget.set(target);
-}
-
 /**
  * The session ⋯ menu: Rename…, Archive (Restore when archived), Copy session
  * ID, Export as Markdown, Show storage folder, then Delete… last (spec §3 Menus).
@@ -269,14 +263,17 @@ export function sessionMenuItems(
       icon: "trash",
       danger: true,
       separator: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: "session-delete-confirm",
+      cancelAccessibilityLabel: "session-delete-cancel",
       accessibilityLabel: `session-menu-delete-${key}`,
-      onSelect: () => openSessionDelete(target),
+      onSelect: () => void deleteSessionTarget(target),
     });
   }
   return items;
 }
 
-/** The rename and delete dialogs the session menu opens; mounted once by the shell. */
+/** The rename dialog the session menu opens; mounted once by the shell. */
 export function SessionActionDialogs(): JSX.Element {
   const closeRename = () => {
     if (renameBusy()) return;
@@ -300,77 +297,44 @@ export function SessionActionDialogs(): JSX.Element {
         renameBusy.set(false);
       });
   };
-  const confirmDelete = () => {
-    const target = deleteTarget();
-    if (!target || deleteBusy()) return;
-    deleteBusy.set(true);
-    void deleteSessionTarget(target).finally(() => {
-      deleteBusy.set(false);
-      deleteTarget.set(null);
-    });
-  };
   return (
-    <>
-      <ModalDialog
-        open={Boolean(renameTarget())}
-        title={tr("session.renameTitle")}
-        size="sm"
-        accessibilityLabel="session-rename-modal"
-        onClose={closeRename}
-        footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={closeRename} />
-            <Button
-              label={tr("common.save")}
-              variant="primary"
-              size="md"
-              loading={renameBusy()}
-              disabled={!renameDraft().trim()}
-              accessibilityLabel="session-rename-save"
-              onPress={submitRename}
-            />
-          </View>
-        }
-      >
-        <View style={{ gap: space.sm }}>
-          <TextField
-            autoFocus
-            label={tr("session.nameLabel")}
-            value={renameDraft()}
-            accessibilityLabel="session-rename-input"
-            onChange={value => {
-              renameDraft.set(value);
-              if (renameError()) renameError.set("");
-            }}
-            onSubmit={() => submitRename()}
+    <ModalDialog
+      open={Boolean(renameTarget())}
+      title={tr("session.renameTitle")}
+      size="sm"
+      accessibilityLabel="session-rename-modal"
+      onClose={closeRename}
+      footer={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={closeRename} />
+          <Button
+            label={tr("common.save")}
+            variant="primary"
+            size="md"
+            loading={renameBusy()}
+            disabled={!renameDraft().trim()}
+            accessibilityLabel="session-rename-save"
+            onPress={submitRename}
           />
-          <If when={renameError()}>
-            {error => <Text style={textStyle("caption", { color: palette().danger })}>{error()}</Text>}
-          </If>
         </View>
-      </ModalDialog>
-      <ModalDialog
-        open={Boolean(deleteTarget())}
-        title={tr("session.deleteTitle", { title: deleteTarget()?.title ?? "" })}
-        size="sm"
-        accessibilityLabel="session-delete-modal"
-        onClose={() => deleteTarget.set(null)}
-        footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => deleteTarget.set(null)} />
-            <Button
-              label={tr("common.delete")}
-              variant="danger"
-              size="md"
-              loading={deleteBusy()}
-              accessibilityLabel="session-delete-confirm"
-              onPress={confirmDelete}
-            />
-          </View>
-        }
-      >
-        <Text style={textStyle("body", { color: palette().textSecondary })}>{tr("session.deleteBody")}</Text>
-      </ModalDialog>
-    </>
+      }
+    >
+      <View style={{ gap: space.sm }}>
+        <TextField
+          autoFocus
+          label={tr("session.nameLabel")}
+          value={renameDraft()}
+          accessibilityLabel="session-rename-input"
+          onChange={value => {
+            renameDraft.set(value);
+            if (renameError()) renameError.set("");
+          }}
+          onSubmit={() => submitRename()}
+        />
+        <If when={renameError()}>
+          {error => <Text style={textStyle("caption", { color: palette().danger })}>{error()}</Text>}
+        </If>
+      </View>
+    </ModalDialog>
   );
 }

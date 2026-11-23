@@ -76,7 +76,7 @@ import {
   focusRingStyle,
   IconButton,
   InlineBanner,
-  InlineConfirmBar,
+  InlineDeleteConfirm,
   InputBox,
   SegmentedTabs,
   type SegmentedTabOption,
@@ -307,8 +307,10 @@ function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] 
       label: tr("spaces.deleteSpace"),
       icon: "trash",
       danger: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: `space-delete-confirm-${space.id}`,
       accessibilityLabel: `space-menu-delete-${space.id}`,
-      onSelect: () => requestDeleteSpace(space.id),
+      onSelect: () => void confirmDeleteSpace(space.id),
     },
   ];
 }
@@ -438,19 +440,6 @@ function SpaceCard(props: { space: () => SpaceMeta }) {
           />
         </View>
       </View>
-
-      <If when={confirmingDeleteSpaceId() === props.space().id}>
-        <View style={{ paddingHorizontal: space.lg, paddingBottom: space.lg }}>
-          <InlineConfirmBar
-            danger
-            message={tr("spaces.deleteConfirmCard", { name: props.space().name })}
-            confirmLabel={tr("common.delete")}
-            cancelLabel={tr("common.cancel")}
-            onConfirm={() => void confirmDeleteSpace(props.space().id)}
-            onCancel={() => cancelDeleteSpace()}
-          />
-        </View>
-      </If>
     </View>
   );
 }
@@ -472,17 +461,23 @@ function SpaceInspectorModal() {
       footer={
         <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
           <If when={Boolean(selectedSpaceId())}>
-            <Button
+            <InlineDeleteConfirm
+              confirming={Boolean(confirmingDeleteSpaceId() && confirmingDeleteSpaceId() === selectedSpaceId())}
+              onConfirmingChange={next => {
+                const id = selectedSpaceId();
+                if (next && id) requestDeleteSpace(id);
+                else cancelDeleteSpace();
+              }}
               label={tr("spaces.deleteSpace")}
+              icon="trash"
               variant="danger"
               size="md"
-              leadingIcon="trash"
               disabled={spacesBusy()}
               accessibilityLabel="space-inspector-delete"
-              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-              onPress={() => {
+              confirmAccessibilityLabel="space-inspector-delete-confirm"
+              onConfirm={() => {
                 const id = selectedSpaceId();
-                if (id) requestDeleteSpace(id);
+                if (id) void confirmDeleteSpace(id);
               }}
             />
           </If>
@@ -573,22 +568,6 @@ function SpaceInspectorModal() {
 
         <If when={!spaceInspectorBusy() && !selectedSpaceDetail() && Boolean(spacesError())}>
           <InlineBanner tone="danger" message={localizeHostError(spacesError())} />
-        </If>
-
-        <If when={Boolean(confirmingDeleteSpaceId() && confirmingDeleteSpaceId() === selectedSpaceId())}>
-          <InlineConfirmBar
-            danger
-            message={tr("spaces.deleteConfirmModal", {
-              name: selectedSpaceDetail()?.name ?? selectedSpaceId() ?? "",
-            })}
-            confirmLabel={tr("spaces.deleteSpace")}
-            cancelLabel={tr("common.cancel")}
-            onConfirm={() => {
-              const id = selectedSpaceId();
-              if (id) void confirmDeleteSpace(id);
-            }}
-            onCancel={() => cancelDeleteSpace()}
-          />
         </If>
 
         <If when={!spaceInspectorBusy() ? selectedSpaceDetail() : null}>

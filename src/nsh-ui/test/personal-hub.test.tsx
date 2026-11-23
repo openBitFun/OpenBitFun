@@ -461,8 +461,8 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("assistant-delete-asst-1");
   expect(app.enabled("assistant-delete-asst-1")).toBe(true);
   await app.press("assistant-delete-asst-1");
-  await app.waitFor("Confirm delete");
-  await app.press("Confirm delete");
+  await app.waitFor("assistant-delete-confirm-asst-1");
+  await app.press("assistant-delete-confirm-asst-1");
   await app.waitFor("Deleted assistant workspace.");
   expect(app.texts()).not.toContain("Muse");
 

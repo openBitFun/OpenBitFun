@@ -896,8 +896,8 @@ export function cancelDelete(): void {
   confirmingDelete.set(null);
 }
 
-export async function removeSelected(): Promise<void> {
-  const target = confirmingDelete();
+export async function removeSelected(explicitTarget?: string): Promise<void> {
+  const target = explicitTarget ?? confirmingDelete();
   const workspaceId = activeWorkspaceId();
   if (!target || !workspaceId) return;
   const isDirectory = isKnownDirectory(target);

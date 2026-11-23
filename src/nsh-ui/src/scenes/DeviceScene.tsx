@@ -105,7 +105,6 @@ const detail = signal<DeviceDetail | null>(null);
 const detailFor = signal("");
 const renameOpen = signal(false);
 const renameDraft = signal("");
-const removeOpen = signal(false);
 const copiedCommand = signal(false);
 
 const CAPABILITY_WORDS: Readonly<Record<string, MessageKey>> = {
@@ -379,9 +378,13 @@ function Header(props: { view: DeviceView }) {
       label: tr("device.remove"),
       danger: true,
       separator: true,
+      confirmDelete: true,
+      confirmAccessibilityLabel: "device-remove-confirm",
       accessibilityLabel: "device-menu-remove",
       disabled: !props.view.deviceId || props.view.isThisDevice,
-      onSelect: () => removeOpen.set(true),
+      onSelect: () => {
+        void removeAccountDevice(props.view.deviceId, props.view.name).then(() => openAllSessions("by-device"));
+      },
     },
   ];
   return (
@@ -609,29 +612,6 @@ function DeviceDialogs(props: { view: DeviceView }) {
         }
       >
         <RenameField onSubmit={submitRename} />
-      </ModalDialog>
-      <ModalDialog
-        open={removeOpen()}
-        size="sm"
-        title={tr("device.removeTitle", { device: props.view.name })}
-        onClose={() => removeOpen.set(false)}
-        footer={
-          <>
-          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => removeOpen.set(false)} />
-          <Button
-            label={tr("common.remove")}
-            variant="danger"
-            size="md"
-            accessibilityLabel="device-remove-confirm"
-            onPress={() => {
-              removeOpen.set(false);
-              void removeAccountDevice(props.view.deviceId, props.view.name).then(() => openAllSessions("by-device"));
-            }}
-          />
-          </>
-        }
-      >
-        <Text style={textStyle("body", { color: palette().textSecondary })}>{tr("device.removeBody")}</Text>
       </ModalDialog>
     </>
   );

@@ -758,11 +758,12 @@ test("AgentsScene creates, edits, deletes custom mode and configures/resets buil
     workspaceId: "workspace-1",
   });
 
-  // Delete custom mode via card action DropdownMenu + Delete ModalDialog
+  // Delete custom mode via card action DropdownMenu in-place Cancel | Confirm
   await app.press("agent-actions-architect");
   await app.press("agent-menu-delete-architect");
-  await app.waitFor("Confirm delete");
-  await app.press("Confirm delete");
+  await app.waitFor("agent-delete-confirm");
+  expect(app.shows("agent-delete-dialog")).toBe(false);
+  await app.press("agent-delete-confirm");
 
   await app.waitUntil(() => !app.texts().includes("Architect"));
   expect(mock.callFor("delete_custom_agent")[0]).toMatchObject({
@@ -912,11 +913,12 @@ test("AgentsScene creates, edits, configures, reloads, and deletes subagents", a
     request: { workspaceId: "workspace-1" },
   });
 
-  // Delete custom subagent via DropdownMenu + Delete ModalDialog
+  // Delete custom subagent via DropdownMenu in-place Cancel | Confirm
   await app.press("agent-actions-qa-bot");
   await app.press("agent-menu-delete-qa-bot");
-  await app.waitFor("Confirm delete");
-  await app.press("Confirm delete");
+  await app.waitFor("agent-delete-confirm");
+  expect(app.shows("agent-delete-dialog")).toBe(false);
+  await app.press("agent-delete-confirm");
   await app.waitUntil(() => !app.texts().includes("qa-bot"));
   expect(mock.callFor("delete_subagent")[0]).toMatchObject({
     raw: false,
@@ -1020,11 +1022,12 @@ test("SkillsScene toggles global disabled, inspects SKILL.md, validates, install
   await app.press("skills-scope-all");
   await app.waitFor("Code Reviewer");
 
-  // Delete installed skill via card DropdownMenu + Delete ModalDialog
+  // Delete installed skill via card DropdownMenu in-place Cancel | Confirm
   await app.press("label:skill-actions-project::openbitfun::my-skill");
   await app.press("label:skill-menu-delete-project::openbitfun::my-skill");
-  await app.waitFor("Confirm delete");
-  await app.press("Confirm delete");
+  await app.waitFor("skill-delete-confirm");
+  expect(app.shows("skill-delete-dialog")).toBe(false);
+  await app.press("skill-delete-confirm");
   await app.waitUntil(() => !app.texts().includes("my-skill"));
 
   expect(mock.callFor("delete_skill")[0]).toMatchObject({

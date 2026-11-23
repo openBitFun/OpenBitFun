@@ -1666,7 +1666,11 @@ export function agentTypeOf(sessionId: string | null): string {
   const bound = sessionAgentTypes()[sessionKey(sessionId)];
   if (bound) return bound;
   const stored = sessions().find(row => row.sessionId === sessionId)?.agentType;
-  return stored && stored.trim() ? stored.trim() : chosenAgentType();
+  if (stored && stored.trim()) return stored.trim();
+  const fleetRow = fleetSessionRow(deviceOfSession(sessionId), sessionId);
+  if (fleetRow?.agentType && fleetRow.agentType.trim()) return fleetRow.agentType.trim();
+  if (sessionId !== activeSessionId()) return DEFAULT_AGENT_TYPE;
+  return chosenAgentType();
 }
 
 /**
