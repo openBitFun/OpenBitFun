@@ -296,6 +296,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "sessions.quickActionHint": "点击后作为新一轮指令发送",
   "sessions.stopTurn": "停止生成",
   "sessions.sendMessage": "发送消息",
+  "sessions.turnPosition": "{{current}} / {{total}}",
   "sessions.steer": "实时引导",
   "sessions.queue": "加入队列",
   "sessions.steeringRunning": "发送后立即引导当前执行",

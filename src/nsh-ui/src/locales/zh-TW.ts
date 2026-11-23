@@ -296,6 +296,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "sessions.quickActionHint": "點擊後作為新一輪指令傳送",
   "sessions.stopTurn": "停止產生",
   "sessions.sendMessage": "傳送訊息",
+  "sessions.turnPosition": "{{current}} / {{total}}",
   "sessions.steer": "即時引導",
   "sessions.queue": "加入佇列",
   "sessions.steeringRunning": "傳送後立即引導目前執行",

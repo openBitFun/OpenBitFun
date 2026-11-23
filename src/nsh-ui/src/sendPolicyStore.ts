@@ -1,10 +1,9 @@
 // What the composer does with a message written while a turn is still running.
 //
 // The desktop surface stores this as `app.flow_chat.send_during_turn` and offers
-// two policies: send it into the running turn (live steering) or queue it until
-// that turn finishes. The host skips the field while the policy is the default,
-// so an absent value means `immediate`, which is what the composer used to do
-// unconditionally.
+// two policies: queue it until the running turn finishes (the default) or send
+// it into the running turn (live steering). The host skips the field while the
+// policy is the default, so an absent value means `queue`.
 //
 // It lives in its own store rather than in the settings table because the
 // composer reads it on every send, not only while the Settings scene is open.
@@ -20,13 +19,13 @@ export const MID_TURN_POLICIES: ReadonlyArray<{
   label: string;
   hint: string;
 }> = [
-  { value: "immediate", label: "Steer now", hint: "A message written during a turn reaches that turn" },
   { value: "queue", label: "Queue", hint: "A message written during a turn waits until it finishes" },
+  { value: "immediate", label: "Steer now", hint: "A message written during a turn reaches that turn" },
 ];
 
 const CONFIG_PATH = "app.flow_chat.send_during_turn";
 
-export const midTurnSendPolicy = signal<MidTurnSendPolicy>("immediate");
+export const midTurnSendPolicy = signal<MidTurnSendPolicy>("queue");
 export const sendPolicyNotice = signal("");
 
 let requested = false;
@@ -43,10 +42,10 @@ export async function loadSendPolicy(): Promise<void> {
   await runStep(async () => {
     try {
       const stored = await getConfig(CONFIG_PATH, true);
-      midTurnSendPolicy.set(stored === "queue" ? "queue" : "immediate");
+      midTurnSendPolicy.set(stored === "immediate" ? "immediate" : "queue");
     } catch {
       // A host that does not store the field applies its own default.
-      midTurnSendPolicy.set("immediate");
+      midTurnSendPolicy.set("queue");
     }
   });
 }

@@ -794,21 +794,21 @@ mod tests {
         let (service, _dir) = test_service("legacy-omitted-default").await;
         let path = "app.flow_chat.send_during_turn";
 
-        let queued = apply_legacy_config_mutation(&service, path, json!("queue"))
-            .await
-            .expect("queue write");
-        assert!(queued.changed);
-        assert_eq!(queued.effective_value, json!("queue"));
-
         let immediate = apply_legacy_config_mutation(&service, path, json!("immediate"))
             .await
-            .expect("writing the omitted default must not fail its read-back");
+            .expect("immediate write");
         assert!(immediate.changed);
-        assert_eq!(immediate.effective_value, Value::Null);
+        assert_eq!(immediate.effective_value, json!("immediate"));
+
+        let queued = apply_legacy_config_mutation(&service, path, json!("queue"))
+            .await
+            .expect("writing the omitted default must not fail its read-back");
+        assert!(queued.changed);
+        assert_eq!(queued.effective_value, Value::Null);
         let config: GlobalConfig = service.get_config(None).await.unwrap();
         assert_eq!(
             serde_json::to_value(config.app.flow_chat.send_during_turn).unwrap(),
-            json!("immediate")
+            json!("queue")
         );
 
         let cleared_path = "app.flow_chat.last_mode_id";

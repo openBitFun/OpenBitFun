@@ -2982,7 +2982,7 @@ function SendPolicySection() {
   useDeviceScopedLoad("send-policy", ensureSendPolicy, () => void loadSendPolicy());
   const currentHint = (): string => {
     const entry = MID_TURN_KEYS[midTurnSendPolicy()];
-    return entry ? tr(entry.hintKey) : tr("settings.sendPolicy.steerNowHint");
+    return entry ? tr(entry.hintKey) : tr("settings.sendPolicy.queueHint");
   };
   return (
     <SettingsSection

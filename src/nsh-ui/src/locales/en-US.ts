@@ -297,6 +297,7 @@ export const enUSMessages = {
   "sessions.quickActionHint": "Sends the action's prompt as a turn",
   "sessions.stopTurn": "Stop turn",
   "sessions.sendMessage": "Send message",
+  "sessions.turnPosition": "{{current}} of {{total}}",
   "sessions.steer": "Steer",
   "sessions.queue": "Queue",
   "sessions.steeringRunning": "Steering the running turn",

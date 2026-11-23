@@ -422,7 +422,7 @@ let devConfigs = {
     default_mode_strategy: "follow_last",
     last_mode_id: "Standard",
     auto_show_selection_toolbar: true,
-    send_during_turn: "immediate",
+    send_during_turn: "queue",
   },
   "app.ai_experience": {
     enable_session_title_generation: true,

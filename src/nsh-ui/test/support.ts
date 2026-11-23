@@ -848,7 +848,7 @@ const DEFAULT_CONFIGS: Record<string, unknown> = {
   "ai.browser_control_preferred_browser": "",
   "app.flow_chat.show_permission_mode_control": true,
   "app.flow_chat.auto_show_selection_toolbar": true,
-  "app.flow_chat.send_during_turn": "immediate",
+  "app.flow_chat.send_during_turn": "queue",
   "app.ai_experience.voice_input.enabled": true,
   "app.ai_experience.voice_input.default_language": "auto",
   "app.ai_experience.voice_input.max_recording_seconds": 60,
@@ -2546,7 +2546,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
         }
         const running = runningTurnsBySession[sessionId];
         const stored = liveConfigs["app.flow_chat.send_during_turn"];
-        const policy = String(payload.sendDuringTurn ?? stored ?? "immediate");
+        const policy = String(payload.sendDuringTurn ?? stored ?? "queue");
         const workspaceId = payload.workspaceId ? String(payload.workspaceId) : undefined;
         if (running && policy !== "queue") {
           userMessages.push({ sessionId, text, outcome: "steered", turnId: running, ...(workspaceId ? { workspaceId } : {}) });

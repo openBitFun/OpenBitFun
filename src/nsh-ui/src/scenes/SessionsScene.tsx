@@ -587,13 +587,68 @@ const activeSearchTurnKey = computed(() => {
   return keys[Math.min(searchMatchIndex(), keys.length - 1)] ?? "";
 });
 
-/** The rendered view of each persisted turn, so search can scroll a match into view. */
+/** The rendered view of each persisted turn, keyed by `turnKeyOf`, for search and external turn jumps. */
 const turnRefs = new Map<string, ViewRef>();
+/** The rendered view of each persisted turn, keyed by `TurnRow.key`, for the left-edge jump rail. */
+const turnRowRefs = new Map<string, ViewRef>();
+/** Y-offset of each rendered turn inside the transcript column (keyed by `TurnRow.key`), for rail tracking. */
+const turnOffsets = new Map<string, number>();
+const activeRailTurnKey = signal("");
+const hoveredRailTurnKey = signal("");
+const hoveredRailAnchor = signal<ViewRef | null>(null);
+/** Briefly prevents an upward animated rail jump from re-locking `followLatest` on its first frames near the bottom. */
+let suppressAutoFollowUntil = 0;
 
 function registerTurnRef(key: string, el: ViewRef | null | undefined): void {
   if (!key) return;
   if (el) turnRefs.set(key, el);
   else turnRefs.delete(key);
+}
+
+function registerTurnRowRef(rowKey: string, el: ViewRef | null | undefined): void {
+  if (!rowKey) return;
+  if (el) turnRowRefs.set(rowKey, el);
+  else {
+    turnRowRefs.delete(rowKey);
+    turnOffsets.delete(rowKey);
+  }
+}
+
+function recordTurnOffset(rowKey: string, y: number): void {
+  if (!rowKey || !Number.isFinite(y)) return;
+  turnOffsets.set(rowKey, y);
+}
+
+function syncActiveRailTurn(scrollY: number): void {
+  const rows = visibleTurnRows();
+  if (rows.length === 0) {
+    if (activeRailTurnKey() !== "") activeRailTurnKey.set("");
+    return;
+  }
+  if (followLatest()) {
+    const last = rows[rows.length - 1]!.key;
+    if (activeRailTurnKey() !== last) activeRailTurnKey.set(last);
+    return;
+  }
+  const threshold = scrollY + 96;
+  let current = rows[0]!.key;
+  for (const row of rows) {
+    const offset = turnOffsets.get(row.key);
+    if (offset !== undefined && offset <= threshold) {
+      current = row.key;
+    }
+  }
+  if (activeRailTurnKey() !== current) activeRailTurnKey.set(current);
+}
+
+function jumpToTurn(rowKey: string): void {
+  const ref = rowKey ? turnRowRefs.get(rowKey) : undefined;
+  if (!ref) return;
+  followLatest.set(false);
+  suppressAutoFollowUntil = Date.now() + 500;
+  cancelScheduledTranscriptScroll();
+  activeRailTurnKey.set(rowKey);
+  ref.reveal({ vertical: "start", animated: true });
 }
 
 function revealSearchMatch(): void {
@@ -2777,6 +2832,11 @@ function resetTranscriptScrollTracking(): void {
   lastViewportHeight = 0;
   lastEventContentHeight = 0;
   lastEventViewportHeight = 0;
+  turnOffsets.clear();
+  suppressAutoFollowUntil = 0;
+  activeRailTurnKey.set("");
+  hoveredRailTurnKey.set("");
+  hoveredRailAnchor.set(null);
   followLatest.set(true);
 }
 
@@ -2804,11 +2864,13 @@ function stickToTranscriptEnd(): void {
 }
 
 function jumpToTranscriptEnd(): void {
+  suppressAutoFollowUntil = 0;
   followLatest.set(true);
   peakFollowScrollY = lastObservedScrollY;
   cancelScheduledTranscriptScroll();
   transcriptScrollRef?.scrollToEnd({ animated: false });
   stickToTranscriptEnd();
+  syncActiveRailTurn(lastObservedScrollY);
 }
 
 function handleTranscriptScroll(event: ScrollEvent): void {
@@ -2826,8 +2888,13 @@ function handleTranscriptScroll(event: ScrollEvent): void {
   transcriptScrolled.set(y > 4);
 
   if (atTranscriptEnd(event)) {
-    if (!followLatest()) followLatest.set(true);
-    peakFollowScrollY = y;
+    if (!followLatest() && Date.now() >= suppressAutoFollowUntil) {
+      followLatest.set(true);
+    }
+    if (followLatest()) {
+      peakFollowScrollY = y;
+    }
+    syncActiveRailTurn(y);
     return;
   }
 
@@ -2850,6 +2917,7 @@ function handleTranscriptScroll(event: ScrollEvent): void {
       peakFollowScrollY = y;
     }
   }
+  syncActiveRailTurn(y);
   // A reader who scrolled up to the top of a windowed history gets the turns
   // before it; the initial layout pass (still following) never triggers this.
   if (y <= 2 && !followLatest() && contentHeight > viewportHeight && hasEarlierTurns() && !loadingEarlier()) {
@@ -3205,14 +3273,18 @@ async function showEarlierTurns(): Promise<void> {
  * identity while unchanged (`stableTurnRows`), so a streaming chunk, a reload or
  * "Load earlier" never evaluates this subtree again.
  */
-function TranscriptTurn(props: { turn: () => unknown }) {
+function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
   const key = computed(() => turnKeyOf(props.turn()));
   const matches = computed(() => turnMatchesSearch(props.turn(), transcriptSearchQuery()));
   const items = computed(() => turnItems(props.turn()));
   const hovered = signal(false);
   return (
     <View
-      ref={el => registerTurnRef(key(), el)}
+      ref={el => {
+        registerTurnRef(key(), el);
+        registerTurnRowRef(props.rowKey, el);
+      }}
+      onLayout={event => recordTurnOffset(props.rowKey, event.bounds.origin.y)}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
       style={{
@@ -3261,6 +3333,256 @@ function TranscriptTurn(props: { turn: () => unknown }) {
         <TurnFooter turn={props.turn()} visible={hovered() || compactLayout()} />
       </If>
     </View>
+  );
+}
+
+function collapsedExcerpt(text: string, maxChars: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) return compact;
+  return `${compact.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function turnPromptExcerpt(turn: unknown): string {
+  const combined = userPartsOf(turn)
+    .map(part => part.text.trim())
+    .filter(Boolean)
+    .join(" ");
+  return collapsedExcerpt(combined, 140);
+}
+
+function turnReplyExcerpt(turn: unknown): string {
+  const combined = responsePartsOf(turn)
+    .map(part => part.text.trim())
+    .filter(Boolean)
+    .join(" ");
+  return collapsedExcerpt(combined, 220);
+}
+
+const hoveredRailEntry = computed(() => {
+  const key = hoveredRailTurnKey();
+  if (!key) return null;
+  const rows = visibleTurnRows();
+  const index = rows.findIndex(row => row.key === key);
+  if (index < 0) return null;
+  const turn = rows[index]!.turn;
+  return {
+    key,
+    index,
+    total: rows.length,
+    prompt: turnPromptExcerpt(turn),
+    reply: turnReplyExcerpt(turn),
+    timestamp: turnTimestampOf(turn),
+  };
+});
+
+/**
+ * Subtle left-edge turn minimap: thin horizontal hairlines (one per turn) that
+ * thicken and lengthen on hover with an anchored preview card, and scroll back
+ * to that turn on click. Hidden on narrow/compact viewports and 0-1 turn chats.
+ */
+function TurnJumpRail() {
+  const rows = computed(() => visibleTurnRows());
+  const visible = computed(() => !compactLayout() && !sessionsCompact() && rows().length >= 2);
+  const dense = computed(() => rows().length > 24);
+  const resolvedActiveKey = computed(() => {
+    const current = activeRailTurnKey();
+    const list = rows();
+    if (current && list.some(row => row.key === current)) return current;
+    return list[list.length - 1]?.key ?? "";
+  });
+
+  const renderTicks = () => (
+    <View style={{ alignItems: "flex-start" }}>
+      <Each of={rows()} key={row => row.key}>
+        {(row, index) => {
+          let tickRef: ViewRef | null = null;
+          const key = () => row().key;
+          const isHovered = () => hoveredRailTurnKey() === key();
+          const isActive = () => resolvedActiveKey() === key();
+          return (
+            <View
+              ref={el => {
+                tickRef = el;
+              }}
+              role="button"
+              accessibilityLabel={`turn-jump-${index() + 1}`}
+              accessibilityState={{ selected: isActive() }}
+              onMouseEnter={() => {
+                hoveredRailTurnKey.set(key());
+                hoveredRailAnchor.set(tickRef);
+              }}
+              onMouseLeave={() => {
+                if (hoveredRailTurnKey() === key()) {
+                  hoveredRailTurnKey.set("");
+                  hoveredRailAnchor.set(null);
+                }
+              }}
+              onPress={() => jumpToTurn(key())}
+              style={{
+                width: 28,
+                height: dense() ? 8 : 12,
+                justifyContent: "center",
+                alignItems: "flex-start",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              focusVisibleStyle={focusRingStyle(-1)}
+            >
+              <View
+                style={{
+                  width: 10,
+                  height: 2,
+                  borderRadius: radii.pill,
+                  transformOrigin: "left center",
+                  pointerEvents: "none",
+                  backgroundColor: isHovered() || isActive() ? palette().text : palette().borderStrong,
+                  opacity: isHovered() ? 1 : isActive() ? 0.9 : 0.55,
+                  transform: isHovered()
+                    ? [{ scaleX: 2.2 }, { scaleY: 1.75 }]
+                    : isActive()
+                      ? [{ scaleX: 1.5 }, { scaleY: 1.25 }]
+                      : [{ scaleX: 1 }, { scaleY: 1 }],
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+              />
+            </View>
+          );
+        }}
+      </Each>
+    </View>
+  );
+
+  return (
+    <If when={visible()}>
+      <View
+        accessibilityLabel="turn-jump-rail"
+        style={{
+          position: "absolute",
+          left: 10,
+          top: space.xl,
+          bottom: space.xl,
+          justifyContent: "center",
+          pointerEvents: "box-none",
+        }}
+      >
+        <View
+          style={{
+            paddingVertical: space.xs,
+            paddingRight: space.xs,
+            pointerEvents: "auto",
+          }}
+        >
+          <If when={rows().length > 32} else={renderTicks()}>
+            <Scroll style={{ maxHeight: 360 }} scrollbar={false}>
+              {renderTicks()}
+            </Scroll>
+          </If>
+        </View>
+
+        <If when={Boolean(hoveredRailEntry() && hoveredRailAnchor())}>
+          <Overlay
+            anchor={hoveredRailAnchor()}
+            placement="right"
+            align="center"
+            offset={10}
+            margin={12}
+          >
+            <TurnJumpPreview />
+          </Overlay>
+        </If>
+      </View>
+    </If>
+  );
+}
+
+function TurnJumpPreview() {
+  const entry = hoveredRailEntry;
+  const motion = enterMotion("fadeIn", MOTION_DURATION.fast);
+  return (
+    <If when={entry()}>
+      {current => (
+        <View
+          accessibilityLabel="turn-jump-preview"
+          style={[
+            {
+              width: 312,
+              paddingHorizontal: space.lg,
+              paddingVertical: space.md,
+              borderRadius: radii.lg,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor: palette().borderStrong,
+              backgroundColor: palette().glassOverlayBg,
+              backdropFilter: "blur(16px)",
+              boxShadow: palette().shadowOverlay,
+              gap: space.xs,
+              pointerEvents: "none",
+            },
+            motion.style,
+          ]}
+        >
+          <If when={current().prompt}>
+            <Text
+              style={{
+                color: palette().text,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.4),
+                fontWeight: "600",
+                numberOfLines: 2,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {current().prompt}
+            </Text>
+          </If>
+          <If when={current().reply}>
+            <Text
+              style={{
+                color: palette().textSecondary,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.45),
+                numberOfLines: 3,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {current().reply}
+            </Text>
+          </If>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: space.sm,
+              paddingTop: space.hair,
+            }}
+          >
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.3),
+              }}
+            >
+              {tr("sessions.turnPosition", { current: current().index + 1, total: current().total })}
+            </Text>
+            <If when={current().timestamp ? formatTimestamp(current().timestamp) : ""}>
+              {formatted => (
+                <Text
+                  style={{
+                    color: palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
+                  }}
+                >
+                  {formatted()}
+                </Text>
+              )}
+            </If>
+          </View>
+        </View>
+      )}
+    </If>
   );
 }
 
@@ -3390,7 +3712,7 @@ function Transcript() {
           </If>
 
           <Each of={visibleTurnRows()} key={row => row.key}>
-            {row => <TranscriptTurn turn={() => row().turn} />}
+            {row => <TranscriptTurn turn={() => row().turn} rowKey={row().key} />}
           </Each>
 
           <If when={optimisticUserText()}>
@@ -3443,6 +3765,8 @@ function Transcript() {
           </If>
         </View>
       </Scroll>
+
+      <TurnJumpRail />
 
       <If when={!followLatest()}>
         <LatestPill />
@@ -4606,46 +4930,6 @@ function ComposerDock() {
                 <ContextUsageRing />
               </If>
 
-              <If when={Boolean(runningTurnId() && composerText().trim().length > 0)}>
-                <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", flexShrink: 0, gap: space.xs, paddingLeft: space.hair }}>
-                  <Button
-                    label={
-                      midTurnSendPolicy() === "queue"
-                        ? tr("sessions.steer")
-                        : tr("sessions.queue")
-                    }
-                    variant="secondary"
-                    size="xs"
-                    pill={true}
-                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-                    onPress={() =>
-                      void submitComposer(midTurnSendPolicy() === "queue" ? "immediate" : "queue")
-                    }
-                  />
-                  <Button
-                    label={
-                      midTurnSendPolicy() === "queue"
-                        ? tr("sessions.queue")
-                        : tr("sessions.steer")
-                    }
-                    variant="primary"
-                    size="xs"
-                    pill={true}
-                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-                    onPress={() => void submitComposer()}
-                  />
-                  <IconButton
-                    icon="stop"
-                    size="sm"
-                    tone="danger"
-                    accessibilityLabel="Stop"
-                    tooltip={tr("sessions.stopTurn")}
-                    style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-                    onPress={() => void stopRunningTurn()}
-                  />
-                </View>
-              </If>
-
               <If when={Boolean(runningTurnId() && !composerText().trim())}>
                 <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? space.hair : space.xs }}>
                   <If
@@ -4719,7 +5003,7 @@ function ComposerDock() {
                 </View>
               </If>
 
-              <If when={!runningTurnId()}>
+              <If when={!runningTurnId() || composerText().trim().length > 0}>
                 <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 0 : 4 }}>
                   <If
                     when={compactComposer()}

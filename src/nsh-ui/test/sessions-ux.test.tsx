@@ -679,25 +679,28 @@ test("the host decides whether a mid-turn message steers or queues", async () =>
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
+  // Empty composer during a running turn shows Stop, not Send.
+  expect(app.shows("Stop")).toBe(true);
+  expect(app.shows("Send")).toBe(false);
 
-  // The stored policy is the host's; the composer forwards the message as is.
-  await app.type("composer", "Also check the tests");
-  await app.press("Steer");
-  await app.waitUntil(() => backend.userMessages.length === 1);
-  expect(backend.userMessages[0]).toMatchObject({ sessionId: "session-1", outcome: "steered", turnId: "turn-9" });
-  const steer = backend.calls.find(call => call.action === "submit_user_message")?.request as Record<string, unknown>;
-  expect(steer).toMatchObject({ sessionId: "session-1", text: "Also check the tests", workspaceId: "workspace-1" });
-  expect(steer.sendDuringTurn).toBeUndefined();
-  expect(app.value("composer")).toBe("");
-
-  // The explicit secondary button asks the host to queue this one message.
+  // Typing replaces Stop with the normal Send button (no extra Steer / Queue pills).
   await app.type("composer", "Then the docs");
-  await app.press("Queue");
+  expect(app.shows("Send")).toBe(true);
+  expect(app.shows("Stop")).toBe(false);
+  expect(app.texts()).not.toContain("Steer");
+  expect(app.texts()).not.toContain("Queue");
+
+  // Default policy is `queue`; the composer sends without an override and the host queues it.
+  await app.press("Send");
   await app.waitFor("Then the docs");
-  expect(backend.userMessages[1]).toMatchObject({ outcome: "queued", text: "Then the docs" });
-  const queued = backend.calls.filter(call => call.action === "submit_user_message").at(-1)?.request;
-  expect(queued).toMatchObject({ sendDuringTurn: "queue" });
+  expect(backend.userMessages[0]).toMatchObject({ sessionId: "session-1", outcome: "queued", text: "Then the docs" });
+  const queued = backend.calls.find(call => call.action === "submit_user_message")?.request as Record<string, unknown>;
+  expect(queued).toMatchObject({ sessionId: "session-1", text: "Then the docs", workspaceId: "workspace-1" });
+  expect(queued.sendDuringTurn).toBeUndefined();
+  expect(app.value("composer")).toBe("");
+  // After sending clears the composer, the Stop button returns while the turn is still running.
+  expect(app.shows("Stop")).toBe(true);
   // No client-side queue copy and no client steering call.
   expect(backend.actions()).not.toContain("steer_dialog_turn");
   expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
@@ -733,7 +736,7 @@ test("a host without a queue or submit_user_message is told to update, nothing i
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
   // Without the host queue there is an explicit state, not a local list.
   await app.waitFor("This device has no message queue. Update OpenBitFun on it to queue messages during a turn.");
   await app.type("composer", "Mid-turn note");
@@ -754,7 +757,7 @@ test("stop goes through the host's stop, which picks interrupt or cancel", async
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
   await app.press("Stop");
   await app.waitUntil(() => backend.actions().includes("stop_dialog_turn"));
   expect(backend.calls.find(call => call.action === "stop_dialog_turn")?.request).toMatchObject({
@@ -1293,4 +1296,66 @@ test("composer syncs session model from get_session_model_target, omits open ske
   await app.waitFor("Stop");
   expect(app.texts()).not.toContain("Steering the running turn");
   expect(app.texts()).not.toContain("Queued until the turn finishes");
+});
+
+test("left-side turn jump rail previews a turn on hover and jumps on press", async () => {
+  const turns = Array.from({ length: 12 }, (_, index) => ({
+    turnId: `turn-${index + 1}`,
+    turnIndex: index,
+    userMessage: {
+      id: `u-${index + 1}`,
+      content:
+        index === 0
+          ? "First question about architecture"
+          : `Follow-up question number ${index + 1} covering deployment details`,
+      timestamp: 1763100000000 + index * 60000,
+    },
+    modelRounds: [
+      {
+        id: `r-${index + 1}`,
+        textItems: [
+          {
+            id: `t-${index + 1}`,
+            content:
+              index === 0
+                ? "Here is the architecture overview.\n\nEach layer keeps dependencies pointed downward so hosts stay thin."
+                : `Detailed answer for turn ${index + 1}.\n\nParagraph one explains the state machine.\n\nParagraph two documents recovery and verification steps.`,
+          },
+        ],
+      },
+    ],
+  }));
+  const backend = createBackend({
+    sessions: [
+      {
+        sessionId: "multi-turn",
+        sessionName: "Multi turn thread",
+        lastUpdated: 1763100720000,
+        messageCount: turns.length * 2,
+        agentType: "Standard",
+        workspaceId: "workspace-1",
+      },
+    ],
+  });
+  withCustomTurns(backend, { "multi-turn": turns });
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Multi turn thread");
+  await app.waitFor("turn-jump-rail");
+  expect(app.shows("turn-jump-1")).toBe(true);
+  expect(app.shows("turn-jump-12")).toBe(true);
+
+  await app.hover("turn-jump-1");
+  await app.waitFor("turn-jump-preview");
+  expect(app.shows("label:turn-jump-preview >> text:First question about architecture")).toBe(true);
+  expect(
+    app.shows(
+      "label:turn-jump-preview >> text:Here is the architecture overview. Each layer keeps dependencies pointed downward so hosts stay thin.",
+    ),
+  ).toBe(true);
+  expect(app.shows("label:turn-jump-preview >> text:1 of 12")).toBe(true);
+
+  // Clicking jumps back to turn 1 and reveals the "Latest" pill since the thread overflows.
+  await app.press("turn-jump-1");
+  await app.waitFor("Latest");
 });

@@ -226,7 +226,9 @@ test("settings switches the scheme it draws and remembers the choice", async () 
 });
 
 test("a message sent while a turn runs steers that turn instead of starting another", async () => {
-  const backend = createBackend();
+  const backend = createBackend({
+    configs: { "app.flow_chat.send_during_turn": "immediate" },
+  });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await showAllSessions(app, "NSH skeleton");
@@ -242,7 +244,7 @@ test("a message sent while a turn runs steers that turn instead of starting anot
   await app.waitFor("Steer this session");
 
   await app.type("composer", "Also check the tests");
-  await app.press("Steer");
+  await app.press("Send");
 
   await app.waitUntil(() => backend.userMessages.length === 1);
   // The stored policy (`immediate`) is applied by the host, not by this surface.
@@ -288,10 +290,10 @@ test("a queued message waits in the host queue; this window never drains it", as
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
 
   await app.type("composer", "Then look at the docs");
-  await app.press("Queue");
+  await app.press("Send");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
   // Queueing is not steering, and nothing is kept in this surface's storage.
   expect(backend.userMessages[0]).toMatchObject({ outcome: "queued", text: "Then look at the docs" });
@@ -343,21 +345,21 @@ test("a host with a dialog queue keeps the message and promotes it on request", 
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
 
   await app.type("composer", "Hold this until the turn ends");
-  await app.press("Queue");
+  await app.press("Send");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
 
-  // The host owns the row: the press asked it to queue this one message, and
-  // the list above is the snapshot the host returned.
+  // The host owns the row: the default setting (`queue`) queues the message
+  // without sending an explicit per-message override from the composer.
   const submit = backend.calls.find(call => call.action === "submit_user_message");
   expect(submit?.request).toMatchObject({
     sessionId: "session-1",
     text: "Hold this until the turn ends",
     agentType: "Standard",
-    sendDuringTurn: "queue",
   });
+  expect((submit?.request as Record<string, unknown>)?.sendDuringTurn).toBeUndefined();
   // Nothing reaches the running turn until the host promotes it.
   expect(backend.actions()).not.toContain("steer_dialog_turn");
   // A host queue is not a local list, so nothing is written to local storage.
@@ -384,13 +386,13 @@ test("a host queue reorders its own rows against the revision it just read", asy
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
 
   await app.type("composer", "First on the queue");
-  await app.press("Queue");
+  await app.press("Send");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
   await app.type("composer", "Second on the queue");
-  await app.press("Queue");
+  await app.press("Send");
   await app.waitFor("Queued 2 · starts when the running turn finishes");
 
   // The first row moves to the end: "before nothing" is how the host spells last.
@@ -424,10 +426,10 @@ test("a queued row the host is holding back says why", async () => {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
 
   await app.type("composer", "Blocked by the host");
-  await app.press("Queue");
+  await app.press("Send");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
 
   const turnId = backend.userMessages.find(message => message.outcome === "queued")?.turnId ?? "";
@@ -2780,7 +2782,7 @@ test("the stored mid-turn policy decides whether a composer message steers or qu
   const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  // The default is steering, which is what the composer has always done.
+  // The default is queueing; Settings lets the user switch to live steering.
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
@@ -2789,28 +2791,28 @@ test("the stored mid-turn policy decides whether a composer message steers or qu
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer this session");
+  await app.waitFor("Queue follow-up…");
 
   await app.press("Settings");
   await app.press("nav-settings-page-input");
   await app.waitFor("Message sending");
-  await app.press("mid-turn-policy-queue");
+  await app.press("mid-turn-policy-immediate");
   expect(backend.settingsWrites).toContainEqual({
     path: "app.flow_chat.send_during_turn",
-    value: "queue",
+    value: "immediate",
   });
 
   // Back to the session the message goes to.
   await openSession(app, "NSH skeleton");
-  await app.waitFor("Queue follow-up…");
-  await app.type("composer", "Wait for the turn");
-  await app.press("Queue");
-  await app.waitFor("Queued 1 · starts when the running turn finishes");
-  // The primary press carries no choice of its own: the host read the stored
-  // policy and queued the message, so nothing was steered into the turn.
+  await app.waitFor("Steer this session");
+  await app.type("composer", "Steer the turn");
+  await app.press("Send");
+  await app.waitUntil(() => backend.userMessages.length === 1);
+  // The send press carries no choice of its own: the host read the stored
+  // policy and steered the message into the running turn.
   const submit = backend.calls.filter(call => call.action === "submit_user_message").at(-1)?.request as Record<string, unknown>;
   expect(submit.sendDuringTurn).toBeUndefined();
-  expect(backend.userMessages.at(-1)).toMatchObject({ outcome: "queued", text: "Wait for the turn" });
+  expect(backend.userMessages.at(-1)).toMatchObject({ outcome: "steered", text: "Steer the turn" });
   expect(backend.actions()).not.toContain("steer_dialog_turn");
 });
 test("web search picks a provider, keeps the document, and the key goes to the vault", async () => {
