@@ -1291,6 +1291,132 @@ pub(crate) async fn ensure_coordinator_session(
         .map_err(|error| peer_core_session_error("Failed to ensure session", error))
 }
 
+fn mode_sources_from_available_modes(
+    value: &Value,
+) -> Vec<openbitfun_core::agentic::session_policy::SessionModeSource> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(id);
+            let description = item
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            Some(
+                openbitfun_core::agentic::session_policy::SessionModeSource {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    description: description.to_string(),
+                },
+            )
+        })
+        .collect()
+}
+
+async fn peer_flow_chat_preference(
+) -> openbitfun_core::agentic::session_policy::SessionModePreference {
+    let config = match openbitfun_core::service::config::get_global_config_service().await {
+        Ok(config_service) => config_service
+            .get_config::<openbitfun_core::service::config::types::AppFlowChatConfig>(Some(
+                "app.flow_chat",
+            ))
+            .await
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
+    openbitfun_core::agentic::session_policy::SessionModePreference {
+        strategy: config.default_mode_strategy,
+        default_mode_id: config.default_mode_id,
+        last_mode_id: config.last_mode_id,
+    }
+}
+
+pub(crate) async fn get_session_mode_catalog(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = optional_string(request, "sessionId");
+    let workspace_id = optional_string(request, "workspaceId");
+    let workspace_path = optional_string(request, "workspacePath");
+    let remote_connection_id = optional_string(request, "remoteConnectionId");
+    let remote_ssh_host = optional_string(request, "remoteSshHost");
+
+    let mode_dtos = get_available_modes(state, args).await?;
+    let rows = mode_sources_from_available_modes(&mode_dtos);
+
+    let loaded_session = match session_id.as_deref() {
+        Some(sid) => {
+            let existing = openbitfun_core::agentic::coordination::get_global_coordinator()
+                .and_then(|coordinator| coordinator.get_session_manager().get_session(sid));
+            if existing.is_none() && has_session_workspace_scope(request) {
+                if let Err(error) = ensure_coordinator_session(state, args).await {
+                    tracing::warn!(
+                        "Peer mode catalog could not load its session: session_id={}, error={}",
+                        sid,
+                        error
+                    );
+                }
+                openbitfun_core::agentic::coordination::get_global_coordinator()
+                    .and_then(|coordinator| coordinator.get_session_manager().get_session(sid))
+            } else {
+                existing
+            }
+        }
+        None => None,
+    };
+
+    let facts = loaded_session.as_ref().map(|session| {
+        openbitfun_core::agentic::session_policy::SessionModeFacts {
+            mode_id: session.agent_type.clone(),
+            started: !session.dialog_turn_ids.is_empty(),
+        }
+    });
+
+    let mut is_assistant = is_assistant_workspace(
+        state,
+        workspace_id.as_deref(),
+        workspace_path.as_deref(),
+        remote_connection_id.as_deref(),
+        remote_ssh_host.as_deref(),
+    )
+    .await;
+    if !is_assistant {
+        if let Some(session) = loaded_session.as_ref() {
+            is_assistant = is_assistant_workspace(
+                state,
+                session.config.workspace_id.as_deref(),
+                session.config.workspace_path.as_deref(),
+                remote_connection_id.as_deref(),
+                remote_ssh_host.as_deref(),
+            )
+            .await;
+        }
+    }
+
+    let preference = peer_flow_chat_preference().await;
+    let catalog =
+        openbitfun_core::agentic::session_policy::build_session_mode_catalog_for_workspace(
+            &rows,
+            &preference,
+            facts.as_ref(),
+            is_assistant,
+        );
+    serde_json::to_value(catalog).map_err(|error| error.to_string())
+}
+
 pub(crate) async fn get_available_modes(
     state: &PeerHostState,
     args: &Value,
@@ -1889,6 +2015,22 @@ mod tests {
             err.starts_with(openbitfun_core::agentic::session_policy::SESSION_MODE_LOCKED_CODE),
             "{err}"
         );
+
+        let dtos = serde_json::json!([
+            { "id": "Standard", "name": "Standard", "description": "Default mode" },
+            { "id": "Claw", "name": "Claw", "description": "Assistant mode" },
+        ]);
+        let sources = super::mode_sources_from_available_modes(&dtos);
+        let assistant_catalog =
+            openbitfun_core::agentic::session_policy::build_session_mode_catalog_for_workspace(
+                &sources,
+                &Default::default(),
+                None,
+                true,
+            );
+        assert_eq!(assistant_catalog.default_mode_id, "Claw");
+        assert_eq!(assistant_catalog.entries.len(), 1);
+        assert_eq!(assistant_catalog.entries[0].id, "Claw");
     }
 }
 

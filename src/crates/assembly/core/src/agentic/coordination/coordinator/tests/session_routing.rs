@@ -503,3 +503,111 @@ fn turn_review_manifest_is_ignored_for_ordinary_agents() {
     assert!(turn_review_manifest_for_agent(Some(&metadata), "CodeReview").is_some());
     assert!(turn_review_manifest_for_agent(Some(&metadata), "DeepReview").is_some());
 }
+
+#[test]
+fn assistant_workspace_session_policy_protects_user_sessions_but_allows_subagents() {
+    let mut user_session = crate::agentic::core::Session::new(
+        "Assistant chat".to_string(),
+        "Claw".to_string(),
+        SessionConfig {
+            workspace_kind: Some(openbitfun_core_types::WorkspaceKind::Assistant),
+            ..SessionConfig::default()
+        },
+    );
+    assert!(ConversationCoordinator::is_assistant_workspace_session(
+        &user_session,
+        None,
+    ));
+
+    user_session.kind = SessionKind::Subagent;
+    assert!(
+        !ConversationCoordinator::is_assistant_workspace_session(&user_session, None),
+        "delegated subagent sessions inside an assistant workspace keep their child agent type"
+    );
+
+    let normal_session = crate::agentic::core::Session::new(
+        "Project chat".to_string(),
+        "Standard".to_string(),
+        SessionConfig {
+            workspace_kind: Some(openbitfun_core_types::WorkspaceKind::Normal),
+            ..SessionConfig::default()
+        },
+    );
+    assert!(!ConversationCoordinator::is_assistant_workspace_session(
+        &normal_session,
+        None,
+    ));
+}
+
+#[tokio::test]
+async fn assistant_workspace_session_rejects_non_claw_mode_update_and_preserves_claw() {
+    let (coordinator, session_manager) = test_coordinator();
+    let workspace = tempfile::tempdir().expect("assistant workspace");
+    let workspace_path = workspace.path().to_string_lossy().into_owned();
+    let ws_service = crate::service::workspace::get_global_workspace_service()
+        .expect("global workspace service should be initialized");
+    let assistant_ws = ws_service
+        .open_workspace_with_options(
+            workspace.path().to_path_buf(),
+            crate::service::workspace::WorkspaceCreateOptions {
+                workspace_kind: openbitfun_core_types::WorkspaceKind::Assistant,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("assistant workspace should register");
+
+    let session = coordinator
+        .create_session_with_workspace(
+            None,
+            "Assistant chat".to_string(),
+            "Standard".to_string(),
+            SessionConfig {
+                workspace_id: Some(assistant_ws.id.clone()),
+                workspace_path: Some(workspace_path.clone()),
+                ..SessionConfig::default()
+            },
+            workspace_path,
+        )
+        .await
+        .expect("assistant session should be created");
+    assert_eq!(
+        session.agent_type, "Claw",
+        "coordinator create_session must enforce Claw for assistant workspaces"
+    );
+
+    let error = coordinator
+        .update_session_mode(&session.session_id, "Standard")
+        .await
+        .expect_err("assistant workspace session must reject switching to Standard");
+    assert!(
+        error
+            .to_string()
+            .contains(crate::agentic::session_policy::SESSION_MODE_LOCKED_CODE),
+        "unexpected error: {error}"
+    );
+
+    coordinator
+        .update_session_mode(&session.session_id, "claw")
+        .await
+        .expect("lowercase claw should canonicalize to Claw");
+    let refreshed = session_manager
+        .get_session(&session.session_id)
+        .expect("assistant session should remain loaded");
+    assert_eq!(refreshed.agent_type, "Claw");
+
+    coordinator
+        .update_last_submitted_agent_type(&session.session_id, "Standard")
+        .await
+        .expect("last submitted agent type update should succeed");
+    let refreshed = session_manager
+        .get_session(&session.session_id)
+        .expect("assistant session should remain loaded");
+    assert_eq!(
+        refreshed.last_submitted_agent_type.as_deref(),
+        Some("Claw"),
+        "assistant workspace must not record non-Claw submitted mode"
+    );
+
+    let _ = ws_service.close_workspace(&assistant_ws.id).await;
+}

@@ -31,6 +31,7 @@ import {
   chosenAgentType,
   createSessionInWorkspace,
   onSessionSwitch,
+  onWorkspaceChanged,
   runStep,
   sessionAgentTypes,
   sessionKey,
@@ -318,4 +319,19 @@ onSessionSwitch((phase, sessionId) => {
   if (!agentIdsMatch(agentTypeOf(sessionId), id) || sessionStarted(sessionId)) return;
   pendingModeRecord = null;
   void bindSessionAgent(sessionId, id);
+});
+
+// Clear the previous workspace's mode catalogue immediately on workspace/device
+// switch so project modes never linger or open while an Assistant (or remote
+// device) catalogue is still loading.
+onWorkspaceChanged(() => {
+  catalogueKey = null;
+  pendingModeRecord = null;
+  agentChoices.set([]);
+  agentCatalogAnswered.set(false);
+  agentCatalogNotice.set("");
+  agentPickerOpen.set(false);
+  pendingAgentSession.set(null);
+  agentNotice.set("");
+  catalogSessionStarted.set(null);
 });

@@ -11090,7 +11090,7 @@
       "visibility": "documented",
       "rustPath": "api::agentic_api::update_session_mode",
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
-      "signature": "fn update_session_mode( app: HostHandle, runtime: State<'_, DesktopRuntimeContext>, coordinator: State<'_, Arc<ConversationCoordinator>>, request: UpdateSessionModeRequest, ) -> Result<(), String>",
+      "signature": "fn update_session_mode( app: HostHandle, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, coordinator: State<'_, Arc<ConversationCoordinator>>, request: UpdateSessionModeRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {

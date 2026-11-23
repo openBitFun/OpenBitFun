@@ -529,7 +529,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_session_files",                                          Unaudited,   Proxied,          HANDLED),
     op("get_session_interaction_mailbox",                         Agnostic,    Proxied,          HANDLED),
     op("get_session_lineage",                                        Routed,      Proxied,          HANDLED),
-    op("get_session_mode_catalog",                                   Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
+    op("get_session_mode_catalog",                                   Routed,      Proxied,          HANDLED),
     op("get_session_model_target", Agnostic, Proxied, HANDLED),
     op("get_session_operations",                                     Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_session_permission_mode",                                Routed,      Proxied,          HANDLED),

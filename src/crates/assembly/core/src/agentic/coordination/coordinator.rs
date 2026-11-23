@@ -1761,6 +1761,18 @@ impl ConversationCoordinator {
             })
     }
 
+    fn is_assistant_workspace_session(
+        session: &Session,
+        workspace: Option<&WorkspaceBinding>,
+    ) -> bool {
+        session.kind != SessionKind::Subagent
+            && (workspace.is_some_and(|binding| {
+                binding.session_identity.workspace_kind
+                    == openbitfun_core_types::WorkspaceKind::Assistant
+            }) || session.config.workspace_kind
+                == Some(openbitfun_core_types::WorkspaceKind::Assistant))
+    }
+
     async fn resolve_session_agent_for_turn(
         session: &Session,
         agent_type: &str,
@@ -3086,8 +3098,20 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             config.remote_ssh_host.as_deref(),
         )?;
         config.workspace_id = Self::resolve_workspace_id_for_config(&config).await;
-        let agent_type = Self::normalize_agent_type(&agent_type);
-        let expected_route_key = config.agent_route_key.clone();
+        let normalized_agent_type = Self::normalize_agent_type(&agent_type);
+        let is_assistant_workspace =
+            config.workspace_kind == Some(openbitfun_core_types::WorkspaceKind::Assistant);
+        let agent_type = crate::agentic::session_policy::resolve_session_agent_type_for_workspace(
+            &normalized_agent_type,
+            is_assistant_workspace,
+        );
+        let expected_route_key = if is_assistant_workspace
+            && !crate::agentic::session_policy::is_assistant_mode_id(&normalized_agent_type)
+        {
+            None
+        } else {
+            config.agent_route_key.clone()
+        };
         let workspace_binding = Self::build_workspace_binding(&config).await;
         let external_sources_supported = workspace_binding
             .as_ref()
@@ -4614,8 +4638,13 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     })?;
             }
 
-            let effective_agent_type = Self::normalize_agent_type(agent_type.trim());
             let session_workspace = Self::build_workspace_binding(&session.config).await;
+            let normalized_agent_type = Self::normalize_agent_type(agent_type.trim());
+            let effective_agent_type =
+                crate::agentic::session_policy::resolve_session_agent_type_for_workspace(
+                    &normalized_agent_type,
+                    Self::is_assistant_workspace_session(&session, session_workspace.as_ref()),
+                );
             let primary_agent_binding = Self::resolve_session_agent_for_turn(
                 &session,
                 &effective_agent_type,
@@ -6818,7 +6847,12 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         } else {
             "Standard".to_string()
         };
-        let effective_agent_type = Self::normalize_agent_type(&provisional_agent_type);
+        let normalized_agent_type = Self::normalize_agent_type(&provisional_agent_type);
+        let effective_agent_type =
+            crate::agentic::session_policy::resolve_session_agent_type_for_workspace(
+                &normalized_agent_type,
+                Self::is_assistant_workspace_session(&session, session_workspace.as_ref()),
+            );
         let primary_agent_binding = Self::resolve_session_agent_for_turn(
             &session,
             &effective_agent_type,
@@ -14445,11 +14479,25 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .get_session(session_id)
             .ok_or_else(|| OpenBitFunError::NotFound(format!("Session not found: {session_id}")))?;
         let workspace = Self::build_workspace_binding(&session.config).await;
+        let is_assistant_locked =
+            Self::is_assistant_workspace_session(&session, workspace.as_ref())
+                || (session.kind != SessionKind::Subagent
+                    && crate::agentic::session_policy::is_assistant_mode_id(&session.agent_type));
+        crate::agentic::session_policy::check_assistant_workspace_mode(
+            mode_id,
+            is_assistant_locked,
+        )
+        .map_err(OpenBitFunError::Validation)?;
+        let effective_mode_id = if crate::agentic::session_policy::is_assistant_mode_id(mode_id) {
+            crate::agentic::session_policy::ASSISTANT_MODE_ID
+        } else {
+            mode_id
+        };
         let external_sources_supported = workspace
             .as_ref()
             .is_some_and(|workspace| !workspace.is_remote());
         let binding = Self::resolve_primary_agent_for_workspace(
-            mode_id,
+            effective_mode_id,
             session.config.workspace_id.as_deref(),
             external_sources_supported,
             None,
@@ -14460,7 +14508,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         self.session_manager
             .update_session_agent_binding(
                 session_id,
-                mode_id,
+                effective_mode_id,
                 binding.route_owner,
                 binding.route_key,
             )
@@ -14476,8 +14524,16 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     ) -> OpenBitFunResult<()> {
         self.ensure_session_runtime_ownership(session_id, None)?;
         let normalized = Self::normalize_agent_type(agent_type);
+        let is_assistant = self
+            .session_manager
+            .get_session(session_id)
+            .is_some_and(|session| Self::is_assistant_workspace_session(&session, None));
+        let effective = crate::agentic::session_policy::resolve_session_agent_type_for_workspace(
+            &normalized,
+            is_assistant,
+        );
         self.session_manager
-            .update_last_submitted_agent_type(session_id, &normalized)
+            .update_last_submitted_agent_type(session_id, &effective)
             .await
     }
 

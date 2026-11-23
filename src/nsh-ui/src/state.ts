@@ -1470,6 +1470,13 @@ export async function createSessionInWorkspace(
     if (created?.sessionId) {
       const bound = created.agentType || agentType;
       sessionAgentTypes.update(current => ({ ...current, [sessionKey(created.sessionId, deviceContext())]: bound }));
+      if (
+        created.agentType &&
+        activeWorkspaceId() === workspaceId &&
+        created.agentType.trim().toLowerCase() !== agentType.trim().toLowerCase()
+      ) {
+        chosenAgentType.set(created.agentType.trim());
+      }
     }
     await loadSessions();
     if (created?.sessionId) selectSession(created.sessionId);

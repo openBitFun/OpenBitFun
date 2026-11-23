@@ -1161,3 +1161,44 @@ test("assistant workspace exposes only Claw, locks composer switcher, and does n
   await app.waitFor("label:agent-picker >> text:Agent: Claw");
   expect(app.enabled("agent-picker")).toBe(false);
 });
+
+test("creating a session from the sidebar assistant `+` clears stale project mode choices and locks to Claw", async () => {
+  const backend = createBackend({
+    openedWorkspaces: [
+      { id: "workspace-1", name: "openbitfun", rootPath: "/Users/me/openbitfun", workspaceKind: "local" },
+      { id: "asst-1", name: "Muse", rootPath: "/assistants/muse", workspaceKind: "assistant" },
+    ],
+    sessions: [
+      {
+        sessionId: "proj-session",
+        sessionName: "Project thread",
+        lastUpdated: 1763100000000,
+        messageCount: 0,
+        agentType: "Creative",
+        workspaceId: "workspace-1",
+      },
+    ],
+  });
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Project thread");
+  await app.waitFor("label:agent-picker >> text:Creative");
+
+  // Starting a new session from the sidebar `+` icon on Muse switches workspace,
+  // clears stale project modes, creates a Claw session, and locks the picker.
+  await app.hover("sidebar-workspace-toggle-asst-1");
+  await app.press("sidebar-new-session-asst-1");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call => call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "asst-1",
+    ),
+  );
+  const created = backend.calls.find(
+    call => call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "asst-1",
+  );
+  expect(created?.request).toMatchObject({ workspaceId: "asst-1", agentType: "Claw" });
+  await app.waitFor("label:agent-picker >> text:Claw");
+  await expect(app.press("agent-picker")).rejects.toThrow(/no pressable/i);
+  expect(app.shows("agent-option-Standard")).toBe(false);
+  expect(app.shows("agent-option-Creative")).toBe(false);
+});
