@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "bef36016249f851a642a43ffeea5fa2459aab581fde8902e1bbca0c86ba81ef0",
+  "catalogDigest": "9d4b46d0f519bc79d9d097e7c62b1a5fe5f39148d78221974a13c3df24f89373",
   "count": 221,
   "reasonCounts": {
     "externalAuth": 4,
@@ -2679,8 +2679,8 @@
     {
       "capabilityId": "setting.ai.models",
       "itemId": "subscription-auth",
-      "titleZh": "登录 Codex、ZCode、OpenCode、Grok、Antigravity、Hermes 等订阅账号与多号订阅池",
-      "titleEn": "Sign in to Codex, ZCode, OpenCode, Grok, Antigravity, Hermes, and multi-account subscription pools",
+      "titleZh": "登录 Codex、ZCode、OpenCode、Grok、Hermes 等订阅账号与多号订阅池",
+      "titleEn": "Sign in to Codex, ZCode, OpenCode, Grok, Hermes, and multi-account subscription pools",
       "reasonCode": "externalAuth",
       "reasonZh": "订阅账户登录需要在供应商网页或设备授权流程中确认；智能体可以打开入口，但不能代替用户完成外部认证。",
       "reasonEn": "Subscription sign-in requires confirmation in a provider web or device-authorization flow; the Agent can open the entry but cannot complete external authentication for the user.",

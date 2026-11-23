@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "bef36016249f851a642a43ffeea5fa2459aab581fde8902e1bbca0c86ba81ef0",
+  "digest": "9d4b46d0f519bc79d9d097e7c62b1a5fe5f39148d78221974a13c3df24f89373",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -31663,8 +31663,8 @@
         },
         {
           "id": "subscription-auth",
-          "titleZh": "登录 Codex、ZCode、OpenCode、Grok、Antigravity、Hermes 等订阅账号与多号订阅池",
-          "titleEn": "Sign in to Codex, ZCode, OpenCode, Grok, Antigravity, Hermes, and multi-account subscription pools",
+          "titleZh": "登录 Codex、ZCode、OpenCode、Grok、Hermes 等订阅账号与多号订阅池",
+          "titleEn": "Sign in to Codex, ZCode, OpenCode, Grok, Hermes, and multi-account subscription pools",
           "descriptionZh": "支持浏览器或设备码授权登录（含智谱国内版与 Z.ai 国际版 ZCode），可在卡片上直观查看 OpenCode 与 Grok 实时额度面板，并将多个账号编成订阅池在限流时自动故障轮换。",
           "descriptionEn": "Sign in via browser or device code (including ZCode CN and Z.ai Intl), view live OpenCode and Grok quota panels, and group multiple accounts into a subscription pool that rotates automatically on rate limits.",
           "control": {
@@ -31940,8 +31940,8 @@
         "Add built-in or custom providers, probe Magpie gateways, and set up standalone image services",
         "配置 API Key、Base URL、请求格式（含实时派生 URL 预览）与备用通道",
         "Configure API keys, base URLs, API formats with live derived URL preview, and fallback channels",
-        "登录 Codex、ZCode、OpenCode、Grok、Antigravity、Hermes 等订阅账号与多号订阅池",
-        "Sign in to Codex, ZCode, OpenCode, Grok, Antigravity, Hermes, and multi-account subscription pools",
+        "登录 Codex、ZCode、OpenCode、Grok、Hermes 等订阅账号与多号订阅池",
+        "Sign in to Codex, ZCode, OpenCode, Grok, Hermes, and multi-account subscription pools",
         "选择主模型、快速模型、经济模型以及图像理解、图像生成和语音识别默认模型",
         "Choose Primary, Fast, Economy, image-understanding, image-generation, and speech-recognition defaults",
         "按模型能力选择推理预设或自定义思考预算",
