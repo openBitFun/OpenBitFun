@@ -6790,19 +6790,20 @@ function QueuedPanel() {
   return (
     <If when={queuedForActive().length > 0}>
       <View
+        accessibilityLabel="queued-panel"
         style={{
-          gap: space.chip,
-          paddingHorizontal: space.md,
-          paddingVertical: space.sm,
-          borderRadius: radii.lg,
+          marginHorizontal: space.xs,
+          borderRadius: radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: palette().borderSubtle,
-          backgroundColor: palette().surfaceTertiary,
+          backgroundColor: palette().surfaceSubtle,
+          overflow: "hidden",
         }}
       >
         <View
           role="button"
+          accessibilityLabel="queued-panel-toggle"
           onPress={() => {
             animateLayout();
             queueCollapsed.update(v => !v);
@@ -6810,29 +6811,26 @@ function QueuedPanel() {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            minHeight: compactLayout() ? layout.touchTarget : undefined,
-            gap: space.chip,
-            paddingVertical: space.hair,
-            borderRadius: radii.xs,
+            minHeight: compactLayout() ? layout.touchTarget : 30,
+            gap: space.xs,
+            paddingHorizontal: space.md,
+            paddingVertical: space.xs,
             cursor: "pointer",
             userSelect: "none",
+            ...paintTransition(MOTION_DURATION.fast),
           }}
-          focusVisibleStyle={focusRingStyle()}
+          hoverStyle={{ backgroundColor: palette().panelHover }}
+          focusVisibleStyle={focusRingStyle(-1)}
         >
-          <Icon
-            name={queueCollapsed() ? "chevron-right" : "chevron-down"}
-            size={12}
-            color={palette().textMuted}
-          />
           <Icon name="clock" size={12} color={palette().textMuted} />
           <Text
             style={{
               flex: 1,
               minWidth: 0,
-              color: palette().textMuted,
+              color: palette().textSecondary,
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 1.3),
-              fontWeight: "600",
+              fontWeight: "500",
               fontVariant: ["tabular-nums"],
               numberOfLines: 1,
               textOverflow: "ellipsis",
@@ -6840,31 +6838,49 @@ function QueuedPanel() {
           >
             {tr("sessions.queuedSummary", { count: formatCount(queuedForActive().length) })}
           </Text>
+          <Icon
+            name={queueCollapsed() ? "chevron-right" : "chevron-down"}
+            size={12}
+            color={palette().textMuted}
+          />
         </View>
         <If when={!queueCollapsed()}>
-          <Scroll style={{ maxHeight: 176, minHeight: 0 }} scrollbar={true}>
-            <View style={{ gap: space.chip }}>
+          <Scroll style={{ maxHeight: 168, minHeight: 0 }} scrollbar={true}>
+            <View>
               <Each of={queuedForActive()} key={item => item.id}>
-                {item => (
+                {(item, index) => (
                   <View
                     style={{
                       flexDirection: "row",
                       alignItems: "center",
-                      flexWrap: "wrap",
-                      gap: space.chip,
+                      gap: space.sm,
                       paddingHorizontal: space.md,
-                      paddingVertical: space.sm,
-                      borderRadius: radii.sm,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
+                      paddingVertical: space.xs + 2,
+                      borderTopWidth: 1,
                       borderColor: palette().borderSubtle,
-                      backgroundColor: palette().panelRaised,
+                      ...paintTransition(MOTION_DURATION.fast),
                     }}
+                    hoverStyle={{ backgroundColor: palette().panelHover }}
                   >
+                    <If when={queuedForActive().length > 1}>
+                      <Text
+                        style={{
+                          width: 14,
+                          flexShrink: 0,
+                          color: palette().textMuted,
+                          fontSize: textSize(11),
+                          lineHeight: textLineHeight(11, 1.3),
+                          fontVariant: ["tabular-nums"],
+                          textAlign: "center",
+                        }}
+                      >
+                        {String(index() + 1)}
+                      </Text>
+                    </If>
                     <Text
                       style={{
                         flex: 1,
-                        minWidth: 160,
+                        minWidth: 0,
                         color: palette().text,
                         fontSize: textSize(12),
                         lineHeight: textLineHeight(12, 1.4),
@@ -6878,53 +6894,60 @@ function QueuedPanel() {
                       style={{
                         flexDirection: "row",
                         alignItems: "center",
-                        flexWrap: "wrap",
                         flexShrink: 0,
-                        gap: space.xs,
+                        gap: space.hair,
                       }}
                     >
                       <If when={item().status !== "queued"}>
                         <Badge label={queuedStatusLabel(item().status)} tone="warning" />
                       </If>
-                      <If when={canReorder(item().source)}>
-                        <Button
-                          label={tr("common.up")}
-                          variant="ghost"
+                      <If when={canReorder(item().source) && queuedForActive().length > 1}>
+                        <IconButton
+                          icon="chevron-up"
                           size="xs"
-                          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                          iconSize={13}
+                          disabled={index() === 0}
+                          tooltip={tr("common.up")}
+                          accessibilityLabel={tr("common.up")}
                           onPress={() => void moveQueued(item().id, -1)}
                         />
-                        <Button
-                          label={tr("common.down")}
-                          variant="ghost"
+                        <IconButton
+                          icon="chevron-down"
                           size="xs"
-                          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                          iconSize={13}
+                          disabled={index() === queuedForActive().length - 1}
+                          tooltip={tr("common.down")}
+                          accessibilityLabel={tr("common.down")}
                           onPress={() => void moveQueued(item().id, 1)}
                         />
                       </If>
-                      <Button
-                        label={tr("sessions.sendNow")}
-                        variant="secondary"
+                      <IconButton
+                        icon="arrow-up"
                         size="xs"
-                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                        iconSize={13}
+                        tooltip={tr("sessions.sendNow")}
+                        accessibilityLabel={tr("sessions.sendNow")}
                         onPress={() => void sendQueuedNow(item().id)}
                       />
-                      <Button
-                        label={tr("common.edit")}
-                        variant="ghost"
+                      <IconButton
+                        icon="edit"
                         size="xs"
-                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                        iconSize={13}
+                        tooltip={tr("common.edit")}
+                        accessibilityLabel={tr("common.edit")}
                         onPress={() => {
                           void takeQueued(item().id).then(text => {
                             if (text) composerText.set(text);
                           });
                         }}
                       />
-                      <Button
-                        label={tr("common.delete")}
-                        variant="danger"
+                      <IconButton
+                        icon="trash"
                         size="xs"
-                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                        iconSize={13}
+                        tone="danger"
+                        tooltip={tr("common.delete")}
+                        accessibilityLabel={tr("common.delete")}
                         onPress={() => void removeQueued(item().id)}
                       />
                     </View>
@@ -6933,38 +6956,65 @@ function QueuedPanel() {
               </Each>
               <Each of={queuedForActive().filter(item => item.reason.length > 0)} key={item => `reason-${item.id}`}>
                 {item => (
+                  <View
+                    style={{
+                      paddingHorizontal: space.md,
+                      paddingVertical: space.xs,
+                      borderTopWidth: 1,
+                      borderColor: palette().borderSubtle,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: palette().warning,
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.35),
+                      }}
+                    >
+                      {tr("sessions.queuedWaiting", { reason: localizeHostError(item().reason) })}
+                    </Text>
+                  </View>
+                )}
+              </Each>
+              <If when={queueFallbackReason().length > 0}>
+                <View
+                  style={{
+                    paddingHorizontal: space.md,
+                    paddingVertical: space.xs,
+                    borderTopWidth: 1,
+                    borderColor: palette().borderSubtle,
+                  }}
+                >
                   <Text
                     style={{
-                      color: palette().warning,
+                      color: palette().textMuted,
                       fontSize: textSize(12),
                       lineHeight: textLineHeight(12, 1.35),
                     }}
                   >
-                    {tr("sessions.queuedWaiting", { reason: localizeHostError(item().reason) })}
+                    {localizeHostError(queueFallbackReason())}
                   </Text>
-                )}
-              </Each>
-              <If when={queueFallbackReason().length > 0}>
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                  }}
-                >
-                  {localizeHostError(queueFallbackReason())}
-                </Text>
+                </View>
               </If>
               <If when={queueNotice().length > 0}>
-                <Text
+                <View
                   style={{
-                    color: palette().danger,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
+                    paddingHorizontal: space.md,
+                    paddingVertical: space.xs,
+                    borderTopWidth: 1,
+                    borderColor: palette().borderSubtle,
                   }}
                 >
-                  {localizeHostError(queueNotice())}
-                </Text>
+                  <Text
+                    style={{
+                      color: palette().danger,
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.35),
+                    }}
+                  >
+                    {localizeHostError(queueNotice())}
+                  </Text>
+                </View>
               </If>
             </View>
           </Scroll>

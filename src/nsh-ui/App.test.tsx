@@ -294,7 +294,7 @@ test("a queued message waits in the host queue; this window never drains it", as
 
   await app.type("composer", "Then look at the docs");
   await app.press("Send");
-  await app.waitFor("Queued 1 · starts when the running turn finishes");
+  await app.waitFor("Queued 1");
   // Queueing is not steering, and nothing is kept in this surface's storage.
   expect(backend.userMessages[0]).toMatchObject({ outcome: "queued", text: "Then look at the docs" });
   expect(backend.actions()).not.toContain("steer_dialog_turn");
@@ -309,6 +309,16 @@ test("a queued message waits in the host queue; this window never drains it", as
   const lists = await waitForCalls(backend, "manage_dialog_queue", 2);
   expect(lists.every(call => (call.request as { action?: string })?.action === "list")).toBe(true);
   expect(backend.actions()).not.toContain("start_dialog_turn");
+
+  // Once the queued turn actually starts, it leaves the queue immediately even if the
+  // host snapshot had not yet marked it started before dialog-turn-started fired.
+  const queuedTurnId = backend.userMessages[0].turnId;
+  backend.setRunningTurn("session-1", queuedTurnId);
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: queuedTurnId, userInput: "Then look at the docs" },
+  });
+  await app.waitUntil(() => !app.shows("queued-panel"));
 });
 
 test("rows an earlier build kept locally are handed to the host queue once", async () => {
@@ -349,7 +359,7 @@ test("a host with a dialog queue keeps the message and promotes it on request", 
 
   await app.type("composer", "Hold this until the turn ends");
   await app.press("Send");
-  await app.waitFor("Queued 1 · starts when the running turn finishes");
+  await app.waitFor("Queued 1");
 
   // The host owns the row: the default setting (`queue`) queues the message
   // without sending an explicit per-message override from the composer.
@@ -390,10 +400,10 @@ test("a host queue reorders its own rows against the revision it just read", asy
 
   await app.type("composer", "First on the queue");
   await app.press("Send");
-  await app.waitFor("Queued 1 · starts when the running turn finishes");
+  await app.waitFor("Queued 1");
   await app.type("composer", "Second on the queue");
   await app.press("Send");
-  await app.waitFor("Queued 2 · starts when the running turn finishes");
+  await app.waitFor("Queued 2");
 
   // The first row moves to the end: "before nothing" is how the host spells last.
   await app.press("Down >> nth=0");
@@ -430,7 +440,7 @@ test("a queued row the host is holding back says why", async () => {
 
   await app.type("composer", "Blocked by the host");
   await app.press("Send");
-  await app.waitFor("Queued 1 · starts when the running turn finishes");
+  await app.waitFor("Queued 1");
 
   const turnId = backend.userMessages.find(message => message.outcome === "queued")?.turnId ?? "";
   expect(turnId).not.toBe("");

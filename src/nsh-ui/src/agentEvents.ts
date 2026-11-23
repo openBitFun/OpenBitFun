@@ -33,7 +33,12 @@ import {
 } from "nsh";
 import type { RunningTurnSnapshot } from "./api";
 import { backendConnection, listenEvent, windowShellId } from "./bridge";
-import { loadQueueForSession } from "./queueStore";
+import {
+  hasPendingSteeringForSession,
+  loadQueueForSession,
+  markQueuedTurnStarted,
+  queueForSession,
+} from "./queueStore";
 import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import {
   activeSessionDevice,
@@ -1673,6 +1678,9 @@ export function subscribeAgentEvents(): void {
       liveTurn.set(updated);
       bumpScrollTick();
     });
+    if (sessionId && hasPendingSteeringForSession(sessionId)) {
+      void loadQueueForSession(sessionId, true);
+    }
   });
 
   onAgentEvent<ModelRoundEventPayload>("agentic://model-round-completed", payload => {
@@ -1767,6 +1775,12 @@ export function subscribeAgentEvents(): void {
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
+    const queueSession = sessionId || activeSessionId() || "";
+    if (queueSession && running) {
+      const hadQueued = queueForSession(queueSession).length > 0;
+      markQueuedTurnStarted(queueSession, running);
+      if (hadQueued) void loadQueueForSession(queueSession, true);
+    }
     if (running && !replayingSnapshot) {
       if (followedTurns.size >= 256) {
         const oldest = followedTurns.values().next().value;

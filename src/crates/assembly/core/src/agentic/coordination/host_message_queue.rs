@@ -323,7 +323,10 @@ impl DialogScheduler {
             .order
             .iter()
             .filter_map(|id| s.entries.get(id))
-            .filter(|e| e.view.status.is_pending())
+            .filter(|e| {
+                e.view.status.is_pending()
+                    && active_turn_id.as_deref() != Some(e.view.turn_id.as_str())
+            })
             .map(|e| e.view.clone())
             .collect();
         let held = s

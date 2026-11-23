@@ -43,6 +43,7 @@ interface HostQueueSnapshot {
   sessionId?: string;
   queueEpoch?: string;
   revision?: number;
+  activeTurnId?: string | null;
   items?: HostQueueItem[];
   /** Absent on hosts that predate reorder; support is never inferred from a version. */
   supportsReorder?: boolean;
@@ -69,12 +70,55 @@ let hostEpoch = "";
 let hostSessionId = "";
 /** The revision the last snapshot was issued at; a reorder has to name it. */
 let hostRevision = 0;
+/** Per-session monotonic request sequence so an older in-flight `list` cannot overwrite newer state. */
+const listSeqBySession = new Map<string, number>();
+/** Per-session revision watermark per queue epoch to reject out-of-order snapshots. */
+const sessionRevisionBySession = new Map<string, { epoch: string; revision: number }>();
+/** Turn IDs already observed in `dialog-turn-started`, so stale snapshots never resurrect them. */
+const startedTurnsBySession = new Map<string, Set<string>>();
+
+function bumpSessionSeq(sessionId: string): number {
+  const next = (listSeqBySession.get(sessionId) ?? 0) + 1;
+  listSeqBySession.set(sessionId, next);
+  return next;
+}
 
 /** The queue for one session, oldest first. */
 export function queueForSession(sessionId: string | null): QueuedMessage[] {
   if (!sessionId) return [];
   return queuedMessages().filter(item => item.id.startsWith(`${sessionId}\u0000`))
     .map(item => ({ ...item, id: item.id.slice(sessionId.length + 1) }));
+}
+
+export function hasPendingSteeringForSession(sessionId: string | null): boolean {
+  return queueForSession(sessionId).some(item => item.status === "steering_pending");
+}
+
+/**
+ * Drops a queued row the instant its turn starts running (`dialog-turn-started`),
+ * invalidating any older in-flight `list` snapshot that was captured before the
+ * host dequeued it.
+ */
+export function markQueuedTurnStarted(sessionId: string | null, turnId: string | null): void {
+  if (!sessionId || !turnId) return;
+  let started = startedTurnsBySession.get(sessionId);
+  if (!started) {
+    started = new Set<string>();
+    startedTurnsBySession.set(sessionId, started);
+  }
+  if (started.size >= 64) {
+    const oldest = started.values().next().value;
+    if (oldest !== undefined) started.delete(oldest);
+  }
+  started.add(turnId);
+  bumpSessionSeq(sessionId);
+  const targetId = idFor(sessionId, turnId);
+  const current = queuedMessages();
+  if (!current.some(item => item.id === targetId)) return;
+  const next = current.filter(item => item.id !== targetId);
+  queuedMessages.set(next);
+  const remaining = next.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length;
+  queuedCounts.update(counts => ({ ...counts, [sessionId]: remaining }));
 }
 
 function idFor(sessionId: string, turnId: string): string {
@@ -92,17 +136,44 @@ async function callQueue(sessionId: string, request: Record<string, unknown>): P
 /** Rows the host still holds for the next turn; a started one has left the queue. */
 const HELD_STATUSES = ["queued", "blocked", "steering_pending"];
 
-function adoptSnapshot(sessionId: string, snapshot: HostQueueSnapshot): void {
+function adoptSnapshot(
+  sessionId: string,
+  snapshot: HostQueueSnapshot,
+  options?: { fromListSeq?: number },
+): void {
+  if (options?.fromListSeq !== undefined && options.fromListSeq < (listSeqBySession.get(sessionId) ?? 0)) {
+    return;
+  }
+  const epoch = snapshot.queueEpoch ?? (sessionId === hostSessionId ? hostEpoch : "");
+  const previous = sessionRevisionBySession.get(sessionId);
+  if (
+    options?.fromListSeq !== undefined &&
+    previous &&
+    epoch &&
+    previous.epoch === epoch &&
+    typeof snapshot.revision === "number" &&
+    snapshot.revision < previous.revision
+  ) {
+    return;
+  }
+  if (typeof snapshot.revision === "number") {
+    sessionRevisionBySession.set(sessionId, { epoch, revision: snapshot.revision });
+  }
   hostEpoch = snapshot.queueEpoch ?? hostEpoch;
   hostSessionId = sessionId;
   hostRevision = snapshot.revision ?? hostRevision;
   hostQueueReorderSupported.set(snapshot.supportsReorder ?? null);
+  const activeId = typeof snapshot.activeTurnId === "string" && snapshot.activeTurnId ? snapshot.activeTurnId : null;
+  const started = startedTurnsBySession.get(sessionId);
+  const snapshotTurnIds = new Set<string>();
   const others = queuedMessages().filter(item => !item.id.startsWith(`${sessionId}\u0000`));
   const rows: QueuedMessage[] = [];
   for (const item of snapshot.items ?? []) {
     const turnId = item.turnId;
     if (!turnId) continue;
+    snapshotTurnIds.add(turnId);
     if (!HELD_STATUSES.includes(item.status ?? "queued")) continue;
+    if (activeId === turnId || started?.has(turnId)) continue;
     rows.push({
       id: idFor(sessionId, turnId),
       content: item.displayContent ?? "",
@@ -111,6 +182,12 @@ function adoptSnapshot(sessionId: string, snapshot: HostQueueSnapshot): void {
       source: "host",
       ...(item.attachmentCount ? { attachmentCount: item.attachmentCount } : {}),
     });
+  }
+  if (started) {
+    for (const id of started) {
+      if (!snapshotTurnIds.has(id) && id !== activeId) started.delete(id);
+    }
+    if (started.size === 0) startedTurnsBySession.delete(sessionId);
   }
   queuedMessages.set([...others, ...rows]);
   queuedCounts.update(current => ({ ...current, [sessionId]: rows.length }));
@@ -131,12 +208,15 @@ function markQueueUnavailable(sessionId: string): void {
 export async function loadQueueForSession(sessionId: string | null, force = false): Promise<void> {
   if (!sessionId) return;
   if (!force && sessionId === hostSessionId) return;
+  const seq = bumpSessionSeq(sessionId);
   try {
-    adoptSnapshot(sessionId, await callQueue(sessionId, { action: "list" }));
+    adoptSnapshot(sessionId, await callQueue(sessionId, { action: "list" }), { fromListSeq: seq });
     hostQueueAvailable.set(true);
     queueFallbackReason.set("");
   } catch {
-    markQueueUnavailable(sessionId);
+    if (seq === (listSeqBySession.get(sessionId) ?? 0)) {
+      markQueueUnavailable(sessionId);
+    }
   }
 }
 
@@ -201,6 +281,7 @@ export async function removeQueued(id: string): Promise<void> {
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
+  bumpSessionSeq(sessionId);
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, {
       action: "cancel",
@@ -228,6 +309,7 @@ export async function sendQueuedNow(id: string): Promise<void> {
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
+  bumpSessionSeq(sessionId);
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, {
       action: "promote",
@@ -253,6 +335,7 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
+  const seq = bumpSessionSeq(sessionId);
   let snapshot: HostQueueSnapshot;
   try {
     snapshot = await callQueue(sessionId, { action: "list" });
@@ -260,7 +343,7 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
     queueNotice.set(tr("chat.queue.listRefused"));
     return;
   }
-  adoptSnapshot(sessionId, snapshot);
+  adoptSnapshot(sessionId, snapshot, { fromListSeq: seq });
   if (hostQueueReorderSupported() !== true) {
     queueNotice.set(tr("chat.queue.reorderUnsupported"));
     return;
@@ -273,6 +356,7 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
   // "Move before" the row on the far side of the destination, so the moved row
   // lands where the press asked for; the end of the list is `null`.
   const beforeTurnId = direction < 0 ? turnIds[index - 1] : (turnIds[index + 2] ?? null);
+  bumpSessionSeq(sessionId);
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, {
       action: "reorder",

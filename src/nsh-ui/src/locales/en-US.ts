@@ -302,7 +302,7 @@ export const enUSMessages = {
   "sessions.queue": "Queue",
   "sessions.steeringRunning": "Steering the running turn",
   "sessions.queuedUntilFinish": "Queued until the turn finishes",
-  "sessions.queuedSummary": "Queued {{count}} · starts when the running turn finishes",
+  "sessions.queuedSummary": "Queued {{count}}",
   "sessions.steeringStatus": "Steering",
   "sessions.sendNow": "Send now",
   "sessions.searchFilesPlaceholder": "Search workspace file names",

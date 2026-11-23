@@ -301,7 +301,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "sessions.queue": "加入佇列",
   "sessions.steeringRunning": "傳送後立即引導目前執行",
   "sessions.queuedUntilFinish": "將於目前輪次完成後自動傳送",
-  "sessions.queuedSummary": "已排隊 {{count}} 則 · 目前輪次結束後自動執行",
+  "sessions.queuedSummary": "待傳送 {{count}}",
   "sessions.steeringStatus": "引導中",
   "sessions.sendNow": "立即傳送",
   "sessions.searchFilesPlaceholder": "搜尋工作區檔案名稱",

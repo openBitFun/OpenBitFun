@@ -301,7 +301,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "sessions.queue": "加入队列",
   "sessions.steeringRunning": "发送后立即引导当前执行",
   "sessions.queuedUntilFinish": "将在当前轮次完成后自动发送",
-  "sessions.queuedSummary": "已排队 {{count}} 条 · 当前轮次结束后自动执行",
+  "sessions.queuedSummary": "待发送 {{count}}",
   "sessions.steeringStatus": "引导中",
   "sessions.sendNow": "立即发送",
   "sessions.searchFilesPlaceholder": "搜索工作区文件名",
