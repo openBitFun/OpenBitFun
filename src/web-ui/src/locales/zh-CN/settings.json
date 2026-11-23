@@ -101,7 +101,6 @@
     "sections": {
       "text-selection": "文本选择",
       "message-sending": "消息发送",
-      "btw-close-confirmation": "侧问关闭",
       "voice": "语音",
       "shortcuts": "快捷键",
       "session": "会话默认行为",
@@ -114,7 +113,8 @@
       "pet": "宠物",
       "voice-call": "实时语音通话",
       "desktop-cards": "小卡片",
-      "sidebar-navigation": "左侧导航栏"
+      "sidebar-navigation": "左侧导航栏",
+      "btw": "侧问"
     }
   },
   "changeGuard": {

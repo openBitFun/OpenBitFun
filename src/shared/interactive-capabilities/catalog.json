@@ -8578,11 +8578,11 @@
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“开启或关闭侧问（/btw）面板关闭前的丢弃确认提示”保存在当前界面的交互偏好中，智能体会为你打开“输入与交互 → 侧问关闭确认”开关位置。",
-            "reasonEn": "“Enable or disable the confirmation prompt before closing a /btw side conversation” is stored as a client UI interaction preference; the Agent opens Input & Interaction → Side-Question Close Confirmation for you."
+            "reasonZh": "“开启或关闭侧问（/btw）面板关闭前的丢弃确认提示”保存在当前界面的交互偏好中，智能体会为你打开“会话与记忆 → 侧问”中的确认开关。",
+            "reasonEn": "“Enable or disable the confirmation prompt before closing a /btw side conversation” is stored as a client UI interaction preference; the Agent opens Session & Memory → Side questions for you."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/BtwCloseConfirmationSettingsSection.tsx#BtwCloseConfirmationSettingsSection"
+            "source:src/web-ui/src/app/scenes/settings/pages/ai/BtwSettingsSection.tsx#BtwSettingsSection"
           ]
         },
         {

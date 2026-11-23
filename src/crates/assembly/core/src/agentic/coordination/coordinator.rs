@@ -405,6 +405,7 @@ fn apply_primary_agent_model_default(
 #[cfg(test)]
 tokio::task_local! {
     static TEST_AGENT_MODEL_DEFAULTS: AgentModelSelections;
+    static TEST_BTW_AI_CONFIG: crate::service::config::types::AIConfig;
 }
 
 async fn normalize_model_selection(model_id: &str) -> OpenBitFunResult<String> {
@@ -12133,6 +12134,50 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         Ok(child_session)
     }
 
+    async fn resolve_btw_initial_model_target(
+        &self,
+        child_session_id: &str,
+        model_id: Option<&str>,
+        legacy_selection: Option<&openbitfun_runtime_ports::AgentSessionModelSelection>,
+        explicit_target: Option<openbitfun_runtime_ports::AgentSessionModelTargetSelection>,
+    ) -> OpenBitFunResult<Option<openbitfun_runtime_ports::AgentSessionModelTargetSelection>> {
+        if explicit_target.is_some()
+            || legacy_selection.is_some()
+            || model_id.is_some_and(|id| !id.trim().is_empty())
+            || self
+                .session_manager
+                .get_session(child_session_id)
+                .is_some_and(|session| !session.dialog_turn_ids.is_empty())
+        {
+            return Ok(explicit_target);
+        }
+        #[cfg(test)]
+        if let Ok(ai) = TEST_BTW_AI_CONFIG.try_with(Clone::clone) {
+            return Self::btw_default_model_target(&ai);
+        }
+        let service = get_global_config_service().await?;
+        let ai = service.get_config(Some("ai")).await?;
+        Self::btw_default_model_target(&ai)
+    }
+
+    fn btw_default_model_target(
+        ai: &crate::service::config::types::AIConfig,
+    ) -> OpenBitFunResult<Option<openbitfun_runtime_ports::AgentSessionModelTargetSelection>> {
+        let selection = openbitfun_config_contracts::btw::validate_model_selection(ai)
+            .map_err(OpenBitFunError::validation)?;
+        let selection = match selection {
+            AgentModelSelection::Inherit => return Ok(None),
+            AgentModelSelection::Model { model_ref } => ModelSelection::Model { model_ref },
+            AgentModelSelection::Pool { pool_id } => ModelSelection::Pool { pool_id },
+        };
+        Ok(Some(
+            openbitfun_runtime_ports::AgentSessionModelTargetSelection {
+                selection,
+                reasoning_preset: None,
+            },
+        ))
+    }
+
     pub async fn start_btw_turn(
         &self,
         request_id: &str,
@@ -12169,6 +12214,17 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 "question is required".to_string(),
             ));
         }
+
+        // Resolve the host's future-session default only for an unsubmitted
+        // child. Explicit controller choices and existing children keep ownership.
+        let initial_model_target = self
+            .resolve_btw_initial_model_target(
+                child_session_id,
+                model_id,
+                initial_model_selection.as_ref(),
+                initial_model_target,
+            )
+            .await?;
 
         let child_session = self
             .ensure_btw_session(

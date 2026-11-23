@@ -1413,7 +1413,8 @@
     "nestedDisabled": "側問會話中不能繼續新增側問",
     "error": "失敗",
     "close": "關閉",
-    "noSession": "目前沒有可用於 /btw 的會話"
+    "noSession": "目前沒有可用於 /btw 的會話",
+    "submitFailed": "無法發起側問：{{error}}"
   },
   "childSession": {
     "stopReview": "中止審核",

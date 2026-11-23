@@ -1299,6 +1299,10 @@ pub struct AIConfig {
     #[serde(default, skip_serializing_if = "TaskModelsConfig::is_default")]
     pub task_models: TaskModelsConfig,
 
+    /// Opaque, host-owned defaults for new BTW sessions; unknown choices stay readable.
+    #[serde(default = "crate::btw::default_btw_config")]
+    pub btw: serde_json::Value,
+
     /// Default model configuration.
     #[serde(default)]
     pub default_models: DefaultModelsConfig,
@@ -2363,6 +2367,7 @@ impl Default for AIConfig {
             models: vec![],
             tool_presentation_mode: ToolPresentationMode::default(),
             task_models: TaskModelsConfig::default(),
+            btw: crate::btw::default_btw_config(),
             default_models: DefaultModelsConfig::default(),
             model_routing: ModelRoutingConfig::default(),
             agent_model_defaults: AgentModelDefaultsConfig::default(),

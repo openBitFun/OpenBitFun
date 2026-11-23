@@ -34,6 +34,7 @@ const flowChatStoreMocks = vi.hoisted(() => {
   const store = {
     getState: () => ({ sessions }),
     subscribe: vi.fn(() => () => undefined),
+    markBtwModelSelectionExplicit: vi.fn(),
     updateSessionModelName: vi.fn(),
     updateSessionReasoningPreset: vi.fn(),
     updateSessionMaxContextTokens: vi.fn(),

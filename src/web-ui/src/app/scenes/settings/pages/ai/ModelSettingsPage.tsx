@@ -1,3 +1,4 @@
+import { supportsBtwModelDefaults } from '@/infrastructure/config/services/btwModelDefaults';
 import { modelSelectionsConfigPath } from '@/infrastructure/config/services/modelSelections';
 import '@/app/scenes/settings/pages/ai/ModelSettingsPage.scss';
 import { ModelDiscoveryPicker, type ModelDiscoveryOption } from './ModelDiscoveryPicker';
@@ -2393,13 +2394,14 @@ const ModelSettingsPage: React.FC = () => {
   };
 
   const inspectModelReferenceCount = async (modelIds: string[]): Promise<number> => {
-    const [defaultModels, taskModels, agentModelDefaults] = await Promise.all([
+    const [defaultModels, taskModels, agentModelDefaults, btwDefaults] = await Promise.all([
       configManager.getConfig<unknown>('ai.default_models'),
       configManager.getConfig<unknown>('ai.task_models'),
       configManager.getConfig<unknown>(modelSelectionsConfigPath()),
+      supportsBtwModelDefaults() ? configManager.getConfig<unknown>('ai.btw') : undefined,
     ]);
     const ids = new Set(modelIds);
-    return [defaultModels, taskModels, agentModelDefaults]
+    return [defaultModels, taskModels, agentModelDefaults, btwDefaults]
       .reduce<number>((count, value) => count + countModelConfigReferences(value, ids), 0);
   };
 

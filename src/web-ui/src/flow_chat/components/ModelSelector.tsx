@@ -540,6 +540,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     acpClientIdFromAgentType(activeSession?.config.agentType) ??
     acpClientIdFromAgentType(activeSession?.mode);
   const isAcpSession = Boolean(acpClientId && sessionId);
+  const persistModeDefault = persistSharedModeDefault && activeSession?.sessionKind !== 'btw';
   const targetIsSubagent = isSubagentSession || activeSession?.sessionKind === 'subagent';
 
   const sessionPoolId = useSyncExternalStore(
@@ -1347,7 +1348,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   const modelInformationLoading = availability.status === 'loading'
     || (isNativeModelSelection && configLoadState === 'ready' && catalogLoadState === 'loading')
     || (isAcpSession && !externalSelection && acpOptionsLoadState === 'loading');
-  const canConfigureNativeDefaults = isNativeModelSelection && persistSharedModeDefault && !targetIsSubagent;
+  const canConfigureNativeDefaults = isNativeModelSelection && persistModeDefault && !targetIsSubagent;
   const routing = useModelRouting({
     identity: routingIdentity, epoch: deviceSurfaceScope.epoch,
     request: { sessionId, workspaceId: activeSession?.workspaceId || activeSession?.config.workspaceId,
@@ -1567,7 +1568,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       }
 
       await updateTargetSessionModel();
-      if (persistSharedModeDefault) {
+      if (sessionId && activeSession?.sessionKind === 'btw') store.markBtwModelSelectionExplicit(sessionId);
+      if (persistModeDefault) {
         const saveDefault = rememberModeSelection({ kind: 'model', model_ref: modelId });
         if (!sessionId) {
           // A selector without a draft/session has no other owner for the next
@@ -1617,6 +1619,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   }, [
     allModels,
     loadConfigData,
+    activeSession?.sessionKind,
     activeSession?.config.workspacePath,
     activeSession?.remoteConnectionId,
     activeSession?.remoteSshHost,
@@ -1631,6 +1634,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     loading,
     modelSelectionScopeKey,
     persistSharedModeDefault,
+    persistModeDefault,
     routing.pending,
     reasoningLoading,
     recentPresetForModel,
@@ -1753,7 +1757,10 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const session = store.getState().sessions.get(sessionId);
     if (!session) return false;
     const previousPreset = session.config.reasoningPreset;
-    if (previousPreset === normalizedPreset) return true;
+    if (previousPreset === normalizedPreset) {
+      if (session.sessionKind === 'btw') store.markBtwModelSelectionExplicit(sessionId);
+      return true;
+    }
 
     const selectionScope = getActiveSurfaceScope();
     setReasoningLoading(true);
@@ -1772,6 +1779,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         });
       }
       selectionScope.assertCurrent('select reasoning preset');
+      if (session.sessionKind === 'btw') store.markBtwModelSelectionExplicit(sessionId);
       if (!targetIsSubagent) {
         setRecentReasoningPreset(concreteModelId, normalizedPreset);
         setPreSessionReasoningSelection({
@@ -1951,7 +1959,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           store.updateSessionModelPool(sessionId, pool.id, undefined, true);
         }
       }
-      if (!targetIsSubagent && persistSharedModeDefault) {
+      if (sessionId && activeSession?.sessionKind === 'btw') store.markBtwModelSelectionExplicit(sessionId);
+      if (!targetIsSubagent && persistModeDefault) {
         const saved = rememberModeSelection({ kind: 'pool', pool_id: pool.id });
         if (!sessionId) await saved;
         else void saved.catch(error => {

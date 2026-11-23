@@ -1081,6 +1081,21 @@ before the first selected-text question. Peer hosts must advertise
 `btw_model_pool_selection_v1` for these typed initial choices; older hosts retain
 the inherited path without silently replacing a pool with its current member.
 
+Settings → AI → Session & Memory → Side questions controls the default for new `/btw`
+sessions (`ai.btw.model_selection`). The default is `{ "kind": "inherit" }`, which
+retains the parent's model, reasoning and pool binding. A fixed model uses
+`{ "kind": "model", "model_ref": "<configured model id>" }`; a pool uses
+`{ "kind": "pool", "pool_id": "<pool id>" }`. An explicit choice inside a side
+question takes precedence and affects only that conversation. Changing the global
+BTW default does not change existing conversations. A different model starts with
+its own default reasoning, while inherited sessions retain the parent's reasoning.
+Unavailable saved choices remain stored and block new side questions until an
+explicit choice repairs or overrides them. Peers expose this setting only when the
+execution host advertises `btw_model_defaults_v1`; settings and model IDs belong to
+that host. SSH/Docker workspace side questions keep their parent's execution root.
+The host returns the committed model target with admission so the selector shows
+the actual choice without depending on a second request.
+
 Peer Device Mode routes pool operations to capable Desktop/CLI hosts. Standalone
 browser clients, detached dispatch, and ACP/external-agent model selection
 do not expose pool selection in this version. Mobile/IM clients can continue a

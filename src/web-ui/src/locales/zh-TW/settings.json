@@ -101,7 +101,6 @@
     "sections": {
       "text-selection": "文字選取",
       "message-sending": "訊息傳送",
-      "btw-close-confirmation": "側問關閉",
       "voice": "語音",
       "shortcuts": "快捷鍵",
       "session": "工作階段預設行為",
@@ -114,7 +113,8 @@
       "pet": "寵物",
       "voice-call": "即時語音通話",
       "desktop-cards": "小卡片",
-      "sidebar-navigation": "左側導覽列"
+      "sidebar-navigation": "左側導覽列",
+      "btw": "側問"
     }
   },
   "changeGuard": {

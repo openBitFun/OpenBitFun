@@ -101,7 +101,6 @@
     "sections": {
       "text-selection": "Text selection",
       "message-sending": "Message sending",
-      "btw-close-confirmation": "Side conversation closing",
       "voice": "Voice",
       "shortcuts": "Keyboard Shortcuts",
       "session": "Session Defaults",
@@ -114,7 +113,8 @@
       "pet": "Pet",
       "voice-call": "Real-time voice calls",
       "desktop-cards": "Desktop cards",
-      "sidebar-navigation": "Left sidebar"
+      "sidebar-navigation": "Left sidebar",
+      "btw": "Side questions"
     }
   },
   "changeGuard": {

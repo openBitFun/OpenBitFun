@@ -183,12 +183,6 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
         searchPhrases: [phrase('settings/application', 'messageSending.title'), phrase('settings/application', 'messageSending.duringTurn'), phrase('settings/application', 'messageSending.description')],
       },
       {
-        id: 'btw-close-confirmation',
-        labelKey: 'navigation.sections.btw-close-confirmation',
-        keywords: ['btw', 'side conversation', 'close', 'confirmation', 'prompt'],
-        searchPhrases: [phrase('settings/application', 'btwCloseConfirmation.title'), phrase('settings/application', 'btwCloseConfirmation.label')],
-      },
-      {
         id: 'text-selection',
         labelKey: 'navigation.sections.text-selection',
         keywords: ['selection', 'annotation', 'excerpt', 'toolbar', 'popup', 'flowchat'],
@@ -239,8 +233,8 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
     icon: Brain,
     labelKey: 'navigation.pages.sessionMemory.label',
     descriptionKey: 'navigation.pages.sessionMemory.description',
-    keywords: ['session', 'memory', 'harness', 'title', 'remember', 'recall'],
-    namespaces: ['settings', 'settings/runtime', 'settings/models', 'settings/memory', 'flow-chat'],
+    keywords: ['session', 'memory', 'harness', 'title', 'remember', 'recall', 'btw', 'side question'],
+    namespaces: ['settings', 'settings/runtime', 'settings/models', 'settings/memory', 'settings/application', 'flow-chat'],
     searchPhrases: [],
     sections: [
       {
@@ -248,6 +242,12 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
         labelKey: 'navigation.sections.session',
         keywords: ['session', 'harness', 'mode', 'title'],
         searchPhrases: [phrase('settings/runtime', 'defaultHarness.title'), phrase('settings/models', 'sessionTitle.title')],
+      },
+      {
+        id: 'btw',
+        labelKey: 'navigation.sections.btw',
+        keywords: ['btw', 'side question', 'side conversation', 'model', 'pool', 'close', 'confirmation'],
+        searchPhrases: [phrase('settings/models', 'btwModel.title'), phrase('settings/models', 'btwModel.label'), phrase('settings/application', 'btwCloseConfirmation.label')],
       },
       {
         id: 'memory',

@@ -1413,7 +1413,8 @@
     "nestedDisabled": "侧问会话中不能继续新建侧问",
     "error": "失败",
     "close": "关闭",
-    "noSession": "当前没有可用于 /btw 的会话"
+    "noSession": "当前没有可用于 /btw 的会话",
+    "submitFailed": "无法发起侧问：{{error}}"
   },
   "childSession": {
     "stopReview": "中止审核",
