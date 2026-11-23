@@ -437,6 +437,13 @@ export async function loadDefaultModels(): Promise<void> {
   defaultModelsLoaded.set(true);
 }
 
+const defaultModelsChangedHandlers = new Set<() => void>();
+
+export function onDefaultModelsChanged(handler: () => void): () => void {
+  defaultModelsChangedHandlers.add(handler);
+  return () => defaultModelsChangedHandlers.delete(handler);
+}
+
 /**
  * Points one slot at a model, or clears it with `null`. Only that slot's leaf is
  * written, so the slots this page does not draw (`search`, `image_generation`)
@@ -448,6 +455,7 @@ export async function chooseDefaultModel(slot: DefaultModelSlot, modelId: string
     await setConfig(`ai.default_models.${slot}`, modelId);
     defaultModels.update(current => ({ ...current, [slot]: modelId }));
     defaultModelsNotice.set("");
+    for (const handler of defaultModelsChangedHandlers) handler();
   } catch (error) {
     defaultModelsNotice.set(error instanceof Error ? error.message : String(error));
   } finally {

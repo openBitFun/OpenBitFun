@@ -3069,6 +3069,7 @@ fn sample_remote_model_catalog(version: u64) -> RemoteModelCatalog {
             primary: Some("model-1".to_string()),
             ..RemoteDefaultModelsConfig::default()
         },
+        mode_default_model_id: None,
         reasoning_preset_selection_supported: true,
         session_model_write_fence_supported: false,
         session_model_write_token: None,

@@ -1202,3 +1202,95 @@ test("creating a session from the sidebar assistant `+` clears stale project mod
   expect(app.shows("agent-option-Standard")).toBe(false);
   expect(app.shows("agent-option-Creative")).toBe(false);
 });
+
+test("composer syncs session model from get_session_model_target, omits open skeleton, and hides redundant running hint", async () => {
+  const base = createBackend({
+    sessions: [
+      {
+        sessionId: "sess-1",
+        sessionName: "Model sync check",
+        lastUpdated: 1763100000000,
+        messageCount: 1,
+        agentType: "Standard",
+        workspaceId: "workspace-1",
+      },
+    ],
+    sessionReasoningPreset: "high",
+    configs: {
+      "ai.models": [
+        {
+          id: "cfg-primary",
+          name: "Primary model",
+          provider: "openai",
+          model_name: "gpt-4.1-mini",
+          base_url: "https://api.openai.com/v1",
+          enabled: true,
+          capabilities: ["text_chat"],
+        },
+        {
+          id: "cfg-fast",
+          name: "Fast model",
+          provider: "openai",
+          model_name: "fast-small",
+          base_url: "https://api.openai.com/v1",
+          enabled: true,
+          capabilities: ["text_chat"],
+        },
+      ],
+    },
+  });
+  // Simulate a fleet session whose summary omits `modelName`, while the host's
+  // authoritative `get_session_model_target` reports `fast-small` (not primary `gpt-4.1-mini`).
+  const handlers: Record<string, (data: unknown) => unknown> = {
+    ...base.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const call = data as { action?: string; request?: Record<string, unknown> };
+      if (call?.action === "get_session_model_target") {
+        base.calls.push({ action: "get_session_model_target", request: call.request, raw: false });
+        return {
+          ok: true,
+          value: {
+            sessionId: "sess-1",
+            selection: { kind: "model", model_ref: "fast-small" },
+            reasoningPreset: "high",
+          },
+        };
+      }
+      return base.handlers["openbitfun.invoke"](data);
+    },
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
+  await openSession(app, "Model sync check");
+
+  // No transcript loading skeleton appears when opening a session.
+  expect(app.shows("transcript-loading")).toBe(false);
+
+  // Composer must reflect the session's authoritative bound model (`Fast model`),
+  // not fall back to `Primary model`.
+  await app.waitFor("label:bot-capsule-trigger >> text:Fast model");
+  await app.waitFor("label:reasoning-picker >> text:Reasoning: High");
+
+  // Changing reasoning sends the session's real model (`fast-small`), never `gpt-4.1-mini`.
+  await app.press("reasoning-picker");
+  await app.waitFor("reasoning-option-low");
+  await app.press("reasoning-option-low");
+  await app.waitUntil(() => base.calls.some(call => call.action === "update_session_model"));
+  const write = base.calls.find(call => call.action === "update_session_model");
+  expect(write?.request).toMatchObject({
+    sessionId: "sess-1",
+    modelName: "fast-small",
+    reasoningPreset: "low",
+  });
+
+  // While a turn is running, the redundant footer caption ("Steering the running turn")
+  // is not rendered underneath the composer.
+  base.setRunningTurn("sess-1", "turn-live");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "sess-1", turnId: "turn-live", userInput: "checking" },
+  });
+  await app.waitFor("Stop");
+  expect(app.texts()).not.toContain("Steering the running turn");
+  expect(app.texts()).not.toContain("Queued until the turn finishes");
+});

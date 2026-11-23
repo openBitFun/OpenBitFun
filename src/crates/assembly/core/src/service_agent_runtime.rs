@@ -2430,6 +2430,9 @@ impl CoreServiceAgentRuntime {
             .await
             .map_err(|e| format!("Failed to load global config: {e}"))?;
         let ai_config: AIConfig = global_config.ai;
+        let mode_default_model_id = ai_config.mode_model_reference().ok().and_then(|reference| {
+            crate::service::config::model_projection::resolve_model_selector(&ai_config, &reference)
+        });
         let models_dev = load_models_dev_reasoning_catalog().await;
         let models_dev_reasoning_catalog =
             remote_models_dev_reasoning_catalog(&models_dev, include_host_catalogs);
@@ -2471,7 +2474,7 @@ impl CoreServiceAgentRuntime {
         } else {
             (None, None)
         };
-        Ok(build_remote_model_catalog(RemoteModelCatalogFacts {
+        let mut catalog = build_remote_model_catalog(RemoteModelCatalogFacts {
             last_modified_ms: global_config.last_modified.timestamp_millis(),
             source_version: Some(models_dev.version),
             models,
@@ -2480,7 +2483,9 @@ impl CoreServiceAgentRuntime {
             default_models: remote_default_models_config(&ai_config.default_models),
             session_model_id,
             session_reasoning_preset,
-        }))
+        });
+        catalog.mode_default_model_id = mode_default_model_id;
+        Ok(catalog)
     }
 
     /// Project this machine's own models.dev snapshot for a controller that

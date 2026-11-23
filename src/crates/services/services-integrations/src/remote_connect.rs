@@ -2164,6 +2164,10 @@ pub struct RemoteModelCatalog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models_dev_reasoning_catalog: Option<ModelsDevReasoningCatalog>,
     pub default_models: RemoteDefaultModelsConfig,
+    /// Concrete configured model ID resolved from `ai.agent_model_selections.mode`
+    /// (what a newly created session starts on when no explicit model is passed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_default_model_id: Option<String>,
     #[serde(default)]
     pub reasoning_preset_selection_supported: bool,
     /// Offers per-intent preparation and targeted barriers on catalog reads.
@@ -2294,6 +2298,7 @@ pub fn build_remote_model_catalog(facts: RemoteModelCatalogFacts) -> RemoteModel
         provider_catalog: facts.provider_catalog,
         models_dev_reasoning_catalog: facts.models_dev_reasoning_catalog,
         default_models: facts.default_models,
+        mode_default_model_id: None,
         reasoning_preset_selection_supported: true,
         session_model_write_fence_supported: false,
         session_model_write_token: None,
@@ -5144,6 +5149,7 @@ mod tests {
                 provider_catalog: Default::default(),
                 models_dev_reasoning_catalog: None,
                 default_models: RemoteDefaultModelsConfig::default(),
+                mode_default_model_id: None,
                 reasoning_preset_selection_supported: true,
                 session_model_write_fence_supported: false,
                 session_model_write_token: None,

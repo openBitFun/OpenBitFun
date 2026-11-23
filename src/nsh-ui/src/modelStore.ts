@@ -8,18 +8,26 @@ import {
   getSessionModelTarget,
   projectAiModelReasoningCatalog,
   updateSessionModel,
+  updateSessionModelTarget,
   type ModelCatalogEntry,
   type ReasoningCatalogProjection,
+  type SessionModelTargetResponse,
 } from "./api";
 import { entryDeviceId, fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { FLEET_INDEX_CHANGED_EVENT } from "./fleetTypes";
-import { loadModels as loadStoredModels, storedModels, type StoredModel } from "./modelSettingsStore";
+import {
+  loadModels as loadStoredModels,
+  onDefaultModelsChanged,
+  storedModels,
+  type StoredModel,
+} from "./modelSettingsStore";
 import {
   activeSessionDevice,
   activeSessionId,
   activeSessionKey,
   activeWorkspaceId,
   deviceOfSession,
+  onSessionCreated,
   onWorkspaceChanged,
   runStep,
   sessionKey,
@@ -150,9 +158,92 @@ export const models = signal<ModelOption[]>([]);
 export const defaultModels = signal<Record<string, string | null | undefined>>({});
 /** The workspace's default when the session has not been bound to one yet. */
 export const defaultModelId = signal<string | null>(null);
-/** `sessionKey` → the model the user picked in this surface. */
+/** `sessionKey` → the model the host reported or the user picked in this surface. */
 export const sessionModels = signal<Record<string, string>>({});
+/** `sessionKey` → pool id when the session is bound to a model pool. */
+const sessionPoolIds = signal<Record<string, string>>({});
 export const modelPickerOpen = signal(false);
+
+/** Monotonic write counter per `sessionKey` so an in-flight read cannot overwrite a newer pick. */
+const sessionWriteGen: Record<string, number> = {};
+/** `sessionKey`s whose `get_session_model_target` has already been read for this workspace. */
+const targetReadFor = new Set<string>();
+let modelEventsSubscribed = false;
+
+function bumpWriteGen(key: string): number {
+  const next = (sessionWriteGen[key] ?? 0) + 1;
+  sessionWriteGen[key] = next;
+  return next;
+}
+
+function setSessionModelBinding(
+  key: string,
+  sessionId: string,
+  modelRef: string,
+  poolId?: string | null,
+): void {
+  sessionModels.update(current => (current[key] === modelRef ? current : { ...current, [key]: modelRef }));
+  if (poolId) {
+    sessionPoolIds.update(current => (current[key] === poolId ? current : { ...current, [key]: poolId }));
+  } else if (key in sessionPoolIds()) {
+    sessionPoolIds.update(current => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+  sessions.update(rows => {
+    let changed = false;
+    const next = rows.map(row => {
+      if (row.sessionId !== sessionId || row.modelName === modelRef) return row;
+      changed = true;
+      return { ...row, modelName: modelRef };
+    });
+    return changed ? next : rows;
+  });
+}
+
+function extractTargetModel(target: SessionModelTargetResponse): { modelRef: string | null; poolId: string | null } {
+  const selection = target.selection;
+  if (selection && typeof selection === "object") {
+    if (selection.kind === "model") {
+      const ref = typeof selection.model_ref === "string" ? selection.model_ref.trim() : "";
+      if (ref) return { modelRef: ref, poolId: null };
+    } else if (selection.kind === "pool") {
+      const poolId = typeof selection.pool_id === "string" ? selection.pool_id.trim() : "";
+      const boundModel = typeof target.binding?.modelId === "string" ? target.binding.modelId.trim() : "";
+      return { modelRef: boundModel || poolId || null, poolId: poolId || null };
+    }
+  }
+  const legacyModel = typeof target.modelId === "string" ? target.modelId.trim() : "";
+  return { modelRef: legacyModel || null, poolId: null };
+}
+
+function subscribeModelEvents(): void {
+  if (modelEventsSubscribed) return;
+  modelEventsSubscribed = true;
+  listenEvent<{ sessionId?: string; newModelId?: string }>(
+    "agentic://session-model-fallback-applied",
+    (payload, meta) => {
+      const sid = typeof payload?.sessionId === "string" ? payload.sessionId.trim() : "";
+      const nextModel = typeof payload?.newModelId === "string" ? payload.newModelId.trim() : "";
+      if (!sid || !nextModel) return;
+      const key = sessionKey(sid, meta?.origin);
+      bumpWriteGen(key);
+      targetReadFor.add(key);
+      setSessionModelBinding(key, sid, nextModel, null);
+    },
+  );
+  listenEvent<{ sessionId?: string }>(
+    "agentic://session-reasoning-preset-auto-cleared",
+    (payload, meta) => {
+      const sid = typeof payload?.sessionId === "string" ? payload.sessionId.trim() : "";
+      if (!sid) return;
+      const key = sessionKey(sid, meta?.origin);
+      applyReasoningToSession(key, null);
+    },
+  );
+}
 
 const SYMBOLIC_PRIMARY_ROLES = new Set(["", "primary", "auto", "default"]);
 
@@ -248,6 +339,7 @@ function projectionToChoices(projection: ReasoningCatalogProjection | null | und
 
 /** Loads the catalog once per workspace; the composer asks on mount. */
 export function ensureModelsLoaded(): void {
+  subscribeModelEvents();
   void refreshFleetModels();
   if (models().length) return;
   // A host without a catalog leaves the composer on its default model instead of
@@ -262,13 +354,17 @@ export async function loadModels(): Promise<void> {
       const rawEntries = (catalog?.models ?? []).filter(
         entry => entry && entry.enabled !== false && (entry.id || entry.model_name),
       );
-      const preferred = catalog?.default_models?.primary ?? null;
+      const primaryRef = catalog?.default_models?.primary ?? null;
+      // Backend snapshots new sessions from `ai.agent_model_selections.mode`
+      // (`mode_default_model_id`), falling back to `default_models.primary` on
+      // older hosts that omit the field.
+      const preferred = catalog?.mode_default_model_id ?? primaryRef;
       // Real Rust `get_ai_model_catalog` keys `default_models.primary` and
       // `update_session_model` by `entry.id` (config ID). Legacy mock fixtures
       // occasionally point `default_models.primary` at `entry.model_name` while
       // using a distinct `entry.id`; detect that shape without breaking real hosts.
       const legacyModelNameKeying = Boolean(
-        preferred && rawEntries.some(entry => entry.model_name === preferred && entry.id !== preferred),
+        primaryRef && rawEntries.some(entry => entry.model_name === primaryRef && entry.id !== primaryRef),
       );
 
       const options = rawEntries.map(entry => optionOf(entry, legacyModelNameKeying));
@@ -330,18 +426,41 @@ export async function chooseModel(modelId: string): Promise<void> {
   if (!sessionId || !key) return;
   const resolved = findOption(modelId)?.id ?? modelId;
   const workspaceId = activeWorkspaceId();
+  const wasPool = Boolean(sessionPoolIds()[key]);
+  const keepReasoning = reasoningOfferedFor(resolved);
+  const preset = keepReasoning ? activeReasoningId() : null;
+  bumpWriteGen(key);
   await runStep(async () => {
-    await updateSessionModel({
-      sessionId,
-      modelName: resolved,
-      // A preset the new model does not offer would be refused as a pair, so the
-      // session keeps its setting only when this surface knows it is offered.
-      ...(reasoningOfferedFor(resolved) ? { reasoningPreset: activeReasoningId() } : {}),
-      ...(workspaceId ? { workspaceId } : {}),
-      includeInternal: false,
-    });
-    sessionModels.update(current => ({ ...current, [key]: resolved }));
-    if (!reasoningOfferedFor(resolved)) applyReasoningToSession(key, null);
+    if (wasPool) {
+      await updateSessionModelTarget({
+        sessionId,
+        selection: { kind: "model", model_ref: resolved },
+        ...(workspaceId ? { workspaceId } : {}),
+        includeInternal: false,
+      });
+      if (keepReasoning && preset !== null) {
+        await updateSessionModel({
+          sessionId,
+          modelName: resolved,
+          reasoningPreset: preset,
+          ...(workspaceId ? { workspaceId } : {}),
+          includeInternal: false,
+        });
+      }
+    } else {
+      await updateSessionModel({
+        sessionId,
+        modelName: resolved,
+        // A preset the new model does not offer would be refused as a pair, so the
+        // session keeps its setting only when this surface knows it is offered.
+        ...(keepReasoning ? { reasoningPreset: preset } : {}),
+        ...(workspaceId ? { workspaceId } : {}),
+        includeInternal: false,
+      });
+    }
+    targetReadFor.add(key);
+    setSessionModelBinding(key, sessionId, resolved, null);
+    if (!keepReasoning) applyReasoningToSession(key, null);
   });
 }
 
@@ -402,36 +521,58 @@ function applyReasoningToSession(key: string, preset: string | null): void {
 }
 
 /**
- * Reads the session's own binding and, from the model it runs, the settings that
- * model offers. A host without the catalog commands leaves both empty and the
- * composer draws no reasoning control at all.
+ * Reads the session's authoritative model & reasoning binding from the host
+ * (`get_session_model_target`) and ensures reasoning presets for that model are
+ * loaded. Reading the target first guarantees the composer shows the session's
+ * actual bound model (even on fleet connections where `FleetSession` omits
+ * `modelName`) and loads reasoning options for that real model.
  */
 export async function ensureReasoningLoaded(): Promise<void> {
   const sessionId = activeSessionId();
   const key = activeSessionKey() ?? (sessionId ? sessionKey(sessionId) : null);
-  const modelId = activeModelId();
-  if (!sessionId || !key || !modelId) return;
-  // The effect that asks for this re-runs whenever the model binding is recomputed,
-  // so a session already read is not read again on every pass.
-  if (reasoningReadFor[key] === modelId) return;
-  reasoningReadFor[key] = modelId;
+  if (!sessionId || !key) return;
   const workspaceId = activeWorkspaceId();
-  const alreadyKnown = reasoningByModel()[modelId];
+  const needTarget = !targetReadFor.has(key);
+  const initialModelId = activeModelId();
+  const needReasoningForInitial =
+    !needTarget && Boolean(initialModelId) && reasoningReadFor[key] !== initialModelId;
+  if (!needTarget && !needReasoningForInitial) return;
+
+  if (needTarget) targetReadFor.add(key);
+  const writeGenBefore = sessionWriteGen[key] ?? 0;
+
   await runStep(
     async () => {
-      if (alreadyKnown === undefined) {
-        reasoningByModel.update(current => ({ ...current, [modelId]: null }));
-        const choices = await reasoningChoicesFor(modelId).catch(() => [] as ReasoningChoice[]);
-        reasoningByModel.update(current => ({ ...current, [modelId]: choices }));
+      if (needTarget) {
+        const target = await getSessionModelTarget({
+          sessionId,
+          ...(workspaceId ? { workspaceId } : {}),
+        }).catch(() => null);
+        // Never overwrite an explicit user pick made while this read was in flight.
+        if (target && (sessionWriteGen[key] ?? 0) === writeGenBefore) {
+          const { modelRef, poolId } = extractTargetModel(target);
+          if (modelRef) {
+            setSessionModelBinding(key, sessionId, modelRef, poolId);
+          }
+          // A host older than the field omits it; that is not a session set to the
+          // default, so nothing is written for it.
+          if (target.reasoningPreset !== undefined) {
+            applyReasoningToSession(key, target.reasoningPreset ?? null);
+          }
+        }
       }
-      const target = await getSessionModelTarget({
-        sessionId,
-        ...(workspaceId ? { workspaceId } : {}),
-      }).catch(() => null);
-      // A host older than the field omits it; that is not a session set to the
-      // default, so nothing is written for it.
-      if (!target || target.reasoningPreset === undefined) return;
-      applyReasoningToSession(key, target.reasoningPreset ?? null);
+
+      const effectiveModelId = activeModelId();
+      if (!effectiveModelId) return;
+      if (reasoningReadFor[key] === effectiveModelId && reasoningByModel()[effectiveModelId] !== undefined) {
+        return;
+      }
+      reasoningReadFor[key] = effectiveModelId;
+      if (reasoningByModel()[effectiveModelId] === undefined) {
+        reasoningByModel.update(current => ({ ...current, [effectiveModelId]: null }));
+        const choices = await reasoningChoicesFor(effectiveModelId).catch(() => [] as ReasoningChoice[]);
+        reasoningByModel.update(current => ({ ...current, [effectiveModelId]: choices }));
+      }
     },
     { trackBusy: false, clearError: false },
   );
@@ -495,10 +636,17 @@ async function storedModelEntry(modelId: string): Promise<StoredModel | null> {
 export async function chooseReasoning(presetId: string | null): Promise<void> {
   const sessionId = activeSessionId();
   const key = activeSessionKey();
-  const modelId = activeModelId();
   reasoningPickerOpen.set(false);
-  if (!sessionId || !key || !modelId) return;
+  if (!sessionId || !key) return;
+  // Ensure the session's authoritative model has been read before writing the pair,
+  // so changing reasoning never overwrites the session's real model with a default.
+  if (!targetReadFor.has(key)) {
+    await ensureReasoningLoaded();
+  }
+  const modelId = activeModelId();
+  if (!modelId) return;
   const workspaceId = activeWorkspaceId();
+  bumpWriteGen(key);
   await runStep(async () => {
     await updateSessionModel({
       sessionId,
@@ -511,11 +659,22 @@ export async function chooseReasoning(presetId: string | null): Promise<void> {
   });
 }
 
+onSessionCreated(({ sessionId, deviceId, modelId }) => {
+  if (!sessionId || !modelId) return;
+  const key = sessionKey(sessionId, deviceId);
+  setSessionModelBinding(key, sessionId, modelId, null);
+});
+
+onDefaultModelsChanged(() => {
+  void loadModels().catch(() => undefined);
+});
+
 onWorkspaceChanged(() => {
   models.set([]);
   defaultModels.set({});
   defaultModelId.set(null);
   sessionModels.set({});
+  sessionPoolIds.set({});
   fleetModelGroups.set(null);
   modelPickerOpen.set(false);
   // Presets belong to a model and a session belongs to a workspace, so neither
@@ -523,7 +682,9 @@ onWorkspaceChanged(() => {
   reasoningPickerOpen.set(false);
   sessionReasoning.set({});
   reasoningByModel.set({});
+  targetReadFor.clear();
   for (const key of Object.keys(reasoningReadFor)) delete reasoningReadFor[key];
+  for (const key of Object.keys(sessionWriteGen)) delete sessionWriteGen[key];
   void loadModels().catch(() => undefined);
   void refreshFleetModels();
 });

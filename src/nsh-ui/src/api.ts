@@ -474,6 +474,8 @@ export interface ModelCatalog {
     fast?: string | null;
     [role: string]: string | null | undefined;
   };
+  /** Concrete configured model ID resolved from `ai.agent_model_selections.mode`. */
+  mode_default_model_id?: string | null;
   session_model_id?: string;
   session_reasoning_preset?: string | null;
 }
@@ -562,18 +564,31 @@ export const projectAiModelReasoningCatalog = (request: {
   reasoning: Record<string, unknown>;
 }) => invokeCommand<ReasoningCatalogProjection>("project_ai_model_reasoning_catalog", request);
 
+export interface SessionModelTargetResponse {
+  sessionId?: string;
+  /** Legacy dev-host shape; real Rust hosts return `selection`. */
+  modelId?: string;
+  selection?: { kind: string; model_ref?: string; pool_id?: string };
+  /** Absent on a host older than this field, which is not the same as `null`. */
+  reasoningPreset?: string | null;
+  binding?: { poolId?: string; modelId?: string } | null;
+}
+
 /** What a session's next turn is bound to, including its reasoning setting. */
 export const getSessionModelTarget = (request: {
   sessionId: string;
   workspaceId?: string;
   workspacePath?: string;
-}) =>
-  invokeCommand<{
-    sessionId: string;
-    selection: { kind: string; model_ref?: string; pool_id?: string };
-    /** Absent on a host older than this field, which is not the same as `null`. */
-    reasoningPreset?: string | null;
-  }>("get_session_model_target", request);
+}) => invokeCommand<SessionModelTargetResponse>("get_session_model_target", request);
+
+/** Updates a session's explicit model/pool target (required when switching out of a model pool). */
+export const updateSessionModelTarget = (request: {
+  sessionId: string;
+  selection: { kind: "model"; model_ref: string } | { kind: "pool"; pool_id: string };
+  workspaceId?: string;
+  workspacePath?: string;
+  includeInternal?: boolean;
+}) => invokeCommand<SessionModelTargetResponse>("update_session_model_target", request);
 
 /** Session lifecycle and row actions; sessions address a workspace by `workspace_id`. */
 export const createSession = (request: {
@@ -582,7 +597,14 @@ export const createSession = (request: {
   agentType: string;
   workspacePath?: string;
   workspaceId?: string;
-}) => invokeCommand<{ sessionId: string; sessionName: string; agentType: string }>("create_session", request);
+}) =>
+  invokeCommand<{
+    sessionId: string;
+    sessionName: string;
+    agentType: string;
+    modelId?: string | null;
+    modelName?: string | null;
+  }>("create_session", request);
 
 export const startDialogTurn = (request: {
   sessionId: string;

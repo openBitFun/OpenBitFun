@@ -843,6 +843,7 @@ pub(crate) async fn create_session(state: &PeerHostState, args: &Value) -> Resul
         "sessionId": session.session_id,
         "sessionName": session.session_name,
         "agentType": session.agent_type,
+        "modelId": session.model_id,
     }))
 }
 

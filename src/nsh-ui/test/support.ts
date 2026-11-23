@@ -2963,19 +2963,50 @@ export function createBackend(options: BackendOptions = {}): Backend {
           ],
           default_models: { primary: "gpt-4.1-mini" },
         };
-      case "update_session_model":
+      case "update_session_model": {
         // The host validates the pair, so a preset that arrives without its model
         // is refused there; here the write is only remembered for the next read.
+        const sid = String(payload.sessionId ?? "");
+        const nextModel = typeof payload.modelName === "string" ? payload.modelName.trim() : "";
+        if (sid && nextModel) {
+          sessions = sessions.map(item =>
+            String(item.sessionId) === sid ? { ...item, modelName: nextModel } : item,
+          );
+        }
         if (Object.prototype.hasOwnProperty.call(payload, "reasoningPreset")) {
           sessionReasoningPreset = (payload.reasoningPreset as string | null) ?? null;
         }
         return null;
-      case "get_session_model_target":
+      }
+      case "update_session_model_target": {
+        const sid = String(payload.sessionId ?? "");
+        const selection = payload.selection as { kind?: string; model_ref?: string; pool_id?: string } | undefined;
+        const nextModel =
+          selection?.kind === "model" && typeof selection.model_ref === "string"
+            ? selection.model_ref.trim()
+            : "";
+        if (sid && nextModel) {
+          sessions = sessions.map(item =>
+            String(item.sessionId) === sid ? { ...item, modelName: nextModel } : item,
+          );
+        }
         return {
-          sessionId: String(payload.sessionId ?? ""),
-          selection: { kind: "model", model_ref: "gpt-4.1-mini" },
+          sessionId: sid,
+          selection: selection ?? { kind: "model", model_ref: "gpt-4.1-mini" },
           ...(sessionReasoningPreset === undefined ? {} : { reasoningPreset: sessionReasoningPreset }),
         };
+      }
+      case "get_session_model_target": {
+        const sid = String(payload.sessionId ?? "");
+        const row = sessions.find(item => String(item.sessionId) === sid);
+        const modelRef =
+          typeof row?.modelName === "string" && row.modelName.trim() ? row.modelName.trim() : "gpt-4.1-mini";
+        return {
+          sessionId: sid,
+          selection: { kind: "model", model_ref: modelRef },
+          ...(sessionReasoningPreset === undefined ? {} : { reasoningPreset: sessionReasoningPreset }),
+        };
+      }
       case "project_ai_model_reasoning_catalog": {
         if (reasoningCatalogFixture === null) {
           throw new Error("Command not found: project_ai_model_reasoning_catalog");

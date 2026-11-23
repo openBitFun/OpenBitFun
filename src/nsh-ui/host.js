@@ -1906,7 +1906,17 @@ const DEV_FIXTURES = {
     models: devConfigs["ai.models"] || [],
     defaultModels: devConfigs["ai.default_models"] || {},
   }),
-  get_session_model_target: () => ({ modelId: "model-1", reasoningPreset: null }),
+  get_session_model_target: args => {
+    const req = payloadOf(args);
+    const sid = String(req.sessionId || "");
+    const found = devSessions.find(s => s.sessionId === sid);
+    const modelRef = (found && found.modelName) || "model-1";
+    return {
+      sessionId: sid,
+      selection: { kind: "model", model_ref: modelRef },
+      reasoningPreset: null,
+    };
+  },
   project_ai_model_reasoning_catalog: () => ({ status: "known", default_preset: null, presets: [] }),
   subscribe_permission_requests: () => null,
   list_pending_permission_requests: () => [],

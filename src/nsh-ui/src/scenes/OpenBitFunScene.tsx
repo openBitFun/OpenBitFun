@@ -23,7 +23,6 @@ import {
   citedJobId,
   composerDraft,
   conversationError,
-  conversationLoading,
   conversationView,
   conversationsLoaded,
   conversationGroups,
@@ -64,7 +63,7 @@ import {
 import { createMarkdownCodeActions, createMarkdownStyles, STATIC_MARKDOWN_OPTIONS, STREAMING_MARKDOWN_OPTIONS } from "../ui/markdown";
 import { BrandSpinner, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
-import { Button, EmptyStateCard, IconButton, SkeletonBlock, focusRingStyle } from "../ui/primitives";
+import { Button, EmptyStateCard, IconButton, focusRingStyle } from "../ui/primitives";
 import { CardsStrip } from "../ui/cardView"; // wave22-p3
 
 /** The user bubble's widest (spec §3: min(560, 72 %)). */
@@ -547,21 +546,6 @@ function Notice(props: { text: string; failed: boolean; onRetry?: () => void }) 
   );
 }
 
-function ConversationSkeleton() {
-  return (
-    <View testID="sa-loading" style={{ gap: space.xxl, paddingVertical: space.sm }}>
-      <View style={{ alignSelf: "flex-end", width: "54%", gap: space.xs }}>
-        <SkeletonBlock width="100%" height={44} borderRadius={radii.lg} />
-      </View>
-      <View style={{ gap: space.sm }}>
-        <SkeletonBlock width="84%" height={14} borderRadius={radii.xs} />
-        <SkeletonBlock width="68%" height={14} borderRadius={radii.xs} />
-        <SkeletonBlock width="42%" height={14} borderRadius={radii.xs} />
-      </View>
-    </View>
-  );
-}
-
 function ThinkingLine() {
   return (
     <View testID="sa-thinking" style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
@@ -659,9 +643,6 @@ function Thread(props: { height: number }) {
             style={{ width: "100%", maxWidth: contentWidth() }}
             onLayout={() => stick()}
           >
-            <If when={conversationLoading() && !conversationView()}>
-              <ConversationSkeleton />
-            </If>
             <Each of={settledThreadItems()} key={item => item.key}>
               {item => (
                 <View

@@ -1452,6 +1452,15 @@ export function sessionStarted(sessionId: string | null): boolean {
   return row.messageCount === undefined || row.messageCount > 0;
 }
 
+const sessionCreatedHandlers = new Set<(info: { sessionId: string; deviceId: string; modelId?: string }) => void>();
+
+export function onSessionCreated(
+  handler: (info: { sessionId: string; deviceId: string; modelId?: string }) => void,
+): () => void {
+  sessionCreatedHandlers.add(handler);
+  return () => sessionCreatedHandlers.delete(handler);
+}
+
 export async function createSessionInWorkspace(
   name: string,
   agentType: string = chosenAgentType(),
@@ -1468,14 +1477,19 @@ export async function createSessionInWorkspace(
     // The row the catalogue returns carries the binding too, but the composer has
     // to agree with the answer that created the session before that read lands.
     if (created?.sessionId) {
+      const device = deviceContext();
       const bound = created.agentType || agentType;
-      sessionAgentTypes.update(current => ({ ...current, [sessionKey(created.sessionId, deviceContext())]: bound }));
+      sessionAgentTypes.update(current => ({ ...current, [sessionKey(created.sessionId, device)]: bound }));
       if (
         created.agentType &&
         activeWorkspaceId() === workspaceId &&
         created.agentType.trim().toLowerCase() !== agentType.trim().toLowerCase()
       ) {
         chosenAgentType.set(created.agentType.trim());
+      }
+      const createdModel = (created.modelId ?? created.modelName ?? "").trim() || undefined;
+      for (const handler of sessionCreatedHandlers) {
+        handler({ sessionId: created.sessionId, deviceId: device, modelId: createdModel });
       }
     }
     await loadSessions();

@@ -3174,34 +3174,6 @@ const visibleTurnRows = computed<TurnRow[]>(() => {
 /** The persisted turns the transcript draws, in order. */
 const visibleTurns = computed(() => visibleTurnRows().map(row => row.turn));
 
-const showTurnsSkeleton = computed(
-  () => turnsLoading() && sessionTurns().length === 0 && !optimisticUserText() && !hasLiveContent(),
-);
-
-function TranscriptSkeleton() {
-  const bar = (width: `${number}%`, height = 12): ViewStyle => ({
-    width,
-    height,
-    borderRadius: radii.xs,
-    backgroundColor: palette().skeletonBg,
-  });
-  return (
-    <View accessibilityLabel="transcript-loading" style={{ gap: 16, paddingTop: 8 }}>
-      <View style={{ alignSelf: "flex-end", width: "42%", height: 36, borderRadius: radii.md, backgroundColor: palette().skeletonBg }} />
-      <View style={{ gap: 8 }}>
-        <View style={bar("88%")} />
-        <View style={bar("94%")} />
-        <View style={bar("61%")} />
-      </View>
-      <View style={{ alignSelf: "flex-end", width: "30%", height: 36, borderRadius: radii.md, backgroundColor: palette().skeletonBg }} />
-      <View style={{ gap: 8 }}>
-        <View style={bar("76%")} />
-        <View style={bar("52%")} />
-      </View>
-    </View>
-  );
-}
-
 const loadingEarlier = signal(false);
 let earlierRevealTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -3378,10 +3350,6 @@ function Transcript() {
         >
           <If when={isTranscriptEmpty()}>
             <WelcomeStudio />
-          </If>
-
-          <If when={showTurnsSkeleton()}>
-            <TranscriptSkeleton />
           </If>
 
           <If when={transcriptNotice()}>
@@ -4781,8 +4749,8 @@ function ComposerDock() {
           </View>
         </View>
 
-        {/* The mode line shows only while it says something: no idle shortcut hint (spec §5); shortcuts live in the send tooltip. */}
-        <If when={composerDisabled() || Boolean(runningTurnId())}>
+        {/* Only show a footer notice when the composer cannot send (offline or no session). */}
+        <If when={composerDisabled()}>
           <View style={{ paddingHorizontal: space.chip, flexDirection: "row", alignItems: "center" }}>
             <Text
               style={{
@@ -4793,11 +4761,7 @@ function ComposerDock() {
                 textOverflow: "ellipsis",
               }}
             >
-              {composerDisabled()
-                ? offlineNoticeText() || tr("sessions.noSessionSelected")
-                : midTurnSendPolicy() === "queue"
-                  ? tr("sessions.queuedUntilFinish")
-                  : tr("sessions.steeringRunning")}
+              {offlineNoticeText() || tr("sessions.noSessionSelected")}
             </Text>
           </View>
         </If>
