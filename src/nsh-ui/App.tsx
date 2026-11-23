@@ -88,6 +88,8 @@ import {
   activeScene,
   activeSessionId,
   activeWorkspace,
+  AUX_MAX_WIDTH,
+  AUX_MIN_WIDTH,
   auxPaneMaximized,
   auxPaneOpen,
   auxPaneSide,
@@ -2565,18 +2567,45 @@ function auxFillsScene(): boolean {
 }
 
 /**
- * When docking the aux inspector beside the canvas would push the primary
- * canvas below `layout.canvasMinWidth` (560 px, typical on 960–1199 px medium
- * windows), present the inspector as a 400 px overlay sheet instead.
+ * When docking the aux inspector at its minimum width beside the canvas would
+ * push the primary canvas below `layout.canvasMinWidth` (560 px, typical on
+ * 960–1133 px medium windows with a docked sidebar), present the inspector as
+ * a resizable overlay sheet instead. Never depends on the user's live
+ * `auxPaneWidth()` so dragging the split handle wider or narrower never flips
+ * between docked and sheet modes mid-drag.
  */
 const auxAsSheet = computed(() => {
   if (compactShell() || auxPaneMaximized()) return false;
   const width = shellWidth();
   if (width <= 0) return false;
   const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
-  const canvasAllowance = width - navAllowance - layout.canvasInset * 2 - (auxPaneWidth() + 9);
+  const minDockedAuxAllowance = AUX_MIN_WIDTH + 9;
+  const canvasAllowance = width - navAllowance - layout.canvasInset * 2 - minDockedAuxAllowance;
   return canvasAllowance < layout.canvasMinWidth;
 });
+
+/** Maximum docked aux pane width for the current window (68% of the scene row). */
+const dockedAuxMaxWidth = computed(() => {
+  const width = shellWidth();
+  if (width <= 0) return AUX_MAX_WIDTH;
+  const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
+  const sceneRowWidth = Math.max(0, width - navAllowance - layout.canvasInset * 2);
+  const maxByRow = Math.floor(sceneRowWidth * 0.68) - 9;
+  return Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, maxByRow));
+});
+
+/** Effective docked aux pane width clamped to the current window so reversing drag has no dead zone. */
+const dockedAuxWidth = computed(() => Math.max(AUX_MIN_WIDTH, Math.min(dockedAuxMaxWidth(), auxPaneWidth())));
+
+/** Maximum overlay sheet width (leaves a clickable scrim strip on the opposite edge). */
+const sheetAuxMaxWidth = computed(() => {
+  const width = shellWidth();
+  if (width <= 0) return AUX_MAX_WIDTH;
+  return Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, Math.round(width - space.xxl * 2)));
+});
+
+/** Effective overlay sheet width backed by `auxPaneWidth()` and clamped to the viewport. */
+const sheetAuxWidth = computed(() => Math.max(AUX_MIN_WIDTH, Math.min(sheetAuxMaxWidth(), auxPaneWidth())));
 
 /**
  * The canvas's 44 top bar on desktop: the sidebar toggle and back/forward when
@@ -2980,11 +3009,25 @@ function OverlaySidebarDrawer() {
   );
 }
 
-/** 960–1199 medium-width inspector sheet (keeps the primary canvas >= 560 px wide). */
+/** Medium-width resizable inspector sheet (keeps the primary canvas >= 560 px wide). */
 function AuxPaneSheet() {
   const onLeft = () => auxPaneSide() === "left";
   const motion = drawerEnterMotion(onLeft() ? "left" : "right");
+  let dragWidth: number | null = null;
   cleanup(registerEscapeDismiss(() => toggleAuxPane()));
+  const handleDragState = (dragging: boolean) => {
+    dragWidth = dragging ? sheetAuxWidth() : null;
+  };
+  const handleDelta = (delta: number) => {
+    const signed = onLeft() ? delta : -delta;
+    const next = (dragWidth ?? sheetAuxWidth()) + signed;
+    const clamped = Math.max(AUX_MIN_WIDTH, Math.min(sheetAuxMaxWidth(), Math.round(next)));
+    dragWidth = clamped;
+    setAuxPaneWidth(clamped);
+  };
+  const handleReset = () => {
+    setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, sheetAuxMaxWidth()));
+  };
   return (
     // Mounted in-tree (not inside `<Overlay>`) so `<BrowserPageLayer />` can
     // sit directly above it and display native WebViews inside the sheet's
@@ -3000,11 +3043,24 @@ function AuxPaneSheet() {
       }}
     >
       <View
+        role="button"
+        accessibilityLabel="aux-pane-sheet-scrim"
+        onPress={() => toggleAuxPane()}
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: palette().scrimBg,
+        }}
+      />
+      <View
         role="dialog"
         accessibilityLabel="aux-pane-sheet"
         style={[
           {
-            width: Math.min(layout.inspectorSheetWidth, Math.max(320, shellWidth() - space.xxl)),
+            width: sheetAuxWidth(),
             height: "100%",
             minHeight: 0,
             flexDirection: "column",
@@ -3019,11 +3075,13 @@ function AuxPaneSheet() {
       >
         <AuxPane />
       </View>
-      <View
-        role="button"
-        accessibilityLabel="aux-pane-sheet-scrim"
-        onPress={() => toggleAuxPane()}
-        style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
+      <SplitHandle
+        surface="canvas"
+        seam={false}
+        accessibilityLabel={onLeft() ? "aux-sheet-split-handle-left" : "aux-sheet-split-handle-right"}
+        onDragStateChange={handleDragState}
+        onDelta={handleDelta}
+        onReset={handleReset}
       />
     </View>
   );
@@ -3196,6 +3254,14 @@ function StudioApp() {
     if (untracked(() => compactShell() || overlayNav())) untracked(() => drawerOpen.set(false));
   });
 
+  let auxDragWidth: number | null = null;
+  const resizeDockedAux = (signedDelta: number) => {
+    const next = (auxDragWidth ?? dockedAuxWidth()) + signedDelta;
+    const clamped = Math.max(AUX_MIN_WIDTH, Math.min(dockedAuxMaxWidth(), Math.round(next)));
+    auxDragWidth = clamped;
+    setAuxPaneWidth(clamped);
+  };
+
   return (
     <View
       onLayout={event => {
@@ -3309,8 +3375,7 @@ function StudioApp() {
               style={{
                 flexDirection: "row",
                 minHeight: 0,
-                width: auxPaneWidth() + 9,
-                maxWidth: "68%",
+                width: dockedAuxWidth() + 9,
                 flexShrink: 0,
               }}
             >
@@ -3318,8 +3383,11 @@ function StudioApp() {
               <SplitHandle
                 surface="canvas"
                 accessibilityLabel="aux-split-handle-left"
-                onDelta={delta => setAuxPaneWidth(auxPaneWidth() + delta)}
-                onReset={() => setAuxPaneWidth(DEFAULT_AUX_WIDTH)}
+                onDragStateChange={dragging => {
+                  auxDragWidth = dragging ? dockedAuxWidth() : null;
+                }}
+                onDelta={delta => resizeDockedAux(delta)}
+                onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
               />
             </View>
           </If>
@@ -3345,16 +3413,18 @@ function StudioApp() {
               style={{
                 flexDirection: "row",
                 minHeight: 0,
-                width: auxPaneWidth() + 9,
-                maxWidth: "68%",
+                width: dockedAuxWidth() + 9,
                 flexShrink: 0,
               }}
             >
               <SplitHandle
                 surface="canvas"
                 accessibilityLabel="aux-split-handle-right"
-                onDelta={delta => setAuxPaneWidth(auxPaneWidth() - delta)}
-                onReset={() => setAuxPaneWidth(DEFAULT_AUX_WIDTH)}
+                onDragStateChange={dragging => {
+                  auxDragWidth = dragging ? dockedAuxWidth() : null;
+                }}
+                onDelta={delta => resizeDockedAux(-delta)}
+                onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
               />
               <AuxPane />
             </View>

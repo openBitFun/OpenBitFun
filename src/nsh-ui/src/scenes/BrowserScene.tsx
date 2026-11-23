@@ -104,7 +104,7 @@ import { accountAuthModalOpen } from "../ui/AccountAuthModal";
 import { deviceException } from "../ui/fleet";
 import { Spinner } from "../ui/motion";
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
-import { Button, EmptyStateCard, IconButton, InlineBanner, TextField } from "../ui/primitives";
+import { Button, EmptyStateCard, IconButton, InlineBanner, TextField, splitDragging } from "../ui/primitives";
 
 let layerRef: ViewRef | undefined;
 const shellOverlayOccluded = signal(false);
@@ -235,11 +235,17 @@ function BrowserPageView(props: { page: () => BrowserPage }) {
   }
 
   return (
-    <View style={{ ...placement(), backgroundColor: palette().canvas }}>
+    <View
+      style={{
+        ...placement(),
+        backgroundColor: palette().canvas,
+        pointerEvents: splitDragging() ? "none" : "auto",
+      }}
+    >
       <WebView
         ref={(node: WebViewRef) => registerBrowserHandle(label, node ?? null)}
         src={initialUrl}
-        style={{ flex: 1 }}
+        style={{ flex: 1, pointerEvents: splitDragging() ? "none" : "auto" }}
         desktop={{ allowsBackForwardNavigationGestures: true }}
         onLoadStart={event => events.loadStart(facts(event))}
         onLoad={event => events.load(facts(event))}
@@ -454,13 +460,16 @@ function Toolbar(props: { compact: boolean }) {
 function NativeBody(props: { compact: boolean }) {
   let viewportRef: ViewRef | undefined;
   let claim = 0;
+  let measureSeq = 0;
 
   const measureViewport = () => {
+    const seq = ++measureSeq;
     void (async () => {
       if (viewportOwner() !== claim) return;
       const measured = await viewportRef?.measure();
-      if (!measured || viewportOwner() !== claim) return;
+      if (!measured || viewportOwner() !== claim || seq !== measureSeq) return;
       const origin = await layerOrigin();
+      if (viewportOwner() !== claim || seq !== measureSeq) return;
       browserViewport.set({
         x: Math.round(measured.pagePosition.x - origin.x),
         y: Math.round(measured.pagePosition.y - origin.y),
@@ -472,8 +481,14 @@ function NativeBody(props: { compact: boolean }) {
   claim = claimViewport(measureViewport);
 
   // Leaving hides the page; its document keeps running.
+  let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleSettleMeasure = () => {
+    if (frameTimer) clearTimeout(frameTimer);
+    frameTimer = setTimeout(() => {
+      frameTimer = null;
+      measureViewport();
+    }, 16);
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
       settleTimer = null;
@@ -481,6 +496,11 @@ function NativeBody(props: { compact: boolean }) {
     }, 250);
   };
   cleanup(() => {
+    measureSeq++;
+    if (frameTimer) {
+      clearTimeout(frameTimer);
+      frameTimer = null;
+    }
     if (settleTimer) {
       clearTimeout(settleTimer);
       settleTimer = null;
@@ -496,6 +516,7 @@ function NativeBody(props: { compact: boolean }) {
     auxPaneWidth();
     auxPaneSide();
     auxPaneMaximized();
+    splitDragging();
     measureViewport();
     scheduleSettleMeasure();
   });
@@ -629,12 +650,19 @@ function PreviewBody(props: { compact: boolean }) {
       </If>
       <If when={htmlPreview()}>
         {preview => (
-          <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}>
+          <View
+            style={{
+              flex: 1,
+              minHeight: 0,
+              backgroundColor: palette().canvas,
+              pointerEvents: splitDragging() ? "none" : "auto",
+            }}
+          >
             <WebView
               accessibilityLabel={`browser-preview-${preview().name}`}
               html={preview().html}
               incognito
-              style={{ flex: 1 }}
+              style={{ flex: 1, pointerEvents: splitDragging() ? "none" : "auto" }}
             />
           </View>
         )}

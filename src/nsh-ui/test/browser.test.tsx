@@ -633,3 +633,80 @@ test("medium-width inspector sheet keeps the embedded browser page visible above
   await app.press("aux-pane-sheet-scrim");
   await app.waitUntil(() => !app.shows("aux-pane-sheet"));
 });
+
+test("docked right-side browser at default 1200px width drags wider and narrower without flipping to a sheet", async () => {
+  const wire = browserBackendHost();
+  const app = await open("./fixtures/browserApp.tsx", {
+    width: 1200,
+    height: 800,
+    platform: "macos",
+    host: { handlers: wire.handlers },
+  });
+  await openSession(app, "NSH skeleton");
+
+  await app.waitFor("session-tool-browser");
+  await app.press("session-tool-browser");
+  await app.waitFor("aux-split-handle-right");
+  expect(app.shows("aux-pane-sheet")).toBe(false);
+
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  const create = wire.invokes.find(call => call.command === "browser_webview_create")?.args.request as { label: string };
+  await pump(app, wire);
+  await app.waitFor(`browser-page-${create.label}`);
+
+  const readWidth = () => {
+    const raw = app.storage()["openbitfun.nsh.shell-layout.v1"];
+    return raw ? (JSON.parse(raw) as { auxPaneWidth?: number }).auxPaneWidth ?? 0 : 0;
+  };
+
+  // Drag left to widen the right-side browser pane; must stay docked and never flip to AuxPaneSheet.
+  await app.drag("aux-split-handle-right", { x: -120 });
+  await app.waitUntil(() => readWidth() > 540);
+  expect(app.shows("aux-pane-sheet")).toBe(false);
+  expect(app.shows("aux-split-handle-right")).toBe(true);
+  expect(app.shows(`browser-page-${create.label}`)).toBe(true);
+
+  const widened = readWidth();
+  // Drag right to shrink the right-side browser pane back down.
+  await app.drag("aux-split-handle-right", { x: 180 });
+  await app.waitUntil(() => readWidth() < widened - 120);
+  expect(app.shows("aux-pane-sheet")).toBe(false);
+  expect(app.shows(`browser-page-${create.label}`)).toBe(true);
+});
+
+test("medium-width inspector sheet browser edge handle resizes wider and narrower", async () => {
+  const wire = browserBackendHost();
+  const app = await open("./fixtures/browserApp.tsx", {
+    width: 1100,
+    height: 800,
+    platform: "macos",
+    host: { handlers: wire.handlers },
+  });
+  await openSession(app, "NSH skeleton");
+
+  await app.waitFor("session-tool-browser");
+  await app.press("session-tool-browser");
+  await app.waitFor("aux-pane-sheet");
+  await app.waitFor("aux-sheet-split-handle-right");
+
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  const create = wire.invokes.find(call => call.command === "browser_webview_create")?.args.request as { label: string };
+  await pump(app, wire);
+  await app.waitFor(`browser-page-${create.label}`);
+
+  const readWidth = () => {
+    const raw = app.storage()["openbitfun.nsh.shell-layout.v1"];
+    return raw ? (JSON.parse(raw) as { auxPaneWidth?: number }).auxPaneWidth ?? 0 : 0;
+  };
+
+  await app.drag("aux-sheet-split-handle-right", { x: -140 });
+  await app.waitUntil(() => readWidth() > 560);
+  expect(app.shows("aux-pane-sheet")).toBe(true);
+  expect(app.shows(`browser-page-${create.label}`)).toBe(true);
+
+  const widened = readWidth();
+  await app.drag("aux-sheet-split-handle-right", { x: 200 });
+  await app.waitUntil(() => readWidth() < widened - 140);
+  expect(app.shows("aux-pane-sheet")).toBe(true);
+  expect(app.shows(`browser-page-${create.label}`)).toBe(true);
+});

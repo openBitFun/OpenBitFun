@@ -166,6 +166,7 @@ import {
   InputBox,
   SegmentedTabs,
   SplitHandle,
+  splitDragging,
   TooltipBubble,
 } from "../ui/primitives";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
@@ -2679,7 +2680,13 @@ function PreviewBody(props: { compact?: boolean }) {
               html={editingContent() ?? file().content}
               javaScriptEnabled={false}
               incognito={true}
-              style={{ flex: 1, minHeight: 0, minWidth: 0, backgroundColor: palette().canvas }}
+              style={{
+                flex: 1,
+                minHeight: 0,
+                minWidth: 0,
+                backgroundColor: palette().canvas,
+                pointerEvents: splitDragging() ? "none" : "auto",
+              }}
               onError={() => setHtmlPreview(file().path, false)}
             />
           </If>
@@ -2711,7 +2718,7 @@ function PreviewBody(props: { compact?: boolean }) {
                   html={pdfDocumentHtml(encoded(), palette().canvas)}
                   javaScriptEnabled={false}
                   incognito={true}
-                  style={{ flex: 1, minHeight: 0, minWidth: 0 }}
+                  style={{ flex: 1, minHeight: 0, minWidth: 0, pointerEvents: splitDragging() ? "none" : "auto" }}
                   onError={() =>
                     openFile.update(current =>
                       current && current.path === file().path ? { ...current, content: "" } : current,

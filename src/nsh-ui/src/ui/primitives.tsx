@@ -6,6 +6,8 @@ import {
   PanResponder,
   Text,
   View,
+  cleanup,
+  computed,
   context,
   reduceMotion,
   signal,
@@ -1043,6 +1045,11 @@ export interface SplitHandleProps {
   accessibilityLabel?: string;
 }
 
+const activeSplitDragCount = signal(0);
+
+/** True while the user is dragging any `SplitHandle` resize edge. */
+export const splitDragging = computed(() => activeSplitDragCount() > 0);
+
 /**
  * Tactile vertical split resize handle: optional 1px full-height seam hairline
  * paired with a centered GPU-scaled pill grip that reveals smoothly on hover/drag.
@@ -1050,15 +1057,25 @@ export interface SplitHandleProps {
 export function SplitHandle(props: SplitHandleProps) {
   const hovered = signal(false);
   const dragging = signal(false);
+  let dragCounted = false;
   let lastDx = 0;
+
+  const setDragging = (next: boolean) => {
+    if (next === dragCounted) return;
+    dragCounted = next;
+    dragging.set(next);
+    activeSplitDragCount.update(n => Math.max(0, n + (next ? 1 : -1)));
+    props.onDragStateChange?.(next);
+  };
+  cleanup(() => setDragging(false));
 
   const responder = PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
+    onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: () => {
       lastDx = 0;
-      dragging.set(true);
-      props.onDragStateChange?.(true);
+      setDragging(true);
     },
     onPanResponderMove: (_e, state) => {
       const delta = state.dx - lastDx;
@@ -1066,12 +1083,10 @@ export function SplitHandle(props: SplitHandleProps) {
       if (delta !== 0) props.onDelta(delta);
     },
     onPanResponderRelease: () => {
-      dragging.set(false);
-      props.onDragStateChange?.(false);
+      setDragging(false);
     },
     onPanResponderTerminate: () => {
-      dragging.set(false);
-      props.onDragStateChange?.(false);
+      setDragging(false);
     },
   });
 
@@ -1091,6 +1106,7 @@ export function SplitHandle(props: SplitHandleProps) {
         alignItems: "center",
         justifyContent: "center",
         cursor: "ew-resize",
+        userSelect: "none",
         backgroundColor: "transparent",
       }}
     >
