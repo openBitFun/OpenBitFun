@@ -47,7 +47,7 @@ function BtwModelSettings() {
     const unwatch = configManager.watch('ai.btw', () => void load());
     const unwatchPools = configManager.watch('ai.model_pools', () => void load());
     const unwatchModels = configManager.watch('ai.models', () => void load());
-    return () => { revision.current++; unwatch(); unwatchPools(); unwatchModels(); };
+    return () => { revision.current += 1; unwatch(); unwatchPools(); unwatchModels(); };
   }, [load, supported]);
 
   const selection = ready ? btwModelSelection(value) : undefined;

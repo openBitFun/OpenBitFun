@@ -1633,7 +1633,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     isAcpSession,
     loading,
     modelSelectionScopeKey,
-    persistSharedModeDefault,
     persistModeDefault,
     routing.pending,
     reasoningLoading,
