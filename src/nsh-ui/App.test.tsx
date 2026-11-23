@@ -456,6 +456,57 @@ test("a queued row the host is holding back says why", async () => {
   await app.waitFor("Waiting: the workspace folder is not readable");
 });
 
+test("editing or cancelling a queued message never wipes the currently running turn's user bubble or stream", async () => {
+  const backend = createBackend({ hostQueue: true });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
+  await app.waitFor("Message");
+
+  // Turn A is actively running with its user bubble and streamed response on screen.
+  backend.setRunningTurn("session-1", "turn-active");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-active", userInput: "Search the web for this" },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-1", turnId: "turn-active", roundId: "r1", text: "Searching now..." },
+  });
+  await app.waitFor("Search the web for this");
+  await app.waitFor("Searching now...");
+
+  // User queues Turn B while Turn A is still running.
+  await app.type("composer", "Follow-up draft");
+  await app.press("Send");
+  await app.waitFor("Queued 1");
+  const queuedTurnId = backend.userMessages.find(m => m.outcome === "queued")?.turnId ?? "";
+  expect(queuedTurnId).not.toBe("");
+
+  // Clicking Edit cancels queued Turn B on the host; the host emits `dialog-turn-cancelled` for Turn B.
+  await app.press("Edit");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-cancelled",
+    payload: { sessionId: "session-1", turnId: queuedTurnId },
+  });
+
+  // Draft returns to composer, queue closes, AND Turn A's user bubble + live stream + Stop stay intact!
+  await app.waitUntil(() => app.value("composer") === "Follow-up draft");
+  expect(app.shows("queued-panel")).toBe(false);
+  expect(app.texts()).toContain("Search the web for this");
+  expect(app.texts()).toContain("Searching now...");
+
+  // Late text chunk from a different stale turn ID must also not clobber Turn A.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-1", turnId: "turn-stale-old", roundId: "r-old", text: "STALE CLOBBER" },
+  });
+  expect(app.texts().join("\n")).not.toContain("STALE CLOBBER");
+  expect(app.texts()).toContain("Search the web for this");
+  expect(app.texts()).toContain("Searching now...");
+});
+
 test("a clipboard image rides into the turn as an attachment", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", {

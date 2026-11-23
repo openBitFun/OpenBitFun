@@ -1168,14 +1168,64 @@ function upsertRoundMeta(
   return { ...state, rounds: [...state.rounds, makeLiveRound(createdMeta, entry)] };
 }
 
-/** Clears the running mark of whichever session the event names. */
+/**
+ * The turn currently owning a session's live state (running, streaming, or parked).
+ * Every turn-scoped lifecycle and stream event is checked against this owner so
+ * cancelling a queued turn (e.g. Edit/Delete in queue) or receiving a late event
+ * from a previous turn can never clobber the active running turn.
+ */
+function activeTurnIdOf(sessionId: string, key = keyOf(sessionId)): string | null {
+  const running = runningTurns()[key];
+  if (running) return running;
+  if (isActive(sessionId)) {
+    const live = liveTurn();
+    if (live && live.sessionId === sessionId && (live.deviceId ?? "") === eventOrigin && live.turnId) {
+      return live.turnId;
+    }
+    const pending = pendingTurnState();
+    if (
+      pending &&
+      pending.sessionId === sessionId &&
+      (!pending.sessionKey || pending.sessionKey === key) &&
+      pending.turnId
+    ) {
+      return pending.turnId;
+    }
+    return null;
+  }
+  return parkedTurns.get(key)?.turnId ?? null;
+}
+
+/**
+ * Whether an event carrying `eventTurnId` applies to the session's active turn.
+ * Legacy hosts omitting `turnId` still match; an explicit `turnId` naming a
+ * different turn (such as a cancelled queued turn or a superseded turn) does not.
+ */
+function matchesSessionActiveTurn(sessionId: string, eventTurnId: string | null, key = keyOf(sessionId)): boolean {
+  if (!eventTurnId || !sessionId) return true;
+  const current = activeTurnIdOf(sessionId, key);
+  if (!current) return true;
+  return current === eventTurnId;
+}
+
+/** Whether a stream event carries an explicit turnId belonging to another (stale) turn. */
+function isStaleTurnStreamEvent(sessionId: string, eventTurnId: string | null): boolean {
+  if (!eventTurnId || !sessionId) return false;
+  const active = activeTurnIdOf(sessionId);
+  return Boolean(active && active !== eventTurnId);
+}
+
+/** Clears the running mark of whichever session the event names, only if its turn matches. */
 function endTurn(payload: TurnEventPayload | null): void {
   const sessionId = sessionOf(payload);
   if (!sessionId) return;
   const key = keyOf(sessionId);
+  const eventTurnId = turnOf(payload);
+  if (!matchesSessionActiveTurn(sessionId, eventTurnId, key)) return;
   turnStarts.delete(key);
   runningTurns.update(current => {
     if (!(key in current)) return current;
+    if (eventTurnId && current[key] && current[key] !== eventTurnId) return current;
     const next = { ...current };
     delete next[key];
     return next;
@@ -1206,18 +1256,35 @@ async function settleCompletedTurn(sessionId: string, turnId: string | null, aft
   // A failed read keeps what streamed visible; the next read settles it.
   if (loaded === null) return;
 
+  // Guard against a newer turn having started while `loadTurns` was in flight:
+  // never wipe `liveTurn`, `roundStreams`, or `pendingTurn` belonging to another turn.
+  const currentLive = liveTurn();
+  const currentRunning = runningTurnId();
+  if (
+    effectiveTurnId &&
+    ((currentLive?.turnId && currentLive.turnId !== effectiveTurnId) ||
+      (currentRunning && currentRunning !== effectiveTurnId))
+  ) {
+    return;
+  }
+
   const matched = effectiveTurnId
     ? loaded.find(turn => turn.turnId === effectiveTurnId)
     : loaded[loaded.length - 1];
   const ready = matched ? matched.settled : afterPersist;
   if (!ready) return;
 
-  settlingTurns.delete(key);
+  if (settlingTurns.get(key)?.turnId === effectiveTurnId || !effectiveTurnId) {
+    settlingTurns.delete(key);
+  }
   batch(() => {
     clearAllRoundStreams();
     liveTurn.set(null);
     clearStreamedText();
-    clearPendingTurn(sessionId);
+    const pending = pendingTurnState();
+    if (!effectiveTurnId || !pending?.turnId || pending.turnId === effectiveTurnId) {
+      clearPendingTurn(sessionId);
+    }
   });
   markSessionSeen(sessionId, Date.now());
   void refreshSessionsSilently();
@@ -1414,7 +1481,14 @@ function applyToolEvent(
 function finishOtherSessionTurn(payload: TurnEventPayload | null, drain: boolean): boolean {
   if (!payload || !isOtherSession(payload)) return false;
   const sessionId = sessionOf(payload);
-  parkedTurns.delete(keyOf(sessionId));
+  const key = keyOf(sessionId);
+  const eventTurnId = turnOf(payload);
+  if (matchesSessionActiveTurn(sessionId, eventTurnId, key)) {
+    const parked = parkedTurns.get(key);
+    if (!eventTurnId || !parked?.turnId || parked.turnId === eventTurnId) {
+      parkedTurns.delete(key);
+    }
+  }
   // The host drains its own queue; the rows follow.
   if (drain) void loadQueueForSession(sessionId, true);
   return true;
@@ -1556,6 +1630,8 @@ export function subscribeAgentEvents(): void {
     if (!payload) return;
     const attemptId = attemptOf(payload);
     if (attemptId && supersededAttempts.has(attemptId)) return;
+    const rawSession = sessionOf(payload) || activeSessionId() || "";
+    if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
     if (isOtherSession(payload)) {
       parkEvent("chunk", payload as Record<string, unknown>);
       return;
@@ -1649,6 +1725,8 @@ export function subscribeAgentEvents(): void {
 
   onAgentEvent<ModelRoundEventPayload>("agentic://model-round-started", payload => {
     if (!payload) return;
+    const rawSession = sessionOf(payload) || activeSessionId() || "";
+    if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
     if (isOtherSession(payload)) {
       parkEvent("roundStarted", payload as Record<string, unknown>);
       return;
@@ -1685,6 +1763,8 @@ export function subscribeAgentEvents(): void {
 
   onAgentEvent<ModelRoundEventPayload>("agentic://model-round-completed", payload => {
     if (!payload) return;
+    const rawSession = sessionOf(payload) || activeSessionId() || "";
+    if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
     if (isOtherSession(payload)) {
       parkEvent("roundCompleted", payload as Record<string, unknown>);
       return;
@@ -1745,6 +1825,8 @@ export function subscribeAgentEvents(): void {
     if (!payload) return;
     const attemptId = attemptOf(payload);
     if (attemptId && supersededAttempts.has(attemptId)) return;
+    const rawSession = sessionOf(payload) || activeSessionId() || "";
+    if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
     if (isOtherSession(payload)) {
       parkEvent("tool", payload as Record<string, unknown>);
       return;
@@ -1830,30 +1912,66 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-completed", payload => {
+  /**
+   * Unified terminal-turn reducer (`completed`, `cancelled`, `interrupted`, `failed`).
+   * Enforces the `(sessionKey, turnId)` ownership invariant: if a terminal event
+   * names a turn other than the session's active running/live turn (for example,
+   * cancelling a queued message via Edit/Delete, or a late terminal event for a
+   * previous turn), it never disturbs the active turn's bubble, stream, or running
+   * state and only refreshes the host queue.
+   */
+  const handleTerminalTurnEvent = (
+    kind: "completed" | "cancelled" | "interrupted" | "failed",
+    payload: TurnEventPayload | null,
+  ) => {
+    const rawSession = sessionOf(payload);
+    const sessionId = rawSession || activeSessionId() || "";
+    const eventTurnId = turnOf(payload);
+    const drainQueue = kind !== "interrupted";
+
+    if (sessionId && !matchesSessionActiveTurn(sessionId, eventTurnId)) {
+      // Non-active turn (e.g. cancelled queued message): never touch the active turn!
+      if (drainQueue) void loadQueueForSession(sessionId, true);
+      return;
+    }
+
     endTurn(payload);
-    if (finishOtherSessionTurn(payload, true)) return;
-    // Flush ALL remaining buffered text immediately so nothing is lost before
-    // `hasLiveContent()` is checked or disk persistence swaps in.
+    if (kind === "failed" && rawSession) markSessionFailed(rawSession);
+    if (finishOtherSessionTurn(payload, drainQueue)) return;
+
     flushStreamingBuffers();
-    const sessionId = sessionOf(payload) || activeSessionId() || "";
-    const completedTurnId = turnOf(payload) ?? runningTurnId();
+    const effectiveTurnId = eventTurnId ?? runningTurnId();
+    const message = kind === "failed" ? payload?.error ?? payload?.message ?? payload?.reason : undefined;
+
     batch(() => {
       runningTurnId.set(null);
-      // CRITICAL: do NOT clear streamed text synchronously! Keep live content on
-      // screen while `coordinator.rs` finishes disk persistence and `loadTurns()`
-      // / `agentic://session-history-changed` confirms the persisted turn.
-      const currentLive = liveTurn();
-      if (currentLive) {
-        liveTurn.set({ ...currentLive, settling: true });
+      if (kind === "completed") {
+        // Keep live content on screen while `coordinator.rs` finishes disk
+        // persistence and `loadTurns()` / `session-history-changed` confirms it.
+        const currentLive = liveTurn();
+        if (currentLive && (!effectiveTurnId || !currentLive.turnId || currentLive.turnId === effectiveTurnId)) {
+          liveTurn.set({ ...currentLive, settling: true });
+        }
       }
+      if (typeof message === "string" && message.trim()) {
+        turnError.set(message.trim());
+      }
+      if (kind === "failed") bumpScrollTick();
     });
+
     if (sessionId) {
-      settlingTurns.set(keyOf(sessionId), { turnId: completedTurnId });
-      void settleCompletedTurn(sessionId, completedTurnId, false);
+      settlingTurns.set(keyOf(sessionId), { turnId: effectiveTurnId });
+      void settleCompletedTurn(sessionId, effectiveTurnId, kind !== "completed");
       // The host drains its own queue; the rows follow.
-      void loadQueueForSession(sessionId, true);
+      if (drainQueue) void loadQueueForSession(sessionId, true);
+    } else {
+      clearStreamedText();
+      if (kind === "failed") clearPendingTurn();
     }
+  };
+
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-completed", payload => {
+    handleTerminalTurnEvent("completed", payload);
   });
 
   onAgentEvent<SessionHistoryChangedPayload>("agentic://session-history-changed", payload => {
@@ -1877,35 +1995,11 @@ export function subscribeAgentEvents(): void {
   });
 
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-cancelled", payload => {
-    endTurn(payload);
-    if (finishOtherSessionTurn(payload, true)) return;
-    flushStreamingBuffers();
-    const sessionId = sessionOf(payload) || activeSessionId() || "";
-    const turnId = turnOf(payload) ?? runningTurnId();
-    runningTurnId.set(null);
-    if (sessionId) {
-      settlingTurns.set(keyOf(sessionId), { turnId });
-      void settleCompletedTurn(sessionId, turnId, true);
-      // The host drains its own queue; the rows follow.
-      void loadQueueForSession(sessionId, true);
-    } else {
-      clearStreamedText();
-    }
+    handleTerminalTurnEvent("cancelled", payload);
   });
 
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-interrupted", payload => {
-    endTurn(payload);
-    if (finishOtherSessionTurn(payload, false)) return;
-    flushStreamingBuffers();
-    const sessionId = sessionOf(payload) || activeSessionId() || "";
-    const turnId = turnOf(payload) ?? runningTurnId();
-    runningTurnId.set(null);
-    if (sessionId) {
-      settlingTurns.set(keyOf(sessionId), { turnId });
-      void settleCompletedTurn(sessionId, turnId, true);
-    } else {
-      clearStreamedText();
-    }
+    handleTerminalTurnEvent("interrupted", payload);
   });
 
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-recovered", payload => {
@@ -1921,31 +2015,7 @@ export function subscribeAgentEvents(): void {
   });
 
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-failed", payload => {
-    endTurn(payload);
-    const failedSession = sessionOf(payload);
-    if (failedSession) markSessionFailed(failedSession);
-    if (finishOtherSessionTurn(payload, true)) return;
-    flushStreamingBuffers();
-    const sessionId = failedSession || activeSessionId() || "";
-    const turnId = turnOf(payload) ?? runningTurnId();
-    const message = payload?.error ?? payload?.message ?? payload?.reason;
-    batch(() => {
-      runningTurnId.set(null);
-      if (typeof message === "string" && message.trim()) {
-        turnError.set(message.trim());
-      }
-      bumpScrollTick();
-    });
-    if (sessionId) {
-      settlingTurns.set(keyOf(sessionId), { turnId });
-      void settleCompletedTurn(sessionId, turnId, true);
-      // A failed turn must not strand the queue behind it.
-      // The host drains its own queue; the rows follow.
-      void loadQueueForSession(sessionId, true);
-    } else {
-      clearStreamedText();
-      clearPendingTurn();
-    }
+    handleTerminalTurnEvent("failed", payload);
   });
 
   // Real Rust emits `"session_title_generated"` (without the `agentic://` prefix).

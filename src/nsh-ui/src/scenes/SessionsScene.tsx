@@ -6952,10 +6952,12 @@ function QueuedPanel() {
                         onPress={() => {
                           const content = item().content;
                           const prevDraft = composerText();
-                          if (!prevDraft.trim()) composerText.set(content);
+                          const nextDraft = prevDraft.trim() ? `${prevDraft.trimEnd()}\n${content}` : content;
+                          composerText.set(nextDraft);
                           void takeQueued(item().id).then(text => {
-                            if (text) composerText.set(text);
-                            else if (composerText() === content) composerText.set(prevDraft);
+                            if (!text && composerText() === nextDraft) {
+                              composerText.set(prevDraft);
+                            }
                           });
                         }}
                       />

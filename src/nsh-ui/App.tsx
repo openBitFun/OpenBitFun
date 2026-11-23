@@ -1030,7 +1030,7 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
       <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
         <SidebarRow
           label={tr("nav.newSession")}
-          icon="edit"
+          icon="plus"
           active={false}
           accessibilityLabel="nav-new-session"
           onPress={() => {
@@ -1123,7 +1123,7 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
           }}
           trailing={
             <IconButton
-              icon="edit"
+              icon="plus"
               size="xs"
               surface="chrome"
               accessibilityLabel="nav-new-conversation"
@@ -2947,7 +2947,7 @@ function CompactDrawer() {
               style={{ width: layout.touchTarget, height: layout.touchTarget }}
             />
             <IconButton
-              icon="edit"
+              icon="plus"
               size="md"
               surface="chrome"
               accessibilityLabel="phone-new-conversation"

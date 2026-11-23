@@ -953,6 +953,7 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   if (previousKey !== key) {
     evictTurnWindow(previousKey);
     transcriptCursor = null;
+    turnsLoadSeq += 1;
     notifySessionSwitch("leave", previous, previousKey);
     swapComposerDraft(previousKey, key);
     sessionTurns.set([]);
@@ -982,6 +983,7 @@ export function closeSessionTab(sessionId: string, deviceId?: string): void {
   if (activeSessionKey() !== key) return;
   const fallback = remaining[remaining.length - 1];
   transcriptCursor = null;
+  turnsLoadSeq += 1;
   notifySessionSwitch("leave", sessionId, key);
   swapComposerDraft(key, null);
   setActiveSession(null);
@@ -1055,6 +1057,8 @@ export async function loadEarlierTurns(): Promise<void> {
 
 /** What the last view read returned, so the next one asks only for what changed. */
 let transcriptCursor: { sessionKey: string; limit: number; cursor: string } | null = null;
+/** Monotonic sequence for transcript view loads so an older overlapping response never overwrites newer state. */
+let turnsLoadSeq = 0;
 
 /**
  * Re-reads the open session's transcript view. With the cursor of the previous
@@ -1069,6 +1073,7 @@ export async function loadTurns(
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return null;
   const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
+  const seq = ++turnsLoadSeq;
   let loaded: TranscriptTurnView[] | null = null;
   await runStep(
     async () => {
@@ -1085,13 +1090,14 @@ export async function loadTurns(
       let view: SessionTranscriptView | null = null;
       try {
         view = await getSessionTranscriptView(sessionId, workspaceId, limit, cursor);
+        if (seq !== turnsLoadSeq || activeSessionKey() !== key) return;
         if (view.mode === "after" && !held.some(turn => turn.turnIndex === view!.keptThroughIndex)) {
           // The turns this surface holds are not the ones the cursor named.
           view = await getSessionTranscriptView(sessionId, workspaceId, limit);
         }
       } catch (error) {
         if (isMissingCommand(error, "get_session_transcript_view")) {
-          if (activeSessionKey() === key) {
+          if (seq === turnsLoadSeq && activeSessionKey() === key) {
             transcriptCursor = null;
             transcriptNotice.set(tr("sessions.transcriptHostOutdated"));
             sessionTurns.set([]);
@@ -1101,9 +1107,9 @@ export async function loadTurns(
         }
         throw error;
       } finally {
-        if (activeSessionKey() === key) turnsLoading.set(false);
+        if (seq === turnsLoadSeq && activeSessionKey() === key) turnsLoading.set(false);
       }
-      if (activeSessionKey() !== key || !view) return;
+      if (seq !== turnsLoadSeq || activeSessionKey() !== key || !view) return;
       const list =
         view.mode === "after"
           ? [...held.filter(turn => turn.turnIndex <= (view.keptThroughIndex ?? -1)), ...view.turns]
@@ -1428,6 +1434,7 @@ export async function stopRunningTurn(): Promise<void> {
   const sessionId = activeSessionId();
   const turnId = runningTurnId();
   if (!sessionId || !turnId) return;
+  const key = activeSessionKey() ?? sessionKey(sessionId);
   await runStep(async () => {
     try {
       await stopDialogTurn(sessionId, turnId);
@@ -1439,17 +1446,23 @@ export async function stopRunningTurn(): Promise<void> {
         await cancelDialogTurn(sessionId, turnId);
       }
     }
-    runningTurnId.set(null);
-    const key = sessionKey(sessionId);
+    // Only clear running/live/pending state if no newer turn has replaced `turnId`.
+    if (runningTurnId() === turnId) runningTurnId.set(null);
     runningTurns.update(current => {
-      if (!(key in current)) return current;
+      if (current[key] !== turnId) return current;
       const next = { ...current };
       delete next[key];
       return next;
     });
     await loadTurns(sessionId, { silent: true });
-    clearStreamedText();
-    clearPendingTurn(sessionId);
+    const currentRunning = runningTurnId();
+    const pending = pendingTurnState();
+    if (!currentRunning || currentRunning === turnId) {
+      clearStreamedText();
+      if (!pending?.turnId || pending.turnId === turnId) {
+        clearPendingTurn(sessionId, key);
+      }
+    }
   });
 }
 

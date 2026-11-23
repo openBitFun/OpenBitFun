@@ -333,7 +333,7 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
         trailing={
           <HoverActions visible={hovered() || menuOpen()}>
             <IconButton
-              icon="edit"
+              icon="plus"
               size="xs"
               surface="chrome"
               tooltip={tr("workspace.newSession")}
