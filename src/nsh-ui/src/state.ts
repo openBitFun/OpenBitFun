@@ -38,6 +38,10 @@ import {
 import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import { clearPermissionsForSession } from "./permissionStore";
+import {
+  clearPromptSuggestion,
+  hydratePromptSuggestionFromTranscript,
+} from "./promptSuggestionStore";
 import { clearQuestionsForSession, loadQuestionMailbox } from "./userQuestionStore";
 import { superAgentUi } from "./productGates";
 import {
@@ -1121,6 +1125,12 @@ export async function loadTurns(
       transcriptNotice.set("");
       sessionTurns.set(list);
       reconcilePendingTurnWithPersisted(sessionId, list, key);
+      hydratePromptSuggestionFromTranscript(
+        sessionId,
+        view.runningTurn?.activeTurnId ? null : view.promptSuggestion,
+        list[list.length - 1],
+        activeSessionDevice(),
+      );
       if (view.runningTurn?.activeTurnId) notifyRunningTurn(sessionId, view.runningTurn);
       loaded = list;
     },
@@ -1362,6 +1372,7 @@ export async function sendTurn(
   batch(() => {
     turnError.set("");
     sendNotice.set("");
+    clearPromptSuggestion(sessionId, activeSessionDevice());
     if (fromComposer) composerText.set("");
     if (!usesExplicitAttachments) clearAttachments();
     if (!running) {
@@ -1644,6 +1655,7 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     const device = activeSessionDevice();
     clearQuestionsForSession(sessionId, device);
     clearPermissionsForSession(sessionId, device);
+    clearPromptSuggestion(sessionId, device);
     clearPendingTurn(sessionId, key);
     evictTurnWindow(key);
     composerDrafts.delete(key);

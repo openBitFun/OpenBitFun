@@ -183,6 +183,15 @@ impl TranscriptTurnView {
     }
 }
 
+/// Persisted next-input prompt suggestion attached to a transcript view read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPromptSuggestion {
+    #[serde(alias = "source_turn_id")]
+    pub source_turn_id: String,
+    pub suggestion: String,
+}
+
 /// The answer to `get_session_transcript_view`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,6 +210,10 @@ pub struct SessionTranscriptView {
     pub cursor: Option<String>,
     /// The host holds turns older than this window.
     pub has_earlier: bool,
+    /// Last persisted next-input suggestion when it still applies to the latest
+    /// completed turn. Additive: older clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_suggestion: Option<TranscriptPromptSuggestion>,
 }
 
 struct OrderedEntry {
@@ -631,6 +644,7 @@ pub fn session_transcript_view(
                 turns: after,
                 cursor: next_cursor,
                 has_earlier,
+                prompt_suggestion: None,
             }
         }
         None => SessionTranscriptView {
@@ -640,6 +654,7 @@ pub fn session_transcript_view(
             cursor: last_settled_prefix(&turns).map(cursor_for),
             turns,
             has_earlier,
+            prompt_suggestion: None,
         },
     }
 }

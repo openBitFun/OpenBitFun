@@ -205,6 +205,15 @@ pub struct SessionMetadata {
     )]
     pub current_context_usage: Option<SessionContextUsage>,
 
+    /// Last generated next-input prompt suggestion for restoring the composer
+    /// suggestion after switching sessions or restarting the app.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "last_prompt_suggestion"
+    )]
+    pub last_prompt_suggestion: Option<SessionPromptSuggestion>,
+
     /// Structured child-session relationship metadata.
     #[serde(
         default,
@@ -710,6 +719,18 @@ pub struct SessionContextUsage {
     pub timestamp: u64,
 
     pub source: SessionContextUsageSource,
+}
+
+/// Last generated next-input prompt suggestion persisted with the session record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPromptSuggestion {
+    /// Turn ID whose completion produced this suggestion.
+    #[serde(alias = "source_turn_id")]
+    pub source_turn_id: String,
+
+    /// One-sentence plain-text prompt suggestion for the empty composer.
+    pub suggestion: String,
 }
 
 /// Persisted dialog turn kind.
@@ -1273,6 +1294,7 @@ impl SessionMetadata {
             tags: Vec::new(),
             custom_metadata: None,
             current_context_usage: None,
+            last_prompt_suggestion: None,
             relationship: None,
             todos: None,
             review_action_state: None,

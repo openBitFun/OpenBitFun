@@ -2,8 +2,8 @@ use openbitfun_services_core::session::{
     build_session_index_snapshot, refresh_session_metadata_from_turns, remove_session_index_entry,
     try_refresh_session_metadata_for_saved_turn, upsert_session_index_entry, DialogTurnData,
     DialogTurnKind, ModelRoundData, SessionContextUsage, SessionContextUsageSource, SessionKind,
-    SessionMetadata, StoredSessionIndexFile, TextItemData, ToolCallData, ToolItemData, TurnStatus,
-    UserMessageData,
+    SessionMetadata, SessionPromptSuggestion, StoredSessionIndexFile, TextItemData, ToolCallData,
+    ToolItemData, TurnStatus, UserMessageData,
 };
 
 fn metadata(session_id: &str) -> SessionMetadata {
@@ -356,6 +356,85 @@ fn full_refresh_keeps_context_usage_for_a_surviving_turn() {
     );
 
     assert!(metadata.current_context_usage.is_some());
+}
+
+#[test]
+fn last_prompt_suggestion_round_trips_and_tolerates_legacy_metadata_without_field() {
+    let mut current = metadata("session-1");
+    current.last_prompt_suggestion = Some(SessionPromptSuggestion {
+        source_turn_id: "turn-2".to_string(),
+        suggestion: "Run the tests and check git diff.".to_string(),
+    });
+
+    let value = serde_json::to_value(&current).expect("serialize metadata");
+    assert_eq!(value["lastPromptSuggestion"]["sourceTurnId"], "turn-2");
+    assert_eq!(
+        value["lastPromptSuggestion"]["suggestion"],
+        "Run the tests and check git diff."
+    );
+
+    let restored: SessionMetadata = serde_json::from_value(value.clone()).expect("roundtrip");
+    assert_eq!(
+        restored.last_prompt_suggestion,
+        current.last_prompt_suggestion
+    );
+
+    // Upgrade compatibility: older metadata.json without `lastPromptSuggestion` still reads cleanly.
+    let mut legacy = value;
+    legacy
+        .as_object_mut()
+        .expect("object")
+        .remove("lastPromptSuggestion");
+    let legacy_restored: SessionMetadata =
+        serde_json::from_value(legacy).expect("deserialize legacy metadata");
+    assert!(legacy_restored.last_prompt_suggestion.is_none());
+}
+
+#[test]
+fn full_refresh_and_saved_turn_invalidate_stale_prompt_suggestion() {
+    let mut current = metadata("session-1");
+    current.last_prompt_suggestion = Some(SessionPromptSuggestion {
+        source_turn_id: "turn-1".to_string(),
+        suggestion: "Ship the patch.".to_string(),
+    });
+
+    // Rollback to turn-0 drops turn-1's suggestion.
+    refresh_session_metadata_from_turns(
+        &mut current,
+        "D:/workspace/project",
+        &[turn("session-1", 0, 1, 0)],
+        42,
+    );
+    assert!(current.last_prompt_suggestion.is_none());
+
+    // Matching latest completed turn keeps the suggestion.
+    current.last_prompt_suggestion = Some(SessionPromptSuggestion {
+        source_turn_id: "turn-0".to_string(),
+        suggestion: "Add regression tests.".to_string(),
+    });
+    refresh_session_metadata_from_turns(
+        &mut current,
+        "D:/workspace/project",
+        &[finished_turn("session-1", 0, TurnStatus::Completed, 42)],
+        43,
+    );
+    assert_eq!(
+        current
+            .last_prompt_suggestion
+            .as_ref()
+            .map(|hint| hint.suggestion.as_str()),
+        Some("Add regression tests.")
+    );
+
+    // Appending a newer turn invalidates turn-0's persisted suggestion.
+    assert!(try_refresh_session_metadata_for_saved_turn(
+        &mut current,
+        "D:/workspace/project",
+        None,
+        &finished_turn("session-1", 1, TurnStatus::Completed, 44),
+        44,
+    ));
+    assert!(current.last_prompt_suggestion.is_none());
 }
 
 #[test]

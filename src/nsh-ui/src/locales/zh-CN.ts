@@ -371,6 +371,9 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "sessions.questionAutoProceed": "{{remaining}} 后未选择将自动继续",
   "sessions.queuedBlocked": "已阻塞",
   "sessions.queuedWaiting": "等待中：{{reason}}",
+  "sessions.promptSuggestionAcceptTooltip": "填入建议（按 Tab 或 →）",
+  "sessions.promptSuggestionUse": "采用",
+  "sessions.promptSuggestionDismiss": "忽略建议",
 
   // ── 助理场景 ──
   "assistants.title": "助理",

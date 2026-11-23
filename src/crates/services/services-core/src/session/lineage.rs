@@ -2,7 +2,8 @@
 
 use super::normalized_session_relationship;
 use super::types::{
-    DialogTurnData, SessionMetadata, SessionRelationship, SessionRelationshipKind, SessionStatus,
+    DialogTurnData, DialogTurnKind, SessionMetadata, SessionRelationship, SessionRelationshipKind,
+    SessionStatus, TurnStatus,
 };
 use openbitfun_core_types::SessionKind;
 use serde::{Deserialize, Serialize};
@@ -409,6 +410,22 @@ pub fn build_branched_session_metadata(facts: BranchSessionMetadataFacts<'_>) ->
         })
     {
         metadata.current_context_usage = None;
+    }
+    let latest_branched_user_turn = facts
+        .branched_turns
+        .iter()
+        .filter(|turn| turn.kind == DialogTurnKind::UserDialog)
+        .max_by_key(|turn| turn.turn_index);
+    if metadata
+        .last_prompt_suggestion
+        .as_ref()
+        .is_some_and(|hint| {
+            !latest_branched_user_turn.is_some_and(|turn| {
+                turn.turn_id == hint.source_turn_id && turn.status == TurnStatus::Completed
+            })
+        })
+    {
+        metadata.last_prompt_suggestion = None;
     }
     metadata.relationship = None;
     metadata.todos = None;

@@ -41,6 +41,7 @@ import {
 } from "./queueStore";
 import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import { clearPermissionsForSession } from "./permissionStore";
+import { clearPromptSuggestion, setPromptSuggestion } from "./promptSuggestionStore";
 import { clearQuestionsForSession, dropQuestionByToolId } from "./userQuestionStore";
 import {
   activeSessionDevice,
@@ -1876,6 +1877,7 @@ export function subscribeAgentEvents(): void {
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
+    if (sessionId) clearPromptSuggestion(sessionId, eventOrigin);
     const queueSession = sessionId || activeSessionId() || "";
     let dequeuedImages: ReturnType<typeof markQueuedTurnStarted> = [];
     if (queueSession && running) {
@@ -2050,6 +2052,23 @@ export function subscribeAgentEvents(): void {
     patchSessionTitle(sessionId, title);
   });
 
+  onAgentEvent<{
+    sessionId?: string;
+    session_id?: string;
+    sourceTurnId?: string;
+    source_turn_id?: string;
+    suggestion?: string;
+  }>("agentic://prompt-suggestion", payload => {
+    const sessionId = sessionOf(payload);
+    const sourceTurnId =
+      (typeof payload?.sourceTurnId === "string" && payload.sourceTurnId) ||
+      (typeof payload?.source_turn_id === "string" && payload.source_turn_id) ||
+      "";
+    const suggestion = typeof payload?.suggestion === "string" ? payload.suggestion : "";
+    if (!sessionId || !sourceTurnId || !suggestion.trim()) return;
+    setPromptSuggestion(sessionId, sourceTurnId, suggestion, eventOrigin);
+  });
+
   onAgentEvent<SessionCreatedPayload>("agentic://session-created", payload => {
     const sessionId = sessionOf(payload);
     // The lists show the device context's sessions; another device's arrive with its index.
@@ -2079,6 +2098,7 @@ export function subscribeAgentEvents(): void {
 
   onAgentEvent<TurnEventPayload>("agentic://session-deleted", payload => {
     const sessionId = sessionOf(payload);
+    if (sessionId) clearPromptSuggestion(sessionId, eventOrigin);
     if (!sessionId || eventOrigin !== deviceContext()) return;
     removeSessionFromEvent(sessionId);
   });

@@ -20,6 +20,7 @@ use crate::agentic::workspace::WorkspaceServices;
 use crate::agentic::WorkspaceBinding;
 use crate::infrastructure::ai::AIClient;
 use crate::service::config::{subscribe_config_updates, ConfigUpdateEvent};
+use crate::service::session::SessionPromptSuggestion;
 use crate::util::types::{Message as AIMessage, ToolDefinition};
 use log::{debug, info, warn};
 use openbitfun_agent_runtime::prompt_suggestion::{
@@ -56,7 +57,7 @@ fn suggestion_request_context(context: &ModelRequestContext) -> ModelRequestCont
     }
 }
 
-async fn prompt_suggestion_enabled() -> bool {
+pub(crate) async fn prompt_suggestion_enabled() -> bool {
     match crate::service::config::get_global_config_service().await {
         Ok(service) => service
             .get_config::<bool>(Some(PROMPT_SUGGESTION_CONFIG_PATH))
@@ -222,11 +223,15 @@ pub(super) fn spawn_prompt_suggestion(
     session_manager: Arc<SessionManager>,
     request: PromptSuggestionRequest,
 ) {
-    spawn_prompt_suggestion_generation(
+    let session_id = request.session_id.clone();
+    let turn_id = request.turn_id.clone();
+    let persistence_manager = session_manager.clone();
+    spawn_prompt_suggestion_generation_with_persistence(
         runtime,
         event_queue,
-        request.session_id.clone(),
-        request.turn_id.clone(),
+        Some(persistence_manager),
+        session_id,
+        turn_id,
         generate_prompt_suggestion(request, session_manager),
     );
 }
@@ -234,9 +239,28 @@ pub(super) fn spawn_prompt_suggestion(
 /// Suggestions are best-effort: every expected failure stays inside this task.
 /// Only a successful suggestion may enqueue an event; failures never alter the
 /// completed dialog turn or emit an error to local/remote consumers.
+#[cfg(test)]
 fn spawn_prompt_suggestion_generation(
     runtime: &PromptSuggestionRuntime,
     event_queue: Arc<EventQueue>,
+    session_id: String,
+    turn_id: String,
+    generation: impl Future<Output = anyhow::Result<Option<String>>> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    spawn_prompt_suggestion_generation_with_persistence(
+        runtime,
+        event_queue,
+        None,
+        session_id,
+        turn_id,
+        generation,
+    )
+}
+
+fn spawn_prompt_suggestion_generation_with_persistence(
+    runtime: &PromptSuggestionRuntime,
+    event_queue: Arc<EventQueue>,
+    session_manager: Option<Arc<SessionManager>>,
     session_id: String,
     turn_id: String,
     generation: impl Future<Output = anyhow::Result<Option<String>>> + Send + 'static,
@@ -272,6 +296,23 @@ fn spawn_prompt_suggestion_generation(
                     turn_id,
                     suggestion.chars().count()
                 );
+                if let Some(session_manager) = session_manager.as_ref() {
+                    if let Err(error) = session_manager
+                        .persist_last_prompt_suggestion(
+                            &session_id,
+                            SessionPromptSuggestion {
+                                source_turn_id: turn_id.clone(),
+                                suggestion: suggestion.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        warn!(
+                            "Failed to persist prompt suggestion to session metadata: session_id={}, turn_id={}, error={}",
+                            session_id, turn_id, error
+                        );
+                    }
+                }
                 if let Err(error) = event_queue
                     .enqueue(
                         AgenticEvent::PromptSuggestionGenerated {

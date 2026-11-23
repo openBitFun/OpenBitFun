@@ -70,15 +70,21 @@ pub mod service; // Workspace, Config, FileSystem, Terminal, Git
 pub(crate) mod service_agent_runtime;
 pub mod util; // General types, errors, helper functions
 
-/// The typed transcript view every client reads (logic batch 4).
-#[cfg(feature = "remote-connect")]
-pub use openbitfun_services_integrations::remote_connect::SessionTranscriptView;
 #[cfg(feature = "remote-connect")]
 pub use openbitfun_services_integrations::remote_connect::{
     LocalModelsDevCatalogs, RemoteModelCatalog as AIModelCatalog,
 };
+/// The typed transcript view every client reads (logic batch 4).
 #[cfg(feature = "remote-connect")]
-pub use service_agent_runtime::session_transcript_view_from_turns;
+pub use openbitfun_services_integrations::remote_connect::{
+    SessionTranscriptView, TranscriptPromptSuggestion,
+};
+#[cfg(feature = "agent-runtime")]
+pub use service_agent_runtime::is_prompt_suggestion_enabled;
+#[cfg(feature = "remote-connect")]
+pub use service_agent_runtime::{
+    resolved_transcript_prompt_suggestion, session_transcript_view_from_turns,
+};
 
 #[cfg(feature = "agent-runtime")]
 pub fn get_builtin_ai_provider_catalog() -> openbitfun_core_types::ProviderCatalog {

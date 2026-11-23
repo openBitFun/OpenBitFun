@@ -242,6 +242,11 @@ export interface TranscriptTurnView {
   recovery?: { status: string; executionGeneration: number };
 }
 
+export interface TranscriptPromptSuggestion {
+  sourceTurnId: string;
+  suggestion: string;
+}
+
 export interface SessionTranscriptView {
   sessionId: string;
   /** `full` replaces the held turns; `after` keeps them through `keptThroughIndex` and appends. */
@@ -250,6 +255,11 @@ export interface SessionTranscriptView {
   turns: TranscriptTurnView[];
   cursor?: string;
   hasEarlier: boolean;
+  /**
+   * Last persisted next-input suggestion when it still applies to the latest
+   * completed turn. A host older than this field omits it.
+   */
+  promptSuggestion?: TranscriptPromptSuggestion;
   /**
    * The turn running right now, as the host's runtime journal projected it: the
    * live `agentic://*` events so far and the delivery position they reached. A

@@ -1055,6 +1055,47 @@ pub fn session_transcript_view_from_turns(
     )
 }
 
+/// Returns the persisted next-input suggestion when it still applies to the
+/// session's latest completed user dialog turn.
+#[cfg(feature = "remote-connect")]
+pub fn resolved_transcript_prompt_suggestion(
+    metadata: Option<&crate::service::session::SessionMetadata>,
+    turns: &[DialogTurnData],
+) -> Option<openbitfun_services_integrations::remote_connect::TranscriptPromptSuggestion> {
+    use crate::service::session::{DialogTurnKind, TurnStatus};
+    let hint = metadata?.last_prompt_suggestion.as_ref()?;
+    let text = hint.suggestion.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let latest = turns
+        .iter()
+        .filter(|turn| turn.kind == DialogTurnKind::UserDialog)
+        .max_by_key(|turn| turn.turn_index)?;
+    if latest.turn_id != hint.source_turn_id || latest.status != TurnStatus::Completed {
+        return None;
+    }
+    Some(
+        openbitfun_services_integrations::remote_connect::TranscriptPromptSuggestion {
+            source_turn_id: hint.source_turn_id.clone(),
+            suggestion: text.to_string(),
+        },
+    )
+}
+
+/// Whether `app.ai_experience.enable_prompt_suggestion` is currently enabled on
+/// this host (defaults to `true` when the setting is unset).
+#[cfg(feature = "agent-runtime")]
+pub async fn is_prompt_suggestion_enabled() -> bool {
+    match crate::service::config::get_global_config_service().await {
+        Ok(service) => service
+            .get_config::<bool>(Some("app.ai_experience.enable_prompt_suggestion"))
+            .await
+            .unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
 /// `read_image_pixels` is `Some` for mobile history (attachments become
 /// thumbnails); `None` keeps them as recorded for the transcript view.
 #[cfg(feature = "remote-connect")]
@@ -5315,6 +5356,44 @@ mod tests {
                 .as_deref()
                 .map(|cursor| cursor.starts_with("tv1:0:")),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn resolved_transcript_prompt_suggestion_matches_latest_completed_turn_only() {
+        let mut turn = remote_history_test_turn(TurnStatus::Completed, None);
+        turn.turn_id = "turn-latest".to_string();
+        turn.turn_index = 1;
+        let mut meta = crate::service::session::SessionMetadata::new(
+            "session-s".to_string(),
+            "Session".to_string(),
+            "Standard".to_string(),
+            "primary".to_string(),
+        );
+        meta.last_prompt_suggestion = Some(crate::service::session::SessionPromptSuggestion {
+            source_turn_id: "turn-latest".to_string(),
+            suggestion: "  Run cargo test next  ".to_string(),
+        });
+
+        let resolved = crate::resolved_transcript_prompt_suggestion(Some(&meta), &[turn.clone()])
+            .expect("matching completed turn should project suggestion");
+        assert_eq!(resolved.source_turn_id, "turn-latest");
+        assert_eq!(resolved.suggestion, "Run cargo test next");
+
+        // Non-completed latest turn hides the suggestion.
+        let mut failed_turn = turn.clone();
+        failed_turn.status = TurnStatus::Error;
+        assert!(
+            crate::resolved_transcript_prompt_suggestion(Some(&meta), &[failed_turn]).is_none()
+        );
+
+        // Newer turn with different ID hides the stale suggestion.
+        let mut newer_turn = turn.clone();
+        newer_turn.turn_id = "turn-newer".to_string();
+        newer_turn.turn_index = 2;
+        assert!(
+            crate::resolved_transcript_prompt_suggestion(Some(&meta), &[turn, newer_turn])
+                .is_none()
         );
     }
 

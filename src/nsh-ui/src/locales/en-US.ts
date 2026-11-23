@@ -372,6 +372,9 @@ export const enUSMessages = {
   "sessions.questionAutoProceed": "Auto-continuing in {{remaining}}",
   "sessions.queuedBlocked": "Blocked",
   "sessions.queuedWaiting": "Waiting: {{reason}}",
+  "sessions.promptSuggestionAcceptTooltip": "Accept suggestion (Tab or →)",
+  "sessions.promptSuggestionUse": "Use",
+  "sessions.promptSuggestionDismiss": "Dismiss suggestion",
 
   // ── Assistants Scene ──
   "assistants.title": "Assistants",

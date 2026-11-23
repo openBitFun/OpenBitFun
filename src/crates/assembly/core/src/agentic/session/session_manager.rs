@@ -46,9 +46,9 @@ use crate::service::config::{
 };
 use crate::service::session::{
     DialogTurnData, DialogTurnKind, DialogTurnRecoveryData, DialogTurnRecoveryStatus,
-    ModelRoundData, SessionContextUsage, SessionMemoryMode, SessionMetadata, SessionRelationship,
-    SessionStatus, TextItemData, ThinkingItemData, ToolCallData, ToolItemData, ToolResultData,
-    TranscriptLineRange, TurnStatus, UserMessageData,
+    ModelRoundData, SessionContextUsage, SessionMemoryMode, SessionMetadata,
+    SessionPromptSuggestion, SessionRelationship, SessionStatus, TextItemData, ThinkingItemData,
+    ToolCallData, ToolItemData, ToolResultData, TranscriptLineRange, TurnStatus, UserMessageData,
 };
 use crate::service::snapshot::{
     ensure_snapshot_manager_for_workspace, get_or_create_snapshot_manager,
@@ -7469,6 +7469,44 @@ impl SessionManager {
 
         self.update_persisted_session_metadata(session_id, |metadata| {
             metadata.current_context_usage = Some(usage);
+        })
+        .await
+    }
+
+    pub(crate) async fn persist_last_prompt_suggestion(
+        &self,
+        session_id: &str,
+        prompt_suggestion: SessionPromptSuggestion,
+    ) -> OpenBitFunResult<()> {
+        let _mutation_guard = self.acquire_session_mutation(session_id).await?;
+        let trimmed = prompt_suggestion.suggestion.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let clean = SessionPromptSuggestion {
+            source_turn_id: prompt_suggestion.source_turn_id,
+            suggestion: trimmed.to_string(),
+        };
+        let should_persist = self.sessions.get(session_id).is_some_and(|session| {
+            session
+                .dialog_turn_ids
+                .last()
+                .is_some_and(|last_id| last_id == &clean.source_turn_id)
+                && self.should_persist_session(&session)
+        });
+        if !should_persist || !self.config.enable_persistence {
+            return Ok(());
+        }
+
+        self.update_persisted_session_metadata(session_id, |metadata| {
+            if metadata
+                .last_turn
+                .as_ref()
+                .is_some_and(|last| last.turn_id != clean.source_turn_id)
+            {
+                return;
+            }
+            metadata.last_prompt_suggestion = Some(clean);
         })
         .await
     }

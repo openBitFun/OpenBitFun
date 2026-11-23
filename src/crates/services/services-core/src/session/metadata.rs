@@ -75,6 +75,7 @@ pub fn build_session_metadata(facts: SessionMetadataBuildFacts<'_>) -> SessionMe
         tags: existing.map(|value| value.tags.clone()).unwrap_or_default(),
         custom_metadata: existing.and_then(|value| value.custom_metadata.clone()),
         current_context_usage: existing.and_then(|value| value.current_context_usage.clone()),
+        last_prompt_suggestion: existing.and_then(|value| value.last_prompt_suggestion.clone()),
         relationship: build_session_relationship(facts.session_kind, existing),
         todos: existing.and_then(|value| value.todos.clone()),
         review_action_state: existing.and_then(|value| value.review_action_state.clone()),
@@ -248,6 +249,7 @@ pub fn refresh_session_metadata_from_turns(
         refresh_latest_turn(metadata, turn);
     } else {
         metadata.last_turn = None;
+        metadata.last_prompt_suggestion = None;
     }
     if metadata
         .current_context_usage
@@ -255,6 +257,17 @@ pub fn refresh_session_metadata_from_turns(
         .is_some_and(|usage| !turns.iter().any(|turn| turn.turn_id == usage.turn_id))
     {
         metadata.current_context_usage = None;
+    }
+    if metadata
+        .last_prompt_suggestion
+        .as_ref()
+        .is_some_and(|hint| {
+            !latest.is_some_and(|turn| {
+                turn.turn_id == hint.source_turn_id && turn.status == TurnStatus::Completed
+            })
+        })
+    {
+        metadata.last_prompt_suggestion = None;
     }
     metadata.last_active_at = last_active_at;
     fill_workspace_path_if_missing(metadata, workspace_path);
@@ -384,6 +397,15 @@ fn refresh_latest_turn(metadata: &mut SessionMetadata, turn: &DialogTurnData) {
         } else {
             object.remove("unreadCompletionTarget");
         }
+    }
+    if metadata
+        .last_prompt_suggestion
+        .as_ref()
+        .is_some_and(|hint| {
+            hint.source_turn_id != turn.turn_id || turn.status != TurnStatus::Completed
+        })
+    {
+        metadata.last_prompt_suggestion = None;
     }
     metadata.last_turn = Some(next);
 }

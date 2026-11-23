@@ -1683,3 +1683,82 @@ test("AskUserQuestion renders countdown until user interacts and disappears imme
   });
   await app.waitFor("Cleanup: Confirm cleanup?", { state: "gone" });
 });
+
+test("prompt suggestion hydrates from persisted transcript view after restart, updates live, accepts on click, and clears on dismiss or new turn", async () => {
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  let persistedSuggestion: { sourceTurnId: string; suggestion: string } | undefined = {
+    sourceTurnId: "turn-2",
+    suggestion: "Run the focused unit tests next",
+  };
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const res = baseInvoke(data) as { ok?: boolean; value?: Record<string, unknown> };
+    const args = (data ?? {}) as { action?: string };
+    if (args.action === "get_session_transcript_view" && res?.ok && res.value && persistedSuggestion) {
+      return {
+        ...res,
+        value: {
+          ...res.value,
+          promptSuggestion: persistedSuggestion,
+        },
+      };
+    }
+    return res;
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Add the plan and fix the imports.");
+
+  // 1. Persisted suggestion from session metadata is restored immediately on session open (post-restart).
+  await app.waitFor("accept-prompt-suggestion");
+  expect(app.shows("dismiss-prompt-suggestion")).toBe(true);
+
+  // Clicking the Tab/Use accept pill fills the composer and clears the suggestion overlay.
+  await app.press("accept-prompt-suggestion");
+  await app.waitUntil(() => app.value("composer") === "Run the focused unit tests next");
+  expect(app.shows("accept-prompt-suggestion")).toBe(false);
+
+  // Clear composer and verify a stale sourceTurnId does NOT show.
+  await app.clear("composer");
+  await app.waitUntil(() => app.value("composer") === "");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://prompt-suggestion",
+    payload: {
+      sessionId: "session-1",
+      sourceTurnId: "turn-1",
+      suggestion: "Stale suggestion from earlier turn",
+    },
+  });
+  expect(app.shows("accept-prompt-suggestion")).toBe(false);
+
+  // 2. Live `agentic://prompt-suggestion` for the latest completed turn appears and can be dismissed.
+  persistedSuggestion = undefined;
+  await app.host.send("openbitfun.event", {
+    event: "agentic://prompt-suggestion",
+    payload: {
+      sessionId: "session-1",
+      sourceTurnId: "turn-2",
+      suggestion: "Summarize the diff for review",
+    },
+  });
+  await app.waitFor("accept-prompt-suggestion");
+  await app.press("dismiss-prompt-suggestion");
+  await app.waitFor("accept-prompt-suggestion", { state: "gone" });
+
+  // 3. Starting a new turn clears any active suggestion immediately.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://prompt-suggestion",
+    payload: {
+      sessionId: "session-1",
+      sourceTurnId: "turn-2",
+      suggestion: "Commit the verified changes",
+    },
+  });
+  await app.waitFor("accept-prompt-suggestion");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-3", userInput: "Do something else" },
+  });
+  await app.waitFor("accept-prompt-suggestion", { state: "gone" });
+});

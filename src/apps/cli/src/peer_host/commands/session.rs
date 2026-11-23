@@ -499,16 +499,26 @@ pub(crate) async fn get_session_transcript_view(
         .load_persisted_session_turns(&workspace_path, &session_id, limit)
         .await
         .map_err(|e| format!("Failed to load session transcript: {e}"))?;
+    let metadata = state
+        .compatibility
+        .load_persisted_session_metadata(&workspace_path, &session_id)
+        .await
+        .ok()
+        .flatten();
     let has_earlier = limit.is_some_and(|limit| {
         turns.len() >= limit && turns.first().is_some_and(|turn| turn.turn_index > 0)
     });
     let cursor = optional_string(request, "cursor");
-    let view = openbitfun_core::session_transcript_view_from_turns(
+    let mut view = openbitfun_core::session_transcript_view_from_turns(
         &session_id,
         &turns,
         cursor.as_deref(),
         has_earlier,
     );
+    if openbitfun_core::is_prompt_suggestion_enabled().await {
+        view.prompt_suggestion =
+            openbitfun_core::resolved_transcript_prompt_suggestion(metadata.as_ref(), &turns);
+    }
     serde_json::to_value(view).map_err(|e| format!("serialize transcript view: {e}"))
 }
 

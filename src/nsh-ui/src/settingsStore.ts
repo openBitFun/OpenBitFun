@@ -24,6 +24,7 @@ import {
   type MessageKey,
 } from "./i18n";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
+import { setPromptSuggestionsEnabled } from "./promptSuggestionStore";
 import { currentDeviceScopeKey } from "./shared/deviceScope";
 import { runStep } from "./state";
 import { superAgentUi } from "./productGates"; // wave23-E
@@ -1406,6 +1407,9 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
           await setConfig(path, value);
         }
         settingsValues.update(values => ({ ...values, [path]: value }));
+        if (path === "app.ai_experience.enable_prompt_suggestion" && typeof value === "boolean") {
+          setPromptSuggestionsEnabled(value);
+        }
         noticeFor(spec, tr("settings.notice.savedField", { label: fieldLabel(spec) }));
         ok = true;
       } catch (error) {

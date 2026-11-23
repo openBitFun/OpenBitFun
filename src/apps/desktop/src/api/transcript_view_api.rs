@@ -20,7 +20,10 @@ use crate::api::agentic_api::{
 };
 use crate::host::State;
 use crate::runtime::DesktopRuntimeContext;
-use openbitfun_core::{session_transcript_view_from_turns, SessionTranscriptView};
+use openbitfun_core::{
+    is_prompt_suggestion_enabled, resolved_transcript_prompt_suggestion,
+    session_transcript_view_from_turns, SessionTranscriptView,
+};
 use serde::{Deserialize, Serialize};
 
 /// The transcript view plus the turn running right now, when one is.
@@ -80,26 +83,29 @@ pub async fn get_session_transcript_view(
         return Err("session_id is required".to_string());
     }
     let limit = request.limit.filter(|limit| *limit > 0);
+    let scope = desktop_session_scope(
+        request.workspace_id,
+        request.workspace_path,
+        request.remote_connection_id,
+        request.remote_ssh_host,
+    );
     let turns = runtime
         .session_application()
-        .load_session_turns(
-            desktop_session_scope(
-                request.workspace_id,
-                request.workspace_path,
-                request.remote_connection_id,
-                request.remote_ssh_host,
-            ),
-            &session_id,
-            limit,
-        )
+        .load_session_turns(scope.clone(), &session_id, limit)
         .await
         .map_err(|error| format!("Failed to load session transcript: {error}"))?;
+    let metadata = runtime
+        .session_application()
+        .load_session_metadata(scope, &session_id)
+        .await
+        .ok()
+        .flatten();
     let has_earlier = window_has_earlier(
         limit,
         turns.len(),
         turns.first().map(|turn| turn.turn_index),
     );
-    let view = session_transcript_view_from_turns(
+    let mut view = session_transcript_view_from_turns(
         &session_id,
         &turns,
         request
@@ -122,6 +128,9 @@ pub async fn get_session_transcript_view(
                     .any(|turn| turn.turn_id == turn_id && turn.settled)
             })
         });
+    if running_turn.is_none() && is_prompt_suggestion_enabled().await {
+        view.prompt_suggestion = resolved_transcript_prompt_suggestion(metadata.as_ref(), &turns);
+    }
     Ok(DesktopSessionTranscriptView { view, running_turn })
 }
 

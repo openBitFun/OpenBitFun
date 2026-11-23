@@ -176,6 +176,12 @@ import {
 } from "../agentModeStore";
 import { ensureQuickActions, quickActions } from "../quickActionStore";
 import {
+  clearPromptSuggestion,
+  ensurePromptSuggestionSettingLoaded,
+  isCompletedTurnStatus,
+  promptSuggestionForSession,
+} from "../promptSuggestionStore";
+import {
   closeMention,
   insertMention,
   mentionHits,
@@ -337,6 +343,7 @@ const copiedTranscript = signal(false);
 const quickActionMenuOpen = signal(false);
 const queueCollapsed = signal(false);
 const composerFileDragActive = signal(false);
+const composerComposing = signal(false);
 const composerCaretBounds = signal<Bounds | null>(null);
 const mentionSelectedIndex = signal(0);
 
@@ -393,6 +400,43 @@ function offlineNoticeText(): string {
 }
 
 const composerDisabled = computed(() => !activeSessionId() || sessionDeviceOffline() !== null);
+
+const activePromptSuggestion = computed<string>(() => {
+  const sessionId = activeSessionId();
+  if (
+    !sessionId ||
+    composerDisabled() ||
+    runningTurnId() ||
+    pendingTurn() ||
+    pendingTurnState() ||
+    composerText().length > 0 ||
+    imageAttachments().length > 0
+  ) {
+    return "";
+  }
+  const entry = promptSuggestionForSession(sessionId, activeSessionDevice());
+  if (!entry) return "";
+  const turns = sessionTurns();
+  const latestTurn = turns[turns.length - 1];
+  if (!latestTurn || latestTurn.turnId !== entry.sourceTurnId || !isCompletedTurnStatus(latestTurn.status)) {
+    return "";
+  }
+  return entry.suggestion;
+});
+
+function acceptActivePromptSuggestion(): boolean {
+  const suggestion = activePromptSuggestion();
+  if (!suggestion) return false;
+  const sessionId = activeSessionId();
+  composerText.set(suggestion);
+  clearPromptSuggestion(sessionId, activeSessionDevice());
+  composerInputRef?.focus();
+  return true;
+}
+
+function dismissActivePromptSuggestion(): void {
+  clearPromptSuggestion(activeSessionId(), activeSessionDevice());
+}
 
 function focusRingStyle(offset = 2): ViewStyle {
   return offset === 2 ? baseFocusRingStyle() : { ...baseFocusRingStyle(), outlineOffset: offset };
@@ -2063,6 +2107,7 @@ async function confirmRerun(): Promise<void> {
   if (!text && target.images.length === 0) return;
   rerunBusy.set(true);
   try {
+    clearPromptSuggestion(sessionId, activeSessionDevice());
     await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId });
     rerunTarget.set(null);
     await loadTurns(sessionId);
@@ -4558,6 +4603,7 @@ const composerVoiceActions: VoiceComposerActions = {
 function ComposerDock() {
   ensureModelsLoaded();
   ensureQuickActions();
+  ensurePromptSuggestionSettingLoaded();
   void ensureVoiceSettings();
   subscribeContextUsage();
   effect(() => {
@@ -4816,45 +4862,118 @@ function ComposerDock() {
 
           {/* Multiline Editor */}
           <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs }}>
-            <Input
-              ref={composerInputRef}
-              value={composerText()}
-              placeholder={
-                composerDisabled()
-                  ? offlineNoticeText() || tr("sessions.noSessionSelected")
-                  : runningTurnId()
-                    ? midTurnSendPolicy() === "queue"
-                      ? tr("sessions.composerQueuePlaceholder")
-                      : tr("session.placeholderRunning")
-                    : tr("session.placeholder")
-              }
-              accessibilityLabel="composer"
-              multiline={true}
-              readonly={composerDisabled()}
-              submitBehavior="submit"
-              style={{
-                minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-                maxHeight: 160,
-                fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
-                lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
-                color: palette().text,
-                placeholderColor: palette().textMuted,
-                caretColor: palette().accent,
-              }}
-              onChange={event => {
-                composerText.set(event.value);
-                syncInlineMention(event.value, event.value.length);
-              }}
-              onSelectionChange={event => syncInlineMention(composerText(), event.end)}
-              onCaretMove={event => composerCaretBounds.set(event.pageBounds)}
-              onPaste={event => void handleComposerPaste(event)}
-              onKeyPress={event => {
-                if (mentionOpen() && mentionInline()) {
-                  handleMentionKeyNavigation(event.key);
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
+              <Input
+                ref={composerInputRef}
+                value={composerText()}
+                placeholder={
+                  composerDisabled()
+                    ? offlineNoticeText() || tr("sessions.noSessionSelected")
+                    : runningTurnId()
+                      ? midTurnSendPolicy() === "queue"
+                        ? tr("sessions.composerQueuePlaceholder")
+                        : tr("session.placeholderRunning")
+                      : activePromptSuggestion() || tr("session.placeholder")
                 }
-              }}
-              onSubmit={() => void submitComposer()}
-            />
+                accessibilityLabel="composer"
+                multiline={true}
+                readonly={composerDisabled()}
+                submitBehavior="submit"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+                  maxHeight: 160,
+                  fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
+                  lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
+                  color: palette().text,
+                  placeholderColor: palette().textMuted,
+                  caretColor: palette().accent,
+                }}
+                onChange={event => {
+                  composerText.set(event.value);
+                  syncInlineMention(event.value, event.value.length);
+                }}
+                onCompositionChange={event => composerComposing.set(event.composing)}
+                onSelectionChange={event => syncInlineMention(composerText(), event.end)}
+                onCaretMove={event => composerCaretBounds.set(event.pageBounds)}
+                onPaste={event => void handleComposerPaste(event)}
+                onKeyPress={event => {
+                  if (mentionOpen() && mentionInline()) {
+                    handleMentionKeyNavigation(event.key);
+                    return;
+                  }
+                  if (
+                    !composerComposing() &&
+                    !composerText() &&
+                    (event.key === "Tab" || event.key === "ArrowRight")
+                  ) {
+                    acceptActivePromptSuggestion();
+                  }
+                }}
+                onSubmit={() => void submitComposer()}
+              />
+              <If when={activePromptSuggestion()}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.hair,
+                    flexShrink: 0,
+                    paddingTop: 2,
+                  }}
+                >
+                  <View
+                    role="button"
+                    accessibilityLabel="accept-prompt-suggestion"
+                    tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
+                    onPress={() => acceptActivePromptSuggestion()}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      paddingHorizontal: space.chip,
+                      height: compactLayout() ? layout.touchTarget : 22,
+                      minWidth: compactLayout() ? layout.touchTarget : undefined,
+                      borderRadius: radii.xs,
+                      borderCurve: "continuous",
+                      borderWidth: 1,
+                      borderColor: palette().borderSubtle,
+                      backgroundColor: palette().surfaceSubtle,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...pressTransition(MOTION_DURATION.fast),
+                    }}
+                    hoverStyle={{
+                      backgroundColor: palette().panelHover,
+                      borderColor: palette().borderStrong,
+                    }}
+                    activeStyle={tactileActiveStyle(0.96)}
+                    focusVisibleStyle={focusRingStyle()}
+                  >
+                    <Text
+                      style={{
+                        color: palette().textMuted,
+                        fontSize: textSize(11),
+                        lineHeight: textLineHeight(11, 1.15),
+                        fontWeight: "500",
+                        fontFamily: compactLayout() ? undefined : fontMono,
+                      }}
+                    >
+                      {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
+                    </Text>
+                  </View>
+                  <IconButton
+                    icon="close"
+                    size="xs"
+                    iconSize={11}
+                    accessibilityLabel="dismiss-prompt-suggestion"
+                    tooltip={tr("sessions.promptSuggestionDismiss")}
+                    onPress={() => dismissActivePromptSuggestion()}
+                  />
+                </View>
+              </If>
+            </View>
           </View>
 
           {/* Calm Bottom Action Bar (single-row, legible even on 1100px + AuxPane) */}
