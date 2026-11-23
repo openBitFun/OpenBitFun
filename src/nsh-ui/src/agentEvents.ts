@@ -52,8 +52,11 @@ import {
   deviceIdOfKey,
   clearPendingTurn,
   clearStreamedText,
+  getSecondaryPaneBridge,
   loadTurns,
   onRunningTurnSnapshot,
+  onSecondaryRunningTurnSnapshot,
+  onSecondarySessionSwitch,
   onSessionSwitch,
   onStreamCleared,
   patchSessionTitle,
@@ -62,9 +65,12 @@ import {
   removeSessionFromEvent,
   runningTurnId,
   runningTurns,
+  secondarySessionDevice,
+  secondarySessionId,
   sessionKey,
   sessionTurns,
   setPendingTurn,
+  splitPaneOpen,
   streamText,
   thinkingText,
   turnError,
@@ -184,6 +190,8 @@ const HEAVY_MAX_CHARS_PER_FRAME = 96;
 
 /** Structured live rounds & tools for the active session's in-flight/settling turn. */
 export const liveTurn = signal<LiveTurnState | null>(null);
+/** Structured live rounds & tools for the secondary split pane's in-flight/settling turn. */
+export const secondaryLiveTurn = signal<LiveTurnState | null>(null);
 
 /**
  * The device the event being handled comes from (`EventMeta.origin`; `""`
@@ -202,6 +210,16 @@ function isActive(sessionId: string): boolean {
   return Boolean(sessionId) && sessionId === activeSessionId() && eventOrigin === activeSessionDevice();
 }
 
+/** True when the event being handled names the secondary split pane's session. */
+function isSecondary(sessionId: string): boolean {
+  return (
+    splitPaneOpen() &&
+    Boolean(sessionId) &&
+    sessionId === secondarySessionId() &&
+    eventOrigin === secondarySessionDevice()
+  );
+}
+
 /**
  * Monotonic tick incremented at most once per painted streaming frame (and on
  * structural live-turn / tool / round transitions). Scenes should track this
@@ -209,6 +227,8 @@ function isActive(sessionId: string): boolean {
  * `streamText()`, and `thinkingText()` separately.
  */
 export const streamScrollTick = signal<number>(0);
+/** Monotonic auto-scroll tick for the secondary split pane. */
+export const secondaryStreamScrollTick = signal<number>(0);
 
 /** True while any buffered live text or thinking is still smoothly draining. */
 export const isStreamDraining = signal<boolean>(false);
@@ -234,6 +254,9 @@ export const liveTools = computed<LiveToolItem[]>(() => {
 const roundStreams = new Map<string, RoundStreamEntry>();
 /** Ordered round IDs matching `liveTurn().rounds` for O(1)/allocation-free flat sync. */
 let roundOrder: string[] = [];
+/** Decoupled per-round reactive text/thinking channels for the secondary split pane. */
+const secondaryRoundStreams = new Map<string, RoundStreamEntry>();
+let secondaryRoundOrder: string[] = [];
 
 let drainRafId: number | null = null;
 let drainFallbackTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -403,6 +426,19 @@ function ensureRoundStream(roundId: string): RoundStreamEntry {
   return entry;
 }
 
+function ensureSecondaryRoundStream(roundId: string): RoundStreamEntry {
+  let entry = secondaryRoundStreams.get(roundId);
+  if (!entry) {
+    entry = {
+      roundId,
+      text: createChannel(),
+      thinking: createChannel(),
+    };
+    secondaryRoundStreams.set(roundId, entry);
+  }
+  return entry;
+}
+
 function resetChannel(channel: RoundStreamChannel): void {
   channel.target = "";
   channel.revealed = 0;
@@ -506,11 +542,23 @@ function hasAnyPendingBacklog(): boolean {
       return true;
     }
   }
+  for (const entry of secondaryRoundStreams.values()) {
+    if (
+      entry.text.revealed < entry.text.target.length ||
+      entry.thinking.revealed < entry.thinking.target.length
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 
 function bumpScrollTick(): void {
   streamScrollTick.update(n => n + 1);
+}
+
+function bumpSecondaryScrollTick(): void {
+  secondaryStreamScrollTick.update(n => n + 1);
 }
 
 function syncFlatStreamSignals(updateText = true, updateThinking = true): void {
@@ -583,6 +631,7 @@ function drainFrame(nowMs: number, forceAll = false): void {
 
   let anyTextChanged = false;
   let anyThinkingChanged = false;
+  let anySecondaryChanged = false;
   let remaining = false;
 
   batch(() => {
@@ -602,9 +651,28 @@ function drainFrame(nowMs: number, forceAll = false): void {
       }
     }
 
+    for (const entry of secondaryRoundStreams.values()) {
+      if (advanceChannel(entry.thinking, dtMs, smooth, true)) {
+        anySecondaryChanged = true;
+      }
+      if (entry.thinking.revealed < entry.thinking.target.length) {
+        remaining = true;
+      }
+
+      if (advanceChannel(entry.text, dtMs, smooth, false)) {
+        anySecondaryChanged = true;
+      }
+      if (entry.text.revealed < entry.text.target.length) {
+        remaining = true;
+      }
+    }
+
     if (anyTextChanged || anyThinkingChanged) {
       syncFlatStreamSignals(anyTextChanged, anyThinkingChanged);
       bumpScrollTick();
+    }
+    if (anySecondaryChanged) {
+      bumpSecondaryScrollTick();
     }
 
     if (isStreamDraining() !== remaining) {
@@ -645,23 +713,48 @@ function scheduleDrainFrame(): void {
 export function flushStreamingBuffers(): void {
   clearDrainSchedule();
   lastDrainFrameMs = null;
-  if (roundStreams.size === 0) {
+  if (roundStreams.size === 0 && secondaryRoundStreams.size === 0) {
     if (isStreamDraining()) isStreamDraining.set(false);
     return;
   }
   let anyTextChanged = false;
   let anyThinkingChanged = false;
+  let anySecondaryChanged = false;
   batch(() => {
     for (const entry of roundStreams.values()) {
       if (commitChannelImmediate(entry.thinking)) anyThinkingChanged = true;
       if (commitChannelImmediate(entry.text)) anyTextChanged = true;
     }
+    for (const entry of secondaryRoundStreams.values()) {
+      if (commitChannelImmediate(entry.thinking)) anySecondaryChanged = true;
+      if (commitChannelImmediate(entry.text)) anySecondaryChanged = true;
+    }
     if (anyTextChanged || anyThinkingChanged) {
       syncFlatStreamSignals(anyTextChanged, anyThinkingChanged);
       bumpScrollTick();
     }
+    if (anySecondaryChanged) {
+      bumpSecondaryScrollTick();
+    }
     if (isStreamDraining()) {
       isStreamDraining.set(false);
+    }
+  });
+}
+
+function flushSecondaryStreamingBuffers(): void {
+  if (secondaryRoundStreams.size === 0) return;
+  let changed = false;
+  batch(() => {
+    for (const entry of secondaryRoundStreams.values()) {
+      if (commitChannelImmediate(entry.thinking)) changed = true;
+      if (commitChannelImmediate(entry.text)) changed = true;
+    }
+    if (changed) bumpSecondaryScrollTick();
+    if (!hasAnyPendingBacklog()) {
+      clearDrainSchedule();
+      lastDrainFrameMs = null;
+      if (isStreamDraining()) isStreamDraining.set(false);
     }
   });
 }
@@ -717,6 +810,30 @@ export function hasLiveRoundText(roundId: string): boolean {
 /** Coarse boolean reactive guard for whether a live round has any displayed thinking. */
 export function hasLiveRoundThinking(roundId: string): boolean {
   const entry = roundStreams.get(roundId);
+  return entry ? entry.thinking.hasAny() : false;
+}
+
+/** Reactive reader for a secondary split-pane live round's displayed text. */
+export function getSecondaryLiveRoundText(roundId: string): string {
+  const entry = secondaryRoundStreams.get(roundId);
+  return entry ? entry.text.displayed() : "";
+}
+
+/** Reactive reader for a secondary split-pane live round's displayed thinking. */
+export function getSecondaryLiveRoundThinking(roundId: string): string {
+  const entry = secondaryRoundStreams.get(roundId);
+  return entry ? entry.thinking.displayed() : "";
+}
+
+/** Coarse boolean reactive guard for whether a secondary live round has text. */
+export function hasSecondaryLiveRoundText(roundId: string): boolean {
+  const entry = secondaryRoundStreams.get(roundId);
+  return entry ? entry.text.hasAny() : false;
+}
+
+/** Coarse boolean reactive guard for whether a secondary live round has thinking. */
+export function hasSecondaryLiveRoundThinking(roundId: string): boolean {
+  const entry = secondaryRoundStreams.get(roundId);
   return entry ? entry.thinking.hasAny() : false;
 }
 
@@ -1089,8 +1206,10 @@ export function resetParkedTurns(): void {
 }
 
 function clearAllRoundStreams(): void {
-  clearDrainSchedule();
-  lastDrainFrameMs = null;
+  if (secondaryRoundStreams.size === 0) {
+    clearDrainSchedule();
+    lastDrainFrameMs = null;
+  }
   for (const entry of roundStreams.values()) {
     resetChannel(entry.text);
     resetChannel(entry.thinking);
@@ -1099,9 +1218,147 @@ function clearAllRoundStreams(): void {
   roundOrder = [];
   if (hasAnyRoundText()) hasAnyRoundText.set(false);
   if (hasAnyRoundThinking()) hasAnyRoundThinking.set(false);
-  if (isStreamDraining()) {
-    isStreamDraining.set(false);
+  if (!hasAnyPendingBacklog()) {
+    clearDrainSchedule();
+    lastDrainFrameMs = null;
+    if (isStreamDraining()) isStreamDraining.set(false);
   }
+}
+
+function clearSecondaryRoundStreams(): void {
+  for (const entry of secondaryRoundStreams.values()) {
+    resetChannel(entry.text);
+    resetChannel(entry.thinking);
+  }
+  secondaryRoundStreams.clear();
+  secondaryRoundOrder = [];
+  if (!hasAnyPendingBacklog()) {
+    clearDrainSchedule();
+    lastDrainFrameMs = null;
+    if (isStreamDraining()) isStreamDraining.set(false);
+  }
+}
+
+function ensureSecondaryLiveTurn(sessionId: string, turnId: string | null): LiveTurnState {
+  const current = secondaryLiveTurn();
+  if (
+    current &&
+    current.sessionId === sessionId &&
+    (current.deviceId ?? "") === eventOrigin &&
+    (!turnId || !current.turnId || current.turnId === turnId)
+  ) {
+    if (turnId && !current.turnId) return { ...current, turnId };
+    return current;
+  }
+  if (secondaryRoundStreams.size > 0) {
+    clearSecondaryRoundStreams();
+  }
+  const pending = getSecondaryPaneBridge()?.getPendingTurn() ?? null;
+  return {
+    sessionId,
+    deviceId: eventOrigin,
+    turnId,
+    userText: pending && pending.sessionId === sessionId ? pending.userText : "",
+    rounds: [],
+    settling: false,
+  };
+}
+
+function upsertSecondaryRoundMeta(
+  state: LiveTurnState,
+  roundId: string,
+  updater: (meta: LiveRoundMeta) => LiveRoundMeta,
+  defaults?: { roundIndex?: number; effectiveModelName?: string; attemptId?: string },
+): LiveTurnState {
+  const entry = ensureSecondaryRoundStream(roundId);
+  const index = state.rounds.findIndex(item => item.roundId === roundId);
+  if (index >= 0) {
+    const prevMeta = extractRoundMeta(state.rounds[index]);
+    const updatedMeta = updater(prevMeta);
+    if (updatedMeta === prevMeta) return state;
+    const rounds = [...state.rounds];
+    rounds[index] = makeLiveRound(updatedMeta, entry);
+    return { ...state, rounds };
+  }
+  const createdMeta = updater({
+    roundId,
+    roundIndex: defaults?.roundIndex ?? state.rounds.length,
+    ...(defaults?.attemptId ? { attemptId: defaults.attemptId } : {}),
+    ...(defaults?.effectiveModelName ? { effectiveModelName: defaults.effectiveModelName } : {}),
+    tools: [],
+    completed: false,
+  });
+  if (!secondaryRoundOrder.includes(roundId)) {
+    secondaryRoundOrder.push(roundId);
+  }
+  return { ...state, rounds: [...state.rounds, makeLiveRound(createdMeta, entry)] };
+}
+
+function parkSecondaryTurn(sessionId: string | null, key: string | null): void {
+  if (!sessionId || !key) return;
+  const live = secondaryLiveTurn();
+  if (!live || live.sessionId !== sessionId || keyOf(sessionId, live.deviceId ?? "") !== key || live.settling) {
+    clearSecondaryRoundStreams();
+    secondaryLiveTurn.set(null);
+    return;
+  }
+  if (!runningTurns()[key]) {
+    clearSecondaryRoundStreams();
+    secondaryLiveTurn.set(null);
+    return;
+  }
+  flushSecondaryStreamingBuffers();
+  const pending = getSecondaryPaneBridge()?.getPendingTurn() ?? null;
+  parkedTurns.set(key, {
+    sessionId,
+    turnId: live.turnId,
+    userText: live.userText || (pending && pending.sessionId === sessionId ? pending.userText : ""),
+    rounds: live.rounds.map(round => {
+      const entry = secondaryRoundStreams.get(round.roundId);
+      return {
+        meta: extractRoundMeta(round),
+        text: entry?.text.target ?? "",
+        thinking: entry?.thinking.target ?? "",
+      };
+    }),
+  });
+  batch(() => {
+    clearSecondaryRoundStreams();
+    secondaryLiveTurn.set(null);
+  });
+}
+
+function restoreParkedSecondaryTurn(sessionId: string | null, key: string | null): void {
+  if (!sessionId || !key) return;
+  const parked = parkedTurns.get(key);
+  if (!parked) return;
+  parkedTurns.delete(key);
+  if (!runningTurns()[key]) return;
+  batch(() => {
+    clearSecondaryRoundStreams();
+    const rounds: LiveModelRound[] = [];
+    for (const round of parked.rounds) {
+      const entry = ensureSecondaryRoundStream(round.meta.roundId);
+      entry.text.target = round.text;
+      entry.thinking.target = round.thinking;
+      commitChannelImmediate(entry.text);
+      commitChannelImmediate(entry.thinking);
+      secondaryRoundOrder.push(round.meta.roundId);
+      rounds.push(makeLiveRound(round.meta, entry));
+    }
+    secondaryLiveTurn.set({
+      sessionId,
+      deviceId: deviceIdOfKey(key),
+      turnId: parked.turnId,
+      userText: parked.userText,
+      rounds,
+      settling: false,
+    });
+    if (parked.userText) {
+      getSecondaryPaneBridge()?.setPendingTurn(sessionId, parked.userText, parked.turnId ?? undefined);
+    }
+    bumpSecondaryScrollTick();
+  });
 }
 
 export function resetLiveTurn(): void {
@@ -1186,6 +1443,22 @@ function activeTurnIdOf(sessionId: string, key = keyOf(sessionId)): string | nul
       return live.turnId;
     }
     const pending = pendingTurnState();
+    if (
+      pending &&
+      pending.sessionId === sessionId &&
+      (!pending.sessionKey || pending.sessionKey === key) &&
+      pending.turnId
+    ) {
+      return pending.turnId;
+    }
+    return null;
+  }
+  if (isSecondary(sessionId)) {
+    const live = secondaryLiveTurn();
+    if (live && live.sessionId === sessionId && (live.deviceId ?? "") === eventOrigin && live.turnId) {
+      return live.turnId;
+    }
+    const pending = getSecondaryPaneBridge()?.getPendingTurn() ?? null;
     if (
       pending &&
       pending.sessionId === sessionId &&
@@ -1311,6 +1584,72 @@ export function settleLiveTurnFromView(sessionId: string): void {
     liveTurn.set(null);
     clearStreamedText();
     clearPendingTurn(sessionId);
+  });
+}
+
+async function settleSecondaryCompletedTurn(
+  sessionId: string,
+  turnId: string | null,
+  afterPersist: boolean,
+): Promise<void> {
+  if (!sessionId || !isSecondary(sessionId)) return;
+  const bridge = getSecondaryPaneBridge();
+  if (!bridge) return;
+  const origin = eventOrigin;
+  const key = keyOf(sessionId, origin);
+  const stillSecondary = () =>
+    splitPaneOpen() && secondarySessionId() === sessionId && secondarySessionDevice() === origin;
+  const effectiveTurnId = turnId ?? settlingTurns.get(key)?.turnId ?? secondaryLiveTurn()?.turnId ?? null;
+
+  const loaded = await bridge.loadTurns(sessionId, { silent: true });
+  if (!stillSecondary() || loaded === null) return;
+
+  const currentLive = secondaryLiveTurn();
+  const currentRunning = runningTurns()[key] ?? null;
+  if (
+    effectiveTurnId &&
+    ((currentLive?.turnId && currentLive.turnId !== effectiveTurnId) ||
+      (currentRunning && currentRunning !== effectiveTurnId))
+  ) {
+    return;
+  }
+
+  const matched = effectiveTurnId
+    ? loaded.find(turn => turn.turnId === effectiveTurnId)
+    : loaded[loaded.length - 1];
+  const ready = matched ? matched.settled : afterPersist;
+  if (!ready) return;
+
+  if (settlingTurns.get(key)?.turnId === effectiveTurnId || !effectiveTurnId) {
+    settlingTurns.delete(key);
+  }
+  batch(() => {
+    clearSecondaryRoundStreams();
+    secondaryLiveTurn.set(null);
+    const pending = bridge.getPendingTurn();
+    if (!effectiveTurnId || !pending?.turnId || pending.turnId === effectiveTurnId) {
+      bridge.clearPendingTurn(sessionId, key);
+    }
+  });
+  markSessionSeen(sessionId, Date.now());
+  void refreshSessionsSilently();
+}
+
+export function settleSecondaryLiveTurnFromView(sessionId: string): void {
+  const live = secondaryLiveTurn();
+  const bridge = getSecondaryPaneBridge();
+  if (!bridge || !splitPaneOpen() || !live?.turnId || live.sessionId !== sessionId || secondarySessionId() !== sessionId) {
+    return;
+  }
+  if ((live.deviceId ?? "") !== secondarySessionDevice()) return;
+  const matched = bridge.getTurns().find(turn => turn.turnId === live.turnId);
+  if (!matched?.settled) return;
+  const key = keyOf(sessionId, secondarySessionDevice());
+  settlingTurns.delete(key);
+  batch(() => {
+    clearSecondaryRoundStreams();
+    secondaryLiveTurn.set(null);
+    bridge.clearPendingTurn(sessionId, key);
   });
 }
 
@@ -1611,6 +1950,46 @@ export function hydrateRunningTurn(sessionId: string, snapshot: RunningTurnSnaps
   followedTurns.add(turnId);
 }
 
+export function hydrateSecondaryRunningTurn(
+  sessionId: string,
+  device: string,
+  snapshot: RunningTurnSnapshot,
+): void {
+  const turnId = snapshot.activeTurnId;
+  if (!turnId || !splitPaneOpen() || secondarySessionId() !== sessionId || secondarySessionDevice() !== device) {
+    return;
+  }
+  const live = secondaryLiveTurn();
+  if (
+    followedTurns.has(turnId) &&
+    live?.sessionId === sessionId &&
+    (live.deviceId ?? "") === device &&
+    live.turnId === turnId
+  ) {
+    return;
+  }
+  const previousOrigin = eventOrigin;
+  eventOrigin = device;
+  replayingSnapshot = true;
+  try {
+    batch(() => {
+      clearSecondaryRoundStreams();
+      secondaryLiveTurn.set(null);
+    });
+    parkedTurns.delete(keyOf(sessionId));
+    for (const event of snapshot.events ?? []) {
+      const handler = agentEventHandlers.get(event.eventName);
+      if (handler) (handler as (payload: unknown) => void)(event.payload);
+    }
+    flushSecondaryStreamingBuffers();
+  } finally {
+    replayingSnapshot = false;
+    eventOrigin = previousOrigin;
+  }
+  replayFloors.set(keyOf(sessionId, device), { streamId: snapshot.streamId, cursor: snapshot.cursor });
+  followedTurns.add(turnId);
+}
+
 let subscribed = false;
 
 export function subscribeAgentEvents(): void {
@@ -1627,7 +2006,13 @@ export function subscribeAgentEvents(): void {
     else resetParkedTurns();
   });
 
+  onSecondarySessionSwitch((phase, sessionId, key) => {
+    if (phase === "leave" || phase === "close") parkSecondaryTurn(sessionId, key);
+    else if (phase === "enter") restoreParkedSecondaryTurn(sessionId, key);
+  });
+
   onRunningTurnSnapshot(hydrateRunningTurn);
+  onSecondaryRunningTurnSnapshot(hydrateSecondaryRunningTurn);
 
   onAgentEvent<TextChunkPayload>("agentic://text-chunk", payload => {
     if (!payload) return;
@@ -1635,6 +2020,75 @@ export function subscribeAgentEvents(): void {
     if (attemptId && supersededAttempts.has(attemptId)) return;
     const rawSession = sessionOf(payload) || activeSessionId() || "";
     if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
+
+    if (isSecondary(rawSession)) {
+      const isThinking = payload.contentType === "thinking";
+      const roundId = roundOf(payload);
+      const chunk = payload.text ?? payload.delta ?? payload.content ?? payload.chunk ?? "";
+      if (!chunk) {
+        if (isThinking && payload.isThinkingEnd === true) {
+          const entry = secondaryRoundStreams.get(roundId);
+          if (entry && commitChannelImmediate(entry.thinking)) bumpSecondaryScrollTick();
+        }
+        return;
+      }
+      const turnId = turnOf(payload) ?? runningTurns()[keyOf(rawSession)] ?? null;
+      const current = secondaryLiveTurn();
+      const sameLiveTurn =
+        current !== null &&
+        current.sessionId === rawSession &&
+        (!turnId || !current.turnId || current.turnId === turnId);
+      const existingRound = sameLiveTurn
+        ? current.rounds.find(item => item.roundId === roundId)
+        : undefined;
+      const needsStructuralUpdate =
+        !sameLiveTurn ||
+        (Boolean(turnId) && current.turnId !== turnId) ||
+        !existingRound ||
+        (Boolean(attemptId) && existingRound.attemptId !== attemptId) ||
+        (isThinking &&
+          Boolean(payload.reasoningKind) &&
+          existingRound.reasoningKind !== payload.reasoningKind);
+      batch(() => {
+        if (needsStructuralUpdate) {
+          const base = ensureSecondaryLiveTurn(rawSession, turnId);
+          const updated = upsertSecondaryRoundMeta(
+            base,
+            roundId,
+            meta => ({
+              ...meta,
+              ...(attemptId ? { attemptId } : {}),
+              ...(isThinking && payload.reasoningKind
+                ? { reasoningKind: payload.reasoningKind }
+                : {}),
+            }),
+            { attemptId },
+          );
+          secondaryLiveTurn.set(updated);
+        }
+        const entry = ensureSecondaryRoundStream(roundId);
+        if (isThinking) {
+          entry.thinking.target += chunk;
+          if (payload.isThinkingEnd === true) {
+            if (commitChannelImmediate(entry.thinking)) bumpSecondaryScrollTick();
+            return;
+          }
+        } else {
+          if (entry.thinking.revealed < entry.thinking.target.length) {
+            commitChannelImmediate(entry.thinking);
+          }
+          entry.text.target += chunk;
+        }
+        if (!shouldCoalesceToFrame()) {
+          const channel = isThinking ? entry.thinking : entry.text;
+          if (commitChannelImmediate(channel)) bumpSecondaryScrollTick();
+          return;
+        }
+        scheduleDrainFrame();
+      });
+      return;
+    }
+
     if (isOtherSession(payload)) {
       parkEvent("chunk", payload as Record<string, unknown>);
       return;
@@ -1730,6 +2184,34 @@ export function subscribeAgentEvents(): void {
     if (!payload) return;
     const rawSession = sessionOf(payload) || activeSessionId() || "";
     if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
+    if (isSecondary(rawSession)) {
+      flushSecondaryStreamingBuffers();
+      const turnId = turnOf(payload) ?? runningTurns()[keyOf(rawSession)] ?? null;
+      const roundId = roundOf(payload);
+      batch(() => {
+        const base = ensureSecondaryLiveTurn(rawSession, turnId);
+        const updated = upsertSecondaryRoundMeta(
+          base,
+          roundId,
+          meta => ({
+            ...meta,
+            ...(typeof payload.roundIndex === "number" ? { roundIndex: payload.roundIndex } : {}),
+            ...(typeof payload.effectiveModelName === "string" && payload.effectiveModelName
+              ? { effectiveModelName: payload.effectiveModelName }
+              : {}),
+            completed: false,
+          }),
+          {
+            roundIndex: payload.roundIndex,
+            effectiveModelName: payload.effectiveModelName,
+          },
+        );
+        secondaryLiveTurn.set(updated);
+        bumpSecondaryScrollTick();
+      });
+      if (hasPendingSteeringForSession(rawSession)) void loadQueueForSession(rawSession, true);
+      return;
+    }
     if (isOtherSession(payload)) {
       parkEvent("roundStarted", payload as Record<string, unknown>);
       return;
@@ -1768,6 +2250,25 @@ export function subscribeAgentEvents(): void {
     if (!payload) return;
     const rawSession = sessionOf(payload) || activeSessionId() || "";
     if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
+    if (isSecondary(rawSession)) {
+      flushSecondaryStreamingBuffers();
+      const current = secondaryLiveTurn();
+      if (!current) return;
+      const roundId = roundOf(payload);
+      batch(() => {
+        const updated = upsertSecondaryRoundMeta(current, roundId, meta => ({
+          ...meta,
+          completed: true,
+          ...(typeof payload.effectiveModelName === "string" && payload.effectiveModelName
+            ? { effectiveModelName: payload.effectiveModelName }
+            : {}),
+          ...(typeof payload.durationMs === "number" ? { durationMs: payload.durationMs } : {}),
+        }));
+        secondaryLiveTurn.set(updated);
+        bumpSecondaryScrollTick();
+      });
+      return;
+    }
     if (isOtherSession(payload)) {
       parkEvent("roundCompleted", payload as Record<string, unknown>);
       return;
@@ -1795,6 +2296,31 @@ export function subscribeAgentEvents(): void {
     const failedAttempt = payload.diagnostic?.attemptId ?? payload.diagnostic?.attempt_id;
     if (typeof failedAttempt === "string" && failedAttempt) {
       supersededAttempts.add(failedAttempt);
+    }
+    const rawSession = sessionOf(payload);
+    if (isSecondary(rawSession)) {
+      const current = secondaryLiveTurn();
+      if (!current) return;
+      const roundId = roundOf(payload);
+      batch(() => {
+        const entry = secondaryRoundStreams.get(roundId);
+        if (entry) {
+          resetChannel(entry.thinking);
+          resetChannel(entry.text);
+        }
+        const updated = upsertSecondaryRoundMeta(current, roundId, meta => ({
+          ...meta,
+          tools: [],
+          attemptId: undefined,
+        }));
+        secondaryLiveTurn.set(updated);
+        if (!hasAnyPendingBacklog()) {
+          clearDrainSchedule();
+          lastDrainFrameMs = null;
+          if (isStreamDraining()) isStreamDraining.set(false);
+        }
+      });
+      return;
     }
     if (isOtherSession(payload)) {
       parkEvent("superseded", payload as Record<string, unknown>);
@@ -1830,6 +2356,42 @@ export function subscribeAgentEvents(): void {
     if (attemptId && supersededAttempts.has(attemptId)) return;
     const rawSession = sessionOf(payload) || activeSessionId() || "";
     if (isStaleTurnStreamEvent(rawSession, turnOf(payload))) return;
+    if (isSecondary(rawSession)) {
+      const rawTool = payload.toolEvent ?? payload.tool_event;
+      if (!rawTool || typeof rawTool !== "object") return;
+      const toolRec = rawTool as Record<string, unknown>;
+      const rawEventType = String(toolRec.event_type ?? toolRec.eventType ?? "").toLowerCase();
+      const rawToolId = String(toolRec.tool_id ?? toolRec.toolId ?? "");
+      if (
+        rawToolId &&
+        (rawEventType === "completed" ||
+          rawEventType === "failed" ||
+          rawEventType === "error" ||
+          rawEventType === "cancelled" ||
+          rawEventType === "canceled" ||
+          rawEventType === "timedout" ||
+          rawEventType === "timed_out")
+      ) {
+        dropQuestionByToolId(rawToolId, eventOrigin);
+      }
+      flushSecondaryStreamingBuffers();
+      const turnId = turnOf(payload) ?? runningTurns()[keyOf(rawSession)] ?? null;
+      const roundId = roundOf(payload);
+      batch(() => {
+        const base = ensureSecondaryLiveTurn(rawSession, turnId);
+        const updated = upsertSecondaryRoundMeta(
+          base,
+          roundId,
+          meta => applyToolEvent(meta, rawTool, ensureSecondaryRoundStream(roundId).text.target.length),
+          { attemptId },
+        );
+        if (updated !== base || secondaryLiveTurn() !== base) {
+          secondaryLiveTurn.set(updated);
+          bumpSecondaryScrollTick();
+        }
+      });
+      return;
+    }
     if (isOtherSession(payload)) {
       parkEvent("tool", payload as Record<string, unknown>);
       return;
@@ -1910,6 +2472,24 @@ export function subscribeAgentEvents(): void {
           : typeof payload?.user_input === "string" && payload.user_input
             ? payload.user_input
             : undefined;
+    if (sessionId && isSecondary(sessionId)) {
+      settlingTurns.delete(key);
+      const bridge = getSecondaryPaneBridge();
+      batch(() => {
+        clearSecondaryRoundStreams();
+        if (running) bridge?.bindPendingTurnId(sessionId, running, userInput, dequeuedImages);
+        secondaryLiveTurn.set({
+          sessionId,
+          deviceId: eventOrigin,
+          turnId: running,
+          userText: userInput ?? bridge?.getPendingTurn()?.userText ?? "",
+          rounds: [],
+          settling: false,
+        });
+        bumpSecondaryScrollTick();
+      });
+      return;
+    }
     if (sessionId && !isActive(sessionId)) {
       parkedTurns.set(key, { sessionId, turnId: running, userText: userInput ?? "", rounds: [] });
       return;
@@ -1963,6 +2543,28 @@ export function subscribeAgentEvents(): void {
       clearPermissionsForSession(sessionId, eventOrigin);
     }
     if (kind === "failed" && rawSession) markSessionFailed(rawSession);
+    if (sessionId && isSecondary(sessionId)) {
+      flushSecondaryStreamingBuffers();
+      const effectiveTurnId = eventTurnId ?? secondaryLiveTurn()?.turnId ?? null;
+      const message = kind === "failed" ? payload?.error ?? payload?.message ?? payload?.reason : undefined;
+      const bridge = getSecondaryPaneBridge();
+      batch(() => {
+        if (kind === "completed") {
+          const currentLive = secondaryLiveTurn();
+          if (currentLive && (!effectiveTurnId || !currentLive.turnId || currentLive.turnId === effectiveTurnId)) {
+            secondaryLiveTurn.set({ ...currentLive, settling: true });
+          }
+        }
+        if (typeof message === "string" && message.trim()) {
+          bridge?.setTurnError(message.trim());
+        }
+        if (kind === "failed") bumpSecondaryScrollTick();
+      });
+      settlingTurns.set(keyOf(sessionId), { turnId: effectiveTurnId });
+      void settleSecondaryCompletedTurn(sessionId, effectiveTurnId, kind !== "completed");
+      if (drainQueue) void loadQueueForSession(sessionId, true);
+      return;
+    }
     if (finishOtherSessionTurn(payload, drainQueue)) return;
 
     flushStreamingBuffers();
@@ -2015,6 +2617,13 @@ export function subscribeAgentEvents(): void {
       } else if (!runningTurnId()) {
         // External or detached update landed on the active session.
         void loadTurns(sessionId, { silent: true });
+      }
+    } else if (isSecondary(sessionId)) {
+      const key = keyOf(sessionId);
+      if (settlingTurns.has(key) || secondaryLiveTurn()?.settling) {
+        void settleSecondaryCompletedTurn(sessionId, settledTurnId, true);
+      } else if (!runningTurns()[key]) {
+        void getSecondaryPaneBridge()?.loadTurns(sessionId, { silent: true });
       }
     }
     void refreshSessionsSilently();

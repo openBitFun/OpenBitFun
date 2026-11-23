@@ -33,6 +33,7 @@ import { activeSessionKey, openInAuxPane, selectSession } from "../state";
 import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
+import { openImageLightbox } from "./ImageLightbox";
 import { createDiffViewStyles, extractVisualizeDirectives, inferCodeLanguage, stripVisualizeDirectives } from "./markdown";
 import {
   BrandSpinner,
@@ -1188,11 +1189,26 @@ function ToolImagePreview(props: { src: string }) {
         </Text>
       }
     >
-      <Image
-        src={props.src}
-        onError={() => failed.set(true)}
-        style={{ width: 360, maxWidth: "100%", maxHeight: 280, borderRadius: radii.sm, alignSelf: "flex-start" }}
-      />
+      <View
+        role="button"
+        accessibilityLabel="tool-image-preview"
+        onPress={() => openImageLightbox({ src: props.src })}
+        style={{
+          alignSelf: "flex-start",
+          borderRadius: radii.sm,
+          overflow: "hidden",
+          cursor: "pointer",
+        }}
+        hoverStyle={{ opacity: 0.92 }}
+        activeStyle={tactileActiveStyle(0.985)}
+        focusVisibleStyle={focusRingStyle()}
+      >
+        <Image
+          src={props.src}
+          onError={() => failed.set(true)}
+          style={{ width: 360, maxWidth: "100%", maxHeight: 280, borderRadius: radii.sm, objectFit: "contain" }}
+        />
+      </View>
     </If>
   );
 }

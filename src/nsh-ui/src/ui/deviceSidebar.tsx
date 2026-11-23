@@ -20,7 +20,10 @@ import {
   deviceContext,
   openAllSessions,
   openDevicePage,
+  secondarySessionDevice,
+  secondarySessionId,
   selectDeviceContext,
+  splitPaneOpen,
   workspacesLoaded,
 } from "../state";
 import { fleetDeviceById } from "../fleetStore";
@@ -255,7 +258,10 @@ function SessionRow(props: { node: DeviceTreeNode; workspaceId: string; row: Tre
   const hovered = signal(false);
   const menuOpen = signal(false);
   const active = () =>
-    activeSessionId() === props.row.sessionId && (!fleetActive() || activeSessionDevice() === props.node.deviceId);
+    (activeSessionId() === props.row.sessionId && (!fleetActive() || activeSessionDevice() === props.node.deviceId)) ||
+    (splitPaneOpen() &&
+      secondarySessionId() === props.row.sessionId &&
+      (!fleetActive() || secondarySessionDevice() === props.node.deviceId));
   return (
     <TreeRow
       indent={props.indent}

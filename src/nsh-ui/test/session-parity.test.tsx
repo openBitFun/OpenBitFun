@@ -50,7 +50,13 @@ test("a session goal is set, follows the runtime's updates and clears", async ()
   expect(app.shows("session-goal-strip")).toBe(false);
 
   await app.press("thread-actions-trigger");
-  await app.press("session-goal-open");
+  // Goal and side questions live as `/goal` and `/btw` slash commands rather than cluttering `...`.
+  expect(app.shows("session-goal-open")).toBe(false);
+  expect(app.shows("side-question-open")).toBe(false);
+  await app.keyboard.press("escape");
+
+  await app.type("composer", "/goal");
+  await app.press("Send");
   await app.waitFor("session-goal-dialog");
   await app.type("session-goal-input", "Ship the release notes");
   await app.press("session-goal-save");
@@ -106,8 +112,8 @@ test("a side question streams its child session's answer and can be stopped", as
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
-  await app.press("thread-actions-trigger");
-  await app.press("side-question-open");
+  await app.type("composer", "/btw");
+  await app.press("Send");
   await app.waitFor("side-question-sheet");
   await app.type("side-question-input", "Which file holds the router?");
   await app.press("side-question-ask");

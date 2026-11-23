@@ -21,22 +21,30 @@ import { statusOfSession } from "../sessionStatusStore";
 import { loadAgentModes } from "../agentModeStore";
 import {
   allSessionsView,
+  activeSessionDevice,
+  activeSessionId,
   activeWorkspaceId,
   createSessionInWorkspace,
   deviceContext,
+  focusPane,
+  focusedPane,
   forgetRecentWorkspace,
   openRecentWorkspace,
   recentWorkspaces,
   isSessionArchived,
   navigateScene,
   openDevicePage,
+  secondarySessionDevice,
+  secondarySessionId,
   selectSession,
   selectWorkspace,
   sessionLastActivityMs,
   sessions,
+  splitPaneOpen,
   workspaces,
   type AllSessionsView,
 } from "../state";
+import { selectSecondarySession } from "../splitSessionStore";
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import {
   DeviceBadge,
@@ -152,7 +160,25 @@ function workspaceLabel(workspace: { name?: string; rootPath?: string }): string
 // wave23-E: the device tree's projection and row actions are shared with the
 // sidebar tree (`ui/deviceSidebar.tsx`), so both draw the same backend rows.
 export function openSessionRow(sessionId: string, deviceId: string, workspaceId: string): void {
+  const effectiveDevice = fleetActive() ? deviceId : "";
   batch(() => {
+    if (splitPaneOpen()) {
+      if (activeSessionId() === sessionId && (!fleetActive() || activeSessionDevice() === effectiveDevice)) {
+        focusPane(0);
+        navigateScene("sessions");
+        return;
+      }
+      if (secondarySessionId() === sessionId && (!fleetActive() || secondarySessionDevice() === effectiveDevice)) {
+        focusPane(1);
+        navigateScene("sessions");
+        return;
+      }
+      if (focusedPane() === 1) {
+        selectSecondarySession(sessionId, effectiveDevice, workspaceId || undefined);
+        navigateScene("sessions");
+        return;
+      }
+    }
     if (fleetActive()) {
       selectSession(sessionId, deviceId, workspaceId || undefined);
     } else {

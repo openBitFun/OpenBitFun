@@ -78,6 +78,8 @@ export type IconName =
   | "smartphone"
   | "panel-left"
   | "panel-right"
+  | "panel-bottom"
+  | "columns"
   | "maximize"
   | "minimize"
   | "swap"
@@ -173,6 +175,8 @@ const PATH_MAP: Partial<Record<IconName, string>> = {
   sidebar: "M9.5 4.5 V19.5",
   "panel-left": "M9.5 4.5 V19.5",
   "panel-right": "M14.5 4.5 V19.5",
+  "panel-bottom": "M3.5 14.5 H20.5",
+  columns: "M12.0 4.5 V19.5",
   link: "M10.2 13.8 C8.7 15.3 6.3 15.3 4.8 13.8 C3.3 12.3 3.3 9.9 4.8 8.4 L7.7 5.5 C9.2 4.0 11.6 4.0 13.1 5.5 C13.9 6.3 14.2 7.4 14.1 8.5 M13.8 10.2 C15.3 8.7 17.7 8.7 19.2 10.2 C20.7 11.7 20.7 14.1 19.2 15.6 L16.3 18.5 C14.8 20.0 12.4 20.0 10.9 18.5 C10.1 17.7 9.8 16.6 9.9 15.5",
   sliders:
     "M4.0 7.0 H8.0 M12.0 7.0 H20.0 M10.0 5.0 V9.0 M4.0 12.0 H14.0 M18.0 12.0 H20.0 M16.0 10.0 V14.0 M4.0 17.0 H7.0 M11.0 17.0 H20.0 M9.0 15.0 V19.0",
@@ -391,6 +395,8 @@ function drawIconGlyph(cx: CanvasRenderingContext2D, name: IconName): void {
     case "sidebar":
     case "panel-left":
     case "panel-right":
+    case "panel-bottom":
+    case "columns":
     case "panel-left-close":
       strokeRoundRect(cx, 3.5, 4.5, 17, 15, 3);
       break;

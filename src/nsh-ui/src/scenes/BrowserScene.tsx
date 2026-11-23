@@ -91,12 +91,15 @@ import {
   activeSessionDevice,
   activeSessionId,
   activeWorkspaceKey,
+  auxPaneHeight,
   auxPaneMaximized,
   auxPaneSide,
   auxPaneWidth,
   deviceContext,
   drawerOpen,
   navWidth,
+  sessionSplitRatio,
+  splitPaneOpen,
 } from "../state";
 import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
 import { aboutOpen } from "../ui/AboutDialog";
@@ -514,8 +517,11 @@ function NativeBody(props: { compact: boolean }) {
     drawerOpen();
     navWidth();
     auxPaneWidth();
+    auxPaneHeight();
     auxPaneSide();
     auxPaneMaximized();
+    splitPaneOpen();
+    sessionSplitRatio();
     splitDragging();
     measureViewport();
     scheduleSettleMeasure();

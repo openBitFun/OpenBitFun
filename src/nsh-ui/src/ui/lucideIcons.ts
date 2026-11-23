@@ -67,6 +67,8 @@ export const LUCIDE_PATHS: Readonly<Record<string, readonly string[]>> = {
   "smartphone": ["M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-16a2 2 0 0 1 2 -2Z","M12 18h.01"],
   "panel-left": ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z","M9 3v18"],
   "panel-right": ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z","M15 3v18"],
+  "panel-bottom": ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z","M3 15h18"],
+  "columns": ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z","M12 3v18"],
   "maximize": ["M15 3h6v6","m21 3-7 7","m3 21 7-7","M9 21H3v-6"],
   "minimize": ["m14 10 7-7","M20 10h-6V4","m3 21 7-7","M4 14h6v6"],
   "swap": ["m16 3 4 4-4 4","M20 7H4","m8 21-4-4 4-4","M4 17h16"],

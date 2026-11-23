@@ -9,9 +9,23 @@
 
 import { signal } from "nsh";
 import type { InputRef } from "nsh";
-import { executeSessionCommand, listSessionCommands, searchWorkspaceFiles } from "./api";
+import {
+  executeSessionCommand,
+  getDirectoryChildren,
+  listSessionCommands,
+  searchWorkspaceFiles,
+  type WorkspaceEntry,
+} from "./api";
+import { addFileAttachment, toRelativeWorkspacePath } from "./attachmentStore";
+import { invokeCommand, invokeRawCommand } from "./bridge";
 import { tr, type MessageKey } from "./i18n";
-import { activeWorkspaceId, activeWorkspaceRoot, composerText } from "./state";
+import {
+  activeSessionId,
+  activeWorkspaceId,
+  activeWorkspaceRoot,
+  composerText,
+  sessions,
+} from "./state";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 
 /** One row of the picker: a path the host reported, split into what a row shows. */
@@ -19,10 +33,12 @@ export interface MentionHit {
   path: string;
   name: string;
   directory: boolean;
+  relativePath?: string;
 }
 
 export const mentionOpen = signal(false);
 export const mentionQuery = signal("");
+export const mentionBrowseDir = signal("");
 export const mentionHits = signal<MentionHit[]>([]);
 export const mentionSearched = signal(false);
 export const mentionLoading = signal(false);
@@ -37,32 +53,58 @@ export const mentionTruncated = signal(false);
 export const mentionInline = signal(false);
 
 /** Long enough to type through, short enough that the list follows the query. */
-const SEARCH_DEBOUNCE_MS = 150;
-/** What the panel draws without a scrolling list of its own. */
-const RESULT_LIMIT = 8;
+const SEARCH_DEBOUNCE_MS = 140;
+/** Max rows drawn inside the scrollable mention popover. */
+const RESULT_LIMIT = 24;
+const IGNORED_BROWSE_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "target",
+  "dist",
+  "build",
+  "__pycache__",
+  ".next",
+  ".turbo",
+]);
 
 let debounceTimer: number | null = null;
-/** The query of the read in flight, so a slower answer cannot overwrite a newer one. */
-let pendingQuery = "";
+/** Monotonic token for browse/search requests so slower answers never overwrite newer ones. */
+let mentionReqSeq = 0;
+
+function effectiveMentionWorkspaceId(): string | null {
+  const direct = activeWorkspaceId();
+  if (direct) return direct;
+  const sid = activeSessionId();
+  if (!sid) return null;
+  const row = sessions().find(item => item.sessionId === sid);
+  return row?.workspaceId || null;
+}
 
 /** The tag for one row, in the shape the desktop composer writes it. */
 export function mentionToken(hit: MentionHit): string {
-  return `#${hit.directory ? "dir" : "file"}:${hit.name} `;
+  const ref = hit.relativePath || hit.name;
+  return `#${hit.directory ? "dir" : "file"}:${ref} `;
 }
 
 export function openMention(): void {
   mentionNotice.set("");
   mentionQuery.set("");
+  mentionBrowseDir.set("");
   mentionHits.set([]);
   mentionSearched.set(false);
   mentionTruncated.set(false);
   mentionInline.set(false);
   mentionOpen.set(true);
+  void loadMentionDirectory("");
 }
 
 export function closeMention(): void {
   mentionOpen.set(false);
   mentionInline.set(false);
+  mentionQuery.set("");
+  mentionBrowseDir.set("");
+  syncedText = null;
+  syncedCaret = -1;
   if (debounceTimer !== null) {
     clearTimeout(debounceTimer);
     debounceTimer = null;
@@ -94,22 +136,18 @@ export function mentionTriggerAt(text: string, caret: number): MentionTrigger | 
 }
 
 /**
- * Follows the composer's text and caret: a typed `@` opens the panel with the
- * query the user is writing, and the panel closes once that token is gone
- * (a space, a deleted `@`, a caret moved elsewhere).
+ * Follows the composer's text and caret: a typed `@` opens the panel with workspace
+ * root browsing immediately on bare `@` and live file/folder search as the user types.
  */
-/**
- * Follows the composer's text and caret: a typed `@` opens the panel with the
- * query the user is writing, and the panel closes once that token is gone (a
- * space, a deleted `@`).
- *
- * A caret report that comes with the text unchanged changes nothing: the widget
- * reports the caret when a press moves the focus too, and the one thing that must
- * not happen then is the token being forgotten just before a row replaces it.
- */
-export function syncInlineMention(text: string, caret: number): void {
-  if (text === syncedText) return;
+export function syncInlineMention(text: string, caret: number, fromSelectionOnly = false): void {
+  // Selection reports while clicking a popover row keep the active token intact so the row press succeeds.
+  if (fromSelectionOnly && text === syncedText && mentionOpen() && mentionInline()) {
+    const triggerAtCaret = mentionTriggerAt(text, caret);
+    if (!triggerAtCaret) return;
+  }
+  if (text === syncedText && caret === syncedCaret) return;
   syncedText = text;
+  syncedCaret = caret;
   const trigger = mentionTriggerAt(text, caret);
   if (!trigger) {
     inlineToken = null;
@@ -117,21 +155,98 @@ export function syncInlineMention(text: string, caret: number): void {
     return;
   }
   inlineToken = { start: trigger.start, end: trigger.end };
-  if (!mentionOpen()) {
+  const wasOpen = mentionOpen();
+  if (!wasOpen) {
     mentionNotice.set("");
     mentionHits.set([]);
     mentionSearched.set(false);
     mentionTruncated.set(false);
+    mentionBrowseDir.set("");
     mentionOpen.set(true);
   }
   mentionInline.set(true);
-  if (mentionQuery() !== trigger.query) setMentionQuery(trigger.query);
+  if (!wasOpen || mentionQuery() !== trigger.query) {
+    setMentionQuery(trigger.query);
+  }
+}
+
+export function browseMentionDir(dirPath: string): void {
+  if (!mentionOpen()) return;
+  mentionBrowseDir.set(dirPath);
+  mentionQuery.set("");
+  mentionNotice.set("");
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  void loadMentionDirectory(dirPath);
+}
+
+export function browseMentionParent(): void {
+  const current = mentionBrowseDir().replace(/[\\/]+$/, "");
+  const root = activeWorkspaceRoot().replace(/[\\/]+$/, "");
+  if (!current || current === root) return;
+  const lastSep = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
+  if (lastSep <= 0) {
+    browseMentionDir("");
+    return;
+  }
+  const parent = current.slice(0, lastSep);
+  if (root && !parent.startsWith(root)) {
+    browseMentionDir("");
+    return;
+  }
+  browseMentionDir(parent === root ? "" : parent);
+}
+
+async function loadMentionDirectory(dirPath: string): Promise<void> {
+  const workspaceId = effectiveMentionWorkspaceId();
+  const root = activeWorkspaceRoot().replace(/[\\/]+$/, "");
+  if (!workspaceId || !mentionOpen()) return;
+  const target = dirPath || root;
+  if (!target) return;
+  const seq = ++mentionReqSeq;
+  mentionLoading.set(true);
+  mentionNotice.set("");
+  try {
+    const raw = await getDirectoryChildren(workspaceId, target);
+    if (seq !== mentionReqSeq || !mentionOpen()) return;
+    const entries: WorkspaceEntry[] = Array.isArray(raw) ? raw : [];
+    const atRoot = !dirPath || dirPath === root;
+    const filtered = entries.filter(entry => {
+      const name = (entry.name || entry.path.split(/[\\/]/).filter(Boolean).pop() || "").trim();
+      if (!name) return false;
+      if (atRoot && entry.isDirectory && IGNORED_BROWSE_DIRS.has(name)) return false;
+      return true;
+    });
+    filtered.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+      return (a.name || a.path).localeCompare(b.name || b.path, undefined, { sensitivity: "base" });
+    });
+    const hits: MentionHit[] = filtered.slice(0, RESULT_LIMIT).map(entry => {
+      const name = entry.name || entry.path.split(/[\\/]/).filter(Boolean).pop() || entry.path;
+      return {
+        path: entry.path,
+        name,
+        directory: Boolean(entry.isDirectory),
+        relativePath: toRelativeWorkspacePath(entry.path, root) ?? name,
+      };
+    });
+    mentionHits.set(hits);
+    mentionTruncated.set(filtered.length > hits.length);
+    mentionSearched.set(false);
+  } catch {
+    if (seq !== mentionReqSeq) return;
+    mentionHits.set([]);
+    mentionTruncated.set(false);
+  } finally {
+    if (seq === mentionReqSeq) mentionLoading.set(false);
+  }
 }
 
 /**
- * Types the query. The host is asked once the typing settles: a search per
- * keystroke would answer a list the user has already moved past, and the files
- * scene's own search box is the only other reader of that command here.
+ * Types the query. Empty query immediately lists the active workspace (or browsed directory)
+ * files & folders; non-empty query searches workspace filenames & folders with debounce.
  */
 export function setMentionQuery(query: string): void {
   mentionQuery.set(query);
@@ -139,10 +254,17 @@ export function setMentionQuery(query: string): void {
   if (debounceTimer !== null) clearTimeout(debounceTimer);
   const trimmed = query.trim();
   if (!trimmed) {
-    mentionHits.set([]);
     mentionSearched.set(false);
     mentionTruncated.set(false);
+    void loadMentionDirectory(mentionBrowseDir());
     return;
+  }
+  // Drop unfiltered root-browse rows immediately when transitioning into search
+  // so stale non-matching files never linger while the search debounce settles.
+  if (!mentionSearched()) {
+    mentionHits.set([]);
+    mentionTruncated.set(false);
+    mentionLoading.set(true);
   }
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
@@ -151,21 +273,23 @@ export function setMentionQuery(query: string): void {
 }
 
 async function searchMentions(query: string): Promise<void> {
-  const workspaceId = activeWorkspaceId();
+  const workspaceId = effectiveMentionWorkspaceId();
   if (!workspaceId || !mentionOpen()) return;
-  pendingQuery = query;
+  const seq = ++mentionReqSeq;
   mentionLoading.set(true);
   try {
-    const reply = await searchWorkspaceFiles(workspaceId, query);
-    // The workspace or the query may have moved on while the host answered.
-    if (pendingQuery !== query || !mentionOpen() || activeWorkspaceId() !== workspaceId) return;
+    const reply = await searchWorkspaceFiles(workspaceId, query, {
+      searchContent: false,
+      maxResults: RESULT_LIMIT + 6,
+    });
+    if (seq !== mentionReqSeq || !mentionOpen() || effectiveMentionWorkspaceId() !== workspaceId) return;
     const rows = rowsOf(reply);
-    const hits = hitsOf(rows);
+    const hits = hitsOf(rows, query);
     mentionHits.set(hits);
     mentionTruncated.set(rows.length > hits.length);
     mentionSearched.set(true);
   } catch (error) {
-    if (pendingQuery !== query) return;
+    if (seq !== mentionReqSeq) return;
     mentionHits.set([]);
     mentionTruncated.set(false);
     mentionSearched.set(true);
@@ -173,7 +297,7 @@ async function searchMentions(query: string): Promise<void> {
       `This host cannot search its files: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
-    if (pendingQuery === query) mentionLoading.set(false);
+    if (seq === mentionReqSeq) mentionLoading.set(false);
   }
 }
 
@@ -184,11 +308,12 @@ function rowsOf(reply: unknown): unknown[] {
   return Array.isArray(record.results) ? record.results : [];
 }
 
-/** The host's rows, one per path, with the workspace root applied to a relative one. */
-function hitsOf(rows: unknown[]): MentionHit[] {
+/** The host's rows, one per path, with workspace root applied and exact/prefix matches ranked first. */
+function hitsOf(rows: unknown[], query = ""): MentionHit[] {
   const root = activeWorkspaceRoot().replace(/[\\/]+$/, "");
   const hits: MentionHit[] = [];
   const seen = new Set<string>();
+  const q = query.trim().toLowerCase();
   for (const row of rows) {
     const record = (row ?? {}) as Record<string, unknown>;
     const raw = record.path ?? record.filePath ?? record.file ?? record.name;
@@ -197,58 +322,56 @@ function hitsOf(rows: unknown[]): MentionHit[] {
     const path = raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw) || !root ? raw : `${root}/${raw}`;
     if (seen.has(path)) continue;
     seen.add(path);
-    // A content hit reports a line; the reference is still the file.
     const name = path.split(/[\\/]/).filter(Boolean).pop() ?? raw;
-    hits.push({ path, name, directory });
-    if (hits.length >= RESULT_LIMIT) break;
+    const relativePath = toRelativeWorkspacePath(path, root) ?? name;
+    hits.push({ path, name, directory, relativePath });
   }
-  return hits;
+  if (q) {
+    const score = (hit: MentionHit) => {
+      const lowerName = hit.name.toLowerCase();
+      if (lowerName === q) return 0;
+      if (lowerName.startsWith(q)) return 1;
+      if (lowerName.includes(q)) return 2;
+      return 3;
+    };
+    hits.sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }
+  return hits.slice(0, RESULT_LIMIT);
 }
 
-/**
- * The `@…` the panel was opened on, so pressing a row replaces exactly that token.
- * It is kept from the edit that opened (or last grew) the token rather than read
- * from the caret at press time: a widget's last caret report can be older than what
- * is on screen, and replacing the wrong range would cut the message apart.
- */
 let inlineToken: { start: number; end: number } | null = null;
-/** The composer text the panel was last synchronised with. */
 let syncedText: string | null = null;
+let syncedCaret = -1;
 
 /**
- * Puts a row's tag in the message. The composer's widget inserts it as the user's
- * own edit at the caret and reports the new text back through `onChange`; without
- * a widget (the headless runtime has none) the same tag is appended to the text
- * this surface sends, so the reference is in the message either way. A mention
- * typed as `@…` is replaced by its tag rather than left in front of it.
+ * Attaches the chosen file/folder as a styled `FileAttachment` chip in the composer
+ * and strips the inline `@query` token (if triggered inline) instead of dumping raw `#file:` text.
  */
 export function insertMention(hit: MentionHit, composer: InputRef | undefined): void {
-  const token = mentionToken(hit);
   const replacing = mentionInline() ? inlineToken : null;
   inlineToken = null;
   closeMention();
-  const text = composerText();
+  const root = activeWorkspaceRoot();
+  addFileAttachment({
+    name: hit.name,
+    path: hit.path,
+    relativePath: hit.relativePath || toRelativeWorkspacePath(hit.path, root) || hit.name,
+    isDirectory: hit.directory,
+    source: hit.directory ? "folder" : "file",
+  });
   if (replacing) {
-    // The composer is a controlled field, so the replacement is the text itself:
-    // asking the widget to select and insert would depend on its caret report
-    // being the one the user's typing left behind.
-    composerText.set(`${text.slice(0, replacing.start)}${token}${text.slice(replacing.end)}`);
-    composer?.focus();
-    return;
+    const text = composerText();
+    const before = text.slice(0, replacing.start);
+    const after = text.slice(replacing.end);
+    const next = before && after && !/\s$/.test(before) && !/^\s/.test(after) ? `${before} ${after}` : `${before}${after}`;
+    composerText.set(next);
   }
-  if (composer) {
-    composer.focus();
-    composer.insertText(token);
-    return;
-  }
-  composerText.set(`${text}${token}`);
+  composer?.focus();
 }
 
-// Slash commands. A composer that holds only `/name` (no space yet) opens the
-// command list; pressing a row or sending the exact command runs it instead of
-// starting a turn. The list and the commands are the host's
-// (`list_session_commands` / `execute_session_command`), the same ones the IM
-// bots offer, so `/compact` means the same thing whichever client typed it.
+// Slash commands & Skills. A composer that holds `/name` (no space yet) opens the
+// command + skills list; pressing a row or sending the exact command runs it instead
+// of starting a plain turn.
 
 export interface SlashCommand {
   id: string;
@@ -261,17 +384,70 @@ export interface SlashCommand {
   /** Whether the host would run it right now. */
   available: boolean;
   args: string[];
-  /** True for client-local composer commands (e.g. `/model`) that never send a host RPC or turn. */
+  /** True for client-local / 2.0-wired composer commands that execute directly in nsh-ui. */
   local?: boolean;
+  /** Optional usage hint displayed right beside the command (e.g. `[question]`). */
+  argHint?: string;
 }
 
-/** Client-local slash commands always available in the session composer. */
+export interface SlashSkillItem {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  key?: string;
+}
+
+/** Client-local and 2.0-wired slash commands always discoverable in the `/` menu (1.0.12 parity). */
 export const LOCAL_SLASH_COMMANDS: ReadonlyArray<SlashCommand> = [
   {
     id: "model",
     command: "/model",
     labelKey: "sessions.model",
     description: "Switch model",
+    idleOnly: false,
+    available: true,
+    args: [],
+    local: true,
+    argHint: "[name]",
+  },
+  {
+    id: "goal",
+    command: "/goal",
+    labelKey: "sessions.slashGoalDesc",
+    description: "Set, pause, resume, or clear the session goal",
+    idleOnly: false,
+    available: true,
+    args: ["clear", "pause", "resume", "edit"],
+    local: true,
+    argHint: "[objective | clear | pause | resume]",
+  },
+  {
+    id: "btw",
+    command: "/btw",
+    labelKey: "sessions.slashBtwDesc",
+    description: "Ask a side question without interrupting the turn",
+    idleOnly: false,
+    available: true,
+    args: [],
+    local: true,
+    argHint: "[question]",
+  },
+  {
+    id: "review",
+    command: "/review",
+    labelKey: "sessions.slashReviewDesc",
+    description: "Launch a code review on current changes",
+    idleOnly: false,
+    available: true,
+    args: [],
+    local: true,
+    argHint: "[strict] [focus]",
+  },
+  {
+    id: "usage",
+    command: "/usage",
+    labelKey: "sessions.slashUsageDesc",
+    description: "Show token usage for this session",
     idleOnly: false,
     available: true,
     args: [],
@@ -283,8 +459,12 @@ export const LOCAL_SLASH_COMMANDS: ReadonlyArray<SlashCommand> = [
 export const sessionCommandList = signal<SlashCommand[]>([]);
 /** Set when the host has no session commands, so `/` explains instead of listing. */
 export const sessionCommandsUnsupported = signal(false);
+/** Active mode's user-invocable skills searchable right inside `/`. */
+export const slashSkills = signal<SlashSkillItem[]>([]);
 
 let commandsKey: string | null = null;
+let skillsKey: string | null = null;
+const SLASH_SKILL_NAME_RE = /^[A-Za-z][\w:-]*$/;
 
 function mergedSlashCommands(): SlashCommand[] {
   const host = sessionCommandList();
@@ -320,6 +500,72 @@ export async function loadSessionCommands(sessionId: string | null, force = fals
   }
 }
 
+/** Loads enabled user-invocable skills for the active mode/workspace so `/` can search & insert `[$Skill]`. */
+export async function loadSlashSkills(
+  modeId: string,
+  workspaceId: string | null,
+  workspacePath: string,
+  force = false,
+): Promise<void> {
+  const key = `${modeId}|${workspaceId ?? ""}|${workspacePath}`;
+  if (!force && key === skillsKey) return;
+  skillsKey = key;
+  try {
+    let raw: unknown;
+    try {
+      raw = await invokeRawCommand<unknown>("get_mode_skill_configs", {
+        modeId: modeId || "Standard",
+        forceRefresh: force,
+        includeDiagnostics: false,
+        workspaceId: workspaceId || undefined,
+        workspacePath: workspacePath || undefined,
+      });
+    } catch {
+      raw = await invokeCommand<unknown>("get_skill_configs", {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(workspacePath ? { workspacePath } : {}),
+      });
+    }
+    if (skillsKey !== key) return;
+    const rows = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as { skills?: unknown[] } | null)?.skills)
+        ? (raw as { skills: unknown[] }).skills
+        : [];
+    const seen = new Set<string>();
+    const items: SlashSkillItem[] = [];
+    for (const row of rows) {
+      const rec = (row ?? {}) as Record<string, unknown>;
+      const name = typeof rec.name === "string" ? rec.name.trim() : "";
+      if (!name || !SLASH_SKILL_NAME_RE.test(name)) continue;
+      if (rec.enabled === false || rec.disabled === true) continue;
+      if (rec.selectedForRuntime === false || rec.selected_for_runtime === false) continue;
+      if (rec.effectiveEnabled === false || rec.effective_enabled === false) continue;
+      if (rec.globallyEnabled === false || rec.globally_enabled === false) continue;
+      if (rec.allowUserInvocation === false || rec.allow_user_invocation === false) continue;
+      const lower = name.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+      items.push({
+        name,
+        description: typeof rec.description === "string" ? rec.description.trim() : "",
+        argumentHint:
+          typeof rec.argumentHint === "string"
+            ? rec.argumentHint.trim() || undefined
+            : typeof rec.argument_hint === "string"
+              ? rec.argument_hint.trim() || undefined
+              : undefined,
+        key: typeof rec.key === "string" ? rec.key : undefined,
+      });
+    }
+    items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    slashSkills.set(items);
+  } catch {
+    if (skillsKey !== key) return;
+    slashSkills.set([]);
+  }
+}
+
 /** The label a row shows: the client catalog's text when it has the key. */
 export function slashCommandLabel(command: SlashCommand): string {
   const key = command.labelKey as MessageKey;
@@ -331,20 +577,56 @@ export function slashCommandLabel(command: SlashCommand): string {
 export function slashCommandsFor(text: string, running: boolean): SlashCommand[] | null {
   if (!text.startsWith("/") || /\s/.test(text)) return null;
   const query = text.slice(1).toLowerCase();
-  return mergedSlashCommands().filter(
-    entry => entry.command.slice(1).startsWith(query) && (!running || !entry.idleOnly),
-  );
+  return mergedSlashCommands().filter(entry => {
+    if (running && entry.idleOnly) return false;
+    const cmd = entry.command.slice(1).toLowerCase();
+    if (cmd.startsWith(query) || cmd.includes(query)) return true;
+    if (entry.id === "reload" && "reload-skills".startsWith(query)) return true;
+    return false;
+  });
 }
 
-/** The command a whole message names (`/reload skills`, `/model claude` included), if offered. */
+/** Matching enabled skills for a leading `/query` token, ranked exact > prefix > substring. */
+export function slashSkillsFor(text: string): SlashSkillItem[] {
+  if (!text.startsWith("/") || /\s/.test(text)) return [];
+  const query = text.slice(1).toLowerCase();
+  const list = slashSkills();
+  if (!query) return list.slice(0, 12);
+  const scored: Array<{ item: SlashSkillItem; rank: number }> = [];
+  for (const item of list) {
+    const lowerName = item.name.toLowerCase();
+    const lowerDesc = item.description.toLowerCase();
+    let rank = -1;
+    if (lowerName === query) rank = 0;
+    else if (lowerName.startsWith(query)) rank = 1;
+    else if (lowerName.includes(query)) rank = 2;
+    else if (lowerDesc.includes(query)) rank = 3;
+    if (rank >= 0) scored.push({ item, rank });
+  }
+  scored.sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base" }));
+  return scored.slice(0, 12).map(s => s.item);
+}
+
+/** Replaces the leading `/query` token with the runtime-honored `[$<skillName>] ` token. */
+export function insertSlashSkill(skill: SlashSkillItem, composer: InputRef | undefined): void {
+  const token = `[$${skill.name}] `;
+  composerText.set(token);
+  composer?.focus();
+}
+
+/** The command a whole message names (`/reload skills`, `/reload-skills`, `/model claude`, `/goal ...`), if offered. */
 export function parseSlashCommand(text: string): { command: SlashCommand; arg: string } | null {
   const trimmed = text.trim();
-  const match = /^\/([a-z_]+)(?:\s+([\s\S]+))?$/i.exec(trimmed);
+  const match = /^\/([a-z_-]+)(?:\s+([\s\S]+))?$/i.exec(trimmed);
   if (!match) return null;
-  const id = match[1]!.toLowerCase();
+  let id = match[1]!.toLowerCase();
+  let rawArg = (match[2] ?? "").trim();
+  if (id === "reload-skills") {
+    id = "reload";
+    rawArg = "skills";
+  }
   const command = mergedSlashCommands().find(entry => entry.id === id);
   if (!command) return null;
-  const rawArg = (match[2] ?? "").trim();
   if (command.local) {
     return { command, arg: rawArg };
   }

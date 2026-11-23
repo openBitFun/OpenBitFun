@@ -19,9 +19,7 @@ import {
   activeSessionId,
   activeWorkspaceId,
   deviceContext,
-  openSessionKeys,
   runStep,
-  sessionKey,
   sessionTurns,
   sessions,
 } from "./state";
@@ -339,8 +337,6 @@ export async function dismissStaleAcpSessionIfAbsent(
   }
   if (!confirmedAbsent) return false;
   sessions.update(current => current.filter(item => item.sessionId !== sessionId));
-  const key = sessionKey(sessionId, targetDevice || undefined);
-  openSessionKeys.set(openSessionKeys().filter(item => item !== key));
   if (activeSessionId() === sessionId) {
     activeSessionDevice.set("");
     activeSessionId.set(null);

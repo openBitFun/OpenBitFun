@@ -21,17 +21,24 @@ import type {
   ViewStyle,
 } from "nsh";
 import { DiffView, Input, TextView } from "nsh/base";
+import { invokeCommand } from "../bridge";
 import {
   getLiveRoundText,
   getLiveRoundThinking,
+  getSecondaryLiveRoundText,
+  getSecondaryLiveRoundThinking,
   hasLiveContent,
   hasLiveRoundText,
   hasLiveRoundThinking,
   hasLiveText,
   hasLiveThinking,
   hasLiveTools,
+  hasSecondaryLiveRoundText,
+  hasSecondaryLiveRoundThinking,
   isStreamDraining,
   liveTurn,
+  secondaryLiveTurn,
+  secondaryStreamScrollTick,
   streamScrollTick,
   turnStartedAt,
   type LiveModelRound,
@@ -59,14 +66,20 @@ import {
   toolTitleOf,
 } from "../ui/toolCards";
 import {
+  addFileAttachment,
   attachmentNotice,
   attachmentPreviewSrc,
-  attachImageFromClipboard,
   attachImagesFromPicker,
+  fileAttachments,
   imageAttachments,
   isLocalAttachmentPathAllowed,
+  isLongTextPaste,
   pathOfFileUrl,
   removeAttachment,
+  removeFileAttachment,
+  saveLongTextPasteToWorkspace,
+  toRelativeWorkspacePath,
+  type FileAttachment,
   type ImageAttachment,
 } from "../attachmentStore";
 import { contentWidth } from "../contentWidthStore";
@@ -182,8 +195,14 @@ import {
   promptSuggestionForSession,
 } from "../promptSuggestionStore";
 import {
+  browseMentionDir,
+  browseMentionParent,
   closeMention,
   insertMention,
+  insertSlashSkill,
+  loadSessionCommands,
+  loadSlashSkills,
+  mentionBrowseDir,
   mentionHits,
   mentionInline,
   mentionLoading,
@@ -192,7 +211,6 @@ import {
   mentionQuery,
   mentionSearched,
   mentionTruncated,
-  loadSessionCommands,
   openMention,
   parseSlashCommand,
   runSlashCommand,
@@ -200,7 +218,9 @@ import {
   setMentionQuery,
   slashCommandLabel,
   slashCommandsFor,
+  slashSkillsFor,
   type SlashCommand,
+  type SlashSkillItem,
   syncInlineMention,
 } from "../mentionStore";
 import {
@@ -220,28 +240,32 @@ import {
   activeWorkspaceId,
   agentTypeOf,
   archiveSessionRow,
-  closeSessionTab,
   composerText,
   copyActiveSession,
-  createSessionInWorkspace,
   deleteSessionRow,
+  focusPane,
+  focusedPane,
   forkActiveSession,
   hasEarlierTurns,
   isSessionArchived,
   loadEarlierTurns,
-  evictTranscriptCache,
   loadTurns,
   openInAuxPane,
-  openSessionIds,
   pendingTurn,
   pendingTurnState,
   renameSession,
   runningTurnId,
-  selectSession,
+  secondarySessionDevice,
+  secondarySessionId,
+  secondaryWorkspaceId,
   sendNotice,
   sendTurn,
+  SESSION_SPLIT_DEFAULT_RATIO,
+  sessionSplitRatio,
   sessionTurns,
   sessions,
+  setSessionSplitRatio,
+  splitPaneOpen,
   stopRunningTurn,
   streamText,
   thinkingText,
@@ -249,6 +273,35 @@ import {
   transcriptNotice,
   turnsLoading,
 } from "../state";
+import {
+  addSecondaryFileAttachment,
+  addSecondaryImageAttachment,
+  closeSplitPane,
+  createSecondarySession,
+  loadSecondaryEarlierTurns,
+  openSplitPane,
+  removeSecondaryFileAttachment,
+  removeSecondaryImageAttachment,
+  secondaryComposerText,
+  secondaryFileAttachments,
+  secondaryHasEarlierTurns,
+  secondaryImageAttachments,
+  secondaryPendingTurnState,
+  secondaryRunningTurnId,
+  secondarySendNotice,
+  secondarySessionTitle,
+  secondaryTranscriptNotice,
+  secondaryTurnError,
+  secondaryTurns,
+  secondaryTurnsLoading,
+  secondaryWorkspaceName,
+  secondaryWorkspaceRecord,
+  secondaryWorkspaceRoot,
+  selectSecondarySession,
+  sendSecondaryTurn,
+  stopSecondaryTurn,
+  swapSplitPanes,
+} from "../splitSessionStore";
 import {
   compactLayout,
   controlHeight,
@@ -266,6 +319,7 @@ import {
 import { searchRevealTurn } from "../globalSearchStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
 import { Icon, type IconName } from "../ui/icons";
+import { openImageLightbox } from "../ui/ImageLightbox";
 import { OpenBitFunLogoMark } from "../ui/studio";
 import {
   STATIC_MARKDOWN_OPTIONS,
@@ -334,6 +388,7 @@ import {
   InlineBanner,
   InlineConfirmBar,
   InputBox,
+  SplitHandle,
   StatusDot,
   TooltipBubble,
   focusRingStyle as baseFocusRingStyle,
@@ -759,11 +814,20 @@ async function attachRemoteDroppedImage(uri: string, name: string, mime: string)
   }
 }
 
+function insertTextIntoComposer(text: string): void {
+  if (!text) return;
+  if (composerInputRef && typeof composerInputRef.insertText === "function") {
+    composerInputRef.insertText(text);
+    return;
+  }
+  composerText.set(`${composerText()}${text}`);
+}
+
 function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
   let attachedImages = 0;
-  let blockedRemoteImages = 0;
+  let attachedFiles = 0;
   const allowLocalPath = isLocalAttachmentPathAllowed();
-  const referencedNames: string[] = [];
+  const wsRoot = activeWorkspaceRoot();
 
   for (let i = 0; i < uris.length; i += 1) {
     const uri = uris[i];
@@ -781,7 +845,6 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
             pushToast(tr("error.unsupported"), "error");
           }
         });
-        blockedRemoteImages += 1;
         continue;
       }
       const attachment: ImageAttachment = {
@@ -794,53 +857,79 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
       imageAttachments.update(list => [...list, attachment]);
       attachedImages += 1;
     } else {
-      referencedNames.push(name);
+      const relativePath = toRelativeWorkspacePath(filePath, wsRoot);
+      addFileAttachment({
+        name,
+        path: filePath,
+        relativePath,
+        isDirectory: false,
+        source: "file",
+      });
+      attachedFiles += 1;
     }
   }
 
-  if (attachedImages > 0) {
+  if (attachedImages > 0 || attachedFiles > 0) {
     attachmentNotice.set("");
-  }
-  void blockedRemoteImages;
-
-  if (referencedNames.length > 0) {
-    const tags = referencedNames.map(name => `#file:${name}`).join(" ");
-    const current = composerText();
-    const separator = current.length > 0 && !/\s$/.test(current) ? " " : "";
-    composerText.set(`${current}${separator}${tags} `);
     composerInputRef?.focus();
   }
 }
 
 async function handleComposerPaste(event: PasteEvent): Promise<void> {
-  let attachedImages = 0;
+  let handledMediaOrFiles = false;
   if (event.files && event.files.length > 0) {
     for (const file of event.files) {
-      if (!isImageMimeOrPath(file.type, file.name)) continue;
-      try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const mimeType = file.type || mimeFromFilename(file.name);
-        const id = `attachment-paste-${++nextDroppedAttachmentId}`;
-        const attachment: ImageAttachment = {
-          id,
-          name: file.name || `pasted-image-${nextDroppedAttachmentId}.png`,
-          mimeType,
-          fileSize: bytes.byteLength,
-          dataUrl: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-        };
-        imageAttachments.update(list => [...list, attachment]);
-        attachedImages += 1;
-      } catch (error) {
-        attachmentNotice.set(localizeHostError(error));
+      if (isImageMimeOrPath(file.type, file.name)) {
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const mimeType = file.type || mimeFromFilename(file.name);
+          const id = `attachment-paste-${++nextDroppedAttachmentId}`;
+          const attachment: ImageAttachment = {
+            id,
+            name: file.name || `pasted-image-${nextDroppedAttachmentId}.png`,
+            mimeType,
+            fileSize: bytes.byteLength,
+            dataUrl: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+          };
+          imageAttachments.update(list => [...list, attachment]);
+          attachmentNotice.set("");
+          handledMediaOrFiles = true;
+        } catch (error) {
+          attachmentNotice.set(localizeHostError(error));
+        }
+      } else if (file.type.startsWith("text/") || /\.(md|txt|json|ts|tsx|js|jsx|rs|py|yml|yaml|toml|csv|log)$/i.test(file.name)) {
+        try {
+          const content = await file.text();
+          const saved = await saveLongTextPasteToWorkspace(content, {
+            fileName: file.name || undefined,
+          });
+          if (saved) {
+            handledMediaOrFiles = true;
+          }
+        } catch (error) {
+          attachmentNotice.set(localizeHostError(error));
+        }
       }
-    }
-    if (attachedImages > 0) {
-      attachmentNotice.set("");
     }
   }
   if (event.uris && event.uris.length > 0) {
     attachOrReferenceFileUris(event.uris, []);
+    handledMediaOrFiles = true;
   }
+  if (handledMediaOrFiles) {
+    return;
+  }
+  const text = event.text ?? "";
+  if (!text) return;
+  if (isLongTextPaste(text)) {
+    const saved = await saveLongTextPasteToWorkspace(text);
+    if (saved) {
+      composerInputRef?.focus();
+      return;
+    }
+    pushToast(tr("sessions.pastedSaveFailed"), "warning");
+  }
+  insertTextIntoComposer(text);
 }
 
 function handleComposerFileDrop(event: { uris: string[]; mimeTypes: string[] }): void {
@@ -1121,11 +1210,25 @@ function ConversationHeader() {
             }}
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
-              <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.md }}>
+              <View
+                role={splitPaneOpen() ? "button" : undefined}
+                accessibilityLabel={splitPaneOpen() ? "primary-pane-focus" : undefined}
+                onPress={splitPaneOpen() ? () => focusPane(0) : undefined}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.md,
+                  ...(splitPaneOpen() ? { cursor: "pointer", userSelect: "none" } : {}),
+                }}
+              >
                 <Text
                   testID="session-title"
                   style={{
-                    ...textStyle("sectionTitle"),
+                    ...textStyle("sectionTitle", {
+                      color: splitPaneOpen() && focusedPane() !== 0 ? palette().textSecondary : palette().text,
+                    }),
                     minWidth: 0,
                     flexShrink: 1,
                     numberOfLines: 1,
@@ -1145,12 +1248,21 @@ function ConversationHeader() {
                     </View>
                   )}
                 </If>
-                <If when={!sessionsCompact()}>
+                <If when={!sessionsCompact() && !splitPaneOpen()}>
                   <Each of={TOOL_TOGGLES} key={tool => tool.id}>
                     {tool => <ToolToggle id={tool().id} icon={tool().icon} label={tr(tool().label)} />}
                   </Each>
                 </If>
                 <ThreadMenuTrigger />
+                <If when={splitPaneOpen()}>
+                  <IconButton
+                    icon="close"
+                    size="sm"
+                    accessibilityLabel="session-pane-close-0"
+                    tooltip={tr("sessions.splitClosePane")}
+                    onPress={() => closeSplitPane(0)}
+                  />
+                </If>
               </View>
             </View>
             <If when={sessionOrigin()}>
@@ -1240,7 +1352,14 @@ function ConversationHeader() {
           onPressOutside={closeThreadMenu}
           onCancel={closeThreadMenu}
         >
-          <ThreadActionsSurface placement={threadMenuPlacement()} />
+          <ThreadActionsSurface
+            placement={threadMenuPlacement()}
+            splitOpen={splitPaneOpen()}
+            onToggleSplit={() => {
+              if (splitPaneOpen()) closeSplitPane(1);
+              else openSplitPane();
+            }}
+          />
         </Overlay>
       </If>
 
@@ -1437,7 +1556,24 @@ function ConversationHeader() {
   );
 }
 
-function ThreadActionsSurface(props: { placement: Placement }) {
+function ThreadMenuDivider() {
+  return (
+    <View
+      style={{
+        height: 1,
+        marginVertical: space.xs,
+        marginHorizontal: space.xs,
+        backgroundColor: palette().borderSubtle,
+      }}
+    />
+  );
+}
+
+function ThreadActionsSurface(props: {
+  placement: Placement;
+  onToggleSplit?: () => void;
+  splitOpen?: boolean;
+}) {
   const motion = usePopoverMotion(() => props.placement, "end", closeThreadMenu);
   return (
     <View
@@ -1445,91 +1581,18 @@ function ThreadActionsSurface(props: { placement: Placement }) {
       style={[
         overlayPopoverStyle(),
         {
-          minWidth: 236,
-          maxWidth: 300,
+          minWidth: 212,
+          maxWidth: 264,
           padding: space.chip,
-          gap: space.xs,
+          gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "end"),
         },
         motion.style,
       ]}
     >
-      <ThreadMenuAction
-        icon="plus"
-        label={tr("nav.newSession")}
-        onPress={() => {
-          closeThreadMenu();
-          void createSessionInWorkspace(tr("nav.newSession"));
-        }}
-      />
-
-      <If when={!isTranscriptEmpty() || transcriptSearchOpen()}>
-        <ThreadMenuAction
-          icon="search"
-          label={tr("sessions.searchTranscript")}
-          accessibilityLabel="transcript-search-toggle"
-          onPress={() => {
-            closeThreadMenu();
-            const next = !transcriptSearchOpen();
-            transcriptSearchOpen.set(next);
-            if (!next) transcriptSearchQuery.set("");
-          }}
-        />
-        <ThreadMenuAction
-          icon={copiedTranscript() ? "check" : "copy"}
-          label={tr("sessions.copyTranscript")}
-          disabled={sessionTurns().length === 0}
-          accessibilityLabel="copy-transcript"
-          onPress={() => {
-            closeThreadMenu();
-            void copyWholeTranscript();
-          }}
-        />
-      </If>
-
-      <If when={openSessionIds().length > 0}>
-        <View
-          style={{
-            gap: space.hair,
-            paddingTop: space.sm,
-            marginTop: space.hair,
-            borderTopWidth: 1,
-            borderColor: palette().borderSubtle,
-          }}
-        >
-          <Text
-            style={{
-              color: palette().textElevatedMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
-              fontWeight: "600",
-              paddingHorizontal: space.sm,
-              paddingBottom: space.hair,
-            }}
-          >
-            {tr("sessions.openTabs")}
-          </Text>
-          <Scroll style={{ maxHeight: 180, minHeight: 0 }} scrollbar={true}>
-            <View style={{ gap: space.hair }}>
-              <Each of={openSessionIds()} key="index">
-                {id => <SessionMenuTab id={id()} />}
-              </Each>
-            </View>
-          </Scroll>
-        </View>
-      </If>
-
       <If when={activeSession()}>
         {session => (
-          <View
-            style={{
-              gap: space.hair,
-              paddingTop: space.sm,
-              marginTop: space.hair,
-              borderTopWidth: 1,
-              borderColor: palette().borderSubtle,
-            }}
-          >
+          <>
             <ThreadMenuAction
               icon="edit"
               label={tr("common.rename")}
@@ -1539,34 +1602,25 @@ function ThreadActionsSurface(props: { placement: Placement }) {
                 renaming.set(true);
               }}
             />
+            <If when={Boolean(props.onToggleSplit)}>
+              <ThreadMenuAction
+                icon="columns"
+                label={props.splitOpen ? tr("sessions.splitClose") : tr("sessions.splitOpen")}
+                accessibilityLabel={props.splitOpen ? "session-split-close" : "session-split-open"}
+                onPress={() => {
+                  closeThreadMenu();
+                  props.onToggleSplit?.();
+                }}
+              />
+            </If>
             <ThreadMenuAction
-              icon="copy"
-              label={tr("sessions.duplicate")}
-              hint={tr("sessions.copySession")}
+              icon={isArchived(session()) ? "undo" : "layers"}
+              label={isArchived(session()) ? tr("sessions.restore") : tr("sessions.archive")}
               onPress={() => {
                 closeThreadMenu();
-                void copyActiveSession();
+                void archiveSessionRow(session().sessionId, !isArchived(session()));
               }}
             />
-            <ThreadMenuAction
-              icon="git-branch"
-              label={tr("sessions.fork")}
-              hint={tr("sessions.forkFromLastTurn")}
-              onPress={() => {
-                closeThreadMenu();
-                void forkActiveSession();
-              }}
-            />
-            <ThreadMenuAction
-              icon="eye"
-              label={tr("review.open")}
-              accessibilityLabel="review-launch-open"
-              onPress={() => {
-                closeThreadMenu();
-                openReviewLauncher();
-              }}
-            />
-            {/* wave22-p2: a phone has no tool toggles; the page of the session's device, live. */}
             <If when={sessionsCompact()}>
               <ThreadMenuAction
                 icon="globe"
@@ -1578,28 +1632,61 @@ function ThreadActionsSurface(props: { placement: Placement }) {
                 }}
               />
             </If>
-            {/* wave22-p5: the session goal and a side question beside the session. */}
+
+            <ThreadMenuDivider />
+
+            <If when={!isTranscriptEmpty() || transcriptSearchOpen()}>
+              <ThreadMenuAction
+                icon="search"
+                label={tr("sessions.searchTranscript")}
+                accessibilityLabel="transcript-search-toggle"
+                onPress={() => {
+                  closeThreadMenu();
+                  const next = !transcriptSearchOpen();
+                  transcriptSearchOpen.set(next);
+                  if (!next) transcriptSearchQuery.set("");
+                }}
+              />
+            </If>
             <ThreadMenuAction
-              icon="circle-dot"
-              label={tr("goal.menu")}
-              disabled={!goalAvailable()}
-              hint={goalAvailable() ? undefined : tr("goal.hostUpdate")}
-              accessibilityLabel="session-goal-open"
+              icon="git-branch"
+              label={tr("sessions.fork")}
               onPress={() => {
                 closeThreadMenu();
-                openGoalDialog();
+                void forkActiveSession();
               }}
             />
             <ThreadMenuAction
-              icon="message-circle"
-              label={tr("btw.menu")}
-              accessibilityLabel="side-question-open"
+              icon="copy"
+              label={tr("sessions.duplicate")}
               onPress={() => {
                 closeThreadMenu();
-                openSideQuestion();
+                void copyActiveSession();
               }}
             />
-            {/* Copy session ID, Export as Markdown and Show storage folder: the same items as the All sessions ⋯. */}
+            <ThreadMenuAction
+              icon="eye"
+              label={tr("review.open")}
+              accessibilityLabel="review-launch-open"
+              onPress={() => {
+                closeThreadMenu();
+                openReviewLauncher();
+              }}
+            />
+
+            <ThreadMenuDivider />
+
+            <If when={sessionTurns().length > 0}>
+              <ThreadMenuAction
+                icon={copiedTranscript() ? "check" : "copy"}
+                label={tr("sessions.copyTranscript")}
+                accessibilityLabel="copy-transcript"
+                onPress={() => {
+                  closeThreadMenu();
+                  void copyWholeTranscript();
+                }}
+              />
+            </If>
             <Each
               of={sessionMenuItems(
                 {
@@ -1609,7 +1696,7 @@ function ThreadActionsSurface(props: { placement: Placement }) {
                   title: sessionTitle(session()),
                   archived: isArchived(session()),
                 },
-                { omit: ["rename", "archive", "delete"] },
+                { omit: ["rename", "archive", "delete", "split"] },
               )}
               key={item => item.id}
             >
@@ -1627,14 +1714,9 @@ function ThreadActionsSurface(props: { placement: Placement }) {
                 />
               )}
             </Each>
-            <ThreadMenuAction
-              icon={isArchived(session()) ? "undo" : "layers"}
-              label={isArchived(session()) ? tr("sessions.restore") : tr("sessions.archive")}
-              onPress={() => {
-                closeThreadMenu();
-                void archiveSessionRow(session().sessionId, !isArchived(session()));
-              }}
-            />
+
+            <ThreadMenuDivider />
+
             <ThreadMenuAction
               icon="trash"
               label={tr("common.delete")}
@@ -1644,7 +1726,7 @@ function ThreadActionsSurface(props: { placement: Placement }) {
                 confirmingSessionDelete.set(session().sessionId);
               }}
             />
-          </View>
+          </>
         )}
       </If>
     </View>
@@ -1691,15 +1773,15 @@ function ThreadMenuAction(props: {
       <Icon
         name={props.icon}
         size={13}
-        color={palette().textSecondary}
+        color={props.danger ? palette().danger : palette().textSecondary}
       />
       <Text
         style={{
           flex: 1,
           minWidth: 0,
           color: props.danger ? palette().danger : palette().text,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.35),
+          fontSize: textSize(12.5),
+          lineHeight: textLineHeight(12.5, 1.35),
           fontWeight: "500",
           numberOfLines: 1,
           textOverflow: "ellipsis",
@@ -1721,80 +1803,6 @@ function ThreadMenuAction(props: {
           </Text>
         )}
       </If>
-    </View>
-  );
-}
-
-function SessionMenuTab(props: { id: string }) {
-  const title = computed(() => {
-    const row = sessions().find(item => item.sessionId === props.id);
-    return row?.sessionName || props.id;
-  });
-  const active = computed(() => activeSessionId() === props.id);
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        minHeight: compactLayout() ? layout.touchTarget : undefined,
-        gap: space.chip,
-        paddingHorizontal: space.sm,
-        paddingVertical: space.xs,
-        borderRadius: radii.xs,
-        borderCurve: "continuous",
-        backgroundColor: active() ? palette().accentSoft : "transparent",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: active() ? palette().accentSoft : palette().panelHover }}
-    >
-      <View
-        role="button"
-        accessibilityLabel={`open-tab-${props.id}`}
-        onPress={() => {
-          selectSession(props.id);
-          closeThreadMenu();
-        }}
-        style={{ flex: 1, minWidth: 0, cursor: "pointer", borderRadius: radii.xs, userSelect: "none" }}
-        focusVisibleStyle={focusRingStyle()}
-      >
-        <Text
-          style={{
-            color: active() ? palette().text : palette().textSecondary,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.35),
-            fontWeight: active() ? "600" : "400",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {title()}
-        </Text>
-      </View>
-      <View
-        role="button"
-        hitSlop={compactLayout() ? undefined : 4}
-        accessibilityLabel={`close-session-tab-${props.id}`}
-        onPress={() => closeSessionTab(props.id)}
-        style={{
-          flexShrink: 0,
-          minWidth: compactLayout() ? layout.touchTarget : undefined,
-          minHeight: compactLayout() ? layout.touchTarget : undefined,
-          alignItems: "center",
-          justifyContent: "center",
-          paddingHorizontal: space.xs,
-          paddingVertical: space.hair,
-          borderRadius: radii.xs,
-          borderCurve: "continuous",
-          cursor: "pointer",
-          userSelect: "none",
-          ...pressTransition(MOTION_DURATION.fast),
-        }}
-        hoverStyle={{ backgroundColor: palette().panelHover }}
-        activeStyle={tactileActiveStyle(0.97)}
-        focusVisibleStyle={focusRingStyle()}
-      >
-        <Text style={{ color: palette().textMuted, fontSize: textSize(11), fontWeight: "600" }}>×</Text>
-      </View>
     </View>
   );
 }
@@ -1937,17 +1945,79 @@ function UserImageStrip(props: { images: UserImage[] }) {
             }
           >
             {src => (
-              <Image
-                src={src()}
-                accessibilityLabel={`user-image-${image().name}`}
-                style={{ width: 96, height: 96, borderRadius: radii.md, borderWidth: 1, borderColor: palette().borderSubtle }}
-              />
+              <View
+                role="button"
+                accessibilityLabel={`user-image-preview-${image().name}`}
+                tooltip={<TooltipBubble text={image().name} />}
+                onPress={() => openImageLightbox({ src: src(), title: image().name })}
+                style={{
+                  borderRadius: radii.md,
+                  borderCurve: "continuous",
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  overflow: "hidden",
+                  cursor: "pointer",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ borderColor: palette().borderStrong, opacity: 0.94 }}
+                activeStyle={tactileActiveStyle(0.97)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <Image
+                  src={src()}
+                  accessibilityLabel={`user-image-${image().name}`}
+                  style={{ width: 96, height: 96, objectFit: "cover" }}
+                />
+              </View>
             )}
           </If>
         )}
       </Each>
     </View>
   );
+}
+
+interface ParsedUserFileTag {
+  key: string;
+  kind: "file" | "dir";
+  ref: string;
+  name: string;
+}
+
+function extractUserMessageFileTags(raw: string): { files: ParsedUserFileTag[]; text: string } {
+  const files: ParsedUserFileTag[] = [];
+  const seen = new Set<string>();
+  const stripped = raw.replace(/(?:^|\s)#(file|dir):(\S+)/g, (match, kind: "file" | "dir", ref: string) => {
+    const key = `${kind}:${ref}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      const name = basename(ref) || ref;
+      files.push({ key, kind, ref, name });
+    }
+    return match.startsWith(" ") || match.startsWith("\n") ? " " : "";
+  });
+  return {
+    files,
+    text: stripped.replace(/[ \t]{2,}/g, " ").trim(),
+  };
+}
+
+function fileAttachmentIcon(entry: { isDirectory?: boolean; source?: FileAttachment["source"]; name: string }): IconName {
+  if (entry.isDirectory) return "folder";
+  if (entry.source === "pasted-text") return "file-text";
+  const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
+  if (["ts", "tsx", "js", "jsx", "rs", "py", "go", "java", "c", "cpp", "h", "sh", "json", "toml", "yaml", "yml", "css", "html"].includes(ext)) {
+    return "code";
+  }
+  return "file-text";
+}
+
+function resolveUserTagPath(ref: string): string {
+  if (ref.startsWith("/") || /^[A-Za-z]:[\\/]/.test(ref)) return ref;
+  const root = activeWorkspaceRoot();
+  if (!root) return ref;
+  const sep = !isRemoteActiveWorkspace() && /^[A-Za-z]:\\/.test(root) ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${sep}${ref.replace(/^[\\/]+/, "")}`;
 }
 
 function UserBubble(props: {
@@ -1959,8 +2029,10 @@ function UserBubble(props: {
   images?: UserImage[];
 }) {
   const hovered = signal(false);
+  const parsed = computed(() => extractUserMessageFileTags(props.text));
+  const displayText = computed(() => parsed().text);
   const long = computed(
-    () => props.text.split("\n").length > USER_MESSAGE_CLAMP_LINES || props.text.length > 900,
+    () => displayText().split("\n").length > USER_MESSAGE_CLAMP_LINES || displayText().length > 900,
   );
   const expanded = computed(() => expandedUserMessages().includes(props.partKey));
   const revealActions = computed(
@@ -1990,6 +2062,66 @@ function UserBubble(props: {
       <If when={(props.images?.length ?? 0) > 0}>
         <UserImageStrip images={props.images ?? []} />
       </If>
+      <If when={parsed().files.length > 0}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: space.chip }}>
+          <Each of={parsed().files} key={item => item.key}>
+            {item => (
+              <View
+                role="button"
+                accessibilityLabel={`user-file-ref-${item().name}`}
+                tooltip={<TooltipBubble text={`${item().ref} · ${tr("sessions.fileChipOpenHint")}`} />}
+                onPress={() => {
+                  if (item().kind === "file") {
+                    openInAuxPane("files", resolveUserTagPath(item().ref));
+                  } else {
+                    openInAuxPane("files");
+                  }
+                }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.xs,
+                  maxWidth: 240,
+                  height: 26,
+                  paddingHorizontal: space.sm,
+                  borderRadius: radii.md,
+                  borderCurve: "continuous",
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().surfaceTertiary,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().panelHover, borderColor: palette().border }}
+                activeStyle={tactileActiveStyle(0.97)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <Icon
+                  name={fileAttachmentIcon({ isDirectory: item().kind === "dir", name: item().name })}
+                  size={12}
+                  color={item().kind === "dir" ? palette().accent : palette().textSecondary}
+                />
+                <Text
+                  style={{
+                    flexShrink: 1,
+                    minWidth: 0,
+                    color: palette().text,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
+                    fontWeight: "500",
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis-middle",
+                  }}
+                >
+                  {item().name}
+                </Text>
+              </View>
+            )}
+          </Each>
+        </View>
+      </If>
+      <If when={displayText().length > 0 || (parsed().files.length === 0 && (props.images?.length ?? 0) === 0)}>
       <View
         style={{
           backgroundColor: palette().userBubble,
@@ -2008,7 +2140,7 @@ function UserBubble(props: {
             textOverflow: long() && !expanded() ? "ellipsis" : undefined,
           }}
         >
-          {props.text}
+          {displayText()}
         </Text>
         <If when={long()}>
           <View
@@ -2042,6 +2174,7 @@ function UserBubble(props: {
           </View>
         </If>
       </View>
+      </If>
       <View
         style={{
           flexDirection: "row",
@@ -2107,7 +2240,6 @@ async function confirmRerun(): Promise<void> {
   rerunBusy.set(true);
   try {
     clearPromptSuggestion(sessionId, activeSessionDevice());
-    evictTranscriptCache(activeSessionKey());
     await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId });
     rerunTarget.set(null);
     await loadTurns(sessionId);
@@ -2320,6 +2452,24 @@ function handleMarkdownLink(event: { url: string }): void {
   }
 }
 
+function handleMarkdownImagePress(event: { image: { src: string; alt?: string; title?: string } }): void {
+  const raw = (event.image.src ?? "").trim();
+  if (!raw) return;
+  const title = event.image.alt || event.image.title || undefined;
+  if (/^(https?:|data:|file:|asset:)/i.test(raw)) {
+    openImageLightbox({ src: raw, title });
+    return;
+  }
+  const resolved = resolveWorkspaceMarkdownLink(raw, activeWorkspaceRoot(), isRemoteActiveWorkspace());
+  if (resolved.kind === "workspace") {
+    if (isLocalAttachmentPathAllowed()) {
+      openImageLightbox({ src: `file://${resolved.path}`, title: title || resolved.path.split("/").pop() });
+    } else {
+      openInAuxPane("files", resolved.path);
+    }
+  }
+}
+
 /** Structured summary card for an inline visualization figure (`visualize{...}` or `publishedFigures`). */
 function InlineFigureCard(props: { figure: InlineFigureDirective }) {
   const canOpenInFiles = () => !props.figure.path.startsWith("openbitfun://");
@@ -2439,6 +2589,7 @@ function MarkdownBody(props: { text: string; live?: boolean }) {
           selectable
           links="report"
           onLinkPress={handleMarkdownLink}
+          onImagePress={handleMarkdownImagePress}
           options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
           codeBlockActions={createMarkdownCodeActions()}
           styles={createMarkdownStyles()}
@@ -2592,10 +2743,10 @@ function liveToolToCallView(tool: LiveToolItem): ToolCallView {
  * reasoning, then its answer cut at every tool call (each tool remembers how much
  * text had streamed when it appeared), with explore runs folded like history.
  */
-function liveRoundItems(round: LiveModelRound, singleRound: boolean): TranscriptItem[] {
+function liveRoundItems(round: LiveModelRound, singleRound: boolean, pane: 0 | 1 = 0): TranscriptItem[] {
   const items: TranscriptItem[] = [];
-  const thinking = getLiveRoundThinking(round.roundId);
-  const text = getLiveRoundText(round.roundId);
+  const thinking = pane === 1 ? getSecondaryLiveRoundThinking(round.roundId) : getLiveRoundThinking(round.roundId);
+  const text = pane === 1 ? getSecondaryLiveRoundText(round.roundId) : getLiveRoundText(round.roundId);
   if (thinking.trim()) {
     items.push({
       kind: "thinking",
@@ -2628,9 +2779,11 @@ type LiveDisplayBlock =
   | { kind: "round"; key: string; round: LiveModelRound }
   | { kind: "explore"; key: string; calls: ToolCallView[] };
 
-function isPureExploreLiveRound(round: LiveModelRound): boolean {
+function isPureExploreLiveRound(round: LiveModelRound, pane: 0 | 1 = 0): boolean {
   if (round.tools.length === 0) return false;
-  if (hasLiveRoundThinking(round.roundId) || hasLiveRoundText(round.roundId)) return false;
+  const hasThinking = pane === 1 ? hasSecondaryLiveRoundThinking(round.roundId) : hasLiveRoundThinking(round.roundId);
+  const hasText = pane === 1 ? hasSecondaryLiveRoundText(round.roundId) : hasLiveRoundText(round.roundId);
+  if (hasThinking || hasText) return false;
   return round.tools.every(tool => {
     const name = tool.effectiveToolName || tool.toolName;
     const status = (tool.status ?? "").toLowerCase();
@@ -2638,13 +2791,7 @@ function isPureExploreLiveRound(round: LiveModelRound): boolean {
   });
 }
 
-/**
- * Live rounds grouped like settled history: consecutive explore-only rounds
- * fold immediately into one collapsed `ExploreGroupCard` instead of rendering
- * separate rows live and collapsing when the turn settles.
- */
-const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => {
-  const rounds = liveRounds();
+function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): LiveDisplayBlock[] {
   const blocks: LiveDisplayBlock[] = [];
   let exploreRun: LiveModelRound[] = [];
   const flushExplore = () => {
@@ -2660,7 +2807,7 @@ const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => {
     exploreRun = [];
   };
   for (const round of rounds) {
-    if (isPureExploreLiveRound(round)) {
+    if (isPureExploreLiveRound(round, pane)) {
       exploreRun.push(round);
       continue;
     }
@@ -2669,15 +2816,22 @@ const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => {
   }
   flushExplore();
   return blocks;
-});
+}
+
+/**
+ * Live rounds grouped like settled history: consecutive explore-only rounds
+ * fold immediately into one collapsed `ExploreGroupCard` instead of rendering
+ * separate rows live and collapsing when the turn settles.
+ */
+const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => buildLiveDisplayBlocks(liveRounds(), 0));
 
 /**
  * Per-round live view: each round owns its own `computed`, so when round N
  * streams text or thinking, completed rounds 0..N-1 never re-slice text or
  * rebuild their item lists.
  */
-function LiveRoundView(props: { round: () => LiveModelRound; singleRound: () => boolean }) {
-  const items = computed<TranscriptItem[]>(() => liveRoundItems(props.round(), props.singleRound()));
+function LiveRoundView(props: { round: () => LiveModelRound; singleRound: () => boolean; pane?: 0 | 1 }) {
+  const items = computed<TranscriptItem[]>(() => liveRoundItems(props.round(), props.singleRound(), props.pane ?? 0));
   return (
     <If when={items().length > 0}>
       <TranscriptItems items={items()} live={true} />
@@ -3680,6 +3834,8 @@ function Transcript() {
         fullReplySignals.clear();
         liveStreamedTurnIds.clear();
         thinkingOverrides.set({});
+        expandedUserMessages.set([]);
+        questionPages.set({});
       });
     }
     if (isTranscriptEmpty()) {
@@ -3903,6 +4059,52 @@ function Transcript() {
 
 /** The tool the running turn is in right now, as its row would title it. */
 const slashMatches = computed(() => slashCommandsFor(composerText(), Boolean(runningTurnId())));
+const slashSkillMatches = computed(() => slashSkillsFor(composerText()));
+const slashSelectedIndex = signal(0);
+const composerCaretPos = signal(0);
+
+const slashPopoverVisible = computed(
+  () =>
+    ((slashMatches()?.length ?? 0) > 0 ||
+      slashSkillMatches().length > 0 ||
+      mcpPromptMatches().length > 0) &&
+    !mentionOpen(),
+);
+
+async function runUsageSlashCommand(sessionId: string): Promise<void> {
+  try {
+    const report = await invokeCommand<Record<string, unknown>>("get_session_usage_report", {
+      session_id: sessionId,
+      ...(activeWorkspaceId() ? { workspace_id: activeWorkspaceId() } : {}),
+      workspace_path: activeWorkspaceRoot() || "",
+    });
+    const summary = (report?.summary ?? report?.totals ?? report) as Record<string, unknown> | undefined;
+    const input = Number(
+      summary?.total_input_tokens ?? summary?.totalInputTokens ?? summary?.input_tokens ?? summary?.inputTokens ?? 0,
+    );
+    const output = Number(
+      summary?.total_output_tokens ?? summary?.totalOutputTokens ?? summary?.output_tokens ?? summary?.outputTokens ?? 0,
+    );
+    const total = Number(
+      summary?.total_tokens ?? summary?.totalTokens ?? input + output,
+    );
+    pushToast(
+      tr("sessions.usageSummary", {
+        total: formatTokens(total),
+        input: formatTokens(input),
+        output: formatTokens(output),
+      }),
+      "info",
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/not found|unknown command/i.test(msg)) {
+      pushToast(tr("sessions.usageUnavailable"), "warning");
+      return;
+    }
+    pushToast(localizeHostError(msg), "error");
+  }
+}
 
 /** Resolves `/model [query]`: opens the model picker or switches directly to a unique match. */
 async function runModelSlashCommand(arg: string): Promise<void> {
@@ -3952,9 +4154,34 @@ async function runModelSlashCommand(arg: string): Promise<void> {
 async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<void> {
   const sessionId = activeSessionId();
   if (!sessionId) return;
-  if (command.local && command.id === "model") {
-    await runModelSlashCommand(arg);
-    return;
+  if (command.local) {
+    if (command.id === "model") {
+      await runModelSlashCommand(arg);
+      return;
+    }
+    if (command.id === "goal") {
+      composerText.set("");
+      if (!arg || /^edit$/i.test(arg)) openGoalDialog();
+      else runExtrasCommand(`/goal ${arg}`);
+      return;
+    }
+    if (command.id === "btw") {
+      composerText.set("");
+      if (!arg) openSideQuestion();
+      else runExtrasCommand(`/btw ${arg}`);
+      return;
+    }
+    if (command.id === "review") {
+      composerText.set("");
+      if (!arg) openReviewLauncher();
+      else await launchReviewFromCommand(`/review ${arg}`);
+      return;
+    }
+    if (command.id === "usage") {
+      composerText.set("");
+      await runUsageSlashCommand(sessionId);
+      return;
+    }
   }
   if (command.idleOnly && runningTurnId()) {
     pushToast(tr("sessions.steeringRunning"), "info");
@@ -3965,9 +4192,65 @@ async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<voi
   if (outcome.ok) {
     pushToast(outcome.message, "success");
     if (outcome.outcome === "compaction_started") void loadTurns(sessionId, { silent: true });
+    if (outcome.outcome === "reloaded") {
+      void loadSlashSkills(agentTypeOf(sessionId), activeWorkspaceId(), activeWorkspaceRoot(), true);
+    }
   } else {
     turnError.set(outcome.message);
   }
+}
+
+function handleSlashKeyNavigation(key: string): boolean {
+  if (!slashPopoverVisible()) return false;
+  const cmds = slashMatches() ?? [];
+  const skills = slashSkillMatches();
+  const total = cmds.length + skills.length;
+  if (key === "Escape") {
+    composerText.set("");
+    return true;
+  }
+  if (total <= 0) return false;
+  if (key === "ArrowDown") {
+    slashSelectedIndex.update(idx => (idx + 1) % total);
+    return true;
+  }
+  if (key === "ArrowUp") {
+    slashSelectedIndex.update(idx => (idx - 1 + total) % total);
+    return true;
+  }
+  if (key === "Tab") {
+    const idx = Math.max(0, Math.min(slashSelectedIndex(), total - 1));
+    if (idx < cmds.length) {
+      const cmd = cmds[idx]!;
+      composerText.set(`${cmd.command} `);
+      composerInputRef?.focus();
+    } else {
+      const skill = skills[idx - cmds.length];
+      if (skill) insertSlashSkill(skill, composerInputRef);
+    }
+    return true;
+  }
+  return false;
+}
+
+function selectHighlightedSlashItem(): boolean {
+  if (!slashPopoverVisible()) return false;
+  const cmds = slashMatches() ?? [];
+  const skills = slashSkillMatches();
+  const total = cmds.length + skills.length;
+  if (total <= 0) return false;
+  const idx = Math.max(0, Math.min(slashSelectedIndex(), total - 1));
+  if (idx < cmds.length) {
+    const cmd = cmds[idx]!;
+    void executeSlashCommand(cmd);
+    return true;
+  }
+  const skill = skills[idx - cmds.length];
+  if (skill) {
+    insertSlashSkill(skill, composerInputRef);
+    return true;
+  }
+  return false;
 }
 
 /** Shown under a typed `/` when the host offers no session commands at all. */
@@ -3978,7 +4261,7 @@ function SlashCommandsUnavailable(props: { placement: Placement }) {
       style={[
         overlayPopoverStyle(),
         {
-          width: 320,
+          width: 340,
           maxWidth: "92%",
           padding: space.md,
           transformOrigin: popoverOrigin(props.placement, "start"),
@@ -4001,12 +4284,13 @@ function SlashCommandsUnavailable(props: { placement: Placement }) {
 
 function SlashCommandSurface(props: { placement: Placement }) {
   const motion = usePopoverMotion(() => props.placement, "start", () => composerText.set(""));
+  const cmdCount = () => (slashMatches() ?? []).length;
   return (
     <View
       style={[
         overlayPopoverStyle(),
         {
-          width: 320,
+          width: 380,
           maxWidth: "92%",
           padding: space.chip,
           gap: space.hair,
@@ -4015,75 +4299,167 @@ function SlashCommandSurface(props: { placement: Placement }) {
         motion.style,
       ]}
     >
-      <Text
-        style={{
-          paddingHorizontal: space.sm,
-          paddingTop: space.hair,
-          paddingBottom: space.xs,
-          color: palette().textMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.3),
-          fontWeight: "600",
-        }}
-      >
-        {tr("chat.slash.title")}
-      </Text>
-      <Each of={slashMatches() ?? []} key={entry => entry.id}>
-        {entry => (
-          <View
-            role="button"
-            accessibilityLabel={`slash-command-${entry().id}`}
-            onPress={() => void executeSlashCommand(entry())}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              minHeight: compactLayout() ? layout.touchTarget : 30,
-              gap: space.sm,
-              paddingHorizontal: space.sm,
-              paddingVertical: space.chip,
-              borderRadius: radii.sm,
-              borderCurve: "continuous",
-              cursor: "pointer",
-              userSelect: "none",
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{ backgroundColor: palette().panelHover }}
-            focusVisibleStyle={focusRingStyle(-1)}
-          >
-            <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35) }}>
-              {entry().command}
-            </Text>
+      <Scroll style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+        <View style={{ gap: space.hair }}>
+          <If when={cmdCount() > 0}>
             <Text
               style={{
-                flex: 1,
-                minWidth: 0,
+                paddingHorizontal: space.sm,
+                paddingTop: space.hair,
+                paddingBottom: space.xs,
                 color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
+                fontSize: textSize(11.5),
+                lineHeight: textLineHeight(11.5, 1.3),
+                fontWeight: "600",
               }}
             >
-              {slashCommandLabel(entry())}
+              {tr("chat.slash.title")}
             </Text>
-          </View>
-        )}
-      </Each>
-      <McpPromptRows />
-      <If when={sessionCommandsUnsupported()}>
-        <Text
-          style={{
-            paddingHorizontal: space.sm,
-            paddingTop: space.xs,
-            paddingBottom: space.hair,
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.4),
-          }}
-        >
-          {tr("chat.slash.hostUpdateRequired")}
-        </Text>
-      </If>
+            <Each of={slashMatches() ?? []} key={entry => entry.id}>
+              {(entry, idx) => (
+                <View
+                  role="button"
+                  accessibilityLabel={`slash-command-${entry().id}`}
+                  onPress={() => void executeSlashCommand(entry())}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    minHeight: compactLayout() ? layout.touchTarget : 30,
+                    gap: space.sm,
+                    paddingHorizontal: space.sm,
+                    paddingVertical: space.chip,
+                    borderRadius: radii.sm,
+                    borderCurve: "continuous",
+                    backgroundColor: idx() === slashSelectedIndex() ? palette().accentSoft : "transparent",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...paintTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  focusVisibleStyle={focusRingStyle(-1)}
+                >
+                  <Text
+                    style={{
+                      color: idx() === slashSelectedIndex() ? palette().accent : palette().text,
+                      fontFamily: fontMono,
+                      fontSize: textSize(12.5),
+                      lineHeight: textLineHeight(12.5, 1.35),
+                      fontWeight: "500",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {entry().command}
+                  </Text>
+                  <Text
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      color: palette().textMuted,
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.35),
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {slashCommandLabel(entry())}
+                  </Text>
+                </View>
+              )}
+            </Each>
+          </If>
+
+          <If when={slashSkillMatches().length > 0}>
+            <Text
+              style={{
+                paddingHorizontal: space.sm,
+                paddingTop: cmdCount() > 0 ? space.sm : space.hair,
+                paddingBottom: space.xs,
+                color: palette().textMuted,
+                fontSize: textSize(11.5),
+                lineHeight: textLineHeight(11.5, 1.3),
+                fontWeight: "600",
+              }}
+            >
+              {tr("sessions.slashSkillsSection")}
+            </Text>
+            <Each of={slashSkillMatches()} key={skill => skill.name}>
+              {(skill, idx) => {
+                const flatIndex = () => cmdCount() + idx();
+                return (
+                  <View
+                    role="button"
+                    accessibilityLabel={`slash-skill-${skill().name}`}
+                    onPress={() => insertSlashSkill(skill(), composerInputRef)}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      minHeight: compactLayout() ? layout.touchTarget : 30,
+                      gap: space.sm,
+                      paddingHorizontal: space.sm,
+                      paddingVertical: space.chip,
+                      borderRadius: radii.sm,
+                      borderCurve: "continuous",
+                      backgroundColor: flatIndex() === slashSelectedIndex() ? palette().accentSoft : "transparent",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...paintTransition(MOTION_DURATION.fast),
+                    }}
+                    hoverStyle={{ backgroundColor: palette().panelHover }}
+                    focusVisibleStyle={focusRingStyle(-1)}
+                  >
+                    <Icon
+                      name="sparkles"
+                      size={12}
+                      color={flatIndex() === slashSelectedIndex() ? palette().accent : palette().textMuted}
+                    />
+                    <Text
+                      style={{
+                        color: flatIndex() === slashSelectedIndex() ? palette().accent : palette().text,
+                        fontFamily: fontMono,
+                        fontSize: textSize(12.5),
+                        lineHeight: textLineHeight(12.5, 1.35),
+                        fontWeight: "500",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {`/${skill().name}`}
+                    </Text>
+                    <Text
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        color: palette().textMuted,
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.35),
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {skill().description || skill().argumentHint || ""}
+                    </Text>
+                  </View>
+                );
+              }}
+            </Each>
+          </If>
+
+          <McpPromptRows />
+          <If when={sessionCommandsUnsupported()}>
+            <Text
+              style={{
+                paddingHorizontal: space.sm,
+                paddingTop: space.xs,
+                paddingBottom: space.hair,
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.4),
+              }}
+            >
+              {tr("chat.slash.hostUpdateRequired")}
+            </Text>
+          </If>
+        </View>
+      </Scroll>
     </View>
   );
 }
@@ -4102,26 +4478,19 @@ async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<v
     await executeSlashCommand(slash.command, slash.arg);
     return;
   }
-  // wave22-p5: `/goal [objective]` and `/btw [question]`; bare commands open their dialogs instead of sending literal prompts.
+  // Partial `/...` token matching a highlighted slash command or skill selects it on Return.
+  if (activeSessionId() && composerText().startsWith("/") && !/\s/.test(composerText())) {
+    if (selectHighlightedSlashItem()) return;
+  }
+  // `/goal [objective|clear|pause|resume|edit]` and `/btw [question]`
   if (activeSessionId()) {
-    const trimmed = composerText().trim();
-    if (/^\/goal$/i.test(trimmed)) {
-      composerText.set("");
-      openGoalDialog();
-      return;
-    }
-    if (/^\/btw$/i.test(trimmed)) {
-      composerText.set("");
-      openSideQuestion();
-      return;
-    }
     if (runExtrasCommand(composerText())) {
       composerText.set("");
       return;
     }
   }
   const text = composerText();
-  const hasPayload = Boolean(text.trim() || imageAttachments().length > 0);
+  const hasPayload = Boolean(text.trim() || imageAttachments().length > 0 || fileAttachments().length > 0);
   if (hasPayload && !runningTurnId()) jumpToTranscriptEnd();
   // The host decides whether a message written during a turn steers it or
   // waits in its queue; the composer clears immediately and follows the answer.
@@ -4148,9 +4517,14 @@ function insertSelectedMention(): boolean {
 
 function handleMentionKeyNavigation(key: string): void {
   if (!mentionOpen()) return;
-  const count = mentionHits().length;
+  const hits = mentionHits();
+  const count = hits.length;
   if (key === "Escape") {
     closeMention();
+    return;
+  }
+  if (key === "ArrowLeft" && !mentionQuery().trim() && mentionBrowseDir()) {
+    browseMentionParent();
     return;
   }
   if (count <= 0) return;
@@ -4158,6 +4532,9 @@ function handleMentionKeyNavigation(key: string): void {
     mentionSelectedIndex.update(idx => (idx + 1) % count);
   } else if (key === "ArrowUp") {
     mentionSelectedIndex.update(idx => (idx - 1 + count) % count);
+  } else if (key === "ArrowRight") {
+    const chosen = hits[Math.max(0, Math.min(mentionSelectedIndex(), count - 1))];
+    if (chosen?.directory) browseMentionDir(chosen.path);
   }
 }
 
@@ -4522,17 +4899,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
     composerPlusOpen.set(false);
     open();
   };
-  const items: DropdownMenuItem[] = [];
-  if (compact) {
-    items.push({
-      id: "attach",
-      icon: "paperclip",
-      label: tr("sessions.attachImage"),
-      accessibilityLabel: "Attach",
-      onSelect: fromPlus(() => void attachImageFromClipboard()),
-    });
-  }
-  items.push(
+  const items: DropdownMenuItem[] = [
     {
       id: "pick-images",
       icon: "image",
@@ -4560,7 +4927,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
         quickActionMenuOpen.set(true);
       }),
     },
-  );
+  ];
   if (permissionModeSupported() !== false && activeSessionId()) {
     items.push({
       id: "permission",
@@ -4670,6 +5037,13 @@ function ComposerDock() {
     void loadSessionCommands(id);
   });
   effect(() => {
+    const id = activeSessionId();
+    const wsId = activeWorkspaceId();
+    const wsRoot = activeWorkspaceRoot();
+    const modeId = agentTypeOf(id);
+    if (id) void loadSlashSkills(modeId, wsId, wsRoot);
+  });
+  effect(() => {
     activeSessionId();
     activeWorkspaceId();
     ensureAgentModes();
@@ -4680,7 +5054,12 @@ function ComposerDock() {
     void ensureReasoningLoaded();
   });
   effect(() => {
+    composerText();
+    slashSelectedIndex.set(0);
+  });
+  effect(() => {
     mentionQuery();
+    mentionBrowseDir();
     mentionOpen();
     mentionSelectedIndex.set(0);
   });
@@ -4773,6 +5152,7 @@ function ComposerDock() {
             when={
               composerFileDragActive() ||
               imageAttachments().length > 0 ||
+              fileAttachments().length > 0 ||
               attachmentNotice().length > 0
             }
           >
@@ -4820,78 +5200,205 @@ function ComposerDock() {
                 {entry => (
                   <View
                     style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      maxWidth: 240,
-                      gap: space.chip,
-                      paddingHorizontal: space.sm,
-                      paddingVertical: space.xs,
-                      borderRadius: radii.sm,
+                      position: "relative",
+                      width: 56,
+                      height: 56,
+                      borderRadius: radii.md,
                       borderCurve: "continuous",
                       borderWidth: 1,
                       borderColor: palette().borderSubtle,
                       backgroundColor: palette().surfaceTertiary,
+                      overflow: "hidden",
+                      flexShrink: 0,
                     }}
                   >
-                    <If when={attachmentPreviewSrc(entry())} else={<Icon name="image" size={12} color={palette().textSecondary} />}>
-                      {src => (
-                        <Image
-                          src={src()}
-                          accessibilityLabel={`attachment-thumb-${entry().id}`}
-                          style={{ width: 40, height: 40, borderRadius: radii.xs, flexShrink: 0 }}
-                        />
-                      )}
-                    </If>
-                    <Text
-                      style={{
-                        flexShrink: 1,
-                        minWidth: 0,
-                        color: palette().text,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.3),
-                        fontWeight: "500",
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis-middle",
-                      }}
+                    <If
+                      when={attachmentPreviewSrc(entry())}
+                      else={
+                        <View
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Icon name="image" size={18} color={palette().textSecondary} />
+                        </View>
+                      }
                     >
-                      {entry().name}
-                    </Text>
-                    <If when={entry().fileSize > 0}>
-                      <Text
-                        style={{
-                          flexShrink: 0,
-                          color: palette().textMuted,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.25),
-                          fontVariant: ["tabular-nums"],
-                        }}
-                      >
-                        {formatBytes(entry().fileSize)}
-                      </Text>
+                      {src => (
+                        <View
+                          role="button"
+                          accessibilityLabel={`attachment-preview-${entry().id}`}
+                          tooltip={
+                            <TooltipBubble
+                              text={
+                                entry().fileSize > 0
+                                  ? `${entry().name} · ${formatBytes(entry().fileSize)}`
+                                  : entry().name
+                              }
+                            />
+                          }
+                          onPress={() => openImageLightbox({ src: src(), title: entry().name })}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            cursor: "pointer",
+                            ...pressTransition(MOTION_DURATION.fast),
+                          }}
+                          hoverStyle={{ opacity: 0.9 }}
+                          activeStyle={tactileActiveStyle(0.96)}
+                          focusVisibleStyle={focusRingStyle(-1)}
+                        >
+                          <Image
+                            src={src()}
+                            accessibilityLabel={`attachment-thumb-${entry().id}`}
+                            style={{ width: 56, height: 56, objectFit: "cover" }}
+                          />
+                        </View>
+                      )}
                     </If>
                     <View
                       role="button"
-                      hitSlop={compactLayout() ? undefined : 4}
+                      hitSlop={compactLayout() ? 6 : 4}
                       accessibilityLabel={`remove-attachment-${entry().id}`}
+                      tooltip={<TooltipBubble text={tr("common.remove")} />}
                       onPress={() => removeAttachment(entry().id)}
                       style={{
-                        flexShrink: 0,
-                        minWidth: compactLayout() ? layout.touchTarget : undefined,
-                        minHeight: compactLayout() ? layout.touchTarget : undefined,
+                        position: "absolute",
+                        top: 3,
+                        right: 3,
+                        width: 18,
+                        height: 18,
+                        borderRadius: radii.pill,
+                        backgroundColor: palette().scrimBg,
                         alignItems: "center",
                         justifyContent: "center",
-                        padding: space.hair,
-                        borderRadius: radii.xs,
-                        borderCurve: "continuous",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        ...pressTransition(MOTION_DURATION.fast),
+                      }}
+                      hoverStyle={{ backgroundColor: palette().danger }}
+                      activeStyle={tactileActiveStyle(0.92)}
+                      focusVisibleStyle={focusRingStyle()}
+                    >
+                      <Icon name="close" size={10} color={palette().actionPrimaryFg} />
+                    </View>
+                  </View>
+                )}
+              </Each>
+
+              <Each of={fileAttachments()} key={entry => entry.id}>
+                {entry => (
+                  <View
+                    accessibilityLabel={`file-attachment-${entry().name}`}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      maxWidth: 260,
+                      height: 30,
+                      gap: space.chip,
+                      paddingLeft: space.sm,
+                      paddingRight: space.xs,
+                      borderRadius: radii.md,
+                      borderCurve: "continuous",
+                      borderWidth: 1,
+                      borderColor:
+                        entry().source === "pasted-text" ? palette().accentBorder : palette().borderSubtle,
+                      backgroundColor:
+                        entry().source === "pasted-text" ? palette().accentSoft : palette().surfaceTertiary,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <View
+                      role="button"
+                      accessibilityLabel={`file-attachment-open-${entry().id}`}
+                      tooltip={
+                        <TooltipBubble
+                          text={
+                            entry().relativePath
+                              ? `${entry().relativePath} · ${tr("sessions.fileChipOpenHint")}`
+                              : entry().path
+                          }
+                        />
+                      }
+                      onPress={() => {
+                        if (!entry().isDirectory && entry().path) {
+                          openInAuxPane("files", entry().path);
+                        } else {
+                          openInAuxPane("files");
+                        }
+                      }}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.chip,
+                        flexShrink: 1,
+                        minWidth: 0,
+                        cursor: "pointer",
+                        userSelect: "none",
+                      }}
+                    >
+                      <Icon
+                        name={fileAttachmentIcon(entry())}
+                        size={13}
+                        color={
+                          entry().source === "pasted-text" || entry().isDirectory
+                            ? palette().accent
+                            : palette().textSecondary
+                        }
+                      />
+                      <Text
+                        style={{
+                          flexShrink: 1,
+                          minWidth: 0,
+                          color: palette().text,
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
+                          fontWeight: "500",
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis-middle",
+                        }}
+                      >
+                        {entry().name}
+                      </Text>
+                      <If when={entry().lineCount && entry().lineCount! > 0}>
+                        <Text
+                          style={{
+                            flexShrink: 0,
+                            color: palette().textMuted,
+                            fontSize: textSize(11),
+                            lineHeight: textLineHeight(11, 1.25),
+                            fontVariant: ["tabular-nums"],
+                          }}
+                        >
+                          {tr("sessions.pastedLines", { count: entry().lineCount ?? 0 })}
+                        </Text>
+                      </If>
+                    </View>
+                    <View
+                      role="button"
+                      hitSlop={compactLayout() ? 6 : 4}
+                      accessibilityLabel={`remove-file-attachment-${entry().id}`}
+                      tooltip={<TooltipBubble text={tr("common.remove")} />}
+                      onPress={() => removeFileAttachment(entry().id)}
+                      style={{
+                        flexShrink: 0,
+                        width: 18,
+                        height: 18,
+                        borderRadius: radii.pill,
+                        alignItems: "center",
+                        justifyContent: "center",
                         cursor: "pointer",
                         userSelect: "none",
                         ...pressTransition(MOTION_DURATION.fast),
                       }}
                       hoverStyle={{ backgroundColor: palette().panelHover }}
-                      activeStyle={tactileActiveStyle(0.97)}
+                      activeStyle={tactileActiveStyle(0.92)}
                       focusVisibleStyle={focusRingStyle()}
                     >
-                      <Icon name="close" size={12} color={palette().textMuted} />
+                      <Icon name="close" size={11} color={palette().textMuted} />
                     </View>
                   </View>
                 )}
@@ -4932,6 +5439,7 @@ function ComposerDock() {
                 multiline={true}
                 readonly={composerDisabled()}
                 submitBehavior="submit"
+                pasteBehavior="report"
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -4943,17 +5451,35 @@ function ComposerDock() {
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
                 }}
+                onFocus={() => {
+                  if (splitPaneOpen()) focusPane(0);
+                }}
                 onChange={event => {
-                  composerText.set(event.value);
-                  syncInlineMention(event.value, event.value.length);
+                  const prev = composerText();
+                  const next = event.value;
+                  composerText.set(next);
+                  const prevCaret = composerCaretPos();
+                  const delta = next.length - prev.length;
+                  const estimatedCaret =
+                    prevCaret >= 0 && prevCaret <= prev.length
+                      ? Math.max(0, Math.min(next.length, prevCaret + delta))
+                      : next.length;
+                  composerCaretPos.set(estimatedCaret);
+                  syncInlineMention(next, estimatedCaret);
                 }}
                 onCompositionChange={event => composerComposing.set(event.composing)}
-                onSelectionChange={event => syncInlineMention(composerText(), event.end)}
+                onSelectionChange={event => {
+                  composerCaretPos.set(event.end);
+                  syncInlineMention(composerText(), event.end, true);
+                }}
                 onCaretMove={event => composerCaretBounds.set(event.pageBounds)}
                 onPaste={event => void handleComposerPaste(event)}
                 onKeyPress={event => {
                   if (mentionOpen() && mentionInline()) {
                     handleMentionKeyNavigation(event.key);
+                    return;
+                  }
+                  if (slashPopoverVisible() && handleSlashKeyNavigation(event.key)) {
                     return;
                   }
                   if (
@@ -5084,18 +5610,6 @@ function ComposerDock() {
                 </If>
               </View>
               <If when={!compactComposer()}>
-                <IconButton
-                  icon="paperclip"
-                  size="sm"
-                  iconSize={15}
-                  accessibilityLabel="Attach"
-                  tooltip={tr("sessions.attachImage")}
-                  style={{ borderRadius: radii.pill }}
-                  onPress={() => {
-                    closePickers();
-                    void attachImageFromClipboard();
-                  }}
-                />
                 <View
                   style={{
                     width: 1,
@@ -5125,7 +5639,7 @@ function ComposerDock() {
                 <ContextUsageRing />
               </If>
 
-              <If when={Boolean(runningTurnId() && !composerText().trim() && imageAttachments().length === 0)}>
+              <If when={Boolean(runningTurnId() && !composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0)}>
                 <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? space.hair : space.xs }}>
                   <If
                     when={compactComposer() || compactLayout()}
@@ -5207,27 +5721,27 @@ function ComposerDock() {
                 </View>
               </If>
 
-              <If when={!runningTurnId() || composerText().trim().length > 0 || imageAttachments().length > 0}>
+              <If when={!runningTurnId() || composerText().trim().length > 0 || imageAttachments().length > 0 || fileAttachments().length > 0}>
                 <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 0 : space.xs }}>
                   <If
                     when={compactComposer()}
                     else={
                       <IconCircleButton
                         icon="arrow-up"
-                        variant={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0) ? "subtle" : "primary"}
+                        variant={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0) ? "subtle" : "primary"}
                         size={32}
                         iconSize={16}
                         accessibilityLabel="Send"
                         tooltip={tr("sessions.sendMessage")}
-                        disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0)}
+                        disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0)}
                         onPress={() => void submitComposer()}
                       />
                     }
                   >
                     <TouchTargetButton
                       icon="arrow-up"
-                      tone={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0) ? "subtle" : "primary"}
-                      disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0)}
+                      tone={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0) ? "subtle" : "primary"}
+                      disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0)}
                       accessibilityLabel="Send"
                       onPress={() => void submitComposer()}
                     />
@@ -5332,7 +5846,7 @@ function ComposerDock() {
         </Overlay>
       </If>
 
-      <If when={((slashMatches()?.length ?? 0) > 0 || mcpPromptMatches().length > 0) && !mentionOpen()}>
+      <If when={slashPopoverVisible()}>
         <Overlay
           anchor={composerCardAnchor()}
           placement="top"
@@ -5347,7 +5861,7 @@ function ComposerDock() {
         </Overlay>
       </If>
 
-      <If when={sessionCommandsUnsupported() && (slashMatches()?.length ?? 0) === 0 && mcpPromptMatches().length === 0 && composerText().startsWith("/") && !/\s/.test(composerText()) && !mentionOpen()}>
+      <If when={sessionCommandsUnsupported() && !slashPopoverVisible() && composerText().startsWith("/") && !/\s/.test(composerText()) && !mentionOpen()}>
         <Overlay
           anchor={composerCardAnchor()}
           placement="top"
@@ -5746,17 +6260,68 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           }}
         />
       </If>
-      <Text
-        style={{
-          color: palette().textElevatedMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.35),
-        }}
-      >
-        {mentionInline()
-          ? tr("sessions.mentionInlineHint")
-          : tr("sessions.mentionPickerHint")}
-      </Text>
+      <If when={!mentionQuery().trim()}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: space.xs,
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+            <If when={mentionBrowseDir().length > 0}>
+              <IconButton
+                icon="arrow-left"
+                size="xs"
+                accessibilityLabel="mention-browse-up"
+                tooltip={tr("common.back")}
+                onPress={browseMentionParent}
+              />
+            </If>
+            <Icon name="folder" size={12} color={palette().textElevatedMuted} />
+            <Text
+              style={{
+                flexShrink: 1,
+                minWidth: 0,
+                color: palette().textElevatedMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
+                fontWeight: "500",
+                numberOfLines: 1,
+                textOverflow: "ellipsis-middle",
+              }}
+            >
+              {mentionBrowseDir()
+                ? toRelativeWorkspacePath(mentionBrowseDir(), activeWorkspaceRoot()) || mentionBrowseDir()
+                : activeWorkspace()?.name || tr("sessions.mentionRootLabel")}
+            </Text>
+          </View>
+          <Text
+            style={{
+              flexShrink: 0,
+              color: palette().textElevatedMuted,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.3),
+            }}
+          >
+            {mentionInline() ? tr("sessions.mentionInlineHint") : tr("sessions.mentionPickerHint")}
+          </Text>
+        </View>
+      </If>
+      <If when={mentionQuery().trim().length > 0}>
+        <Text
+          style={{
+            color: palette().textElevatedMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
+          }}
+        >
+          {mentionInline()
+            ? tr("sessions.mentionInlineHint")
+            : tr("sessions.mentionPickerHint")}
+        </Text>
+      </If>
       <If when={mentionLoading()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <BrandSpinner size={12} color={palette().accent} variant="matrix" />
@@ -5801,6 +6366,24 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           {tr("sessions.mentionNoMatch", { query: mentionQuery().trim() })}
         </Text>
       </If>
+      <If
+        when={
+          !mentionLoading() &&
+          !mentionNotice() &&
+          !mentionQuery().trim() &&
+          mentionHits().length === 0
+        }
+      >
+        <Text
+          style={{
+            color: palette().textElevatedMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
+          }}
+        >
+          {tr("sessions.mentionEmptyDir")}
+        </Text>
+      </If>
       <If when={mentionTruncated()}>
         <Text
           style={{
@@ -5813,72 +6396,93 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         </Text>
       </If>
       <If when={mentionHits().length > 0}>
-        <Scroll style={{ maxHeight: 220, minHeight: 0 }} scrollbar={true}>
+        <Scroll style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
           <View style={{ gap: space.hair }}>
             <Each of={mentionHits()} key={hit => hit.path}>
               {(hit, idx) => (
                 <View
-                  role="button"
-                  accessibilityLabel={`mention-option-${hit().name}`}
-                  onPress={() => insertMention(hit(), composerInputRef)}
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    minHeight: compactLayout() ? layout.touchTarget : 30,
-                    gap: space.sm,
-                    paddingHorizontal: space.sm,
-                    paddingVertical: space.chip,
+                    gap: space.hair,
                     borderRadius: radii.xs,
                     borderCurve: "continuous",
                     backgroundColor:
                       idx() === mentionSelectedIndex() ? palette().accentSoft : "transparent",
-                    cursor: "pointer",
-                    userSelect: "none",
                     ...paintTransition(MOTION_DURATION.fast),
                   }}
                   hoverStyle={{ backgroundColor: palette().panelHover }}
-                  activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.9 }}
-                  focusVisibleStyle={focusRingStyle(-1)}
                 >
-                  <Icon
-                    name={hit().directory ? "folder" : "file-code"}
-                    size={13}
-                    color={
-                      idx() === mentionSelectedIndex()
-                        ? palette().accent
-                        : palette().textSecondary
-                    }
-                  />
-                  <Text
-                    style={{
-                      maxWidth: "54%",
-                      flexShrink: 0,
-                      color:
-                        idx() === mentionSelectedIndex() ? palette().accent : palette().text,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.35),
-                      fontWeight: "600",
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {hit().name}
-                  </Text>
-                  <Text
+                  <View
+                    role="button"
+                    accessibilityLabel={`mention-option-${hit().name}`}
+                    onPress={() => insertMention(hit(), composerInputRef)}
                     style={{
                       flex: 1,
                       minWidth: 0,
-                      textAlign: "right",
-                      color: palette().textElevatedMuted,
-                      fontFamily: fontMono,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.3),
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis-middle",
+                      flexDirection: "row",
+                      alignItems: "center",
+                      minHeight: compactLayout() ? layout.touchTarget : 30,
+                      gap: space.sm,
+                      paddingHorizontal: space.sm,
+                      paddingVertical: space.chip,
+                      cursor: "pointer",
+                      userSelect: "none",
                     }}
+                    activeStyle={{ opacity: 0.9 }}
+                    focusVisibleStyle={focusRingStyle(-1)}
                   >
-                    {hit().path}
-                  </Text>
+                    <Icon
+                      name={hit().directory ? "folder" : "file-code"}
+                      size={13}
+                      color={
+                        idx() === mentionSelectedIndex()
+                          ? palette().accent
+                          : hit().directory
+                            ? palette().accent
+                            : palette().textSecondary
+                      }
+                    />
+                    <Text
+                      style={{
+                        maxWidth: "56%",
+                        flexShrink: 0,
+                        color:
+                          idx() === mentionSelectedIndex() ? palette().accent : palette().text,
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.35),
+                        fontWeight: "600",
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {hit().name}
+                    </Text>
+                    <Text
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        textAlign: "right",
+                        color: palette().textElevatedMuted,
+                        fontFamily: fontMono,
+                        fontSize: textSize(11.5),
+                        lineHeight: textLineHeight(11.5, 1.3),
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis-middle",
+                      }}
+                    >
+                      {hit().relativePath || hit().path}
+                    </Text>
+                  </View>
+                  <If when={hit().directory}>
+                    <IconButton
+                      icon="chevron-right"
+                      size="xs"
+                      accessibilityLabel={`mention-browse-${hit().name}`}
+                      tooltip={tr("sessions.mentionBrowseDir")}
+                      onPress={() => browseMentionDir(hit().path)}
+                    />
+                  </If>
                 </View>
               )}
             </Each>
@@ -6541,8 +7145,9 @@ async function sendSessionPermission(prompt: FleetPrompt, answer: PromptAnswer):
  * placement). The reason field and "Allow all" stay for this session's own
  * requests.
  */
-function PermissionCard() {
+function PermissionCard(props: { requests?: () => PermissionRequestView[] } = {}) {
   const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
+  const items = () => (props.requests ? props.requests() : activePermissions());
   return (
     <View
       style={[
@@ -6550,7 +7155,7 @@ function PermissionCard() {
         motion.style,
       ]}
     >
-      <Each of={activePermissions()} key={request => `${request.deviceId}/${request.requestId}`}>
+      <Each of={items()} key={request => `${request.deviceId}/${request.requestId}`}>
         {(request, idx) => (
           <PromptAttention
             prompt={permissionAsPrompt(request())}
@@ -6571,9 +7176,9 @@ function PermissionCard() {
                     rejectingPermission.set(rejectingPermission() === request().requestId ? null : request().requestId);
                   }}
                 />
-                <If when={idx() === 0 && activePermissions().length > 1}>
+                <If when={idx() === 0 && items().length > 1}>
                   <Button
-                    label={tr("chat.permission.allowAll", { count: activePermissions().length })}
+                    label={tr("chat.permission.allowAll", { count: items().length })}
                     variant="ghost"
                     size="sm"
                     accessibilityLabel="allow-all-permissions"
@@ -6664,20 +7269,22 @@ function SessionReviewNotes() {
   );
 }
 
-function PermissionPrompts() {
+function PermissionPrompts(props: { sessionId?: () => string | null } = {}) {
+  const items = () => (props.sessionId ? permissionsForSession(props.sessionId()) : activePermissions());
   return (
-    <If when={activePermissions().length > 0}>
+    <If when={items().length > 0}>
       <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.sm }}>
-        <PermissionCard />
+        <PermissionCard requests={items} />
       </View>
     </If>
   );
 }
 
 
-function QuestionPrompts() {
+function QuestionPrompts(props: { sessionId?: () => string | null } = {}) {
+  const items = () => (props.sessionId ? questionsForSession(props.sessionId()) : activeQuestions());
   return (
-    <If when={activeQuestions().length > 0}>
+    <If when={items().length > 0}>
       <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.chip }}>
         <View
           style={{
@@ -6687,7 +7294,7 @@ function QuestionPrompts() {
             gap: space.sm,
           }}
         >
-          <Each of={activeQuestions()} key={prompt => prompt.toolId}>
+          <Each of={items()} key={prompt => prompt.toolId}>
             {prompt => <QuestionCard prompt={prompt} />}
           </Each>
         </View>
@@ -7495,9 +8102,924 @@ function followSearchRevealRequests(): void {
   });
 }
 
+// ── Secondary Split Session Pane (Pane 1) ───────────────────────────────────
+
+const secondaryPermissions = computed(() => permissionsForSession(secondarySessionId()));
+const secondaryQuestions = computed(() => questionsForSession(secondarySessionId()));
+
+const secondaryHeaderState = computed<MarkState | null>(() => {
+  if (secondaryRunningTurnId()) return "working";
+  if (secondaryPermissions().length > 0 || secondaryQuestions().length > 0) return "needs_you";
+  const id = secondarySessionId();
+  const row = id ? fleetSessionRow(secondarySessionDevice(), id) : null;
+  if (row?.status === "waiting" || row?.needsAttention) return row.status === "error" ? "failed" : "needs_you";
+  if (row?.status === "error") return "failed";
+  if (row?.status === "running") return "working";
+  return null;
+});
+
+const secondaryLiveRounds = computed<LiveModelRound[]>(() => secondaryLiveTurn()?.rounds ?? []);
+const secondaryLiveDisplayBlocks = computed<LiveDisplayBlock[]>(() =>
+  buildLiveDisplayBlocks(secondaryLiveRounds(), 1),
+);
+
+const secondaryOptimisticUserText = computed<string>(() => {
+  const pending = secondaryPendingTurnState();
+  const id = secondarySessionId();
+  if (!pending || !id || pending.sessionId !== id) return "";
+  return pending.userText;
+});
+
+const secondaryPendingImages = computed<UserImage[]>(() => {
+  const pending = secondaryPendingTurnState();
+  const id = secondarySessionId();
+  if (!pending || !id || pending.sessionId !== id || !pending.images?.length) return [];
+  return pending.images.map((img, idx) => ({
+    id: img.id || `sec-pending-img-${idx}`,
+    name: img.name,
+    ...(img.dataUrl ? { dataUrl: img.dataUrl } : {}),
+    ...(img.imagePath ? { imagePath: img.imagePath } : {}),
+  }));
+});
+
+const secondaryVisibleTurnRows = computed(() => {
+  const list = secondaryTurns();
+  const live = secondaryLiveTurn();
+  const activeTurnId = live?.turnId || secondaryPendingTurnState()?.turnId || "";
+  const filtered = activeTurnId ? list.filter(turn => turn.turnId !== activeTurnId || turn.settled) : list;
+  return filtered.map((turn, idx) => ({
+    key: turnKeyOf(turn) || `sec-turn-${idx}`,
+    turn,
+  }));
+});
+
+function SecondaryHeader() {
+  const menuOpen = signal(false);
+  const menuAnchor = signal<ViewRef | null>(null);
+  const menuItems = computed<DropdownMenuItem[]>(() => {
+    const id = secondarySessionId();
+    const items: DropdownMenuItem[] = [];
+    if (id && activeSessionId()) {
+      items.push({
+        id: "secondary-swap-panes",
+        label: tr("sessions.splitSwap"),
+        icon: "columns",
+        accessibilityLabel: "secondary-swap-panes",
+        onSelect: () => swapSplitPanes(),
+      });
+    }
+    items.push({
+      id: "secondary-close-split",
+      label: tr("sessions.splitClose"),
+      icon: "close",
+      accessibilityLabel: "secondary-close-split",
+      onSelect: () => closeSplitPane(1),
+    });
+    if (id) {
+      const target = {
+        sessionId: id,
+        deviceId: secondarySessionDevice(),
+        workspaceId: secondaryWorkspaceId() ?? "",
+        title: secondarySessionTitle(),
+      };
+      items.push(...sessionMenuItems(target, { omit: ["split"] }));
+    }
+    return items;
+  });
+
+  return (
+    <View
+      testID="secondary-session-header"
+      style={{
+        minHeight: layout.topBarHeight,
+        paddingHorizontal: space.lg,
+        justifyContent: "center",
+        backgroundColor: palette().canvas,
+        borderTopWidth: 2,
+        borderTopColor: focusedPane() === 1 ? palette().accent : "transparent",
+        borderBottomWidth: 1,
+        borderBottomColor: palette().borderSubtle,
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: layout.topBarHeight - space.lg }}>
+        <View
+          role="button"
+          accessibilityLabel="secondary-pane-focus"
+          onPress={() => focusPane(1)}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <If when={secondaryWorkspaceName()}>
+            {ws => (
+              <>
+                <Text
+                  style={{
+                    ...textStyle("caption", { color: palette().textMuted }),
+                    fontWeight: "500",
+                    flexShrink: 0,
+                    maxWidth: 130,
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {ws()}
+                </Text>
+                <Text style={textStyle("caption", { color: palette().textMuted })}>/</Text>
+              </>
+            )}
+          </If>
+          <Text
+            testID="secondary-session-title"
+            style={{
+              ...textStyle("sectionTitle", {
+                color: focusedPane() === 1 ? palette().text : palette().textSecondary,
+              }),
+              minWidth: 0,
+              flexShrink: 1,
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {secondarySessionTitle()}
+          </Text>
+        </View>
+
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
+          <If when={secondaryHeaderState()}>
+            {state => (
+              <View accessibilityLabel={`secondary-session-status-${state()}`} style={{ marginRight: space.xs }}>
+                <StateMark state={state()} />
+              </View>
+            )}
+          </If>
+          <If when={!compactLayout() && sessionsPaneWidth() >= 680}>
+            <Each of={TOOL_TOGGLES} key={tool => tool.id}>
+              {tool => <ToolToggle id={tool().id} icon={tool().icon} label={tr(tool().label)} />}
+            </Each>
+          </If>
+          <View ref={el => menuAnchor.set(el)} style={{ flexShrink: 0 }}>
+            <IconButton
+              icon="more"
+              size="sm"
+              active={menuOpen()}
+              accessibilityLabel="secondary-thread-actions-trigger"
+              tooltip={tr("nav.threadActions")}
+              onPress={() => {
+                focusPane(1);
+                menuOpen.update(v => !v);
+              }}
+            />
+            <If when={menuOpen()}>
+              <DropdownMenu
+                open={true}
+                anchor={menuAnchor()}
+                align="end"
+                minWidth={210}
+                items={menuItems()}
+                onClose={() => menuOpen.set(false)}
+              />
+            </If>
+          </View>
+          <IconButton
+            icon="close"
+            size="sm"
+            accessibilityLabel="session-pane-close-1"
+            tooltip={tr("sessions.splitClosePane")}
+            onPress={() => closeSplitPane(1)}
+          />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function SecondaryEmptyPicker() {
+  const candidates = computed(() => {
+    const primaryKey = activeSessionKey();
+    return sessions()
+      .filter(row => !isSessionArchived(row) && `${row.deviceId ?? ""}/${row.sessionId}` !== primaryKey)
+      .slice(0, 8);
+  });
+  return (
+    <Scroll
+      style={{ flex: 1, minHeight: 0 }}
+      contentStyle={{
+        flexGrow: 1,
+        justifyContent: "center",
+        alignItems: "center",
+        padding: space.xxl,
+      }}
+    >
+      <View
+        accessibilityLabel="secondary-split-picker"
+        style={{
+          width: "100%",
+          maxWidth: 380,
+          alignItems: "center",
+          gap: space.md,
+        }}
+      >
+        <View
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: radii.lg,
+            borderCurve: "continuous",
+            backgroundColor: palette().surfaceTertiary,
+            borderWidth: 1,
+            borderColor: palette().borderSubtle,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon name="columns" size={18} color={palette().textSecondary} />
+        </View>
+        <View style={{ alignItems: "center", gap: space.xs }}>
+          <Text style={textStyle("sectionTitle")}>{tr("sessions.splitPickTitle")}</Text>
+          <Text style={{ ...textStyle("caption", { color: palette().textMuted }), textAlign: "center" }}>
+            {tr("sessions.splitPickEmpty")}
+          </Text>
+        </View>
+        <Button
+          label={tr("nav.newSession")}
+          variant="primary"
+          size="sm"
+          leadingIcon="plus"
+          accessibilityLabel="secondary-new-session"
+          onPress={() => void createSecondarySession()}
+        />
+        <If when={candidates().length > 0}>
+          <View
+            style={{
+              width: "100%",
+              marginTop: space.sm,
+              gap: space.hair,
+              borderTopWidth: 1,
+              borderColor: palette().borderSubtle,
+              paddingTop: space.sm,
+            }}
+          >
+            <Each of={candidates()} key={row => row.sessionId}>
+              {row => (
+                <View
+                  role="button"
+                  accessibilityLabel={`secondary-pick-session-${row().sessionId}`}
+                  onPress={() =>
+                    selectSecondarySession(
+                      row().sessionId,
+                      row().deviceId,
+                      row().workspaceId || activeWorkspaceId(),
+                    )
+                  }
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.sm,
+                    paddingHorizontal: space.md,
+                    paddingVertical: space.sm,
+                    borderRadius: radii.md,
+                    borderCurve: "continuous",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  activeStyle={tactileActiveStyle(0.99)}
+                >
+                  <Icon name="chat" size={13} color={palette().textMuted} />
+                  <Text
+                    style={{
+                      ...textStyle("label"),
+                      flex: 1,
+                      minWidth: 0,
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {sessionTitle(row())}
+                  </Text>
+                </View>
+              )}
+            </Each>
+          </View>
+        </If>
+      </View>
+    </Scroll>
+  );
+}
+
+function SecondaryTranscript() {
+  let scrollRef: ScrollRef | undefined;
+  const secFollowLatest = signal(true);
+  const loadingEarlierSec = signal(false);
+
+  effect(() => {
+    secondarySessionId();
+    secondaryTurns().length;
+    secondaryOptimisticUserText();
+    secondaryStreamScrollTick();
+    secondaryLiveRounds().length;
+    if (secFollowLatest()) {
+      scrollRef?.scrollToEnd({ animated: false });
+    }
+  });
+
+  const handleScroll = (event: ScrollEvent) => {
+    const max = Math.max(0, event.contentSize.height - event.size.height);
+    const atBottom = event.offset.y >= max - 24;
+    if (atBottom && !secFollowLatest()) secFollowLatest.set(true);
+    else if (!atBottom && secFollowLatest() && event.offset.y < max - 48) secFollowLatest.set(false);
+  };
+
+  return (
+    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      <Scroll
+        ref={el => {
+          scrollRef = el;
+        }}
+        style={{ flex: 1, minHeight: 0 }}
+        contentStyle={{
+          flexGrow: 1,
+          paddingHorizontal: space.lg,
+          paddingTop: space.lg,
+          paddingBottom: space.xxl,
+        }}
+        onScroll={handleScroll}
+      >
+        <View
+          style={{
+            width: "100%",
+            maxWidth: contentWidth(),
+            alignSelf: "center",
+            gap: 16,
+          }}
+        >
+          <If when={secondaryTranscriptNotice()}>
+            {notice => (
+              <InlineBanner tone="info" message={notice()} />
+            )}
+          </If>
+
+          <If when={secondaryHasEarlierTurns() && secondaryTurns().length > 0}>
+            <View style={{ alignSelf: "center" }}>
+              <Button
+                label={loadingEarlierSec() ? tr("chat.loadingEarlier") : tr("chat.loadEarlier")}
+                variant="ghost"
+                size="xs"
+                leadingIcon="history"
+                loading={loadingEarlierSec()}
+                accessibilityLabel="secondary-load-earlier"
+                onPress={() => {
+                  if (loadingEarlierSec()) return;
+                  loadingEarlierSec.set(true);
+                  void loadSecondaryEarlierTurns().finally(() => loadingEarlierSec.set(false));
+                }}
+              />
+            </View>
+          </If>
+
+          <If when={secondaryTurnsLoading() && secondaryTurns().length === 0}>
+            <View style={{ alignItems: "center", paddingVertical: space.xxl }}>
+              <BrandSpinner size={20} />
+            </View>
+          </If>
+
+          <Each of={secondaryVisibleTurnRows()} key={row => row.key}>
+            {row => {
+              const turn = () => row().turn;
+              const tKey = () => row().key;
+              const items = computed(() => turnItems(turn()));
+              return (
+                <View style={{ gap: space.md }}>
+                  <Each of={userPartsOf(turn())} key="index">
+                    {part => (
+                      <UserBubble
+                        partKey={`sec-${turnPartKey(turn(), part())}`}
+                        text={part().text}
+                        timestamp={turnTimestampOf(turn())}
+                        turnId={tKey()}
+                        images={userImagesOf(turn())}
+                      />
+                    )}
+                  </Each>
+                  <TranscriptItems items={items()} />
+                  <If when={publishedFiguresOf(turn()).length > 0}>
+                    <View style={{ gap: space.xs }}>
+                      <Each of={publishedFiguresOf(turn())} key={fig => fig.path}>
+                        {fig => <InlineFigureCard figure={fig()} />}
+                      </Each>
+                    </View>
+                  </If>
+                  <If when={turnFailureOf(turn())}>
+                    {failure => <TurnFailureNotice turn={turn()} failure={failure()} />}
+                  </If>
+                  <If when={turnFileChangesOf(turn()).length > 0}>
+                    <TurnFileChangesCard
+                      turnId={tKey()}
+                      changes={turnFileChangesOf(turn())}
+                      onReview={filePath => openTurnChangesReview(tKey(), turnFileChangesOf(turn()), filePath)}
+                    />
+                  </If>
+                  <If when={items().length > 0}>
+                    <TurnFooter turn={turn()} visible={true} />
+                  </If>
+                </View>
+              );
+            }}
+          </Each>
+
+          <If
+            when={
+              Boolean(secondaryOptimisticUserText()) ||
+              secondaryPendingImages().length > 0 ||
+              secondaryLiveDisplayBlocks().length > 0
+            }
+          >
+            <View style={{ gap: space.md }}>
+              <If when={Boolean(secondaryOptimisticUserText()) || secondaryPendingImages().length > 0}>
+                <UserBubble
+                  partKey={`sec-pending-${secondaryPendingTurnState()?.turnId || secondaryOptimisticUserText()}`}
+                  text={secondaryOptimisticUserText()}
+                  images={secondaryPendingImages()}
+                  timestamp={secondaryPendingTurnState()?.createdAt}
+                  showCopy={false}
+                />
+              </If>
+              <If when={secondaryLiveDisplayBlocks().length > 0}>
+                <View style={{ gap: 8 }}>
+                  <Each of={secondaryLiveDisplayBlocks()} key={block => block.key}>
+                    {block => (
+                      <If
+                        when={block().kind === "explore"}
+                        else={
+                          <LiveRoundView
+                            round={() => (block() as Extract<LiveDisplayBlock, { kind: "round" }>).round}
+                            singleRound={() => secondaryLiveRounds().length === 1}
+                            pane={1}
+                          />
+                        }
+                      >
+                        <ExploreGroupCard
+                          calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
+                          cardId={`sec-${block().key}`}
+                          stateOf={persistedToolState}
+                          live={true}
+                        />
+                      </If>
+                    )}
+                  </Each>
+                </View>
+              </If>
+            </View>
+          </If>
+
+          <If when={secondaryTurnError()}>
+            {message => (
+              <InlineBanner
+                tone="danger"
+                message={localizeHostError(message())}
+                onDismiss={() => secondaryTurnError.set("")}
+              />
+            )}
+          </If>
+
+          <If when={secondarySendNotice()}>
+            {message => (
+              <InlineBanner
+                tone="warning"
+                message={message()}
+                onDismiss={() => secondarySendNotice.set("")}
+              />
+            )}
+          </If>
+        </View>
+      </Scroll>
+
+      <If when={!secFollowLatest()}>
+        <View style={{ position: "absolute", bottom: space.md, alignSelf: "center" }}>
+          <Button
+            label={tr("sessions.latest")}
+            variant="secondary"
+            size="xs"
+            pill={true}
+            leadingIcon="arrow-down"
+            accessibilityLabel="secondary-jump-latest"
+            onPress={() => {
+              secFollowLatest.set(true);
+              scrollRef?.scrollToEnd({ animated: true });
+            }}
+          />
+        </View>
+      </If>
+    </View>
+  );
+}
+
+function SecondaryComposerDock() {
+  let inputRef: InputRef | undefined;
+  const dragActive = signal(false);
+  const composing = signal(false);
+
+  const insertSecondaryText = (text: string) => {
+    if (!text) return;
+    if (inputRef) {
+      inputRef.insertText(text);
+    } else {
+      secondaryComposerText.update(curr => `${curr}${text}`);
+    }
+  };
+
+  const handleSecondaryUris = (uris: string[], mimeTypes: string[]) => {
+    const wsRoot = secondaryWorkspaceRoot();
+    for (let i = 0; i < uris.length; i += 1) {
+      const uri = uris[i];
+      if (!uri) continue;
+      const mime = mimeTypes[i] ?? "";
+      const path = uri.startsWith("file://") ? pathOfFileUrl(uri) : uri;
+      const name = basename(path) || `file-${i + 1}`;
+      if (isImageMimeOrPath(mime, path)) {
+        if (isLocalAttachmentPathAllowed()) {
+          addSecondaryImageAttachment({
+            id: `sec-img-${++nextDroppedAttachmentId}`,
+            name,
+            mimeType: mime || mimeFromFilename(path),
+            fileSize: 0,
+            imagePath: path,
+          });
+        }
+      } else {
+        const rel = toRelativeWorkspacePath(path, wsRoot);
+        addSecondaryFileAttachment({
+          id: `sec-file-${++nextDroppedAttachmentId}`,
+          name,
+          path,
+          relativePath: rel,
+          isDirectory: false,
+          source: "file",
+        });
+      }
+    }
+  };
+
+  const handleSecondaryPaste = async (event: PasteEvent) => {
+    focusPane(1);
+    let handled = false;
+    const wsId = secondaryWorkspaceId() || activeWorkspaceId() || undefined;
+    const wsRoot = secondaryWorkspaceRoot() || activeWorkspaceRoot() || "";
+    const ws = secondaryWorkspaceRecord();
+    const isRemote = Boolean(
+      ws && ((ws.workspaceKind ?? "").toLowerCase().includes("remote") || (ws.workspaceKind ?? "").toLowerCase().includes("ssh") || Boolean(ws.sshHost)),
+    );
+
+    if (event.files && event.files.length > 0) {
+      for (const file of event.files) {
+        if (isImageMimeOrPath(file.type, file.name)) {
+          try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const mimeType = file.type || mimeFromFilename(file.name);
+            addSecondaryImageAttachment({
+              id: `sec-paste-img-${++nextDroppedAttachmentId}`,
+              name: file.name || `pasted-image-${nextDroppedAttachmentId}.png`,
+              mimeType,
+              fileSize: bytes.byteLength,
+              dataUrl: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+            });
+            handled = true;
+          } catch {
+            // Fall through quietly.
+          }
+        } else if (file.type.startsWith("text/") || /\.(md|txt|json|ts|tsx|js|jsx|rs|py|yml|yaml|toml|csv|log)$/i.test(file.name)) {
+          try {
+            const content = await file.text();
+            const saved = await saveLongTextPasteToWorkspace(content, {
+              workspaceId: wsId,
+              workspaceRoot: wsRoot,
+              isRemote,
+              fileName: file.name || undefined,
+              skipPrimaryStore: true,
+            });
+            if (saved) {
+              addSecondaryFileAttachment(saved);
+              handled = true;
+            }
+          } catch {
+            // Fall through quietly.
+          }
+        }
+      }
+    }
+    if (event.uris && event.uris.length > 0) {
+      handleSecondaryUris(event.uris, []);
+      handled = true;
+    }
+    if (handled) return;
+    const text = event.text ?? "";
+    if (!text) return;
+    if (isLongTextPaste(text)) {
+      const saved = await saveLongTextPasteToWorkspace(text, {
+        workspaceId: wsId,
+        workspaceRoot: wsRoot,
+        isRemote,
+        skipPrimaryStore: true,
+      });
+      if (saved) {
+        addSecondaryFileAttachment(saved);
+        inputRef?.focus();
+        return;
+      }
+      pushToast(tr("sessions.pastedSaveFailed"), "warning");
+    }
+    insertSecondaryText(text);
+  };
+
+  const canSend = computed(
+    () =>
+      Boolean(secondarySessionId()) &&
+      (secondaryComposerText().trim().length > 0 ||
+        secondaryImageAttachments().length > 0 ||
+        secondaryFileAttachments().length > 0),
+  );
+
+  const submitSecondary = () => {
+    if (!canSend()) return;
+    void sendSecondaryTurn(secondaryComposerText());
+  };
+
+  return (
+    <View
+      onFileDragEnter={() => dragActive.set(true)}
+      onFileDragLeave={() => dragActive.set(false)}
+      onFileDrop={event => {
+        dragActive.set(false);
+        focusPane(1);
+        if (event.uris?.length) handleSecondaryUris(event.uris, event.mimeTypes ?? []);
+      }}
+      style={{
+        paddingHorizontal: space.lg,
+        paddingTop: space.chip,
+        paddingBottom: space.lg,
+      }}
+    >
+      <View
+        style={{
+          width: "100%",
+          maxWidth: contentWidth(),
+          alignSelf: "center",
+          borderRadius: radii.xl,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: dragActive() ? palette().accent : palette().border,
+          backgroundColor: dragActive() ? palette().accentSoft : palette().inputBg,
+          boxShadow: palette().shadowComposer,
+          overflow: "hidden",
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+        focusWithinStyle={{
+          borderColor: palette().fieldFocusBorder,
+          boxShadow: palette().shadowComposerFocus,
+        }}
+      >
+        <If when={secondaryImageAttachments().length > 0 || secondaryFileAttachments().length > 0}>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: space.chip,
+              paddingHorizontal: space.md,
+              paddingTop: space.sm,
+            }}
+          >
+            <Each of={secondaryImageAttachments()} key={entry => entry.id}>
+              {entry => (
+                <View
+                  style={{
+                    position: "relative",
+                    width: 56,
+                    height: 56,
+                    borderRadius: radii.md,
+                    borderCurve: "continuous",
+                    borderWidth: 1,
+                    borderColor: palette().borderSubtle,
+                    backgroundColor: palette().surfaceTertiary,
+                    overflow: "hidden",
+                    flexShrink: 0,
+                  }}
+                >
+                  <If
+                    when={attachmentPreviewSrc(entry())}
+                    else={
+                      <View style={{ width: "100%", height: "100%", alignItems: "center", justifyContent: "center" }}>
+                        <Icon name="image" size={18} color={palette().textSecondary} />
+                      </View>
+                    }
+                  >
+                    {src => (
+                      <View
+                        role="button"
+                        accessibilityLabel={`secondary-attachment-preview-${entry().id}`}
+                        onPress={() => openImageLightbox({ src: src(), title: entry().name })}
+                        style={{ width: "100%", height: "100%", cursor: "pointer" }}
+                      >
+                        <Image src={src()} style={{ width: 56, height: 56, objectFit: "cover" }} />
+                      </View>
+                    )}
+                  </If>
+                  <View
+                    role="button"
+                    accessibilityLabel={`secondary-remove-attachment-${entry().id}`}
+                    onPress={() => removeSecondaryImageAttachment(entry().id)}
+                    style={{
+                      position: "absolute",
+                      top: 3,
+                      right: 3,
+                      width: 18,
+                      height: 18,
+                      borderRadius: radii.pill,
+                      backgroundColor: palette().scrimBg,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Icon name="close" size={10} color={palette().actionPrimaryFg} />
+                  </View>
+                </View>
+              )}
+            </Each>
+            <Each of={secondaryFileAttachments()} key={entry => entry.id}>
+              {entry => (
+                <View
+                  accessibilityLabel={`secondary-file-attachment-${entry().name}`}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.xs,
+                    maxWidth: 240,
+                    paddingLeft: space.sm,
+                    paddingRight: space.xs,
+                    paddingVertical: space.xs,
+                    borderRadius: radii.md,
+                    borderCurve: "continuous",
+                    borderWidth: 1,
+                    borderColor: palette().borderSubtle,
+                    backgroundColor: palette().surfaceTertiary,
+                  }}
+                >
+                  <Icon name={entry().isDirectory ? "folder" : "file"} size={13} color={palette().accent} />
+                  <Text
+                    style={{
+                      ...textStyle("caption"),
+                      fontWeight: "500",
+                      flexShrink: 1,
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {entry().name}
+                  </Text>
+                  <View
+                    role="button"
+                    accessibilityLabel={`secondary-remove-file-${entry().id}`}
+                    onPress={() => removeSecondaryFileAttachment(entry().id)}
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: radii.sm,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                    }}
+                    hoverStyle={{ backgroundColor: palette().panelHover }}
+                  >
+                    <Icon name="close" size={11} color={palette().textMuted} />
+                  </View>
+                </View>
+              )}
+            </Each>
+          </View>
+        </If>
+
+        <View style={{ paddingHorizontal: space.md, paddingTop: space.sm, paddingBottom: space.xs }}>
+          <Input
+            ref={el => {
+              inputRef = el;
+            }}
+            multiline={true}
+            submitBehavior="submit"
+            pasteBehavior="report"
+            value={secondaryComposerText()}
+            placeholder={
+              secondaryRunningTurnId()
+                ? tr("session.placeholderRunning")
+                : tr("session.placeholder")
+            }
+            accessibilityLabel="secondary-composer"
+            onFocus={() => focusPane(1)}
+            onChange={event => secondaryComposerText.set(event.value)}
+            onPaste={event => void handleSecondaryPaste(event)}
+            onCompositionChange={event => composing.set(event.composing)}
+            onSubmit={() => {
+              if (!composing()) submitSecondary();
+            }}
+            style={{
+              minHeight: 36,
+              maxHeight: 160,
+              color: palette().text,
+              placeholderColor: palette().textMuted,
+              caretColor: palette().accent,
+              fontSize: textSize(14),
+              lineHeight: textLineHeight(14, 1.5),
+            }}
+          />
+        </View>
+
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingHorizontal: space.sm,
+            paddingBottom: space.sm,
+            gap: space.xs,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flex: 1 }}>
+            <Badge
+              label={agentLabel(agentTypeOf(secondarySessionId()))}
+              tone="neutral"
+            />
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+            <If when={Boolean(secondaryRunningTurnId())}>
+              <IconCircleButton
+                icon="stop"
+                variant="primary"
+                size={32}
+                iconSize={14}
+                accessibilityLabel="secondary-stop-turn"
+                tooltip={tr("common.stop")}
+                onPress={() => void stopSecondaryTurn()}
+              />
+            </If>
+            <If when={!secondaryRunningTurnId() || canSend()}>
+              <IconCircleButton
+                icon="arrow-up"
+                variant={canSend() ? "primary" : "subtle"}
+                size={32}
+                iconSize={16}
+                disabled={!canSend()}
+                accessibilityLabel="secondary-send-turn"
+                tooltip={tr("sessions.sendMessage")}
+                onPress={submitSecondary}
+              />
+            </If>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function SecondarySessionPane() {
+  return (
+    <View
+      testID="secondary-session-pane"
+      style={{
+        flexGrow: 1 - sessionSplitRatio(),
+        flexBasis: 0,
+        minWidth: 260,
+        minHeight: 0,
+        flexDirection: "column",
+        backgroundColor: palette().canvas,
+      }}
+    >
+      <SecondaryHeader />
+      <If when={Boolean(secondarySessionId())} else={<SecondaryEmptyPicker />}>
+        <SecondaryTranscript />
+        <PermissionPrompts sessionId={secondarySessionId} />
+        <QuestionPrompts sessionId={secondarySessionId} />
+        <SecondaryComposerDock />
+      </If>
+    </View>
+  );
+}
+
 export function SessionsScene() {
   followSearchRevealRequests();
   useSessionExtras(); // wave22-p5
+  const showSplit = () => splitPaneOpen() && !compactLayout();
+  let splitDragStartRatio: number | null = null;
+  let splitDragAccumPx = 0;
+
   return (
     <View
       onLayout={event => {
@@ -7506,20 +9028,66 @@ export function SessionsScene() {
           sessionsPaneWidth.set(width);
         }
       }}
-      style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: palette().canvas }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        flexDirection: showSplit() ? "row" : "column",
+        backgroundColor: palette().canvas,
+      }}
     >
-      <ConversationHeader />
-      <GoalStrip />
-      <Transcript />
-      <SessionOfflineNotice />
-      <PermissionPrompts />
-      <QuestionPrompts />
-      <SessionReviewNotes />
-      <ReviewLauncherDialog />
-      <BackgroundCommandsStrip />
-      <If when={Boolean(activeSessionId())}>
-        <ComposerDock />
+      <View
+        testID="primary-session-pane"
+        style={{
+          flex: showSplit() ? undefined : 1,
+          flexGrow: showSplit() ? sessionSplitRatio() : 1,
+          flexBasis: showSplit() ? 0 : undefined,
+          minWidth: showSplit() ? 260 : 0,
+          minHeight: 0,
+          flexDirection: "column",
+          borderTopWidth: showSplit() ? 2 : 0,
+          borderTopColor: showSplit() && focusedPane() === 0 ? palette().accent : "transparent",
+          backgroundColor: palette().canvas,
+        }}
+      >
+        <ConversationHeader />
+        <GoalStrip />
+        <Transcript />
+        <SessionOfflineNotice />
+        <PermissionPrompts />
+        <QuestionPrompts />
+        <SessionReviewNotes />
+        <ReviewLauncherDialog />
+        <BackgroundCommandsStrip />
+        <If when={Boolean(activeSessionId())}>
+          <ComposerDock />
+        </If>
+      </View>
+
+      <If when={showSplit()}>
+        <SplitHandle
+          surface="canvas"
+          accessibilityLabel="session-split-handle"
+          onDragStateChange={dragging => {
+            if (dragging) {
+              splitDragStartRatio = sessionSplitRatio();
+              splitDragAccumPx = 0;
+            } else {
+              splitDragStartRatio = null;
+              splitDragAccumPx = 0;
+            }
+          }}
+          onDelta={delta => {
+            splitDragAccumPx += delta;
+            const total = Math.max(400, sessionsPaneWidth());
+            const base = splitDragStartRatio ?? sessionSplitRatio();
+            setSessionSplitRatio(base + splitDragAccumPx / total);
+          }}
+          onReset={() => setSessionSplitRatio(SESSION_SPLIT_DEFAULT_RATIO)}
+        />
+        <SecondarySessionPane />
       </If>
+
       <SessionExtrasDialogs />
       <TurnChangesDiffModal
         review={turnChangesReview}

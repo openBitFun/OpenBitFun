@@ -957,12 +957,27 @@ export function SessionExtrasDialogs(): JSX.Element {
  * own session commands come first, so these run only when it offers neither.
  */
 export function runExtrasCommand(text: string): boolean {
-  const match = /^\/(goal|btw)\s+([\s\S]+)$/i.exec(text.trim());
+  const match = /^\/(goal|btw)(?:\s+([\s\S]+))?$/i.exec(text.trim());
   const target = goalTarget();
   if (!match || !target) return false;
-  const body = match[2].trim();
-  if (match[1].toLowerCase() === "goal") {
-    void setSessionGoal(target, body).catch(error => pushToast(errorText(error), "error"));
+  const cmd = match[1]!.toLowerCase();
+  const body = (match[2] ?? "").trim();
+  if (cmd === "goal") {
+    if (!body || /^edit$/i.test(body)) {
+      openGoalDialog();
+    } else if (/^clear$/i.test(body)) {
+      void clearSessionGoal(target).catch(error => pushToast(errorText(error), "error"));
+    } else if (/^pause$/i.test(body)) {
+      void setSessionGoalStatus(target, "paused").catch(error => pushToast(errorText(error), "error"));
+    } else if (/^resume$/i.test(body)) {
+      void setSessionGoalStatus(target, "active").catch(error => pushToast(errorText(error), "error"));
+    } else {
+      void setSessionGoal(target, body).catch(error => pushToast(errorText(error), "error"));
+    }
+    return true;
+  }
+  if (!body) {
+    openSideQuestion();
   } else {
     openSideQuestion();
     void askSideQuestion({ sessionId: target.sessionId, deviceId: target.deviceId }, body);

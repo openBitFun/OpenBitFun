@@ -1037,9 +1037,11 @@ export function Badge(props: BadgeProps) {
 }
 
 export interface SplitHandleProps {
-  onDelta: (dx: number) => void;
+  onDelta: (delta: number) => void;
   onDragStateChange?: (dragging: boolean) => void;
   onReset?: () => void;
+  /** `"vertical"` (default) resizes side-by-side panes horizontally; `"horizontal"` resizes stacked panes vertically. */
+  orientation?: "vertical" | "horizontal";
   surface?: ControlSurface;
   seam?: boolean;
   accessibilityLabel?: string;
@@ -1051,14 +1053,15 @@ const activeSplitDragCount = signal(0);
 export const splitDragging = computed(() => activeSplitDragCount() > 0);
 
 /**
- * Tactile vertical split resize handle: optional 1px full-height seam hairline
- * paired with a centered GPU-scaled pill grip that reveals smoothly on hover/drag.
+ * Tactile vertical or horizontal split resize handle: optional 1px full-edge
+ * seam hairline paired with a centered GPU-scaled pill grip that reveals on hover/drag.
  */
 export function SplitHandle(props: SplitHandleProps) {
+  const isHorizontal = () => props.orientation === "horizontal";
   const hovered = signal(false);
   const dragging = signal(false);
   let dragCounted = false;
-  let lastDx = 0;
+  let lastOffset = 0;
 
   const setDragging = (next: boolean) => {
     if (next === dragCounted) return;
@@ -1074,12 +1077,13 @@ export function SplitHandle(props: SplitHandleProps) {
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: () => {
-      lastDx = 0;
+      lastOffset = 0;
       setDragging(true);
     },
     onPanResponderMove: (_e, state) => {
-      const delta = state.dx - lastDx;
-      lastDx = state.dx;
+      const current = isHorizontal() ? state.dy : state.dx;
+      const delta = current - lastOffset;
+      lastOffset = current;
       if (delta !== 0) props.onDelta(delta);
     },
     onPanResponderRelease: () => {
@@ -1101,11 +1105,11 @@ export function SplitHandle(props: SplitHandleProps) {
       onMouseLeave={() => hovered.set(false)}
       style={{
         position: "relative",
-        width: 9,
+        ...(isHorizontal() ? { height: 9, width: "100%" } : { width: 9 }),
         flexShrink: 0,
         alignItems: "center",
         justifyContent: "center",
-        cursor: "ew-resize",
+        cursor: isHorizontal() ? "ns-resize" : "ew-resize",
         userSelect: "none",
         backgroundColor: "transparent",
       }}
@@ -1114,9 +1118,9 @@ export function SplitHandle(props: SplitHandleProps) {
         <View
           style={{
             position: "absolute",
-            top: 0,
-            bottom: 0,
-            width: 1,
+            ...(isHorizontal()
+              ? { left: 0, right: 0, height: 1 }
+              : { top: 0, bottom: 0, width: 1 }),
             backgroundColor: dragging()
               ? props.surface === "chrome"
                 ? palette().chromeAccent
@@ -1134,13 +1138,15 @@ export function SplitHandle(props: SplitHandleProps) {
       </If>
       <View
         style={{
-          width: 3,
-          height: 44,
+          width: isHorizontal() ? 44 : 3,
+          height: isHorizontal() ? 3 : 44,
           borderRadius: radii.pill,
           opacity: dragging() || hovered() ? 1 : 0,
           transform: reduceMotion()
             ? undefined
-            : [{ scaleY: dragging() ? 1.1 : hovered() ? 0.84 : 0.62 }],
+            : isHorizontal()
+              ? [{ scaleX: dragging() ? 1.1 : hovered() ? 0.84 : 0.62 }]
+              : [{ scaleY: dragging() ? 1.1 : hovered() ? 0.84 : 0.62 }],
           backgroundColor: dragging()
             ? props.surface === "chrome"
               ? palette().chromeAccent

@@ -57,29 +57,30 @@ test("shell and sessions come from the host", async () => {
   expect(listCall?.request).toMatchObject({ workspace_id: "workspace-1", limit: 50 });
 });
 
-test("opened sessions become tabs on the session canvas", async () => {
+test("sessions open side by side in split view without hidden background tabs", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await showAllSessions(app, "Terminal migration");
-  await openSessionRow(app, "Terminal migration >> nth=0");
-  await app.waitFor("Port the terminal.");
+  await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
-  // Both sessions stay open: each tab inside the thread menu brings its own transcript back.
+  // Thread menu omits retired "Open tabs" clutter and offers "Split view".
   await app.press("thread-actions-trigger");
-  await app.press("open-tab-session-2");
-  await app.waitFor("Port the terminal.");
-  await app.press("thread-actions-trigger");
-  await app.press("open-tab-session-1");
-  await app.waitFor("Port the session list.");
+  expect(app.texts()).not.toContain("Open tabs");
+  await app.press("session-split-open");
 
-  // Closing the other tab leaves one tab, and the transcript on screen stays.
-  await app.press("thread-actions-trigger");
-  await app.press("× >> nth=1");
-  expect(app.texts().filter(text => text === "×").length).toBe(1);
+  // Both sessions render simultaneously side by side with independent transcripts.
+  await app.waitFor("id:secondary-session-pane");
+  await app.waitFor("Port the terminal.");
   expect(app.texts()).toContain("Port the session list.");
+  expect(app.texts()).toContain("Port the terminal.");
+
+  // Closing the secondary pane returns cleanly to single-pane mode and releases its transcript.
+  await app.press("session-pane-close-1");
+  await app.waitFor("id:secondary-session-pane", { state: "gone" });
+  expect(app.texts()).toContain("Port the session list.");
+  expect(app.texts()).not.toContain("Port the terminal.");
 });
 
 test("archived sessions are their own list and can be restored", async () => {
@@ -508,28 +509,22 @@ test("editing or cancelling a queued message never wipes the currently running t
   expect(app.texts()).toContain("Searching now...");
 });
 
-test("a clipboard image rides into the turn as an attachment", async () => {
+test("a pasted image rides into the turn as a compact thumbnail attachment without a clipboard button", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", {
     ...DESKTOP,
     host: { handlers: backend.handlers },
-    // A clipboard image the OS reports by path: the host opens it, not this app.
-    modules: {
-      nsh: {
-        "Clipboard.readImage": () => ({
-          url: "file:///Users/me/Shots/pasted%20image.png",
-          size: { width: 640, height: 480 },
-        }),
-      },
-    },
   });
 
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
+  expect(app.shows("Attach")).toBe(false);
 
-  await app.press("Attach");
-  await app.waitFor("pasted image.png");
+  // Pasting an image URI attaches a compact square thumbnail (no filename text in composer).
+  await app.paste("composer", { uris: ["file:///Users/me/Shots/pasted%20image.png"] });
+  await app.waitFor("attachment-preview-attachment-drop-1");
+  expect(app.texts()).not.toContain("pasted image.png");
 
   await app.type("composer", "What is in this image?");
   await app.press("Send");
@@ -541,14 +536,11 @@ test("a clipboard image rides into the turn as an attachment", async () => {
         mime_type: "image/png",
         image_name: "pasted image.png",
         image_path: "/Users/me/Shots/pasted image.png",
-        width: 640,
-        height: 480,
-        source: "clipboard",
       },
     ],
   });
   // The attachment belongs to the turn that just started, not to the next one.
-  expect(app.texts()).not.toContain("pasted image.png");
+  expect(app.shows("attachment-preview-attachment-drop-1")).toBe(false);
 });
 
 test("the session header copies a session and selects the copy", async () => {
@@ -2999,13 +2991,14 @@ test("Return takes the offered reference first, then sends the message", async (
   await app.type("composer", "Explain @readme");
   await app.waitFor("README.md");
 
-  // Return with a row on offer takes the tag, as the desktop's picker does, and
-  // nothing is sent yet.
+  // Return with a row on offer attaches it as a styled file chip instead of dumping
+  // raw `#file:` text into the input, and nothing is sent yet.
   await app.submit("composer");
   expect(backend.actions()).not.toContain("submit_user_message");
-  expect(app.value("composer")).toBe("Explain #file:README.md ");
+  expect(app.value("composer")).toBe("Explain ");
+  await app.waitFor("file-attachment-README.md");
 
-  // The next Return sends what the composer holds.
+  // The next Return sends what the composer holds together with the attached file tag.
   await app.submit("composer");
   expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     text: "Explain #file:README.md",

@@ -5,7 +5,10 @@ import { batch, computed, effect, signal, Storage, untracked } from "nsh";
 import {
   buildAttachmentContexts,
   clearAttachments,
+  composeMessageWithFileAttachments,
+  fileAttachments,
   imageAttachments,
+  type FileAttachment,
   type ImageAttachment,
 } from "./attachmentStore";
 import {
@@ -105,7 +108,7 @@ export type SceneId =
   | "settings";
 
 export type AuxPaneTab = "files" | "git" | "terminal" | "browser";
-export type AuxPaneSide = "right" | "left";
+export type AuxPaneSide = "right" | "left" | "bottom";
 export type SessionGrouping = "grouped" | "flat";
 
 /**
@@ -256,12 +259,16 @@ export function goForwardScene(): void {
   });
 }
 
-/** Right/left auxiliary workbench pane state (`WorkbenchLayout` / `AuxPane`). */
+/** Right/left/bottom auxiliary workbench pane state (`WorkbenchLayout` / `AuxPane`). */
 export const AUX_MIN_WIDTH = 300;
 export const AUX_MAX_WIDTH = 1200;
+export const AUX_MIN_HEIGHT = 180;
+export const AUX_MAX_HEIGHT = 760;
+export const AUX_DEFAULT_HEIGHT = 320;
 export const auxPaneOpen = signal(false);
 export const auxPaneTab = signal<AuxPaneTab>("files");
 export const auxPaneWidth = signal(460);
+export const auxPaneHeight = signal(AUX_DEFAULT_HEIGHT);
 export const auxPaneMaximized = signal(false);
 export const auxPaneSide = signal<AuxPaneSide>("right");
 export const auxSelectedFilePath = signal<string | null>(null);
@@ -269,6 +276,19 @@ export const auxSelectedFilePath = signal<string | null>(null);
 export function setAuxPaneWidth(width: number): void {
   const clamped = Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, Math.round(width)));
   auxPaneWidth.set(clamped);
+}
+
+export function setAuxPaneHeight(height: number): void {
+  const clamped = Math.max(AUX_MIN_HEIGHT, Math.min(AUX_MAX_HEIGHT, Math.round(height)));
+  auxPaneHeight.set(clamped);
+}
+
+export function setAuxPaneSide(side: AuxPaneSide): void {
+  auxPaneSide.set(side);
+}
+
+export function toggleAuxDockBottom(): void {
+  auxPaneSide.update(side => (side === "bottom" ? "right" : "bottom"));
 }
 
 export function openInAuxPane(tab: AuxPaneTab, filePath?: string | null): void {
@@ -313,6 +333,25 @@ export function setNavWidth(width: number): void {
   navWidth.set(clamped);
 }
 
+/** Dual-session split pane state (left primary pane 0, right secondary pane 1). */
+export const SESSION_SPLIT_MIN_RATIO = 0.28;
+export const SESSION_SPLIT_MAX_RATIO = 0.72;
+export const SESSION_SPLIT_DEFAULT_RATIO = 0.5;
+export const splitPaneOpen = signal(false);
+export const focusedPane = signal<0 | 1>(0);
+export const sessionSplitRatio = signal(SESSION_SPLIT_DEFAULT_RATIO);
+
+export function setSessionSplitRatio(ratio: number): void {
+  if (!Number.isFinite(ratio)) return;
+  const clamped = Math.max(SESSION_SPLIT_MIN_RATIO, Math.min(SESSION_SPLIT_MAX_RATIO, ratio));
+  sessionSplitRatio.set(Math.round(clamped * 1000) / 1000);
+}
+
+export function focusPane(pane: 0 | 1): void {
+  const next: 0 | 1 = splitPaneOpen() ? pane : 0;
+  if (focusedPane() !== next) focusedPane.set(next);
+}
+
 /**
  * The shell's own layout (sidebar open and width, aux pane width and side,
  * session grouping, folded workspaces), kept in this surface's storage. The
@@ -332,7 +371,15 @@ export async function loadShellLayout(): Promise<void> {
       if (typeof doc.auxPaneWidth === "number" && Number.isFinite(doc.auxPaneWidth)) {
         setAuxPaneWidth(doc.auxPaneWidth);
       }
-      if (doc.auxPaneSide === "left" || doc.auxPaneSide === "right") auxPaneSide.set(doc.auxPaneSide);
+      if (typeof doc.auxPaneHeight === "number" && Number.isFinite(doc.auxPaneHeight)) {
+        setAuxPaneHeight(doc.auxPaneHeight);
+      }
+      if (doc.auxPaneSide === "left" || doc.auxPaneSide === "right" || doc.auxPaneSide === "bottom") {
+        auxPaneSide.set(doc.auxPaneSide);
+      }
+      if (typeof doc.sessionSplitRatio === "number" && Number.isFinite(doc.sessionSplitRatio)) {
+        setSessionSplitRatio(doc.sessionSplitRatio);
+      }
       if (doc.sessionGrouping === "grouped" || doc.sessionGrouping === "flat") {
         sessionGrouping.set(doc.sessionGrouping);
       }
@@ -357,7 +404,9 @@ export function persistShellLayout(): void {
     drawerOpen: drawerOpen(),
     navWidth: navWidth(),
     auxPaneWidth: auxPaneWidth(),
+    auxPaneHeight: auxPaneHeight(),
     auxPaneSide: auxPaneSide(),
+    sessionSplitRatio: sessionSplitRatio(),
     sessionGrouping: sessionGrouping(),
     collapsedWorkspaces: collapsedWorkspaces(),
   };
@@ -394,6 +443,10 @@ export const sessionTotal = signal(0);
 export const activeSessionId = signal<string | null>(null);
 /** The device of the open session (`""` without the fleet layer). */
 export const activeSessionDevice = signal<string>("");
+/** Secondary split pane session identity (Pane 1). Cleared immediately when split closes. */
+export const secondarySessionId = signal<string | null>(null);
+export const secondarySessionDevice = signal<string>("");
+export const secondaryWorkspaceId = signal<string | null>(null);
 
 /** The key of a session anywhere on the account: `"<deviceId>/<sessionId>"`. */
 export function sessionKey(sessionId: string, deviceId: string = deviceOfSession(sessionId)): string {
@@ -414,11 +467,13 @@ export function deviceIdOfKey(key: string): string {
 
 /**
  * The device a session id belongs to, as far as this surface knows: the open
- * session's device, else the fleet index's owner, else the device context.
+ * session's device, else the secondary split session's device, else the fleet
+ * index's owner, else the device context.
  */
 export function deviceOfSession(sessionId: string | null | undefined): string {
   if (!fleetActive()) return "";
   if (sessionId && sessionId === activeSessionId() && activeSessionDevice()) return activeSessionDevice();
+  if (sessionId && sessionId === secondarySessionId() && secondarySessionDevice()) return secondarySessionDevice();
   return (sessionId ? fleetSessionOwner(sessionId) : null) ?? deviceContext();
 }
 
@@ -426,6 +481,13 @@ export function deviceOfSession(sessionId: string | null | undefined): string {
 export const activeSessionKey = computed<string | null>(() => {
   const sessionId = activeSessionId();
   return sessionId ? `${activeSessionDevice()}/${sessionId}` : null;
+});
+
+/** The secondary split pane session's key, or `null`. */
+export const secondarySessionKey = computed<string | null>(() => {
+  if (!splitPaneOpen()) return null;
+  const sessionId = secondarySessionId();
+  return sessionId ? `${secondarySessionDevice()}/${sessionId}` : null;
 });
 
 function setActiveSession(sessionId: string | null, deviceId?: string): void {
@@ -563,6 +625,82 @@ function notifySessionSwitch(phase: SessionSwitchPhase, sessionId: string | null
   }
 }
 
+export type SecondarySessionSwitchPhase = "leave" | "enter" | "close";
+const secondarySessionSwitchHandlers = new Set<
+  (phase: SecondarySessionSwitchPhase, sessionId: string | null, key: string | null) => void
+>();
+
+export function onSecondarySessionSwitch(
+  handler: (phase: SecondarySessionSwitchPhase, sessionId: string | null, key: string | null) => void,
+): () => void {
+  secondarySessionSwitchHandlers.add(handler);
+  return () => {
+    secondarySessionSwitchHandlers.delete(handler);
+  };
+}
+
+export function notifySecondarySessionSwitch(
+  phase: SecondarySessionSwitchPhase,
+  sessionId: string | null,
+  key: string | null = null,
+): void {
+  for (const handler of [...secondarySessionSwitchHandlers]) {
+    try {
+      handler(phase, sessionId, key);
+    } catch {
+      // Never block secondary pane switching.
+    }
+  }
+}
+
+const secondaryRunningTurnHandlers = new Set<
+  (sessionId: string, deviceId: string, snapshot: RunningTurnSnapshot) => void
+>();
+
+export function onSecondaryRunningTurnSnapshot(
+  handler: (sessionId: string, deviceId: string, snapshot: RunningTurnSnapshot) => void,
+): () => void {
+  secondaryRunningTurnHandlers.add(handler);
+  return () => {
+    secondaryRunningTurnHandlers.delete(handler);
+  };
+}
+
+export function notifySecondaryRunningTurn(
+  sessionId: string,
+  deviceId: string,
+  snapshot: RunningTurnSnapshot,
+): void {
+  for (const handler of [...secondaryRunningTurnHandlers]) {
+    try {
+      handler(sessionId, deviceId, snapshot);
+    } catch (error) {
+      console.warn(`Failed to hydrate secondary running turn: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+export interface SecondaryPaneBridge {
+  loadTurns: (sessionId: string, options?: { silent?: boolean }) => Promise<TranscriptTurnView[] | null>;
+  clearIfMatches: (predicate: { sessionId?: string; workspaceId?: string }) => void;
+  getTurns: () => TranscriptTurnView[];
+  getPendingTurn: () => PendingTurnState | null;
+  setPendingTurn: (sessionId: string, userText: string, turnId?: string, images?: ImageAttachment[]) => void;
+  bindPendingTurnId: (sessionId: string, turnId: string, userText?: string, images?: ImageAttachment[]) => void;
+  clearPendingTurn: (sessionId?: string, key?: string) => void;
+  setTurnError: (message: string) => void;
+}
+
+let secondaryPaneBridge: SecondaryPaneBridge | null = null;
+
+export function registerSecondaryPaneBridge(bridge: SecondaryPaneBridge): void {
+  secondaryPaneBridge = bridge;
+}
+
+export function getSecondaryPaneBridge(): SecondaryPaneBridge | null {
+  return secondaryPaneBridge;
+}
+
 /** True when a session metadata row is archived (supports both Rust `status` and fixture `persistedStatus`). */
 export function isSessionArchived(meta: SessionSummary | null | undefined): boolean {
   if (!meta) return false;
@@ -617,15 +755,13 @@ export function removeSessionFromEvent(sessionId: string): void {
     sessions.update(current => current.filter(item => item.sessionId !== sessionId));
     sessionTotal.update(total => Math.max(0, total - 1));
   }
-  const key = sessionKey(sessionId);
-  evictTranscriptCache(key);
-  openSessionKeys.set(openSessionKeys().filter(item => item !== key));
   if (activeSessionId() === sessionId) {
     setActiveSession(null);
     sessionTurns.set([]);
     clearPendingTurn(sessionId);
     clearStreamedText();
   }
+  secondaryPaneBridge?.clearIfMatches({ sessionId });
 }
 
 let activeStepCount = 0;
@@ -728,7 +864,6 @@ export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Pr
 }
 
 function clearWorkspaceSelection(): void {
-  clearTranscriptCache();
   batch(() => {
     setActiveWorkspaceKey(null);
     setActiveSession(null);
@@ -865,6 +1000,7 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
         selectWorkspace(next.id);
       }
     }
+    secondaryPaneBridge?.clearIfMatches({ workspaceId });
   });
 }
 
@@ -951,45 +1087,15 @@ export async function loadMoreSessions(): Promise<void> {
   });
 }
 
-/** Sessions the user opened (`sessionKey`s), in the order the tab strip shows them. */
-export const openSessionKeys = signal<string[]>([]);
-/** The open sessions' ids, in tab order (read-only view of `openSessionKeys`). */
-export const openSessionIds = computed<string[]>(() => openSessionKeys().map(sessionIdOfKey));
-
-/** Small LRU transcript cache so switching between recently viewed sessions is 0ms instant with zero blank flash. */
-interface CachedTranscript {
-  turns: TranscriptTurnView[];
-  cursor: string | null;
-  limit: number;
-}
-const MAX_CACHED_TRANSCRIPTS = 16;
-const sessionTranscriptCache = new Map<string, CachedTranscript>();
-
-function readTranscriptCache(key: string): CachedTranscript | undefined {
-  const entry = sessionTranscriptCache.get(key);
-  if (!entry) return undefined;
-  // Refresh LRU order.
-  sessionTranscriptCache.delete(key);
-  sessionTranscriptCache.set(key, entry);
-  return entry;
-}
-
-function writeTranscriptCache(key: string, entry: CachedTranscript): void {
-  sessionTranscriptCache.delete(key);
-  sessionTranscriptCache.set(key, entry);
-  if (sessionTranscriptCache.size > MAX_CACHED_TRANSCRIPTS) {
-    const oldest = sessionTranscriptCache.keys().next().value;
-    if (oldest !== undefined) sessionTranscriptCache.delete(oldest);
-  }
-}
-
-export function evictTranscriptCache(key: string | null | undefined): void {
-  if (key) sessionTranscriptCache.delete(key);
-}
-
-function clearTranscriptCache(): void {
-  sessionTranscriptCache.clear();
-}
+/** Currently visible session keys (active primary pane plus any open split pane). */
+export const visibleSessionKeys = computed<string[]>(() => {
+  const keys: string[] = [];
+  const primary = activeSessionKey();
+  if (primary) keys.push(primary);
+  const secondary = secondarySessionKey();
+  if (secondary && secondary !== primary) keys.push(secondary);
+  return keys;
+});
 
 export function selectSession(sessionId: string, deviceId?: string, workspaceId?: string): void {
   const previous = activeSessionId();
@@ -1002,39 +1108,22 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   const current = activeWorkspaceKey();
   const key = `${device}/${sessionId}`;
 
-  if (previousKey && previousKey !== key && !turnsLoading()) {
-    const previousTurns = sessionTurns();
-    if (previousTurns.length > 0) {
-      writeTranscriptCache(previousKey, {
-        turns: previousTurns,
-        cursor: transcriptCursor && transcriptCursor.sessionKey === previousKey ? transcriptCursor.cursor : null,
-        limit: turnWindowOf(previous ?? "", previousKey),
-      });
-    }
-  }
-
-  const cached = previousKey !== key ? readTranscriptCache(key) : undefined;
   batch(() => {
     if (owner && (current?.workspaceId !== owner || current?.deviceId !== device)) {
       selectWorkspace(owner, { deviceId: device });
     }
     setActiveSession(sessionId, device);
-    if (!openSessionKeys().includes(key)) openSessionKeys.update(keys => [...keys, key]);
     if (previousKey !== key) {
       evictTurnWindow(previousKey);
       turnsLoadSeq += 1;
       notifySessionSwitch("leave", previous, previousKey);
-      swapComposerDraft(previousKey, key);
-      if (cached) {
-        if (cached.limit !== TURN_WINDOW_STEP) setTurnWindow(key, cached.limit);
-        transcriptCursor = cached.cursor ? { sessionKey: key, limit: cached.limit, cursor: cached.cursor } : null;
-        sessionTurns.set(cached.turns);
-        turnsLoading.set(false);
-      } else {
-        transcriptCursor = null;
-        sessionTurns.set([]);
-        turnsLoading.set(true);
+      if (previousKey) {
+        composerText.set("");
+        clearAttachments();
       }
+      transcriptCursor = null;
+      sessionTurns.set([]);
+      turnsLoading.set(true);
       clearPendingTurn();
       clearStreamedText();
       turnError.set("");
@@ -1049,27 +1138,6 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   // A question asked before this surface looked at the session has no event left
   // to replay, so the host's mailbox is read on every open.
   void loadQuestionMailbox(sessionId);
-}
-
-/** Closes one tab; the neighbour takes over when the closed tab was on screen. */
-export function closeSessionTab(sessionId: string, deviceId?: string): void {
-  const key = deviceId !== undefined ? `${deviceId}/${sessionId}` : sessionKey(sessionId);
-  evictTurnWindow(key);
-  composerDrafts.delete(key);
-  const remaining = openSessionKeys().filter(item => item !== key);
-  openSessionKeys.set(remaining);
-  if (activeSessionKey() !== key) return;
-  const fallback = remaining[remaining.length - 1];
-  transcriptCursor = null;
-  turnsLoadSeq += 1;
-  notifySessionSwitch("leave", sessionId, key);
-  swapComposerDraft(key, null);
-  setActiveSession(null);
-  sessionTurns.set([]);
-  runningTurnId.set(null);
-  clearPendingTurn();
-  clearStreamedText();
-  if (fallback) selectSession(sessionIdOfKey(fallback), deviceIdOfKey(fallback));
 }
 
 /** How many of the newest turns a session loads; "Load earlier" widens it. */
@@ -1201,7 +1269,6 @@ export async function loadTurns(
             ? view.turns
             : [];
       transcriptCursor = view.cursor ? { sessionKey: key, limit, cursor: view.cursor } : null;
-      writeTranscriptCache(key, { turns: list, cursor: view.cursor ?? null, limit });
       batch(() => {
         transcriptNotice.set("");
         turnsLoading.set(false);
@@ -1372,28 +1439,6 @@ export function runningTurnOf(sessionId: string, deviceId?: string): string | nu
 /** The composer's current text. */
 export const composerText = signal<string>("");
 
-/**
- * What each session's composer held when another session was opened, so a draft
- * and its attachments stay with the session they were written for (by `sessionKey`).
- */
-const composerDrafts = new Map<string, { text: string; attachments: ImageAttachment[] }>();
-
-function swapComposerDraft(previous: string | null, next: string | null): void {
-  if (previous) {
-    const text = composerText();
-    const attachments = imageAttachments();
-    if (text || attachments.length) composerDrafts.set(previous, { text, attachments });
-    else composerDrafts.delete(previous);
-  }
-  const draft = next ? composerDrafts.get(next) : undefined;
-  // Nothing was open before: whatever the composer holds (a starter card, a quick
-  // prompt) is meant for the session being opened.
-  if (!previous && !draft) return;
-  composerText.set(draft?.text ?? "");
-  imageAttachments.set(draft?.attachments ?? []);
-  if (next) composerDrafts.delete(next);
-}
-
 /** Why the composer could not send mid-turn on this host, or empty. */
 export const sendNotice = signal("");
 
@@ -1416,6 +1461,8 @@ export async function sendTurn(
   options?: {
     /** Explicit attachments for retry / edit-and-rerun; when omitted, composer `imageAttachments()` are used. */
     attachments?: ImageAttachment[];
+    /** Explicit file attachments; when omitted, composer `fileAttachments()` are used. */
+    files?: FileAttachment[];
     onQueued?: (info: {
       sessionId: string;
       turnId: string;
@@ -1426,9 +1473,12 @@ export async function sendTurn(
   },
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   const sessionId = activeSessionId();
-  const body = text.trim();
+  const rawBody = text.trim();
   const usesExplicitAttachments = options?.attachments !== undefined;
+  const usesExplicitFiles = options?.files !== undefined;
   const outgoingImages = usesExplicitAttachments ? [...(options?.attachments ?? [])] : [...imageAttachments()];
+  const outgoingFiles = usesExplicitFiles ? [...(options?.files ?? [])] : [...fileAttachments()];
+  const body = composeMessageWithFileAttachments(rawBody, outgoingFiles);
   if (!sessionId || (!body && outgoingImages.length === 0)) return null;
   // The row says which workspace owns the session. A session open in a tab whose
   // workspace is no longer listed is sent without one, so the host restores it
@@ -1436,7 +1486,7 @@ export async function sendTurn(
   const row = sessions().find(item => item.sessionId === sessionId);
   const workspaceId = row ? row.workspaceId || activeWorkspaceId() || undefined : undefined;
   const savedDraft = composerText();
-  const fromComposer = savedDraft === text && options?.attachments === undefined;
+  const fromComposer = savedDraft === text && options?.attachments === undefined && options?.files === undefined;
   const attachments = buildAttachmentContexts(outgoingImages);
   const running = Boolean(runningTurnId());
   const restoreDraft = () => {
@@ -1446,6 +1496,9 @@ export async function sendTurn(
       }
       if (!usesExplicitAttachments && outgoingImages.length > 0 && imageAttachments().length === 0) {
         imageAttachments.set(outgoingImages);
+      }
+      if (!usesExplicitFiles && outgoingFiles.length > 0 && fileAttachments().length === 0) {
+        fileAttachments.set(outgoingFiles);
       }
     });
   };
@@ -1711,17 +1764,16 @@ export async function archiveSessionRow(sessionId: string, archived: boolean): P
       ),
     );
     if (archived) {
-      // An archived session leaves the tab strip with its header actions.
       const key = sessionKey(sessionId);
       evictTurnWindow(key);
-      evictTranscriptCache(key);
-      composerDrafts.delete(key);
-      openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     }
     if (archived && activeSessionId() === sessionId) {
       transcriptCursor = null;
       setActiveSession(null);
       sessionTurns.set([]);
+    }
+    if (archived) {
+      secondaryPaneBridge?.clearIfMatches({ sessionId });
     }
   });
 }
@@ -1742,14 +1794,12 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     clearPromptSuggestion(sessionId, device);
     clearPendingTurn(sessionId, key);
     evictTurnWindow(key);
-    evictTranscriptCache(key);
-    composerDrafts.delete(key);
-    openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     if (activeSessionId() === sessionId) {
       transcriptCursor = null;
       setActiveSession(null);
       sessionTurns.set([]);
     }
+    secondaryPaneBridge?.clearIfMatches({ sessionId });
   });
 }
 
@@ -1976,7 +2026,7 @@ effect(() => {
   const context = deviceContext();
   const follow: Record<string, { all?: boolean; sessions?: string[] }> = {};
   if (context) follow[context] = { all: true };
-  for (const key of openSessionKeys()) {
+  for (const key of visibleSessionKeys()) {
     const device = deviceIdOfKey(key);
     if (!device || follow[device]?.all) continue;
     (follow[device] ??= { sessions: [] }).sessions!.push(sessionIdOfKey(key));

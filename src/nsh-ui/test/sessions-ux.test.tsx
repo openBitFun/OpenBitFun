@@ -251,10 +251,12 @@ test("conversation sub-header search, copy transcript, thread actions overlay, f
   expect(copied).toContain("Port the session list.");
   expect(copied).toContain("Ready to fork.");
 
-  // Thread actions anchored overlay opens tabs ("×") and Fork.
+  // Simplified thread actions overlay omits retired "Open tabs" / "+ New session" clutter,
+  // offers "Split view", and preserves Fork.
   await app.press("thread-actions-trigger");
-  await app.waitFor("Open tabs");
-  expect(app.texts().filter(text => text === "×")).toHaveLength(1);
+  await app.waitFor("Split view");
+  expect(app.texts()).not.toContain("Open tabs");
+  expect(app.texts().filter(text => text === "×")).toHaveLength(0);
 
   await app.press("Fork");
   expect(backend.calls.find(call => call.action === "fork_session")?.request).toMatchObject({
@@ -282,12 +284,19 @@ test("layered 3-band chat input dock supports attachments, agent selector, unifi
   await openSession(app, "NSH skeleton");
   await app.waitFor("Message");
 
-  // Band 1 attachment chip uses vector close icon rather than literal "×".
-  await app.press("Attach");
-  await app.waitFor("screenshot.png");
-  expect(app.texts().filter(text => text === "×")).toHaveLength(0);
-  await app.press("remove-attachment-attachment-1");
+  // Clipboard paperclip button is retired; images attach via paste/drop/picker as compact
+  // square thumbnails without filename labels and open a click-to-preview lightbox.
+  expect(app.shows("Attach")).toBe(false);
+  await app.paste("composer", { uris: ["file:///tmp/screenshot.png"] });
+  await app.waitFor("attachment-preview-attachment-drop-1");
   expect(app.texts()).not.toContain("screenshot.png");
+  expect(app.texts().filter(text => text === "×")).toHaveLength(0);
+  await app.press("attachment-preview-attachment-drop-1");
+  await app.waitFor("image-lightbox-dialog");
+  await app.press("image-lightbox-close");
+  await app.waitFor("image-lightbox-dialog", { state: "gone" });
+  await app.press("remove-attachment-attachment-drop-1");
+  expect(app.shows("attachment-preview-attachment-drop-1")).toBe(false);
 
   // Band 3 selectors open anchored Overlays cleanly.
   await app.press("bot-capsule-trigger");
@@ -904,20 +913,22 @@ test("a narrow chat runs full width with the composer controls in its + menu", a
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, width: 1440, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
-  await app.waitFor("Attach");
+  await app.waitFor("agent-picker");
+  expect(app.shows("Attach")).toBe(false);
   expect(app.shows("agent-picker")).toBe(true);
 
   await app.setViewport(480, 900);
-  await app.waitFor("Attach", { state: "gone" });
+  await app.waitFor("agent-picker", { state: "gone" });
   expect(app.shows("agent-picker")).toBe(false);
   expect(app.shows("composer-plus")).toBe(true);
   // On a narrow column the row keeps only "+" and Send (both 44 pt touch targets).
   expect(app.shows("Send")).toBe(true);
   expect(app.shows("thread-actions-trigger")).toBe(true);
 
-  // The "+" menu holds attach, agent, model and the rarely used controls.
+  // The "+" menu holds image picker, reference, permission, agent and model controls.
   await app.press("composer-plus");
-  await app.waitFor("Attach");
+  await app.waitFor("attach-image-file");
+  expect(app.shows("Attach")).toBe(false);
   expect(app.shows("Reference")).toBe(true);
   expect(app.shows("permission-mode-pill")).toBe(true);
   await app.press("agent-picker");
@@ -1459,6 +1470,7 @@ test("composer clears immediately on submit before the host RPC resolves and res
   expect(app.texts()).toContain("Instant clear test");
 
   // If the RPC fails, the draft is restored so the user never loses what they typed.
+  await app.waitUntil(() => typeof resolveSend === "function");
   shouldFail = true;
   resolveSend({ ok: false, error: "network timeout" });
   await pressPromise;
@@ -1551,8 +1563,9 @@ test("image attachments render immediately in live bubbles and persist across re
   });
   await app.waitFor("Stop");
 
-  await app.press("Attach");
-  await app.waitFor("pasted-shot.png");
+  await app.paste("composer", { uris: ["file:///tmp/pasted-shot.png"] });
+  await app.waitFor("attachment-preview-attachment-drop-2");
+  expect(app.texts()).not.toContain("pasted-shot.png");
   expect(app.texts().join("\n")).not.toContain("from clipboard");
   expect(app.texts().join("\n")).not.toContain("Attached 1 image");
 
@@ -1561,10 +1574,10 @@ test("image attachments render immediately in live bubbles and persist across re
   await app.waitFor("Queued follow-up with image");
   await app.waitFor("queued-panel");
 
-  // Edit the queued message: composer gets both the text AND the image chip back.
+  // Edit the queued message: composer gets both the text AND the image thumbnail back.
   await app.press("label:queued-panel >> label:Edit");
   await app.waitUntil(() => app.value("composer") === "Queued follow-up with image");
-  await app.waitFor("pasted-shot.png");
+  await app.waitFor("attachment-preview-attachment-drop-2");
 
   // Settle the running turn so we can test live UserBubble image + Edit & Rerun.
   await app.host.send("openbitfun.event", {
@@ -1887,19 +1900,19 @@ test("welcome page with no active session hides the disabled composer dock until
   expect(app.shows("bot-capsule-trigger")).toBe(true);
 });
 
-test("switching back to a previously viewed session restores cached turns immediately without blanking", async () => {
+test("switching away from a session releases hidden transcript state and reloads cleanly on return", async () => {
   const backend = createBackend();
   const baseInvoke = backend.handlers["openbitfun.invoke"];
-  let holdSession1Revalidate = false;
-  const revalidateGate: { release: (() => void) | null } = { release: null };
+  let holdSession1Reload = false;
+  const reloadGate: { release: (() => void) | null } = { release: null };
   let delayedResponse: unknown = null;
 
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
-    const args = (data ?? {}) as { action?: string; request?: { sessionId?: string } };
-    if (args.action === "get_session_transcript_view" && args.request?.sessionId === "session-1" && holdSession1Revalidate) {
+    const args = (data ?? {}) as { action?: string; request?: { session_id?: string } };
+    if (args.action === "get_session_transcript_view" && args.request?.session_id === "session-1" && holdSession1Reload) {
       delayedResponse = baseInvoke(data);
       return new Promise(resolve => {
-        revalidateGate.release = () => resolve(delayedResponse);
+        reloadGate.release = () => resolve(delayedResponse);
       });
     }
     return baseInvoke(data);
@@ -1909,17 +1922,20 @@ test("switching back to a previously viewed session restores cached turns immedi
   await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
-  // Switch to a second session so session-1 enters the in-memory LRU transcript cache.
+  // Switch to a second session: session-1's turns are released (no hidden background transcript cache).
   await openSession(app, "Terminal migration");
   await app.waitFor("Port the terminal.");
 
-  // Block the host revalidation RPC for session-1 and switch back: turns must render immediately from cache.
-  holdSession1Revalidate = true;
-  await openSession(app, "NSH skeleton");
-  await app.waitFor("Port the session list.");
+  // Returning to session-1 fetches fresh turns from the host without flashing the Welcome empty state.
+  holdSession1Reload = true;
+  const switchPromise = app.press("id:sidebar-session-session-1 >> nth=0");
+  await app.waitUntil(() => reloadGate.release !== null);
   expect(app.texts()).not.toContain("How can I help today?");
+  expect(app.texts()).not.toContain("Port the session list.");
 
-  // Releasing the background revalidation settles cleanly without dropping or duplicating turns.
-  revalidateGate.release?.();
+  // Releasing the host response populates the transcript cleanly.
+  reloadGate.release?.();
+  await switchPromise;
+  await app.waitFor("Port the session list.");
   await app.waitFor("Add the plan and fix the imports.");
 });

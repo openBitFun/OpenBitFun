@@ -317,6 +317,11 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
     link: {
       color: p.accent,
     },
+    image: {
+      borderRadius: 10,
+      maxWidth: "100%",
+      cursor: "pointer",
+    },
     mathBlock: {
       borderRadius: 10,
       borderCurve: "continuous",

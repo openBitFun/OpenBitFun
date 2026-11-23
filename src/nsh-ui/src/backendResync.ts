@@ -8,7 +8,7 @@
 // session's question mailbox. This module is transport-neutral; every
 // connection that can drop events delivers the same event.
 
-import { forgetFollowedTurns, settleLiveTurnFromView } from "./agentEvents";
+import { forgetFollowedTurns, settleLiveTurnFromView, settleSecondaryLiveTurnFromView } from "./agentEvents";
 import { refreshAttention } from "./attentionStore";
 import { fleetActive, listenEvent } from "./bridge";
 import { fleetDevices, refreshFleetNavigator, refreshFleetPrompts } from "./fleetStore";
@@ -18,8 +18,12 @@ import {
   activeSessionId,
   activeWorkspaceId,
   deviceContext,
+  getSecondaryPaneBridge,
   loadTurns,
   refreshSessionsSilently,
+  secondarySessionDevice,
+  secondarySessionId,
+  splitPaneOpen,
 } from "./state";
 import {
   activeConversationId,
@@ -58,8 +62,10 @@ async function rehydrateDroppedBatch(origins: ReadonlySet<string> | null): Promi
   const scoped = origins !== null && fleet;
   const sessionId = activeSessionId();
   const openHere = Boolean(sessionId) && (!scoped || origins.has(activeSessionDevice()));
-  // Only forget followed live turns when the gap affects the viewed session's device.
-  if (!scoped || openHere) forgetFollowedTurns();
+  const secSessionId = splitPaneOpen() ? secondarySessionId() : null;
+  const secOpenHere = Boolean(secSessionId) && (!scoped || origins.has(secondarySessionDevice()));
+  // Only forget followed live turns when the gap affects a viewed session's device.
+  if (!scoped || openHere || secOpenHere) forgetFollowedTurns();
 
   // Clear stale question prompts before re-reading the mailbox so fresh answers are kept.
   if (scoped) {
@@ -86,6 +92,11 @@ async function rehydrateDroppedBatch(origins: ReadonlySet<string> | null): Promi
   if (openHere && sessionId) {
     reads.push(loadTurns(sessionId, { silent: true }), loadQuestionMailbox(sessionId));
   }
+  if (secOpenHere && secSessionId) {
+    const bridge = getSecondaryPaneBridge();
+    if (bridge) reads.push(bridge.loadTurns(secSessionId, { silent: true }));
+    reads.push(loadQuestionMailbox(secSessionId));
+  }
 
   // Re-hydrate Super Agent when the gap is unscoped or names the cloud node.
   const cloudId = cloudNodeDeviceId();
@@ -107,6 +118,7 @@ async function rehydrateDroppedBatch(origins: ReadonlySet<string> | null): Promi
   await Promise.allSettled(reads);
   // A turn whose terminal events were lost settles from the view the host sent.
   if (openHere && sessionId) settleLiveTurnFromView(sessionId);
+  if (secOpenHere && secSessionId) settleSecondaryLiveTurnFromView(secSessionId);
   if (scoped) {
     for (const origin of origins) resetPermissions(origin);
   } else {

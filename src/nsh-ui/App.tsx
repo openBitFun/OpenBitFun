@@ -7,6 +7,7 @@ import {
   keymap,
   mount,
   Overlay,
+  PanResponder,
   reduceMotion,
   safeArea,
   Scroll,
@@ -88,8 +89,12 @@ import {
   activeScene,
   activeSessionId,
   activeWorkspace,
+  AUX_DEFAULT_HEIGHT,
+  AUX_MAX_HEIGHT,
   AUX_MAX_WIDTH,
+  AUX_MIN_HEIGHT,
   AUX_MIN_WIDTH,
+  auxPaneHeight,
   auxPaneMaximized,
   auxPaneOpen,
   auxPaneSide,
@@ -128,14 +133,19 @@ import {
   sessionHasMore,
   sessionTotal,
   sessions,
+  splitPaneOpen,
+  setAuxPaneHeight,
   setAuxPaneMaximized,
+  setAuxPaneSide,
   setAuxPaneWidth,
   setNavWidth,
   swapAuxPanes,
+  toggleAuxDockBottom,
   toggleAuxPane,
   toggleDrawer,
   workspaces,
   workspacesLoaded,
+  type AuxPaneSide,
   type AuxPaneTab,
   type SceneId,
   devicePageId,
@@ -209,6 +219,7 @@ import {
   savedConnections,
 } from "./src/sshRemoteStore";
 import { Icon, type IconName } from "./src/ui/icons";
+import { ImageLightboxHost } from "./src/ui/ImageLightbox";
 import {
   MOTION_DURATION,
   SmoothSwap,
@@ -1713,12 +1724,67 @@ function SceneErrorCard(props: { error: unknown; reset: () => void; area: "scene
   );
 }
 
+/** Live target edge shown as a drop-zone preview while dragging AuxPane's header. */
+const auxDockDropPreview = signal<AuxPaneSide | null>(null);
+
+function resolveAuxDockTarget(dx: number, dy: number, moveX: number, moveY: number): AuxPaneSide | null {
+  if (Math.hypot(dx, dy) < 32) return null;
+  const w = shellWidth();
+  const h = shellHeight();
+  const current = auxPaneSide();
+  if (h > 0 && moveY > 0) {
+    if (moveY >= h * 0.66) return "bottom";
+  }
+  if (current !== "bottom" && dy > 72 && Math.abs(dy) >= Math.abs(dx) * 0.8) {
+    return "bottom";
+  }
+  if (current === "bottom" && dy < -60) {
+    if (w > 0 && moveX > 0 && moveX < w * 0.42) return "left";
+    return "right";
+  }
+  if (w > 0 && moveX > 0) {
+    const navOffset = sidebarDocked() ? dockedNavWidth() : 0;
+    const canvasW = Math.max(1, w - navOffset);
+    const relX = (moveX - navOffset) / canvasW;
+    if (relX <= 0.3) return "left";
+    if (relX >= 0.68) return "right";
+  }
+  if (dx < -100 && current === "right") return "left";
+  if (dx > 100 && current === "left") return "right";
+  return current;
+}
+
 function AuxPane() {
+  const draggingHeader = signal(false);
   const expand = () => {
     const tab = AUX_TABS.find(item => item.id === auxPaneTab());
     toggleAuxPane();
     navigateScene(tab?.scene ?? "files");
   };
+  const headerDragResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, state) => !compactShell() && Math.hypot(state.dx, state.dy) > 8,
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderGrant: () => {
+      draggingHeader.set(true);
+    },
+    onPanResponderMove: (_e, state) => {
+      const target = resolveAuxDockTarget(state.dx, state.dy, state.moveX, state.moveY);
+      auxDockDropPreview.set(target);
+    },
+    onPanResponderRelease: (_e, state) => {
+      const target = resolveAuxDockTarget(state.dx, state.dy, state.moveX, state.moveY) ?? auxDockDropPreview();
+      draggingHeader.set(false);
+      auxDockDropPreview.set(null);
+      if (target && target !== auxPaneSide()) {
+        setAuxPaneSide(target);
+      }
+    },
+    onPanResponderTerminate: () => {
+      draggingHeader.set(false);
+      auxDockDropPreview.set(null);
+    },
+  });
   return (
     <View
       style={{
@@ -1777,8 +1843,41 @@ function AuxPane() {
             }}
           </Each>
         </View>
-        <View style={{ flex: 1 }} />
+        {/* Draggable header bar: pull downwards to dock at bottom, or left/right to move sides. */}
+        <View
+          {...headerDragResponder.panHandlers}
+          accessibilityLabel="aux-dock-drag-handle"
+          tooltip={<TooltipBubble text={tr("nav.dragToDock")} />}
+          style={{
+            flex: 1,
+            minWidth: 24,
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: draggingHeader() ? "grabbing" : "grab",
+            userSelect: "none",
+          }}
+        >
+          <View
+            style={{
+              width: 28,
+              height: 3,
+              borderRadius: radii.pill,
+              backgroundColor: draggingHeader() ? palette().accent : palette().borderSubtle,
+              opacity: draggingHeader() ? 1 : 0.7,
+              ...paintTransition(MOTION_DURATION.fast),
+            }}
+          />
+        </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
+          <If when={!compactShell()}>
+            <IconButton
+              icon={auxPaneSide() === "bottom" ? "panel-right" : "panel-bottom"}
+              size="xs"
+              accessibilityLabel="aux-dock-toggle"
+              tooltip={auxPaneSide() === "bottom" ? tr("nav.dockRight") : tr("nav.dockBottom")}
+              onPress={toggleAuxDockBottom}
+            />
+          </If>
           <IconButton
             icon="maximize"
             size="xs"
@@ -2577,8 +2676,9 @@ async function toggleMainWindowFullscreen(): Promise<void> {
 
 // ── Responsive shell: one UI from phone to desktop ───────────────────────────
 
-/** Width of the whole window, measured on the root view. */
+/** Width and height of the whole window, measured on the root view. */
 const shellWidth = signal(0);
+const shellHeight = signal(0);
 /** Phone-sized layouts: the sidebar becomes an overlay drawer and side panes fill the scene. */
 const compactShell = computed(() => shellWidth() > 0 && shellWidth() <= layout.phoneMaxWidth);
 /** 720–959: the sidebar is an overlay drawer instead of docking. */
@@ -2602,7 +2702,7 @@ function auxFillsScene(): boolean {
  * between docked and sheet modes mid-drag.
  */
 const auxAsSheet = computed(() => {
-  if (compactShell() || auxPaneMaximized()) return false;
+  if (compactShell() || auxPaneMaximized() || auxPaneSide() === "bottom") return false;
   const width = shellWidth();
   if (width <= 0) return false;
   const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
@@ -2611,13 +2711,26 @@ const auxAsSheet = computed(() => {
   return canvasAllowance < layout.canvasMinWidth;
 });
 
-/** Maximum docked aux pane width for the current window (68% of the scene row). */
+/** Maximum docked aux pane height when positioned at the bottom (68% of the canvas height). */
+const dockedAuxMaxHeight = computed(() => {
+  const height = shellHeight();
+  if (height <= 0) return AUX_MAX_HEIGHT;
+  const canvasHeight = Math.max(0, height - layout.canvasInset * 2 - 44);
+  const maxByCol = Math.floor(canvasHeight * 0.68) - 9;
+  return Math.max(AUX_MIN_HEIGHT, Math.min(AUX_MAX_HEIGHT, maxByCol));
+});
+
+/** Effective bottom-docked aux pane height clamped to the current window. */
+const dockedAuxHeight = computed(() => Math.max(AUX_MIN_HEIGHT, Math.min(dockedAuxMaxHeight(), auxPaneHeight())));
+
+/** Maximum docked aux pane width for the current window (leaves room for 1 or 2 session panes). */
 const dockedAuxMaxWidth = computed(() => {
   const width = shellWidth();
   if (width <= 0) return AUX_MAX_WIDTH;
   const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
   const sceneRowWidth = Math.max(0, width - navAllowance - layout.canvasInset * 2);
-  const maxByRow = Math.floor(sceneRowWidth * 0.68) - 9;
+  const maxShare = splitPaneOpen() ? 0.45 : 0.68;
+  const maxByRow = Math.floor(sceneRowWidth * maxShare) - 9;
   return Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, maxByRow));
 });
 
@@ -3282,18 +3395,27 @@ function StudioApp() {
   });
 
   let auxDragWidth: number | null = null;
+  let auxDragHeight: number | null = null;
   const resizeDockedAux = (signedDelta: number) => {
     const next = (auxDragWidth ?? dockedAuxWidth()) + signedDelta;
     const clamped = Math.max(AUX_MIN_WIDTH, Math.min(dockedAuxMaxWidth(), Math.round(next)));
     auxDragWidth = clamped;
     setAuxPaneWidth(clamped);
   };
+  const resizeDockedAuxHeight = (signedDelta: number) => {
+    const next = (auxDragHeight ?? dockedAuxHeight()) + signedDelta;
+    const clamped = Math.max(AUX_MIN_HEIGHT, Math.min(dockedAuxMaxHeight(), Math.round(next)));
+    auxDragHeight = clamped;
+    setAuxPaneHeight(clamped);
+  };
 
   return (
     <View
       onLayout={event => {
         const width = event.bounds.size.width;
+        const height = event.bounds.size.height;
         if (width > 0 && Math.abs(width - shellWidth()) > 1) shellWidth.set(width);
+        if (height > 0 && Math.abs(height - shellHeight()) > 1) shellHeight.set(height);
       }}
       style={{
         flex: 1,
@@ -3396,69 +3518,118 @@ function StudioApp() {
         </If>
         <ErrorBanner />
 
-        <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row" }}>
-          <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxFillsScene() && !auxAsSheet()}>
-            <View
-              style={{
-                flexDirection: "row",
-                minHeight: 0,
-                width: dockedAuxWidth() + 9,
-                flexShrink: 0,
-              }}
-            >
-              <AuxPane />
-              <SplitHandle
-                surface="canvas"
-                accessibilityLabel="aux-split-handle-left"
-                onDragStateChange={dragging => {
-                  auxDragWidth = dragging ? dockedAuxWidth() : null;
+        <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", position: "relative" }}>
+          <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row" }}>
+            <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxFillsScene() && !auxAsSheet()}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  minHeight: 0,
+                  width: dockedAuxWidth() + 9,
+                  flexShrink: 0,
                 }}
-                onDelta={delta => resizeDockedAux(delta)}
-                onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
-              />
-            </View>
-          </If>
-
-          <If when={!(auxPaneOpen() && auxFillsScene())}>
-            <View
-              onFileDrop={event => void handleSceneFileDrop(event.uris)}
-              style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}
-            >
-              <ErrorBoundary
-                fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="scene" />}
               >
-                {/* Keyed by canonical scene group so switching primary routes gets a crisp 110ms GPU settle without remounting Library sub-tabs. */}
-                <SmoothSwap swapKey={sceneGroupKey} skipInitial>
-                  {group => sceneElementForGroup(group)}
-                </SmoothSwap>
-              </ErrorBoundary>
-            </View>
-          </If>
+                <AuxPane />
+                <SplitHandle
+                  surface="canvas"
+                  accessibilityLabel="aux-split-handle-left"
+                  onDragStateChange={dragging => {
+                    auxDragWidth = dragging ? dockedAuxWidth() : null;
+                  }}
+                  onDelta={delta => resizeDockedAux(delta)}
+                  onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
+                />
+              </View>
+            </If>
 
-          <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxFillsScene() && !auxAsSheet()}>
+            <If when={!(auxPaneOpen() && auxFillsScene())}>
+              <View
+                onFileDrop={event => void handleSceneFileDrop(event.uris)}
+                style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}
+              >
+                <ErrorBoundary
+                  fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="scene" />}
+                >
+                  {/* Keyed by canonical scene group so switching primary routes gets a crisp 110ms GPU settle without remounting Library sub-tabs. */}
+                  <SmoothSwap swapKey={sceneGroupKey} skipInitial>
+                    {group => sceneElementForGroup(group)}
+                  </SmoothSwap>
+                </ErrorBoundary>
+              </View>
+            </If>
+
+            <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxFillsScene() && !auxAsSheet()}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  minHeight: 0,
+                  width: dockedAuxWidth() + 9,
+                  flexShrink: 0,
+                }}
+              >
+                <SplitHandle
+                  surface="canvas"
+                  accessibilityLabel="aux-split-handle-right"
+                  onDragStateChange={dragging => {
+                    auxDragWidth = dragging ? dockedAuxWidth() : null;
+                  }}
+                  onDelta={delta => resizeDockedAux(-delta)}
+                  onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
+                />
+                <AuxPane />
+              </View>
+            </If>
+
+            <If when={auxPaneOpen() && auxFillsScene()}>
+              <AuxPane />
+            </If>
+          </View>
+
+          <If when={auxPaneOpen() && auxPaneSide() === "bottom" && !auxFillsScene()}>
             <View
+              accessibilityLabel="aux-pane-bottom"
               style={{
-                flexDirection: "row",
-                minHeight: 0,
-                width: dockedAuxWidth() + 9,
+                flexDirection: "column",
+                minWidth: 0,
+                height: dockedAuxHeight() + 9,
                 flexShrink: 0,
               }}
             >
               <SplitHandle
+                orientation="horizontal"
                 surface="canvas"
-                accessibilityLabel="aux-split-handle-right"
+                accessibilityLabel="aux-split-handle-bottom"
                 onDragStateChange={dragging => {
-                  auxDragWidth = dragging ? dockedAuxWidth() : null;
+                  auxDragHeight = dragging ? dockedAuxHeight() : null;
                 }}
-                onDelta={delta => resizeDockedAux(-delta)}
-                onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
+                onDelta={delta => resizeDockedAuxHeight(-delta)}
+                onReset={() => setAuxPaneHeight(Math.min(AUX_DEFAULT_HEIGHT, dockedAuxMaxHeight()))}
               />
               <AuxPane />
             </View>
           </If>
 
-          <If when={auxPaneOpen() && auxFillsScene()}>
-            <AuxPane />
+          {/* Translucent dock target preview while dragging the AuxPane header */}
+          <If when={auxDockDropPreview()}>
+            {target => (
+              <View
+                accessibilityLabel={`aux-drop-preview-${target()}`}
+                style={{
+                  position: "absolute",
+                  pointerEvents: "none",
+                  ...(target() === "bottom"
+                    ? { left: space.sm, right: space.sm, bottom: space.sm, height: "34%" }
+                    : target() === "left"
+                      ? { top: space.sm, bottom: space.sm, left: space.sm, width: "32%" }
+                      : { top: space.sm, bottom: space.sm, right: space.sm, width: "32%" }),
+                  borderRadius: radii.lg,
+                  borderCurve: "continuous",
+                  borderWidth: 2,
+                  borderColor: palette().accent,
+                  backgroundColor: palette().accentSoft,
+                }}
+              />
+            )}
           </If>
         </View>
         {/* A phone session keeps its own header on top; the connection lines sit under the scene. */}
@@ -3495,6 +3666,7 @@ function StudioApp() {
       <WorkspaceActionDialogs />
       <AboutDialog />
       <CloseAskDialog />
+      <ImageLightboxHost />
       <ToastHost />
     </View>
   );

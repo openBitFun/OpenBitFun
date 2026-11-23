@@ -22,9 +22,11 @@ import {
   activeWorkspaceKey,
   archiveSessionRow,
   deleteSessionRow,
+  navigateScene,
   renameSession,
   sessions,
 } from "../state";
+import { openSplitPane } from "../splitSessionStore";
 import { palette, space, textStyle } from "../theme";
 import { ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
 import { Button, TextField } from "./primitives";
@@ -194,12 +196,28 @@ export function openSessionDelete(target: SessionActionTarget): void {
  */
 export function sessionMenuItems(
   target: SessionActionTarget,
-  options?: { omit?: ReadonlyArray<"rename" | "archive" | "delete"> },
+  options?: { omit?: ReadonlyArray<"rename" | "archive" | "delete" | "split"> },
 ): DropdownMenuItem[] {
   const omit = new Set(options?.omit ?? []);
   const key = target.sessionId;
   const local = sessionIsOnThisMachine(target);
   const items: DropdownMenuItem[] = [];
+  if (!omit.has("split")) {
+    items.push({
+      id: `session-split-${key}`,
+      label: tr("sessions.openInSplit"),
+      icon: "columns",
+      accessibilityLabel: `session-menu-split-${key}`,
+      onSelect: () => {
+        openSplitPane({
+          sessionId: target.sessionId,
+          deviceId: target.deviceId,
+          workspaceId: target.workspaceId,
+        });
+        navigateScene("sessions");
+      },
+    });
+  }
   if (!omit.has("rename")) {
     items.push({
       id: `session-rename-${key}`,

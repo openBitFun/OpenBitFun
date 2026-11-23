@@ -15,7 +15,7 @@ import { getConfig } from "./api";
 import { isWindowFocused, listenEvent, nativeWindow, setTrayUnreadCount, showSystemNotification } from "./bridge";
 import { tr } from "./i18n";
 import { pendingPermissions } from "./permissionStore";
-import { activeScene, activeSessionId, sessions } from "./state";
+import { activeScene, activeSessionId, secondarySessionId, sessions, splitPaneOpen } from "./state";
 
 export type NotificationKind = "permission" | "turn-completed" | "turn-failed";
 
@@ -110,8 +110,10 @@ function onTurnEnded(payload: TurnEndPayload | null | undefined, failed: boolean
   // Subagent and side sessions are not listed; their parents report the result.
   const session = sessions().find(item => item.sessionId === sessionId);
   if (!session) return;
-  // A turn the user watched end in the open session is not news.
-  const watching = activeScene() === "sessions" && activeSessionId() === sessionId;
+  // A turn the user watched end in either visible session pane is not news.
+  const watching =
+    activeScene() === "sessions" &&
+    (activeSessionId() === sessionId || (splitPaneOpen() && secondarySessionId() === sessionId));
   const turnId = payload?.turnId ?? payload?.turn_id ?? "";
   const receipt = `${turnId}:${failed ? "failed" : "completed"}`;
   if (deliveredTurns.get(sessionId) === receipt) return;
@@ -160,10 +162,12 @@ export function startNotifications(): void {
     void recordPermissionRequests(fresh.map(item => item.sessionId));
   });
 
-  // Opening a session reads its results.
+  // Opening a session in either pane reads its results.
   effect(() => {
     const sessionId = activeSessionId();
     if (sessionId && activeScene() === "sessions") markSessionNotificationsRead(sessionId);
+    const secondaryId = splitPaneOpen() ? secondarySessionId() : null;
+    if (secondaryId && activeScene() === "sessions") markSessionNotificationsRead(secondaryId);
   });
 
   let lastTrayCount = -1;

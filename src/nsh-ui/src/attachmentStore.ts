@@ -1,9 +1,10 @@
 import { Buffer } from "buffer";
-import { entryDeviceId, fleetActive } from "./bridge";
+import { createWorkspaceDirectory } from "./api";
+import { entryDeviceId, fleetActive, invokeCommand } from "./bridge";
 import { controllerPort } from "./controller/controllerPort";
 import { fleetDeviceById } from "./fleetStore";
 import { tr } from "./i18n";
-import { activeSessionDevice, activeWorkspace, deviceContext } from "./state";
+import { activeSessionDevice, activeWorkspace, activeWorkspaceId, activeWorkspaceRoot, deviceContext } from "./state";
 import { Clipboard, Picker, signal } from "nsh";
 
 /**
@@ -60,10 +61,173 @@ export interface ImageAttachment {
   dataUrl?: string;
 }
 
+export interface FileAttachment {
+  id: string;
+  name: string;
+  /** Full path on the workspace host (or relative path when root is unknown). */
+  path: string;
+  /** Workspace-relative POSIX path when inside the active workspace root. */
+  relativePath?: string;
+  isDirectory?: boolean;
+  source: "file" | "folder" | "pasted-text";
+  lineCount?: number;
+  charCount?: number;
+}
+
+export const LONG_PASTE_MAX_LINES = 50;
+export const LONG_PASTE_MAX_CHARS = 1000;
+
 export const imageAttachments = signal<ImageAttachment[]>([]);
+export const fileAttachments = signal<FileAttachment[]>([]);
 export const attachmentNotice = signal<string>("");
 
 let nextId = 0;
+
+export function countTextLines(text: string): number {
+  if (!text) return 0;
+  return text.split(/\r\n|\r|\n/).length;
+}
+
+export function isLongTextPaste(text: string): boolean {
+  if (!text) return false;
+  return text.length > LONG_PASTE_MAX_CHARS || countTextLines(text) > LONG_PASTE_MAX_LINES;
+}
+
+export function toRelativeWorkspacePath(filePath: string, root: string): string | undefined {
+  if (!filePath || !root) return undefined;
+  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normPath = filePath.replace(/\\/g, "/");
+  if (!normRoot) return undefined;
+  if (normPath === normRoot) return ".";
+  if (normPath.startsWith(`${normRoot}/`)) {
+    return normPath.slice(normRoot.length + 1);
+  }
+  return undefined;
+}
+
+export function addFileAttachment(input: Omit<FileAttachment, "id">): FileAttachment {
+  const existing = fileAttachments().find(item => item.path === input.path && item.isDirectory === input.isDirectory);
+  if (existing) return existing;
+  const entry: FileAttachment = {
+    id: `file-attachment-${++nextId}`,
+    ...input,
+  };
+  fileAttachments.update(list => [...list, entry]);
+  attachmentNotice.set("");
+  return entry;
+}
+
+export function removeFileAttachment(id: string): void {
+  fileAttachments.update(list => list.filter(entry => entry.id !== id));
+}
+
+export function clearFileAttachments(): void {
+  fileAttachments.set([]);
+}
+
+export function formatFileAttachmentTag(entry: Pick<FileAttachment, "path" | "relativePath" | "name" | "isDirectory">): string {
+  const ref = (entry.relativePath || entry.path || entry.name).trim();
+  return entry.isDirectory ? `#dir:${ref}` : `#file:${ref}`;
+}
+
+export function composeMessageWithFileAttachments(
+  text: string,
+  files: ReadonlyArray<Pick<FileAttachment, "path" | "relativePath" | "name" | "isDirectory">>,
+): string {
+  const trimmed = text.trim();
+  if (files.length === 0) return trimmed;
+  const tags: string[] = [];
+  for (const file of files) {
+    const tag = formatFileAttachmentTag(file);
+    if (!trimmed.includes(tag)) tags.push(tag);
+  }
+  if (tags.length === 0) return trimmed;
+  return trimmed ? `${trimmed} ${tags.join(" ")}` : tags.join(" ");
+}
+
+function isRemoteWorkspaceObj(ws: unknown): boolean {
+  const obj = ws as { workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined;
+  if (!obj) return false;
+  const kind = (obj.workspaceKind ?? "").toLowerCase();
+  return (
+    kind === "remote" ||
+    kind === "remote_ssh" ||
+    kind === "docker" ||
+    kind === "wsl" ||
+    Boolean(obj.sshHost) ||
+    Boolean(obj.remoteConnectionId)
+  );
+}
+
+function formatPastedFileName(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const suffix = Math.floor(Math.random() * 0xffff)
+    .toString(16)
+    .padStart(4, "0");
+  return `pasted-${stamp}-${suffix}.txt`;
+}
+
+/**
+ * Saves long pasted text (>50 lines or >1000 chars) into `<workspace>/.openbitfun/pasted/`
+ * through `create_directory` + `write_file_content` (Routed / Proxied / HANDLED on local,
+ * remote SSH/Docker, and CLI peer workspaces) and attaches it as a styled `FileAttachment`.
+ */
+export async function saveLongTextPasteToWorkspace(
+  text: string,
+  options?: {
+    workspaceId?: string;
+    workspaceRoot?: string;
+    isRemote?: boolean;
+    fileName?: string;
+    skipPrimaryStore?: boolean;
+  },
+): Promise<FileAttachment | null> {
+  const workspaceId = options?.workspaceId || activeWorkspaceId();
+  const root = (options?.workspaceRoot || activeWorkspaceRoot() || "").trim();
+  if (!workspaceId || !root) return null;
+  const isRemote = options?.isRemote ?? isRemoteWorkspaceObj(activeWorkspace());
+  // Remote workspaces always use POSIX paths; Windows local roots keep backslash.
+  const sep = !isRemote && /^[A-Za-z]:\\/.test(root) ? "\\" : "/";
+  const trimmedRoot = root.replace(/[\\/]+$/, "");
+  const pastedDir = `${trimmedRoot}${sep}.openbitfun${sep}pasted`;
+  const fileName = options?.fileName || formatPastedFileName();
+  const filePath = `${pastedDir}${sep}${fileName}`;
+  const relativePath = `.openbitfun/pasted/${fileName}`;
+
+  try {
+    try {
+      await createWorkspaceDirectory(workspaceId, pastedDir);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!/exist/i.test(msg)) {
+        // Proceed to write attempt; write_file_content will surface any real permission/path failure.
+      }
+    }
+    await invokeCommand<unknown>("write_file_content", {
+      workspaceId,
+      workspacePath: root,
+      filePath,
+      content: text,
+    });
+    const entry = {
+      name: fileName,
+      path: filePath,
+      relativePath,
+      isDirectory: false,
+      source: "pasted-text" as const,
+      lineCount: countTextLines(text),
+      charCount: text.length,
+    };
+    if (options?.skipPrimaryStore) {
+      return { id: `file-attachment-${++nextId}`, ...entry };
+    }
+    return addFileAttachment(entry);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Reads the clipboard's image. A `file:` URL is a path the host can open itself,
@@ -178,6 +342,7 @@ export function removeAttachment(id: string): void {
 
 export function clearAttachments(): void {
   imageAttachments.set([]);
+  fileAttachments.set([]);
   attachmentNotice.set("");
 }
 
