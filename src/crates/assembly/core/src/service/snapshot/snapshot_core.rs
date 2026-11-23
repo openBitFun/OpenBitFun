@@ -1311,6 +1311,12 @@ impl SnapshotCore {
         self.sessions_dir.join(format!("{}.json", safe))
     }
 
+    pub(super) fn forget_cleaned_history(&mut self, removed: &super::maintenance::Removed) {
+        self.sessions.retain(|id, _| !removed.sessions.contains(id));
+        self.snapshot_system.forget_cleaned_files(removed);
+        self.rebuild_operation_index();
+    }
+
     fn rebuild_operation_index(&mut self) {
         self.operation_index.clear();
         for (session_id, session) in &self.sessions {
@@ -1412,7 +1418,7 @@ fn change_kind_from_session_boundary(boundary: &SessionFileBoundary) -> &'static
     }
 }
 
-fn sanitize_id(id: &str) -> String {
+pub(super) fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {

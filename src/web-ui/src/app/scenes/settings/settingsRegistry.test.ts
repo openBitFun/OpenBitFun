@@ -26,9 +26,9 @@ describe('settings information architecture', () => {
       ai: ['ai.models', 'ai.session-memory', 'ai.execution', 'ai.permissions'],
       development: ['development.editor', 'development.terminal', 'development.workspace'],
       tools: ['tools.external-import', 'tools.web-search', 'tools.desktop-control', 'tools.mcp', 'tools.external-agents', 'tools.automation'],
-      data: ['data.usage', 'data.archived', 'data.diagnostics'],
+      data: ['data.usage', 'data.storage', 'data.archived', 'data.diagnostics'],
     });
-    expect(new Set(SETTINGS_PAGE_MANIFESTS.map(page => page.id)).size).toBe(20);
+    expect(new Set(SETTINGS_PAGE_MANIFESTS.map(page => page.id)).size).toBe(21);
     expect(SETTINGS_PAGE_MANIFESTS.filter(page => page.views?.length).map(page => page.id)).toEqual(['tools.external-agents']);
     expect(getSettingsPageManifest('tools.external-agents').views?.map(view => view.id)).toEqual(['local', 'ssh', 'json']);
     expect(getSettingsPageManifest('application.input').sections?.map(section => section.id)).toEqual(['voice', 'message-sending', 'text-selection', 'shortcuts']);

@@ -24,6 +24,7 @@ export type SettingsPageId =
   | 'tools.external-agents'
   | 'tools.external-import'
   | 'data.usage'
+  | 'data.storage'
   | 'data.archived'
   | 'data.diagnostics';
 

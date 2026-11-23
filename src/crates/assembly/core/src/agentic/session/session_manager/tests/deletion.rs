@@ -248,3 +248,72 @@ async fn direct_delete_rejects_an_unfinished_revert_transition() {
         Some(state)
     );
 }
+
+#[tokio::test]
+async fn cold_session_deletion_reclaims_persisted_file_snapshots() {
+    let workspace = TestWorkspace::new();
+    let paths = workspace.path_manager();
+    let persistence = Arc::new(PersistenceManager::new(paths.clone()).unwrap());
+    let manager = test_manager(persistence);
+    for simulate_busy_writer in [false, true] {
+        let session = manager
+            .create_session(
+                "Cold".into(),
+                "agent".into(),
+                SessionConfig {
+                    workspace_path: Some(workspace.path().to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let id = &session.session_id;
+        let snapshots = paths.project_snapshots_dir(workspace.path());
+        let ops = snapshots.join("operations");
+        std::fs::create_dir_all(&ops).unwrap();
+        let history = ops.join(format!("{id}.json"));
+        std::fs::write(
+            &history,
+            serde_json::json!({
+                "session_id": id, "last_updated": std::time::SystemTime::now(), "turns": {}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        manager.evict_loaded_session_for_test(id);
+        assert!(
+            crate::service::snapshot::get_snapshot_manager_for_workspace(workspace.workspace_id())
+                .is_none()
+        );
+        let gate = if simulate_busy_writer {
+            let dir = paths
+                .project_runtime_root(workspace.path())
+                .join("locks/snapshot-writers");
+            std::fs::create_dir_all(&dir).unwrap();
+            let gate = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(dir.join("maintenance.lock"))
+                .unwrap();
+            gate.try_lock().unwrap();
+            Some(gate)
+        } else {
+            None
+        };
+        manager.delete_session(workspace.path(), id).await.unwrap();
+        if let Some(gate) = gate {
+            assert!(history.is_file());
+            drop(gate);
+            crate::service::snapshot::maintenance::retry_pending_deletions(&paths)
+                .await
+                .unwrap();
+        }
+        assert!(!history.exists());
+        assert!(!paths
+            .project_sessions_dir(workspace.path())
+            .join(id)
+            .exists());
+    }
+}

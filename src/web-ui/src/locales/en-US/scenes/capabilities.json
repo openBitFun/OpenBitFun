@@ -686,6 +686,13 @@
               "trend": "Track Input and Output token volume over time in the stacked bar chart"
             }
           },
+          "storage": {
+            "title": "Storage",
+            "summary": "Inspect local file snapshot usage by workspace and clean up eligible session histories.",
+            "items": {
+              "clean": "Preview and clean up session file snapshots"
+            }
+          },
           "archived": {
             "title": "Archived sessions",
             "summary": "Review archived conversations grouped by collapsible workspace headers, restore sessions back to their original workspace, delete individual native or imported entries, or clear all archives.",

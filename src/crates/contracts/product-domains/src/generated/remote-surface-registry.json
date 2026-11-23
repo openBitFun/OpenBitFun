@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:0b686be0f5103ef5",
+  "digest": "fnv1a64:90361f729e6ce746",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -942,6 +942,18 @@
       },
       "cliPeer": {
         "kind": "handled"
+      }
+    },
+    {
+      "id": "clean_snapshot_storage",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -4099,6 +4111,18 @@
       },
       "cliPeer": {
         "kind": "handled"
+      }
+    },
+    {
+      "id": "inspect_snapshot_storage",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {

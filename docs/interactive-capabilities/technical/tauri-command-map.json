@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "1e9b09293cfab7a47682d9decab4e0626137d6e79cd2405688d7f16e05a8e6b5",
-  "commandCount": 701,
+  "catalogDigest": "f592c3304b41651db62ca8afeff8bb8e3d56a3e49d6420eff960b3cfe9eb9294",
+  "commandCount": 703,
   "coverage": {
-    "commandCount": 701,
-    "documentedCommandCount": 635,
+    "commandCount": 703,
+    "documentedCommandCount": 637,
     "implementationCommandCount": 66,
     "implementationDigest": "22a8353380694e1246a4b15ec83c4f5a10c781fd5dfb0a0fb9d2a135e53380b6"
   },
@@ -1073,6 +1073,22 @@
       "sourceFile": "src/apps/desktop/src/api/external_sources_api.rs",
       "signature": "fn choose_external_subagent_conflict_command( request: ChooseExternalSubagentConflictRequest, ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse>",
       "remoteWorkspacePolicy": "RemoteUnsupported"
+    },
+    {
+      "id": "clean_snapshot_storage",
+      "moduleId": "snapshot_service",
+      "capabilityId": "setting.data.storage",
+      "capabilityIds": [
+        "setting.data.storage"
+      ],
+      "documentedItemIds": [
+        "setting.data.storage:clean"
+      ],
+      "visibility": "documented",
+      "rustPath": "clean_snapshot_storage",
+      "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
+      "signature": "fn clean_snapshot_storage( runtime: State<'_, DesktopRuntimeContext>, request: CleanSnapshotStorageRequest, ) -> Result<CleanupResult, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "cleanup_invalid_workspaces",
@@ -5123,6 +5139,22 @@
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn initialize_workspace_startup_state( state: State<'_, AppState>, app: tauri::AppHandle, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<WorkspaceStartupStateSnapshotDto, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
+      "id": "inspect_snapshot_storage",
+      "moduleId": "snapshot_service",
+      "capabilityId": "setting.data.storage",
+      "capabilityIds": [
+        "setting.data.storage"
+      ],
+      "documentedItemIds": [
+        "setting.data.storage:clean"
+      ],
+      "visibility": "documented",
+      "rustPath": "inspect_snapshot_storage",
+      "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
+      "signature": "fn inspect_snapshot_storage( request: InspectSnapshotStorageRequest, ) -> Result<StorageOverview, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "install_acp_client_cli",

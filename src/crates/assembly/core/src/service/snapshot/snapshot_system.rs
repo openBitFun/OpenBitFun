@@ -974,6 +974,13 @@ impl FileSnapshotSystem {
         Ok(())
     }
 
+    pub(super) fn forget_cleaned_files(&mut self, removed: &super::maintenance::Removed) {
+        self.active_snapshots
+            .retain(|id, _| !removed.handles.contains(id));
+        self.hash_to_path
+            .retain(|hash, _| !removed.blobs.contains(hash));
+    }
+
     /// Returns storage statistics.
     pub async fn get_storage_stats(&self) -> SnapshotResult<StorageStats> {
         let mut total_size_bytes = 0;

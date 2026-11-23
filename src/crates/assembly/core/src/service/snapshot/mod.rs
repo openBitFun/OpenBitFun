@@ -1,6 +1,7 @@
 pub mod events;
 pub mod file_lock_manager;
 pub mod isolation_manager;
+pub mod maintenance;
 pub mod manager;
 pub mod service;
 pub mod snapshot_core;
