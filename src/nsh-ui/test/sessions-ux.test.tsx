@@ -1421,3 +1421,36 @@ test("consecutive live explore rounds fold directly into one collapsed group wit
   await app.waitFor("a.ts");
   await app.waitFor("b.ts");
 });
+
+test("composer clears immediately on submit before the host RPC resolves and restores on failure", async () => {
+  let resolveSend!: (value: unknown) => void;
+  let shouldFail = false;
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string };
+    if (args.action === "submit_user_message") {
+      return new Promise(resolve => {
+        resolveSend = resolve;
+      });
+    }
+    return baseInvoke(data);
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("composer");
+
+  // Send while backend RPC is still pending: composer text clears synchronously (0ms).
+  await app.type("composer", "Instant clear test");
+  const pressPromise = app.press("Send");
+  await app.waitUntil(() => app.value("composer") === "");
+  expect(app.texts()).toContain("Instant clear test");
+
+  // If the RPC fails, the draft is restored so the user never loses what they typed.
+  shouldFail = true;
+  resolveSend({ ok: false, error: "network timeout" });
+  await pressPromise;
+  await app.waitUntil(() => app.value("composer") === "Instant clear test");
+  expect(shouldFail).toBe(true);
+});

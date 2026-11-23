@@ -121,6 +121,38 @@ export function markQueuedTurnStarted(sessionId: string | null, turnId: string |
   queuedCounts.update(counts => ({ ...counts, [sessionId]: remaining }));
 }
 
+/**
+ * Inserts a newly queued row immediately when `submit_user_message` returns
+ * `{ outcome: "queued", turnId }`, avoiding an extra `list` round-trip delay
+ * before the row appears in the queue tray.
+ */
+export function recordQueuedFromSubmit(
+  sessionId: string | null,
+  turnId: string | null,
+  content: string,
+  attachmentCount = 0,
+): void {
+  if (!sessionId || !turnId) return;
+  if (startedTurnsBySession.get(sessionId)?.has(turnId)) return;
+  const targetId = idFor(sessionId, turnId);
+  const current = queuedMessages();
+  if (current.some(item => item.id === targetId)) return;
+  const next: QueuedMessage[] = [
+    ...current,
+    {
+      id: targetId,
+      content,
+      status: "queued",
+      reason: "",
+      source: "host",
+      ...(attachmentCount > 0 ? { attachmentCount } : {}),
+    },
+  ];
+  queuedMessages.set(next);
+  const count = next.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length;
+  queuedCounts.update(counts => ({ ...counts, [sessionId]: count }));
+}
+
 function idFor(sessionId: string, turnId: string): string {
   return `${sessionId}\u0000${turnId}`;
 }
@@ -281,7 +313,14 @@ export async function removeQueued(id: string): Promise<void> {
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
-  bumpSessionSeq(sessionId);
+  const previous = queuedMessages();
+  const next = previous.filter(item => item.id !== row.id);
+  const seq = bumpSessionSeq(sessionId);
+  queuedMessages.set(next);
+  queuedCounts.update(counts => ({
+    ...counts,
+    [sessionId]: next.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length,
+  }));
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, {
       action: "cancel",
@@ -289,7 +328,14 @@ export async function removeQueued(id: string): Promise<void> {
       operationId: `cancel-${nextId++}`,
     }));
   } catch {
-    // The host kept it; leave the row in place rather than lying about it.
+    // The host kept it; restore the row rather than lying about it.
+    if (seq === (listSeqBySession.get(sessionId) ?? 0)) {
+      queuedMessages.set(previous);
+      queuedCounts.update(counts => ({
+        ...counts,
+        [sessionId]: previous.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length,
+      }));
+    }
     queueNotice.set(tr("chat.queue.cancelRefused"));
   }
 }
@@ -309,7 +355,14 @@ export async function sendQueuedNow(id: string): Promise<void> {
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
-  bumpSessionSeq(sessionId);
+  const previous = queuedMessages();
+  const next = previous.filter(item => item.id !== row.id);
+  const seq = bumpSessionSeq(sessionId);
+  queuedMessages.set(next);
+  queuedCounts.update(counts => ({
+    ...counts,
+    [sessionId]: next.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length,
+  }));
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, {
       action: "promote",
@@ -318,6 +371,13 @@ export async function sendQueuedNow(id: string): Promise<void> {
       expectedActiveTurnId: runningTurnId(),
     }));
   } catch {
+    if (seq === (listSeqBySession.get(sessionId) ?? 0)) {
+      queuedMessages.set(previous);
+      queuedCounts.update(counts => ({
+        ...counts,
+        [sessionId]: previous.filter(item => item.id.startsWith(`${sessionId}\u0000`)).length,
+      }));
+    }
     queueNotice.set(tr("chat.queue.promoteRefused"));
   }
 }
@@ -335,11 +395,27 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
   const sessionId = activeSessionId();
   if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
+  const previous = queuedMessages();
+  // Optimistically swap the two session rows immediately so reordering feels instant.
+  const sessionIndices: number[] = [];
+  previous.forEach((item, idx) => {
+    if (item.id.startsWith(`${sessionId}\u0000`)) sessionIndices.push(idx);
+  });
+  const localPos = sessionIndices.findIndex(idx => previous[idx]?.id === row.id);
+  const targetPos = localPos + direction;
+  if (localPos >= 0 && targetPos >= 0 && targetPos < sessionIndices.length) {
+    const swapped = [...previous];
+    const a = sessionIndices[localPos]!;
+    const b = sessionIndices[targetPos]!;
+    [swapped[a], swapped[b]] = [swapped[b]!, swapped[a]!];
+    queuedMessages.set(swapped);
+  }
   const seq = bumpSessionSeq(sessionId);
   let snapshot: HostQueueSnapshot;
   try {
     snapshot = await callQueue(sessionId, { action: "list" });
   } catch {
+    if (seq === (listSeqBySession.get(sessionId) ?? 0)) queuedMessages.set(previous);
     queueNotice.set(tr("chat.queue.listRefused"));
     return;
   }
@@ -356,7 +432,7 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
   // "Move before" the row on the far side of the destination, so the moved row
   // lands where the press asked for; the end of the list is `null`.
   const beforeTurnId = direction < 0 ? turnIds[index - 1] : (turnIds[index + 2] ?? null);
-  bumpSessionSeq(sessionId);
+  const reorderSeq = bumpSessionSeq(sessionId);
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, {
       action: "reorder",
@@ -367,6 +443,9 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
     }));
     queueNotice.set("");
   } catch {
+    if (reorderSeq === (listSeqBySession.get(sessionId) ?? 0)) {
+      adoptSnapshot(sessionId, snapshot);
+    }
     queueNotice.set(tr("chat.queue.reorderRefused"));
   }
 }

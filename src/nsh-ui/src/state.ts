@@ -1,7 +1,7 @@
 // Application state. NSH components run once, so the store is plain signals and
 // the loaders below; a change re-runs only the bindings that read that signal.
 
-import { computed, effect, signal, Storage, untracked } from "nsh";
+import { batch, computed, effect, signal, Storage, untracked } from "nsh";
 import {
   attachmentContexts,
   clearAttachments,
@@ -1204,18 +1204,21 @@ function reconcilePendingTurnWithPersisted(sessionId: string, turns: TranscriptT
   const pending = pendingTurnState();
   if (!pending || !matchesPendingSession(pending, sessionId, key)) return;
   if (pending.turnId) {
-    const matched = turns.some(turn => turn.turnId === pending.turnId);
-    if (matched) {
+    const matched = turns.find(turn => turn.turnId === pending.turnId);
+    // Keep pending state alive while the host still reports this turn as unsettled
+    // so the optimistic user bubble never flickers before liveTurn hands off.
+    if (matched && matched.settled !== false) {
       clearPendingTurn(sessionId, key);
     }
     return;
   }
   // When `turnId` was not yet received (e.g. hosts that don't emit
   // `dialog-turn-started` before persisting), clear once a new turn with the
-  // matching user prompt lands on disk.
+  // matching user prompt lands settled on disk.
   if (turns.length > pending.baselineTurnCount) {
-    const content = (turns[turns.length - 1]?.user?.text ?? "").trim();
-    if (!content || content === pending.userText) {
+    const latest = turns[turns.length - 1];
+    const content = (latest?.user?.text ?? "").trim();
+    if (latest?.settled !== false && (!content || content === pending.userText)) {
       clearPendingTurn(sessionId, key);
     }
   }
@@ -1290,6 +1293,9 @@ export async function sendTurn(
   text: string,
   /** The user's explicit "Steer" / "Queue" press; omitted, the host's setting applies. */
   sendDuringTurn?: "immediate" | "queue",
+  options?: {
+    onQueued?: (info: { sessionId: string; turnId: string; content: string; attachmentCount: number }) => void;
+  },
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   const sessionId = activeSessionId();
   const body = text.trim();
@@ -1299,16 +1305,36 @@ export async function sendTurn(
   // from its own binding instead of the workspace this window shows now.
   const row = sessions().find(item => item.sessionId === sessionId);
   const workspaceId = row ? row.workspaceId || activeWorkspaceId() || undefined : undefined;
-  turnError.set("");
-  sendNotice.set("");
+  const savedDraft = composerText();
+  const fromComposer = savedDraft === text;
+  const savedAttachments = [...imageAttachments()];
   const attachments = attachmentContexts();
   const running = Boolean(runningTurnId());
-  if (!running) {
-    // Optimistic: the pending bubble stays across TTFT until persisted turns
-    // settle (no flash back to the empty Welcome Studio on send).
-    clearStreamedText();
-    setPendingTurn(sessionId, body);
-  }
+  const restoreDraft = () => {
+    batch(() => {
+      if (fromComposer && !composerText().trim()) {
+        composerText.set(savedDraft);
+      }
+      if (savedAttachments.length > 0 && imageAttachments().length === 0) {
+        imageAttachments.set(savedAttachments);
+      }
+    });
+  };
+  // Optimistic frame-0 clear: the composer clears immediately on submit instead
+  // of lagging behind the host RPC round-trip; on error or legacy refusal the
+  // draft is restored cleanly if the user has not started typing something new.
+  batch(() => {
+    turnError.set("");
+    sendNotice.set("");
+    if (fromComposer) composerText.set("");
+    clearAttachments();
+    if (!running) {
+      // Optimistic: the pending bubble stays across TTFT until persisted turns
+      // settle (no flash back to the empty Welcome Studio on send).
+      clearStreamedText();
+      setPendingTurn(sessionId, body);
+    }
+  });
   let outcome: SubmitUserMessageResult["outcome"] | null = null;
   await runStep(async () => {
     try {
@@ -1321,14 +1347,20 @@ export async function sendTurn(
         ...(running && sendDuringTurn ? { sendDuringTurn } : {}),
       });
       outcome = result.outcome;
-      composerText.set("");
-      clearAttachments();
       if (result.outcome === "started") {
         bindPendingTurnId(sessionId, result.turnId, body);
       } else {
         // Steered into the running turn or waiting in the host queue: either way
         // no new turn starts from this message now.
         if (!running) clearPendingTurn(sessionId);
+        if (result.outcome === "queued" && result.turnId) {
+          options?.onQueued?.({
+            sessionId,
+            turnId: result.turnId,
+            content: body,
+            attachmentCount: attachments.length,
+          });
+        }
         if (result.outcome === "steered") await loadTurns(sessionId);
       }
     } catch (error) {
@@ -1339,10 +1371,12 @@ export async function sendTurn(
           body,
           attachments,
           running,
+          restoreDraft,
         );
         return;
       }
       if (!running) clearPendingTurn(sessionId);
+      restoreDraft();
       turnError.set(error instanceof Error ? error.message : String(error));
     }
   });
@@ -1360,8 +1394,10 @@ async function sendWithLegacyHost(
   body: string,
   attachments: ReturnType<typeof attachmentContexts>,
   running: boolean,
+  restoreDraft: () => void,
 ): Promise<SubmitUserMessageResult["outcome"] | null> {
   if (running) {
+    restoreDraft();
     sendNotice.set(tr("chat.send.hostUpdateRequired"));
     return null;
   }
@@ -1373,11 +1409,10 @@ async function sendWithLegacyHost(
       workspaceId,
       ...(attachments.length ? { imageContexts: attachments } : {}),
     });
-    composerText.set("");
-    clearAttachments();
     return "started";
   } catch (error) {
     clearPendingTurn(sessionId);
+    restoreDraft();
     turnError.set(error instanceof Error ? error.message : String(error));
     return null;
   }

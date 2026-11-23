@@ -128,6 +128,7 @@ import {
   queueFallbackReason,
   queueForSession,
   queueNotice,
+  recordQueuedFromSubmit,
   removeQueued,
   sendQueuedNow,
   takeQueued,
@@ -2052,6 +2053,7 @@ function UserBubble(props: {
         style={{
           flexDirection: "row",
           alignItems: "center",
+          height: compactLayout() ? layout.touchTarget : controlHeight.xs,
           gap: space.xs,
           paddingHorizontal: space.hair,
           opacity: revealActions() ? 1 : 0,
@@ -2673,6 +2675,7 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
+        height: compactLayout() ? layout.touchTarget : controlHeight.sm,
         gap: space.hair,
         marginLeft: -space.xs,
         opacity: revealed() ? 1 : 0,
@@ -3775,42 +3778,50 @@ function Transcript() {
             {row => <TranscriptTurn turn={() => row().turn} rowKey={row().key} />}
           </Each>
 
-          <If when={optimisticUserText()}>
-            {text => (
-              <UserBubble
-                partKey={`pending-${pendingTurnState()?.turnId || text()}`}
-                text={text()}
-                timestamp={pendingTurnState()?.createdAt}
-                showCopy={false}
-              />
-            )}
-          </If>
-
-          <If when={liveDisplayBlocks().length > 0}>
-            <View style={{ gap: 8 }}>
-              <Each of={liveDisplayBlocks()} key={block => block.key}>
-                {block => (
-                  <If
-                    when={block().kind === "explore"}
-                    else={
-                      <LiveRoundView
-                        round={() => (block() as Extract<LiveDisplayBlock, { kind: "round" }>).round}
-                        singleRound={() => liveRounds().length === 1}
-                      />
-                    }
-                  >
-                    <ExploreGroupCard
-                      calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
-                      cardId={block().key}
-                      stateOf={persistedToolState}
-                    />
-                  </If>
+          <If when={Boolean(optimisticUserText()) || liveDisplayBlocks().length > 0 || liveFallbackItems().length > 0}>
+            {/* Mirrors `TranscriptTurn`'s exact `gap: space.md` and `TurnFooter` height so settling into a persisted turn causes 0px vertical jump. */}
+            <View style={{ gap: space.md }}>
+              <If when={optimisticUserText()}>
+                {text => (
+                  <UserBubble
+                    partKey={`pending-${pendingTurnState()?.turnId || text()}`}
+                    text={text()}
+                    timestamp={pendingTurnState()?.createdAt}
+                    showCopy={false}
+                  />
                 )}
-              </Each>
+              </If>
+
+              <If when={liveDisplayBlocks().length > 0}>
+                <View style={{ gap: 8 }}>
+                  <Each of={liveDisplayBlocks()} key={block => block.key}>
+                    {block => (
+                      <If
+                        when={block().kind === "explore"}
+                        else={
+                          <LiveRoundView
+                            round={() => (block() as Extract<LiveDisplayBlock, { kind: "round" }>).round}
+                            singleRound={() => liveRounds().length === 1}
+                          />
+                        }
+                      >
+                        <ExploreGroupCard
+                          calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
+                          cardId={block().key}
+                          stateOf={persistedToolState}
+                        />
+                      </If>
+                    )}
+                  </Each>
+                </View>
+              </If>
+              <If when={liveFallbackItems().length > 0}>
+                <TranscriptItems items={liveFallbackItems()} live={true} />
+              </If>
+              <If when={liveDisplayBlocks().length > 0 || liveFallbackItems().length > 0}>
+                <View style={{ height: compactLayout() ? layout.touchTarget : controlHeight.sm }} />
+              </If>
             </View>
-          </If>
-          <If when={liveFallbackItems().length > 0}>
-            <TranscriptItems items={liveFallbackItems()} live={true} />
           </If>
 
           <If when={turnError()}>
@@ -4070,14 +4081,17 @@ async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<v
       return;
     }
   }
-  const sessionId = activeSessionId();
   const text = composerText();
   const hasPayload = Boolean(text.trim() || imageAttachments().length > 0);
   if (hasPayload && !runningTurnId()) jumpToTranscriptEnd();
   // The host decides whether a message written during a turn steers it or
-  // waits in its queue; the composer only follows the answer.
-  const outcome = await sendTurn(text, sendDuringTurn);
-  if (outcome === "queued" && sessionId) void loadQueueForSession(sessionId, true);
+  // waits in its queue; the composer clears immediately and follows the answer.
+  const outcome = await sendTurn(text, sendDuringTurn, {
+    onQueued: info => {
+      recordQueuedFromSubmit(info.sessionId, info.turnId, info.content, info.attachmentCount);
+      void loadQueueForSession(info.sessionId, true);
+    },
+  });
   if (outcome === "steered" && hasPayload) jumpToTranscriptEnd();
 }
 
@@ -6936,8 +6950,12 @@ function QueuedPanel() {
                         tooltip={tr("common.edit")}
                         accessibilityLabel={tr("common.edit")}
                         onPress={() => {
+                          const content = item().content;
+                          const prevDraft = composerText();
+                          if (!prevDraft.trim()) composerText.set(content);
                           void takeQueued(item().id).then(text => {
                             if (text) composerText.set(text);
+                            else if (composerText() === content) composerText.set(prevDraft);
                           });
                         }}
                       />
