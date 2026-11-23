@@ -5,7 +5,6 @@
 
 import {
   cleanup,
-  Clipboard,
   computed,
   effect,
   Scroll,
@@ -15,11 +14,9 @@ import {
   View,
   WebView,
   type JSX,
-  type ScrollRef,
   type ViewRef,
   type WebViewRef,
 } from "nsh";
-import { Input, TextView } from "nsh/base";
 import {
   backgroundCommands,
   backgroundInputDraft,
@@ -37,17 +34,9 @@ import {
 import { listenEvent } from "../bridge";
 import {
   askSideQuestion,
-  cancelSideQuestion,
-  closeSideQuestion,
   openSideQuestion,
-  resetSideQuestionThread,
-  sideQuestion,
-  sideQuestionDraft,
-  sideQuestionHistory,
   sideQuestionOpen,
-  sideQuestionUnsupported,
   subscribeSideQuestionEvents,
-  type SideQuestion,
 } from "../btwStore";
 import type { ToolCallView } from "../format";
 import {
@@ -95,13 +84,11 @@ import {
   activeWorkspaceId,
   activeWorkspaceRoot,
   composerText,
-  sessionSplitRatio,
 } from "../state";
-import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
-import { createMarkdownStyles, STATIC_MARKDOWN_OPTIONS, STREAMING_MARKDOWN_OPTIONS } from "./markdown";
+import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
 import { BrandSpinner, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { DropdownMenu, ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
-import { Button, IconButton, IconCircleButton, TextField, focusRingStyle } from "./primitives";
+import { Button, IconButton, TextField, focusRingStyle } from "./primitives";
 import { Icon } from "./icons";
 
 function errorText(error: unknown): string {
@@ -369,394 +356,8 @@ function GoalDialog(): JSX.Element {
   );
 }
 
-// ── Side question (ephemeral right-side split pane) ──────────────────────────
-
-function sideQuestionEntryStateText(entry: SideQuestion): string {
-  if (entry.state === "running") return entry.answer ? "" : tr("btw.thinking");
-  if (entry.state === "cancelled") return tr("btw.stopped");
-  if (entry.state === "failed") {
-    return sideQuestionUnsupported()
-      ? tr("btw.hostUpdate")
-      : tr("btw.failed", { error: errorText(entry.error ?? "") });
-  }
-  return "";
-}
-
-function askFromSidePane(): void {
-  const sessionId = activeSessionId();
-  if (!sessionId) return;
-  void askSideQuestion(
-    {
-      sessionId,
-      deviceId: activeSessionDevice(),
-      workspaceId: activeWorkspaceId(),
-      workspacePath: activeWorkspaceRoot() || null,
-    },
-    sideQuestionDraft(),
-  );
-}
-
-function SideQuestionPaneBody(): JSX.Element {
-  let scrollRef: ScrollRef | undefined;
-  const composing = signal(false);
-  const copiedId = signal("");
-  const running = () => sideQuestion()?.state === "running";
-  const canSend = () => Boolean(activeSessionId()) && sideQuestionDraft().trim().length > 0 && !running();
-
-  effect(() => {
-    const history = sideQuestionHistory();
-    const latest = history[history.length - 1];
-    latest?.answer.length;
-    latest?.state;
-    scrollRef?.scrollToEnd({ animated: false });
-  });
-
-  const firstTitle = () => {
-    const first = sideQuestionHistory()[0]?.question?.trim();
-    if (!first) return "";
-    return first.length > 36 ? `${first.slice(0, 36)}…` : first;
-  };
-
-  return (
-    <View
-      testID="side-question-pane"
-      accessibilityLabel="side-question-sheet"
-      style={{
-        flex: 1,
-        minWidth: 0,
-        minHeight: 0,
-        flexDirection: "column",
-        backgroundColor: palette().canvas,
-      }}
-    >
-      {/* Header aligned to `layout.topBarHeight` with the primary conversation header */}
-      <View
-        style={{
-          height: layout.topBarHeight,
-          minHeight: layout.topBarHeight,
-          paddingHorizontal: space.lg,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: space.sm,
-          backgroundColor: palette().canvas,
-          borderBottomWidth: 1,
-          borderColor: palette().borderSubtle,
-          flexShrink: 0,
-        }}
-      >
-        <Icon name="sparkles" size={14} color={palette().accent} />
-        <Text
-          style={{
-            ...textStyle("sectionTitle", { color: palette().text }),
-            flexShrink: 0,
-          }}
-        >
-          {tr("btw.title")}
-        </Text>
-        <If when={firstTitle()}>
-          {title => (
-            <Text
-              style={{
-                ...textStyle("caption", { color: palette().textMuted }),
-                flex: 1,
-                minWidth: 0,
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {`· ${title()}`}
-            </Text>
-          )}
-        </If>
-        <If when={!firstTitle()}>
-          <View style={{ flex: 1, minWidth: 0 }} />
-        </If>
-        <If when={sideQuestionHistory().length > 0}>
-          <IconButton
-            icon="plus"
-            size="sm"
-            accessibilityLabel="side-question-new"
-            tooltip={tr("nav.newSession")}
-            onPress={() => resetSideQuestionThread()}
-          />
-        </If>
-        <IconButton
-          icon="close"
-          size="sm"
-          accessibilityLabel="side-question-close"
-          tooltip={tr("common.close")}
-          onPress={() => closeSideQuestion()}
-        />
-      </View>
-
-      {/* Scrollable ephemeral conversation transcript */}
-      <Scroll
-        ref={el => {
-          scrollRef = el;
-        }}
-        style={{ flex: 1, minHeight: 0 }}
-        contentStyle={{
-          flexGrow: 1,
-          paddingHorizontal: space.lg,
-          paddingTop: space.lg,
-          paddingBottom: space.xxl,
-        }}
-      >
-        <View style={{ width: "100%", flexGrow: 1, gap: space.lg }}>
-          <If when={sideQuestionHistory().length === 0}>
-            <View
-              style={{
-                flexGrow: 1,
-                alignItems: "center",
-                justifyContent: "center",
-                paddingHorizontal: space.lg,
-                gap: space.sm,
-              }}
-            >
-              <View
-                style={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: radii.lg,
-                  borderCurve: "continuous",
-                  backgroundColor: palette().surfaceTertiary,
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Icon name="sparkles" size={16} color={palette().accent} />
-              </View>
-              <Text style={textStyle("sectionTitle")}>{tr("btw.title")}</Text>
-              <Text
-                style={{
-                  ...textStyle("caption", { color: palette().textMuted }),
-                  textAlign: "center",
-                  maxWidth: 320,
-                }}
-              >
-                {tr("btw.body")}
-              </Text>
-            </View>
-          </If>
-
-          <Each of={sideQuestionHistory()} key={entry => entry.requestId}>
-            {(entry, idx) => (
-              <View style={{ gap: space.md }}>
-                {/* Right-aligned user question bubble */}
-                <View style={{ alignItems: "flex-end", gap: space.xs }}>
-                  <View
-                    style={{
-                      maxWidth: "88%",
-                      paddingHorizontal: space.md,
-                      paddingVertical: space.sm,
-                      borderRadius: radii.lg,
-                      borderCurve: "continuous",
-                      backgroundColor: palette().surfaceTertiary,
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      gap: space.xs,
-                    }}
-                  >
-                    <If when={idx() === 0}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                        <Icon name="git-branch" size={11} color={palette().textMuted} />
-                        <Text style={textStyle("caption", { color: palette().textMuted })}>
-                          {tr("btw.body")}
-                        </Text>
-                      </View>
-                    </If>
-                    <Text
-                      accessibilityLabel="side-question-asked"
-                      style={{
-                        color: palette().text,
-                        fontSize: textSize(14),
-                        lineHeight: textLineHeight(14, 1.5),
-                      }}
-                    >
-                      {entry().question}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Streamed assistant answer */}
-                <If when={entry().answer}>
-                  <View style={{ gap: space.xs }}>
-                    <View accessibilityLabel="side-question-answer">
-                      <TextView
-                        markdown={entry().answer}
-                        selectable
-                        options={entry().state === "running" ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
-                        styles={createMarkdownStyles()}
-                      />
-                    </View>
-                    <If when={entry().state !== "running"}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                        <IconButton
-                          icon={copiedId() === entry().requestId ? "check" : "copy"}
-                          size="xs"
-                          accessibilityLabel={`side-question-copy-${entry().requestId}`}
-                          tooltip={tr("common.copy")}
-                          onPress={() => {
-                            const id = entry().requestId;
-                            void Clipboard.writeText(entry().answer).then(() => {
-                              copiedId.set(id);
-                              setTimeout(() => {
-                                if (copiedId() === id) copiedId.set("");
-                              }, 1500);
-                            });
-                          }}
-                        />
-                      </View>
-                    </If>
-                  </View>
-                </If>
-
-                <If when={sideQuestionEntryStateText(entry())}>
-                  {statusText => (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-                      <If when={entry().state === "running"}>
-                        <BrandSpinner size={13} />
-                      </If>
-                      <Text
-                        accessibilityLabel="side-question-state"
-                        style={textStyle("caption", {
-                          color: entry().state === "failed" ? palette().danger : palette().textMuted,
-                        })}
-                      >
-                        {statusText()}
-                      </Text>
-                    </View>
-                  )}
-                </If>
-              </View>
-            )}
-          </Each>
-        </View>
-      </Scroll>
-
-      {/* Bottom floating composer matching main session composer */}
-      <View style={{ paddingHorizontal: space.lg, paddingTop: space.chip, paddingBottom: space.lg, flexShrink: 0 }}>
-        <View
-          style={{
-            width: "100%",
-            borderRadius: radii.xl,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: palette().border,
-            backgroundColor: palette().inputBg,
-            boxShadow: palette().shadowComposer,
-            overflow: "hidden",
-            ...paintTransition(MOTION_DURATION.fast),
-          }}
-          focusWithinStyle={{
-            borderColor: palette().fieldFocusBorder,
-            boxShadow: palette().shadowComposerFocus,
-          }}
-        >
-          <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs }}>
-            <Input
-              autoFocus
-              multiline
-              submitBehavior="submit"
-              readonly={running()}
-              value={sideQuestionDraft()}
-              placeholder={tr("btw.placeholder")}
-              accessibilityLabel="side-question-input"
-              onChange={event => sideQuestionDraft.set(event.value)}
-              onCompositionChange={event => composing.set(event.composing)}
-              onSubmit={() => {
-                if (!composing() && canSend()) askFromSidePane();
-              }}
-              style={{
-                minHeight: controlHeight.sm,
-                maxHeight: 140,
-                color: palette().text,
-                placeholderColor: palette().textMuted,
-                caretColor: palette().accent,
-                fontSize: textSize(14),
-                lineHeight: textLineHeight(14, 1.5),
-              }}
-            />
-          </View>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              paddingHorizontal: space.sm,
-              paddingBottom: space.sm,
-              gap: space.xs,
-            }}
-          >
-            <If
-              when={running()}
-              else={
-                <IconCircleButton
-                  icon="arrow-up"
-                  variant={canSend() ? "primary" : "subtle"}
-                  size={32}
-                  iconSize={16}
-                  disabled={!canSend()}
-                  accessibilityLabel="side-question-ask"
-                  tooltip={tr("btw.ask")}
-                  onPress={askFromSidePane}
-                />
-              }
-            >
-              <IconCircleButton
-                icon="stop"
-                variant="primary"
-                size={32}
-                iconSize={14}
-                accessibilityLabel="side-question-stop"
-                tooltip={tr("btw.stop")}
-                onPress={() => void cancelSideQuestion()}
-              />
-            </If>
-          </View>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-/** Right-side ephemeral split pane for `/btw` on desktop viewports. */
-export function SideQuestionSplitPane(): JSX.Element {
-  return (
-    <View
-      style={{
-        flexGrow: 1 - sessionSplitRatio(),
-        flexBasis: 0,
-        minWidth: 280,
-        minHeight: 0,
-        flexDirection: "column",
-        backgroundColor: palette().canvas,
-      }}
-    >
-      <SideQuestionPaneBody />
-    </View>
-  );
-}
-
-/** Compact/phone fallback sheet only when side-by-side split is unavailable. */
-function SideQuestionCompactSheet(): JSX.Element {
-  return (
-    <ModalDialog
-      open={sideQuestionOpen() && compactLayout()}
-      title={tr("btw.title")}
-      size="lg"
-      accessibilityLabel="side-question-compact-sheet"
-      onClose={() => closeSideQuestion()}
-    >
-      <View style={{ minHeight: 340, maxHeight: 560 }}>
-        <SideQuestionPaneBody />
-      </View>
-    </ModalDialog>
-  );
-}
-
+// Side questions (`/btw`) share the unified session pane/transcript/composer
+// primitives in `SessionsScene.tsx` so primary, split, and `/btw` maintain one UI.
 export { openSideQuestion, sideQuestionOpen };
 
 // ── Background commands ───────────────────────────────────────────────────────
@@ -1240,7 +841,6 @@ export function SessionExtrasDialogs(): JSX.Element {
   return (
     <>
       <GoalDialog />
-      <SideQuestionCompactSheet />
       <BackgroundCommandsDialog />
       <McpPromptDialog />
       <McpAppPanel />

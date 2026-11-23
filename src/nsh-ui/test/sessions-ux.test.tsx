@@ -1747,9 +1747,10 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   await openSession(app, "NSH skeleton");
   await app.waitFor("Add the plan and fix the imports.");
 
-  // 1. Persisted suggestion from session metadata is restored immediately on session open (post-restart).
+  // 1. Persisted suggestion from session metadata is restored immediately on session open (post-restart)
+  // without any extra dismiss `×` button beside the aligned `Tab` pill.
   await app.waitFor("accept-prompt-suggestion");
-  expect(app.shows("dismiss-prompt-suggestion")).toBe(true);
+  expect(app.shows("dismiss-prompt-suggestion")).toBe(false);
 
   // Clicking the Tab/Use accept pill fills the composer and clears the suggestion overlay.
   await app.press("accept-prompt-suggestion");
@@ -1769,7 +1770,7 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
   });
   expect(app.shows("accept-prompt-suggestion")).toBe(false);
 
-  // 2. Live `agentic://prompt-suggestion` for the latest completed turn appears and can be dismissed.
+  // 2. Live `agentic://prompt-suggestion` for the latest completed turn appears and hides once user starts typing.
   persistedSuggestion = undefined;
   await app.host.send("openbitfun.event", {
     event: "agentic://prompt-suggestion",
@@ -1780,8 +1781,10 @@ test("prompt suggestion hydrates from persisted transcript view after restart, u
     },
   });
   await app.waitFor("accept-prompt-suggestion");
-  await app.press("dismiss-prompt-suggestion");
+  await app.type("composer", "Manual draft");
   await app.waitFor("accept-prompt-suggestion", { state: "gone" });
+  await app.clear("composer");
+  await app.waitFor("accept-prompt-suggestion");
 
   // 3. Starting a new turn clears any active suggestion immediately.
   await app.host.send("openbitfun.event", {

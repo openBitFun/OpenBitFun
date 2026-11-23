@@ -156,6 +156,7 @@ import {
   Spinner,
   tactileActiveStyle,
 } from "../ui/motion";
+import { ImageViewerSurface, type ImageZoomState } from "../ui/ImageLightbox";
 import { ContextMenuOverlay, DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import {
   Button,
@@ -2279,14 +2280,7 @@ function EditorStatusBar() {
 }
 
 /** The image viewer's zoom: fitted to the pane, or a factor of the natural size. */
-const imageZoom = signal<"fit" | number>("fit");
-const imageNaturalSize = signal<{ width: number; height: number } | null>(null);
-
-function zoomImage(factor: number): void {
-  const current = imageZoom();
-  const base = current === "fit" ? 1 : current;
-  imageZoom.set(Math.min(8, Math.max(0.1, Math.round(base * factor * 100) / 100)));
-}
+const imageZoom = signal<ImageZoomState>("fit");
 
 /** Resolves a document-relative reference (`./img/a.png`, `../b.md`) against the document's folder. */
 function resolveDocumentPath(documentPath: string, reference: string): string {
@@ -2818,80 +2812,26 @@ function PreviewBody(props: { compact?: boolean }) {
           <If when={file().kind === "image"}>
             <View
               style={{
-                position: "relative",
                 flex: 1,
                 minHeight: 0,
                 minWidth: 0,
-                padding: props.compact ? space.md : space.xxl,
-                alignItems: "center",
-                justifyContent: "center",
               }}
             >
-              <View
-                style={{
-                  position: "absolute",
-                  top: space.sm,
-                  right: space.sm,
-                  zIndex: 2,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 2,
-                  padding: 2,
-                  borderRadius: radii.pill,
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  backgroundColor: palette().panelRaised,
-                  boxShadow: elevationShadow(2),
-                }}
-              >
-                <IconButton icon="minimize" size="xs" iconSize={12} tooltip={tr("files.zoomOut")} accessibilityLabel="image-zoom-out" onPress={() => zoomImage(1 / 1.25)} />
-                <Text
-                  style={{
-                    minWidth: 44,
-                    textAlign: "center",
-                    ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
-                  }}
-                >
-                  {imageZoom() === "fit" ? tr("files.zoomFit") : `${Math.round((imageZoom() as number) * 100)}%`}
-                </Text>
-                <IconButton icon="maximize" size="xs" iconSize={12} tooltip={tr("files.zoomIn")} accessibilityLabel="image-zoom-in" onPress={() => zoomImage(1.25)} />
-                <Button label={tr("files.zoomFit")} size="xs" variant={imageZoom() === "fit" ? "secondary" : "ghost"} accessibilityLabel="image-zoom-fit" onPress={() => imageZoom.set("fit")} />
-                <Button label="1:1" size="xs" variant={imageZoom() === 1 ? "secondary" : "ghost"} accessibilityLabel="image-zoom-actual" onPress={() => imageZoom.set(1)} />
-              </View>
-              <If
-                when={imageZoom() !== "fit" ? imageNaturalSize() : null}
-                else={
-                  <Image
-                    src={file().content}
-                    accessibilityLabel={file().name}
-                    style={{ flex: 1, width: "100%", objectFit: "contain" }}
-                    onLoad={event => imageNaturalSize.set(event.size)}
-                    onError={event =>
-                      fileNotice.set(
-                        tr("files.cannotShowImage", {
-                          name: file().name,
-                          error: localizeHostError(event.message),
-                        }),
-                      )
-                    }
-                  />
+              <ImageViewerSurface
+                src={() => file().content}
+                imageAccessibilityLabel={() => file().name}
+                zoom={imageZoom}
+                onZoomChange={next => imageZoom.set(next)}
+                padding={props.compact ? space.md : space.xl}
+                onError={message =>
+                  fileNotice.set(
+                    tr("files.cannotShowImage", {
+                      name: file().name,
+                      error: localizeHostError(message),
+                    }),
+                  )
                 }
-              >
-                {size => (
-                  <Scroll horizontal={false} style={{ flex: 1, minHeight: 0, alignSelf: "stretch" }}>
-                    <Scroll horizontal style={{ flex: 1, minWidth: 0 }}>
-                      <Image
-                        src={file().content}
-                        accessibilityLabel={file().name}
-                        style={{
-                          width: size().width * (imageZoom() as number),
-                          height: size().height * (imageZoom() as number),
-                        }}
-                      />
-                    </Scroll>
-                  </Scroll>
-                )}
-              </If>
+              />
             </View>
           </If>
           <If when={file().kind === "video"}>
@@ -3374,7 +3314,6 @@ export function FilesScene(props: { compact?: boolean } = {}) {
     void openFile()?.path;
     untracked(() => {
       imageZoom.set("fit");
-      imageNaturalSize.set(null);
     });
   });
 

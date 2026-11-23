@@ -302,31 +302,33 @@ test("@ mention immediately lists workspace files & folders, drills into folders
   expect(submitted?.text).toBe("Check #dir:docs");
 });
 
-test("split view hides TurnJumpRail and renders full Pane 1 composer parity", async () => {
+test("split view keeps TurnJumpRail in both Primary and Secondary panes with unified composer parity", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openSession(app, "NSH skeleton");
   await app.waitFor("turn-jump-rail");
 
-  // Open dual-session split: TurnJumpRail hides immediately, Pane 1 has full composer controls.
+  // Open dual-session split: BOTH Primary and Secondary panes keep TurnJumpRail and share unified controls.
   await app.press("thread-actions-trigger");
   await app.press("session-split-open");
   await app.waitFor("id:secondary-session-pane");
-  await app.waitFor("turn-jump-rail", { state: "gone" });
+  await app.waitFor("secondary-turn-jump-rail");
+  expect(app.shows("turn-jump-rail")).toBe(true);
+  expect(app.shows("secondary-turn-jump-rail")).toBe(true);
   expect(app.shows("id:secondary-session-header")).toBe(true);
   expect(app.shows("secondary-composer-plus")).toBe(true);
   expect(app.shows("secondary-agent-picker")).toBe(true);
   expect(app.shows("secondary-bot-capsule-trigger")).toBe(true);
   expect(app.shows("secondary-send-turn")).toBe(true);
 
-  // Closing split view restores TurnJumpRail.
+  // Closing split view leaves Primary TurnJumpRail intact.
   await app.press("session-pane-close-1");
   await app.waitFor("id:secondary-session-pane", { state: "gone" });
-  await app.waitFor("turn-jump-rail");
+  expect(app.shows("turn-jump-rail")).toBe(true);
 });
 
-test("/btw opens right-side ephemeral split pane, sends workspace context, supports multi-turn, and hides TurnJumpRail", async () => {
+test("/btw opens unified right-side ephemeral split pane with workspace context, multi-turn, and TurnJumpRail", async () => {
   const backend = createBackend();
   const btwRequests: Array<Record<string, unknown>> = [];
   const baseInvoke = backend.handlers["openbitfun.invoke"];
@@ -346,12 +348,12 @@ test("/btw opens right-side ephemeral split pane, sends workspace context, suppo
   await openSession(app, "NSH skeleton");
   await app.waitFor("turn-jump-rail");
 
-  // Trigger /btw with a question -> opens side-by-side split pane (NOT a modal),
-  // hides TurnJumpRail, and immediately dispatches `btw_ask_stream` with workspace context.
+  // Trigger /btw with a question -> opens unified side-by-side split pane (NOT a modal),
+  // keeps Primary TurnJumpRail visible, and dispatches `btw_ask_stream` with workspace context.
   await app.type("composer", "/btw What does this session do?");
   await app.press("Send");
   await app.waitFor("id:side-question-pane");
-  await app.waitFor("turn-jump-rail", { state: "gone" });
+  expect(app.shows("turn-jump-rail")).toBe(true);
   expect(app.shows("id:primary-session-pane")).toBe(true);
   expect(app.shows("side-question-compact-sheet")).toBe(false);
 
@@ -376,35 +378,61 @@ test("/btw opens right-side ephemeral split pane, sends workspace context, suppo
   });
   await app.waitFor("It ports the session list to NSH.");
 
-  // Multi-turn follow-up reuses the same ephemeral child session ID.
+  // Multi-turn follow-up reuses the same ephemeral child session ID and activates BTW's TurnJumpRail.
   await app.type("side-question-input", "Any blockers?");
   await app.press("side-question-ask");
   await app.waitUntil(() => btwRequests.length === 2);
   expect(btwRequests[1]?.childSessionId).toBe(firstChildId);
+  await app.waitFor("btw-turn-jump-rail");
 
-  // Closing the split pane discards ephemeral state and restores TurnJumpRail.
+  // Closing the split pane discards ephemeral state cleanly.
   await app.press("side-question-close");
   await app.waitFor("id:side-question-pane", { state: "gone" });
-  await app.waitFor("turn-jump-rail");
+  expect(app.shows("turn-jump-rail")).toBe(true);
 });
 
-test("ImageLightbox supports copy button and FilesScene renders compact explorer rows without tooltip clutter", async () => {
+test("Frameless ImageLightbox and FilesScene image preview share 25% step zoom, percentage, and Copy toolbar", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openSession(app, "NSH skeleton");
   await app.waitFor("Message");
 
-  // Paste an image and open lightbox -> header Copy button is present.
+  // Paste an image and open frameless lightbox -> shared floating bottom toolbar with 25% steps & Copy.
   await app.paste("composer", { uris: ["file:///tmp/shot.png"] });
   await app.waitFor("attachment-preview-attachment-drop-1");
   await app.press("attachment-preview-attachment-drop-1");
   await app.waitFor("image-lightbox-dialog");
+  expect(app.shows("image-viewer-toolbar")).toBe(true);
+  expect(app.shows("image-zoom-out")).toBe(true);
+  expect(app.shows("image-zoom-in")).toBe(true);
+  expect(app.shows("image-zoom-percent")).toBe(true);
+  expect(app.shows("image-zoom-actual")).toBe(true);
   expect(app.shows("image-lightbox-copy")).toBe(true);
+  expect(app.shows("100%")).toBe(true);
+
+  await app.press("image-zoom-in");
+  await app.waitFor("125%");
+  expect(app.shows("image-zoom-fit")).toBe(true);
+
+  await app.press("image-zoom-out");
+  await app.waitFor("100%");
+  await app.press("image-zoom-out");
+  await app.waitFor("75%");
+
   await app.press("image-lightbox-close");
   await app.waitFor("image-lightbox-dialog", { state: "gone" });
 
-  // Open Files inspector -> explorer rows render cleanly without giant phone heights.
+  // Open Files inspector -> compact explorer rows & clicking an image renders the exact same shared toolbar.
   await app.press("session-tool-files");
   await app.waitFor("explorer-row-README.md");
+  await app.waitFor("explorer-row-logo.png");
+  await app.press("explorer-row-logo.png");
+  await app.waitFor("image-viewer-toolbar");
+  expect(app.shows("image-zoom-in")).toBe(true);
+  expect(app.shows("image-zoom-out")).toBe(true);
+  expect(app.shows("image-zoom-percent")).toBe(true);
+  expect(app.shows("image-lightbox-copy")).toBe(true);
+  await app.press("image-zoom-in");
+  await app.waitFor("125%");
 });

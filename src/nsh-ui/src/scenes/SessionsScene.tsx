@@ -11,6 +11,7 @@ import type {
   Align,
   Bounds,
   InputRef,
+  JSX,
   Motion,
   PasteEvent,
   Placement,
@@ -346,7 +347,18 @@ import {
   subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "../ui/motion";
-import { DropdownMenu, pushToast, registerEscapeDismiss, type DropdownMenuItem } from "../ui/overlays";
+import { DropdownMenu, ModalDialog, pushToast, registerEscapeDismiss, type DropdownMenuItem } from "../ui/overlays";
+import {
+  askSideQuestion,
+  cancelSideQuestion,
+  closeSideQuestion,
+  resetSideQuestionThread,
+  sideQuestion,
+  sideQuestionDraft,
+  sideQuestionHistory,
+  sideQuestionUnsupported,
+  type SideQuestion,
+} from "../btwStore";
 import { sessionMenuItems } from "../ui/sessionActions";
 import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
 import { VoiceDictationBar, VoiceInputButtons, type VoiceComposerActions } from "../ui/VoiceInput";
@@ -379,7 +391,6 @@ import {
   runExtrasCommand,
   SessionExtrasDialogs,
   sideQuestionOpen,
-  SideQuestionSplitPane,
   useSessionExtras,
 } from "../ui/sessionExtras";
 import {
@@ -438,7 +449,11 @@ const contextUsagePlacement = signal<Placement>("top");
 const transcriptScrolled = signal(false);
 const sessionsPaneWidth = signal(0);
 const sessionsCompact = computed(() => sessionsPaneWidth() > 0 && sessionsPaneWidth() < 600);
-const sessionsPadX = computed(() => (sessionsCompact() ? 16 : 24));
+const sessionsPadX = computed(() => (sessionsCompact() || anyRightSplitOpen() ? space.lg : space.xxl));
+function paneTranscriptPadLeft(hasRail: boolean): number {
+  const base = sessionsPadX();
+  return !compactLayout() && hasRail ? Math.max(base, 34) : base;
+}
 
 let composerInputRef: InputRef | undefined;
 let nextDroppedAttachmentId = 0;
@@ -502,10 +517,6 @@ function acceptActivePromptSuggestion(): boolean {
   clearPromptSuggestion(sessionId, activeSessionDevice());
   composerInputRef?.focus();
   return true;
-}
-
-function dismissActivePromptSuggestion(): void {
-  clearPromptSuggestion(activeSessionId(), activeSessionDevice());
 }
 
 function focusRingStyle(offset = 2): ViewStyle {
@@ -674,8 +685,6 @@ const turnRowRefs = new Map<string, ViewRef>();
 /** Y-offset of each rendered turn inside the transcript column (keyed by `TurnRow.key`), for rail tracking. */
 const turnOffsets = new Map<string, number>();
 const activeRailTurnKey = signal("");
-const hoveredRailTurnKey = signal("");
-const hoveredRailAnchor = signal<ViewRef | null>(null);
 /** Briefly prevents an upward animated rail jump from re-locking `followLatest` on its first frames near the bottom. */
 let suppressAutoFollowUntil = 0;
 
@@ -1057,10 +1066,14 @@ function sessionWorkspaceName(): string {
 /**
  * The permission mode, only when this session deviates from the device's
  * default (spec §4.5): 20 high, radius 6, `chip`, 12 `textSecondary`.
+ * Shared across Primary and Split sessions.
  */
-function DeviationChip() {
+function DeviationChip(props: {
+  sessionId?: () => string | null;
+  accessibilityLabel?: string;
+} = {}) {
   const mode = () => {
-    const id = activeSessionId();
+    const id = (props.sessionId ?? activeSessionId)();
     if (!id || permissionModeSupported() === false || followsDefaultMode(id)) return null;
     const current = effectivePermissionMode(id);
     return current === permissionMode() ? null : current;
@@ -1069,7 +1082,7 @@ function DeviationChip() {
     <If when={mode()}>
       {current => (
         <View
-          accessibilityLabel="session-permission-deviation"
+          accessibilityLabel={props.accessibilityLabel ?? "session-permission-deviation"}
           style={{
             height: 20,
             justifyContent: "center",
@@ -1089,14 +1102,21 @@ function DeviationChip() {
   );
 }
 
-/** Device › workspace, each segment pressable (spec §3 Session header). */
-function SessionBreadcrumb() {
+/** Device › workspace, each segment pressable (spec §3 Session header). Shared across Primary and Split. */
+function SessionBreadcrumb(props: {
+  device?: () => AttentionDevice | null;
+  workspaceName?: () => string;
+  deviceTestID?: string;
+  workspaceAccessibilityLabel?: string;
+} = {}) {
+  const deviceFn = props.device ?? sessionDeviceLabel;
+  const workspaceFn = props.workspaceName ?? sessionWorkspaceName;
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flexShrink: 1 }}>
-      <If when={sessionDeviceLabel()}>
+      <If when={deviceFn()}>
         {device => (
           <DeviceBadge
-            testID="session-breadcrumb-device"
+            testID={props.deviceTestID}
             name={device().name}
             kind={device().kind}
             exception={device().exception}
@@ -1104,18 +1124,18 @@ function SessionBreadcrumb() {
           />
         )}
       </If>
-      <If when={!compactLayout() ? sessionWorkspaceName() : ""}>
+      <If when={!compactLayout() ? workspaceFn() : ""}>
         {name => (
           <>
             <If
-              when={sessionDeviceLabel()}
+              when={deviceFn()}
               else={<Text style={textStyle("caption", { color: palette().textMuted })}>·</Text>}
             >
               <Icon name="chevron-right" size={12} color={palette().textMuted} />
             </If>
             <View
               role="button"
-              accessibilityLabel="session-breadcrumb-workspace"
+              accessibilityLabel={props.workspaceAccessibilityLabel}
               onPress={() => openAllSessions("by-device")}
               style={{
                 minWidth: 0,
@@ -1145,6 +1165,138 @@ function SessionBreadcrumb() {
           </>
         )}
       </If>
+    </View>
+  );
+}
+
+/**
+ * Single unified desktop header bar shared by Primary, Secondary Split, and BTW panes.
+ * Guarantees pixel-identical height (`layout.topBarHeight`), borders, typography, and focus indicator.
+ */
+function SessionHeaderBar(props: {
+  testID?: string;
+  titleTestID?: string;
+  title: () => string;
+  subtitle?: () => string;
+  dimmed?: () => boolean;
+  focused?: () => boolean;
+  bordered?: () => boolean;
+  tall?: () => boolean;
+  leadingIcon?: IconName;
+  leadingIconColor?: () => string;
+  breadcrumb?: JSX.Element;
+  deviation?: JSX.Element;
+  statusState?: () => MarkState | null;
+  statusLabelPrefix?: string;
+  showTools?: () => boolean;
+  focusAccessibilityLabel?: string;
+  onFocus?: () => void;
+  actions?: JSX.Element;
+  subline?: JSX.Element;
+}) {
+  return (
+    <View
+      testID={props.testID}
+      style={{
+        position: "relative",
+        height: props.tall?.() ? 64 : layout.topBarHeight,
+        minHeight: props.tall?.() ? 64 : layout.topBarHeight,
+        paddingHorizontal: sessionsPadX(),
+        justifyContent: "center",
+        gap: space.hair,
+        backgroundColor: palette().canvas,
+        borderBottomWidth: 1,
+        borderColor: props.bordered?.() ? palette().borderSubtle : "transparent",
+        flexShrink: 0,
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+    >
+      <If when={Boolean(props.focused?.())}>
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 2,
+            backgroundColor: palette().accent,
+            pointerEvents: "none",
+          }}
+        />
+      </If>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
+        <View
+          role={props.onFocus ? "button" : undefined}
+          accessibilityLabel={props.focusAccessibilityLabel}
+          onPress={props.onFocus}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            ...(props.onFocus ? { cursor: "pointer", userSelect: "none" } : {}),
+          }}
+        >
+          <If when={Boolean(props.leadingIcon)}>
+            <Icon
+              name={props.leadingIcon!}
+              size={14}
+              color={props.leadingIconColor ? props.leadingIconColor() : palette().accent}
+            />
+          </If>
+          <Text
+            testID={props.titleTestID}
+            style={{
+              ...textStyle("sectionTitle", {
+                color: props.dimmed?.() ? palette().textSecondary : palette().text,
+              }),
+              minWidth: 0,
+              flexShrink: props.subtitle ? 0 : 1,
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.title()}
+          </Text>
+          <If when={props.subtitle?.() ?? ""}>
+            {sub => (
+              <Text
+                style={{
+                  ...textStyle("caption", { color: palette().textMuted }),
+                  flex: 1,
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {`· ${sub()}`}
+              </Text>
+            )}
+          </If>
+          {props.breadcrumb}
+          {props.deviation}
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
+          <If when={props.statusState?.() ?? null}>
+            {state => (
+              <View
+                accessibilityLabel={`${props.statusLabelPrefix ?? "session-status-"}${state()}`}
+                style={{ marginRight: space.xs }}
+              >
+                <StateMark state={state()} withWord={true} />
+              </View>
+            )}
+          </If>
+          <If when={Boolean(props.showTools?.())}>
+            <Each of={TOOL_TOGGLES} key={tool => tool.id}>
+              {tool => <ToolToggle id={tool().id} icon={tool().icon} label={tr(tool().label)} />}
+            </Each>
+          </If>
+          {props.actions}
+        </View>
+      </View>
+      {props.subline}
     </View>
   );
 }
@@ -1204,78 +1356,35 @@ function ConversationHeader() {
       <If
         when={compactLayout()}
         else={
-          <View
+          <SessionHeaderBar
             testID="session-header"
-            style={{
-              position: "relative",
-              height: sessionOrigin() ? 64 : layout.topBarHeight,
-              minHeight: sessionOrigin() ? 64 : layout.topBarHeight,
-              paddingHorizontal: anyRightSplitOpen() || sessionsCompact() ? space.lg : space.xxl,
-              justifyContent: "center",
-              gap: space.hair,
-              backgroundColor: palette().canvas,
-              borderBottomWidth: 1,
-              borderColor: anyRightSplitOpen() || transcriptScrolled() ? palette().borderSubtle : "transparent",
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-          >
-            <If when={splitPaneOpen() && focusedPane() === 0}>
-              <View
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  height: 2,
-                  backgroundColor: palette().accent,
-                  pointerEvents: "none",
-                }}
+            titleTestID="session-title"
+            title={headerTitle}
+            dimmed={() => splitPaneOpen() && focusedPane() !== 0}
+            focused={() => splitPaneOpen() && focusedPane() === 0}
+            bordered={() => anyRightSplitOpen() || transcriptScrolled()}
+            tall={() => Boolean(sessionOrigin())}
+            focusAccessibilityLabel={splitPaneOpen() ? "primary-pane-focus" : undefined}
+            onFocus={splitPaneOpen() ? () => focusPane(0) : undefined}
+            breadcrumb={
+              <SessionBreadcrumb
+                device={sessionDeviceLabel}
+                workspaceName={sessionWorkspaceName}
+                deviceTestID="session-breadcrumb-device"
+                workspaceAccessibilityLabel="session-breadcrumb-workspace"
               />
-            </If>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
-              <View
-                role={splitPaneOpen() ? "button" : undefined}
-                accessibilityLabel={splitPaneOpen() ? "primary-pane-focus" : undefined}
-                onPress={splitPaneOpen() ? () => focusPane(0) : undefined}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: space.md,
-                  ...(splitPaneOpen() ? { cursor: "pointer", userSelect: "none" } : {}),
-                }}
-              >
-                <Text
-                  testID="session-title"
-                  style={{
-                    ...textStyle("sectionTitle", {
-                      color: splitPaneOpen() && focusedPane() !== 0 ? palette().textSecondary : palette().text,
-                    }),
-                    minWidth: 0,
-                    flexShrink: 1,
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {headerTitle()}
-                </Text>
-                <SessionBreadcrumb />
-                <DeviationChip />
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
-                <If when={headerState()}>
-                  {state => (
-                    <View accessibilityLabel={`session-status-${state()}`} style={{ marginRight: space.sm }}>
-                      <StateMark state={state()} withWord={true} />
-                    </View>
-                  )}
-                </If>
-                <If when={!sessionsCompact() && !splitPaneOpen()}>
-                  <Each of={TOOL_TOGGLES} key={tool => tool.id}>
-                    {tool => <ToolToggle id={tool().id} icon={tool().icon} label={tr(tool().label)} />}
-                  </Each>
-                </If>
+            }
+            deviation={
+              <DeviationChip
+                sessionId={activeSessionId}
+                accessibilityLabel="session-permission-deviation"
+              />
+            }
+            statusState={headerState}
+            statusLabelPrefix="session-status-"
+            showTools={() => !sessionsCompact() && !splitPaneOpen()}
+            actions={
+              <>
                 <ThreadMenuTrigger />
                 <If when={splitPaneOpen()}>
                   <IconButton
@@ -1286,32 +1395,34 @@ function ConversationHeader() {
                     onPress={() => closeSplitPane(0)}
                   />
                 </If>
-              </View>
-            </View>
-            <If when={sessionOrigin()}>
-              {origin => (
-                <View
-                  role="button"
-                  accessibilityLabel="session-origin"
-                  onPress={() => openOrigin(origin())}
-                  style={{
-                    alignSelf: "flex-start",
-                    borderRadius: radii.xs,
-                    cursor: "pointer",
-                    userSelect: "none",
-                    ...pressTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{ backgroundColor: palette().panelHover }}
-                  activeStyle={tactileActiveStyle(0.98)}
-                  focusVisibleStyle={focusRingStyle()}
-                >
-                  <Text style={textStyle("caption")}>
-                    {`${origin().title ? tr("session.origin", { title: origin().title }) : tr("session.originPlain")} ›`}
-                  </Text>
-                </View>
-              )}
-            </If>
-          </View>
+              </>
+            }
+            subline={
+              <If when={sessionOrigin()}>
+                {origin => (
+                  <View
+                    role="button"
+                    accessibilityLabel="session-origin"
+                    onPress={() => openOrigin(origin())}
+                    style={{
+                      alignSelf: "flex-start",
+                      borderRadius: radii.xs,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...pressTransition(MOTION_DURATION.fast),
+                    }}
+                    hoverStyle={{ backgroundColor: palette().panelHover }}
+                    activeStyle={tactileActiveStyle(0.98)}
+                    focusVisibleStyle={focusRingStyle()}
+                  >
+                    <Text style={textStyle("caption")}>
+                      {`${origin().title ? tr("session.origin", { title: origin().title }) : tr("session.originPlain")} ›`}
+                    </Text>
+                  </View>
+                )}
+              </If>
+            }
+          />
         }
       >
         <View
@@ -3072,11 +3183,13 @@ async function resumeInterruptedTurn(turn: unknown): Promise<void> {
  * stopped: {reason}" and a ghost "Try again" below. A stopped turn is a quiet
  * notice: `info` 14 and 13 `textMuted`, no rail.
  */
-function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
+function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure; pane?: 0 | 1 }) {
+  const isSecondary = props.pane === 1;
   const cancelled = computed(() => props.failure.status === "cancelled" || props.failure.status === "interrupted");
   const prompt = computed(() => userPartsOf(props.turn)[0]?.text ?? "");
   const promptImages = computed(() => userImagesOf(props.turn));
   const reason = computed(() => (props.failure.message ? localizeHostError(props.failure.message) : ""));
+  const isBusy = () => Boolean(isSecondary ? secondaryRunningTurnId() : runningTurnId());
   const raw = computed(() => {
     try {
       return JSON.stringify({ error: props.failure.message, detail: props.failure.detail ?? null }, null, 2);
@@ -3113,14 +3226,14 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
               : tr("chat.turnFailed")}
         </Text>
         <If when={!cancelled() && props.failure.message ? "copy" : ""}>
-          <CopyChip partKey={`failure-${turnKeyOf(props.turn)}`} text={raw()} />
+          <CopyChip partKey={`failure-${isSecondary ? "sec-" : ""}${turnKeyOf(props.turn)}`} text={raw()} />
         </If>
       </View>
       <If when={!cancelled() ? failureDetailLines(props.failure).join(" · ") : ""}>
         {line => <Text style={{ ...textStyle("mono", { color: palette().textMuted }), userSelect: "text" }}>{line()}</Text>}
       </If>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-        <If when={interruptedRecoveryOf(props.turn) && !runningTurnId() ? "resume" : ""}>
+        <If when={!isSecondary && interruptedRecoveryOf(props.turn) && !isBusy() ? "resume" : ""}>
           <Button
             label={tr("chat.resume")}
             variant="ghost"
@@ -3130,13 +3243,18 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
             onPress={() => void resumeInterruptedTurn(props.turn)}
           />
         </If>
-        <If when={(prompt() || promptImages().length > 0) && !runningTurnId()}>
+        <If when={(prompt() || promptImages().length > 0) && !isBusy()}>
           <Button
             label={tr("common.tryAgain")}
             variant="ghost"
             size="sm"
-            accessibilityLabel={`retry-turn-${turnKeyOf(props.turn)}`}
+            accessibilityLabel={`${isSecondary ? "secondary-" : ""}retry-turn-${turnKeyOf(props.turn)}`}
             onPress={() => {
+              if (isSecondary) {
+                focusPane(1);
+                void sendSecondaryTurn(prompt());
+                return;
+              }
               jumpToTranscriptEnd();
               const preserved = userImagesToAttachments(promptImages());
               void sendTurn(prompt(), undefined, preserved.length > 0 ? { attachments: preserved } : undefined);
@@ -3176,8 +3294,6 @@ function resetTranscriptScrollTracking(): void {
   turnOffsets.clear();
   suppressAutoFollowUntil = 0;
   activeRailTurnKey.set("");
-  hoveredRailTurnKey.set("");
-  hoveredRailAnchor.set(null);
   followLatest.set(true);
 }
 
@@ -3300,13 +3416,13 @@ function WelcomeStudio() {
 }
 
 /** Subtle elevated floating scroll-to-bottom control (Codex / Claude Desktop aesthetic). */
-function LatestPill() {
+function LatestPill(props?: { onPress?: () => void; accessibilityLabel?: string }) {
   const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
   return (
     <View
       role="button"
-      accessibilityLabel="Latest"
-      onPress={jumpToTranscriptEnd}
+      accessibilityLabel={props?.accessibilityLabel ?? "Latest"}
+      onPress={props?.onPress ?? jumpToTranscriptEnd}
       style={[
         {
           position: "absolute",
@@ -3541,31 +3657,52 @@ function turnFileChangesOf(turn: unknown) {
   return Array.isArray(changes) ? changes : [];
 }
 
-function openTurnChangesReview(turnId: string, changes: NonNullable<TranscriptTurnView["fileChanges"]>, initialFilePath?: string): void {
-  const sessionId = activeSessionId();
+function openTurnChangesReview(
+  turnId: string,
+  changes: NonNullable<TranscriptTurnView["fileChanges"]>,
+  initialFilePath?: string,
+  target?: { sessionId?: string; workspaceId?: string; workspacePath?: string },
+): void {
+  const sessionId = target?.sessionId ?? activeSessionId();
   if (!sessionId || changes.length === 0) return;
   turnChangesReview.set({
     sessionId,
     turnId,
-    workspaceId: activeWorkspaceId() ?? undefined,
-    workspacePath: activeWorkspaceRoot() || undefined,
+    workspaceId: target?.workspaceId ?? (activeWorkspaceId() ?? undefined),
+    workspacePath: target?.workspacePath ?? (activeWorkspaceRoot() || undefined),
     changes,
     selectedPath: initialFilePath || changes[0]!.filePath,
   });
 }
 
-function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
+function TranscriptTurn(props: {
+  turn: () => unknown;
+  rowKey: string;
+  pane?: 0 | 1;
+  onRegisterRef?: (turnId: string, rowKey: string, el: ViewRef | null) => void;
+  onLayoutOffset?: (rowKey: string, y: number) => void;
+}) {
+  const isSecondary = props.pane === 1;
   const key = computed(() => turnKeyOf(props.turn()));
-  const matches = computed(() => turnMatchesSearch(props.turn(), transcriptSearchQuery()));
+  const matches = computed(() =>
+    isSecondary ? false : turnMatchesSearch(props.turn(), transcriptSearchQuery()),
+  );
   const items = computed(() => turnItems(props.turn()));
   const hovered = signal(false);
   return (
     <View
       ref={el => {
-        registerTurnRef(key(), el);
-        registerTurnRowRef(props.rowKey, el);
+        if (props.onRegisterRef) {
+          props.onRegisterRef(key(), props.rowKey, el);
+        } else {
+          registerTurnRef(key(), el);
+          registerTurnRowRef(props.rowKey, el);
+        }
       }}
-      onLayout={event => recordTurnOffset(props.rowKey, event.bounds.origin.y)}
+      onLayout={event => {
+        if (props.onLayoutOffset) props.onLayoutOffset(props.rowKey, event.bounds.origin.y);
+        else recordTurnOffset(props.rowKey, event.bounds.origin.y);
+      }}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
       style={{
@@ -3583,7 +3720,7 @@ function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
       <Each of={userPartsOf(props.turn())} key="index">
         {part => (
           <UserBubble
-            partKey={turnPartKey(props.turn(), part())}
+            partKey={`${isSecondary ? "sec-" : ""}${turnPartKey(props.turn(), part())}`}
             text={part().text}
             timestamp={turnTimestampOf(props.turn())}
             turnId={key()}
@@ -3592,11 +3729,11 @@ function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
         )}
       </Each>
 
-      <If when={Boolean(rerunTarget() && rerunTarget()!.turnId === key())}>
+      <If when={!isSecondary && Boolean(rerunTarget() && rerunTarget()!.turnId === key())}>
         <RerunEditor />
       </If>
 
-      <TranscriptItems items={items()} preserveFullReply={liveStreamedTurnIds.has(key())} />
+      <TranscriptItems items={items()} preserveFullReply={!isSecondary && liveStreamedTurnIds.has(key())} />
 
       <If when={publishedFiguresOf(props.turn()).length > 0}>
         <View style={{ gap: space.xs }}>
@@ -3607,14 +3744,27 @@ function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
       </If>
 
       <If when={turnFailureOf(props.turn())}>
-        {failure => <TurnFailureNotice turn={props.turn()} failure={failure()} />}
+        {failure => <TurnFailureNotice turn={props.turn()} failure={failure()} pane={props.pane} />}
       </If>
 
       <If when={turnFileChangesOf(props.turn()).length > 0}>
         <TurnFileChangesCard
           turnId={key()}
           changes={turnFileChangesOf(props.turn())}
-          onReview={filePath => openTurnChangesReview(key(), turnFileChangesOf(props.turn()), filePath)}
+          onReview={filePath =>
+            openTurnChangesReview(
+              key(),
+              turnFileChangesOf(props.turn()),
+              filePath,
+              isSecondary
+                ? {
+                    sessionId: secondarySessionId() ?? undefined,
+                    workspaceId: secondaryWorkspaceId() ?? undefined,
+                    workspacePath: secondaryWorkspaceRoot() || undefined,
+                  }
+                : undefined,
+            )
+          }
         />
       </If>
 
@@ -3623,6 +3773,12 @@ function TranscriptTurn(props: { turn: () => unknown; rowKey: string }) {
       </If>
     </View>
   );
+}
+
+interface TurnJumpPreviewData {
+  prompt: string;
+  reply: string;
+  timestamp?: number;
 }
 
 function collapsedExcerpt(text: string, maxChars: number): string {
@@ -3647,48 +3803,62 @@ function turnReplyExcerpt(turn: unknown): string {
   return collapsedExcerpt(combined, 220);
 }
 
-const hoveredRailEntry = computed(() => {
-  const key = hoveredRailTurnKey();
-  if (!key) return null;
-  const rows = visibleTurnRows();
-  const index = rows.findIndex(row => row.key === key);
-  if (index < 0) return null;
-  const turn = rows[index]!.turn;
+function turnJumpPreview(
+  rows: ReadonlyArray<{ key: string; turn: unknown }>,
+  key: string,
+): TurnJumpPreviewData | null {
+  const row = rows.find(item => item.key === key);
+  if (!row) return null;
   return {
-    key,
-    index,
-    total: rows.length,
-    prompt: turnPromptExcerpt(turn),
-    reply: turnReplyExcerpt(turn),
-    timestamp: turnTimestampOf(turn),
+    prompt: turnPromptExcerpt(row.turn),
+    reply: turnReplyExcerpt(row.turn),
+    timestamp: turnTimestampOf(row.turn),
   };
-});
+}
 
 /**
- * Subtle left-edge turn minimap: thin horizontal hairlines (one per turn) that
- * thicken and lengthen on hover with an anchored preview card, and scroll back
- * to that turn on click. Hidden on narrow/compact viewports and 0-1 turn chats.
+ * Subtle left-edge turn minimap shared by Primary, Secondary Split, and BTW panes:
+ * thin horizontal hairlines (one per turn) that thicken on hover with an anchored
+ * preview card, and scroll directly to that turn on click.
  */
-function TurnJumpRail() {
-  const rows = computed(() => visibleTurnRows());
-  const visible = computed(
-    () => !compactLayout() && !sessionsCompact() && !splitPaneOpen() && !sideQuestionOpen() && rows().length >= 2,
-  );
-  const dense = computed(() => rows().length > 24);
+function TurnJumpRail(props: {
+  rows: () => ReadonlyArray<{ key: string }>;
+  previewOf: (key: string) => TurnJumpPreviewData | null;
+  activeKey: () => string;
+  onJump: (key: string) => void;
+  accessibilityLabel?: string;
+  tickPrefix?: string;
+}) {
+  const localHoveredKey = signal("");
+  const localHoveredAnchor = signal<ViewRef | null>(null);
+  const visible = computed(() => !compactLayout() && props.rows().length >= 2);
+  const dense = computed(() => props.rows().length > 24);
   const resolvedActiveKey = computed(() => {
-    const current = activeRailTurnKey();
-    const list = rows();
+    const current = props.activeKey();
+    const list = props.rows();
     if (current && list.some(row => row.key === current)) return current;
     return list[list.length - 1]?.key ?? "";
   });
+  const hoveredEntry = computed(() => {
+    const key = localHoveredKey();
+    if (!key) return null;
+    const list = props.rows();
+    const index = list.findIndex(row => row.key === key);
+    if (index < 0) return null;
+    const preview = props.previewOf(key);
+    if (!preview) return null;
+    return { key, ...preview, index, total: list.length };
+  });
+
+  const tickPrefix = props.tickPrefix ?? "turn-jump-";
 
   const renderTicks = () => (
     <View style={{ alignItems: "flex-start" }}>
-      <Each of={rows()} key={row => row.key}>
+      <Each of={props.rows()} key={row => row.key}>
         {(row, index) => {
           let tickRef: ViewRef | null = null;
           const key = () => row().key;
-          const isHovered = () => hoveredRailTurnKey() === key();
+          const isHovered = () => localHoveredKey() === key();
           const isActive = () => resolvedActiveKey() === key();
           return (
             <View
@@ -3696,21 +3866,21 @@ function TurnJumpRail() {
                 tickRef = el;
               }}
               role="button"
-              accessibilityLabel={`turn-jump-${index() + 1}`}
+              accessibilityLabel={`${tickPrefix}${index() + 1}`}
               accessibilityState={{ selected: isActive() }}
               onMouseEnter={() => {
-                hoveredRailTurnKey.set(key());
-                hoveredRailAnchor.set(tickRef);
+                localHoveredKey.set(key());
+                localHoveredAnchor.set(tickRef);
               }}
               onMouseLeave={() => {
-                if (hoveredRailTurnKey() === key()) {
-                  hoveredRailTurnKey.set("");
-                  hoveredRailAnchor.set(null);
+                if (localHoveredKey() === key()) {
+                  localHoveredKey.set("");
+                  localHoveredAnchor.set(null);
                 }
               }}
-              onPress={() => jumpToTurn(key())}
+              onPress={() => props.onJump(key())}
               style={{
-                width: 28,
+                width: 24,
                 height: dense() ? 8 : 12,
                 justifyContent: "center",
                 alignItems: "flex-start",
@@ -3721,7 +3891,7 @@ function TurnJumpRail() {
             >
               <View
                 style={{
-                  width: 10,
+                  width: 9,
                   height: 2,
                   borderRadius: radii.pill,
                   transformOrigin: "left center",
@@ -3729,9 +3899,9 @@ function TurnJumpRail() {
                   backgroundColor: isHovered() || isActive() ? palette().text : palette().borderStrong,
                   opacity: isHovered() ? 1 : isActive() ? 0.9 : 0.55,
                   transform: isHovered()
-                    ? [{ scaleX: 2.2 }, { scaleY: 1.75 }]
+                    ? [{ scaleX: 2.0 }, { scaleY: 1.75 }]
                     : isActive()
-                      ? [{ scaleX: 1.5 }, { scaleY: 1.25 }]
+                      ? [{ scaleX: 1.45 }, { scaleY: 1.25 }]
                       : [{ scaleX: 1 }, { scaleY: 1 }],
                   ...pressTransition(MOTION_DURATION.fast),
                 }}
@@ -3746,10 +3916,10 @@ function TurnJumpRail() {
   return (
     <If when={visible()}>
       <View
-        accessibilityLabel="turn-jump-rail"
+        accessibilityLabel={props.accessibilityLabel ?? "turn-jump-rail"}
         style={{
           position: "absolute",
-          left: 10,
+          left: 8,
           top: space.xl,
           bottom: space.xl,
           justifyContent: "center",
@@ -3763,22 +3933,22 @@ function TurnJumpRail() {
             pointerEvents: "auto",
           }}
         >
-          <If when={rows().length > 32} else={renderTicks()}>
+          <If when={props.rows().length > 32} else={renderTicks()}>
             <Scroll style={{ maxHeight: 360 }} scrollbar={false}>
               {renderTicks()}
             </Scroll>
           </If>
         </View>
 
-        <If when={Boolean(hoveredRailEntry() && hoveredRailAnchor())}>
+        <If when={Boolean(hoveredEntry() && localHoveredAnchor())}>
           <Overlay
-            anchor={hoveredRailAnchor()}
+            anchor={localHoveredAnchor()}
             placement="right"
             align="center"
             offset={10}
             margin={12}
           >
-            <TurnJumpPreview />
+            <TurnJumpPreview entry={hoveredEntry} />
           </Overlay>
         </If>
       </View>
@@ -3786,11 +3956,12 @@ function TurnJumpRail() {
   );
 }
 
-function TurnJumpPreview() {
-  const entry = hoveredRailEntry;
+function TurnJumpPreview(props: {
+  entry: () => (TurnJumpPreviewData & { key: string; index: number; total: number }) | null;
+}) {
   const motion = enterMotion("fadeIn", MOTION_DURATION.fast);
   return (
-    <If when={entry()}>
+    <If when={props.entry()}>
       {current => (
         <View
           accessibilityLabel="turn-jump-preview"
@@ -3946,7 +4117,8 @@ function Transcript() {
         style={{ flex: 1, minHeight: 0 }}
         contentStyle={{
           flexGrow: 1,
-          paddingHorizontal: sessionsPadX(),
+          paddingLeft: paneTranscriptPadLeft(visibleTurnRows().length >= 2),
+          paddingRight: sessionsPadX(),
           paddingTop: space.xl,
           paddingBottom: space.x3l,
         }}
@@ -4115,7 +4287,14 @@ function Transcript() {
         </Each>
       </Scroll>
 
-      <TurnJumpRail />
+      <TurnJumpRail
+        rows={visibleTurnRows}
+        previewOf={key => turnJumpPreview(visibleTurnRows(), key)}
+        activeKey={activeRailTurnKey}
+        onJump={jumpToTurn}
+        accessibilityLabel="turn-jump-rail"
+        tickPrefix="turn-jump-"
+      />
 
       <If when={!followLatest()}>
         <LatestPill />
@@ -4633,43 +4812,45 @@ function permissionModeLabel(mode: "ask" | "auto" | "full_access"): string {
 }
 
 /**
- * The permission mode lives in the "+" menu; only full access, the one mode
- * that runs every tool unasked, stays visible as a compact icon-only shield
- * pill (full label in tooltip) to keep the composer bar uncluttered.
+ * Shared full-access permission indicator pill rendered in both Primary and Secondary composers.
  */
-function FullAccessNotice() {
+function ComposerFullAccessShield(props: {
+  sessionId: () => string | null;
+  compact?: () => boolean;
+  accessibilityLabel: string;
+  onPress: (anchor: ViewRef | null) => void;
+}) {
+  let triggerRef: ViewRef | null = null;
   return (
     <If
       when={
         permissionModeSupported() !== false &&
-        Boolean(activeSessionId()) &&
-        effectivePermissionMode(activeSessionId()) === "full_access"
+        Boolean(props.sessionId()) &&
+        effectivePermissionMode(props.sessionId()!) === "full_access"
       }
     >
       <View
-        ref={el => fullAccessTriggerAnchor.set(el)}
+        ref={el => {
+          triggerRef = el;
+          if (props.accessibilityLabel === "permission-mode-warning") {
+            fullAccessTriggerAnchor.set(el);
+          }
+        }}
         role="button"
-        accessibilityLabel="permission-mode-warning"
+        accessibilityLabel={props.accessibilityLabel}
         tooltip={
           <TooltipBubble
             text={`${permissionModeLabel("full_access")} · ${tr("chat.permissionMode.tooltip")}`}
           />
         }
-        onPress={() => {
-          permissionModeTarget.set(null);
-          permissionPillAnchor.set(fullAccessTriggerAnchor());
-          permissionModeAlign.set("end");
-          const next = !permissionModePickerOpen();
-          closePickers();
-          permissionModePickerOpen.set(next);
-        }}
+        onPress={() => props.onPress(triggerRef)}
         style={{
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
-          width: compactLayout() || sessionsCompact() ? layout.touchTarget : 28,
-          height: compactLayout() || sessionsCompact() ? layout.touchTarget : 28,
+          width: compactLayout() || props.compact?.() ? layout.touchTarget : 28,
+          height: compactLayout() || props.compact?.() ? layout.touchTarget : 28,
           borderRadius: radii.pill,
           backgroundColor: permissionModePickerOpen() ? palette().warningSoft : "transparent",
           cursor: "pointer",
@@ -5154,9 +5335,9 @@ function fileChipDisplayName(entry: FileAttachment): string {
 }
 
 /**
- * Unified Antigravity-style attachment strip shared by Pane 0 and Pane 1.
- * Keeps images (36x36) and file/folder chips (36px height) on one clean baseline
- * above a hairline divider, without hover tooltips, drop-hint text, or line counts.
+ * Unified Antigravity-style attachment strip shared across all session composers.
+ * Keeps images (34×34) and file/folder chips (34px height, compact 164px maxWidth)
+ * pixel-identical in height with no divider above the editor text.
  */
 function ComposerAttachmentStrip(props: {
   images: () => ReadonlyArray<ImageAttachment>;
@@ -5174,9 +5355,7 @@ function ComposerAttachmentStrip(props: {
         style={{
           paddingHorizontal: space.md,
           paddingTop: space.sm,
-          paddingBottom: space.sm,
-          borderBottomWidth: 1,
-          borderColor: palette().borderSubtle,
+          paddingBottom: 0,
           flexDirection: "row",
           flexWrap: "wrap",
           alignItems: "center",
@@ -5187,9 +5366,12 @@ function ComposerAttachmentStrip(props: {
           {entry => (
             <View
               style={{
+                boxSizing: "border-box",
                 position: "relative",
-                width: 36,
-                height: 36,
+                width: 34,
+                height: 34,
+                minHeight: 34,
+                maxHeight: 34,
                 borderRadius: radii.md,
                 borderCurve: "continuous",
                 borderWidth: 1,
@@ -5232,7 +5414,7 @@ function ComposerAttachmentStrip(props: {
                     <Image
                       src={src()}
                       accessibilityLabel={`${prefix}attachment-thumb-${entry().id}`}
-                      style={{ width: 36, height: 36, objectFit: "cover" }}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
                     />
                   </View>
                 )}
@@ -5246,8 +5428,8 @@ function ComposerAttachmentStrip(props: {
                   position: "absolute",
                   top: 2,
                   right: 2,
-                  width: 15,
-                  height: 15,
+                  width: 14,
+                  height: 14,
                   borderRadius: radii.pill,
                   backgroundColor: palette().scrimBg,
                   alignItems: "center",
@@ -5260,7 +5442,7 @@ function ComposerAttachmentStrip(props: {
                 activeStyle={tactileActiveStyle(0.92)}
                 focusVisibleStyle={focusRingStyle()}
               >
-                <Icon name="close" size={9} color={palette().actionPrimaryFg} />
+                <Icon name="close" size={8} color={palette().actionPrimaryFg} />
               </View>
             </View>
           )}
@@ -5273,11 +5455,14 @@ function ComposerAttachmentStrip(props: {
               <View
                 accessibilityLabel={`${prefix}file-attachment-${entry().name}`}
                 style={{
+                  boxSizing: "border-box",
                   flexDirection: "row",
                   alignItems: "center",
-                  maxWidth: 224,
-                  height: 36,
-                  gap: space.chip,
+                  maxWidth: 164,
+                  height: 34,
+                  minHeight: 34,
+                  maxHeight: 34,
+                  gap: space.xs,
                   paddingLeft: space.chip,
                   paddingRight: space.xs,
                   borderRadius: radii.md,
@@ -5421,6 +5606,209 @@ function ComposerAttachmentStrip(props: {
   );
 }
 
+/**
+ * Shared floating elevated composer container used by Primary, Secondary Split, and BTW panes.
+ * Guarantees pixel-identical padding, width, radius, border, shadow, hover/focus ring, and drag feedback.
+ */
+function ComposerCardShell(props: {
+  dragActive?: () => boolean;
+  cardRef?: (el: ViewRef | null) => void;
+  onLayoutWidth?: (width: number) => void;
+  onFileDragEnter?: () => void;
+  onFileDragLeave?: () => void;
+  onFileDrop?: (event: { uris: string[]; mimeTypes: string[] }) => void;
+  aboveCard?: JSX.Element;
+  belowCard?: JSX.Element;
+  children?: JSX.Element;
+}) {
+  const dragging = () => Boolean(props.dragActive?.());
+  return (
+    <View
+      onLayout={
+        props.onLayoutWidth
+          ? event => {
+              const w = event.bounds.size.width;
+              if (w > 0) props.onLayoutWidth!(w);
+            }
+          : undefined
+      }
+      onFileDragEnter={props.onFileDragEnter}
+      onFileDragLeave={props.onFileDragLeave}
+      onFileDrop={props.onFileDrop}
+      style={{
+        paddingHorizontal: sessionsPadX(),
+        paddingTop: space.chip,
+        paddingBottom: space.lg,
+        gap: space.chip,
+      }}
+    >
+      <View
+        style={{
+          width: "100%",
+          maxWidth: contentWidth(),
+          alignSelf: "center",
+          gap: space.chip,
+        }}
+      >
+        {props.aboveCard}
+        <View
+          ref={props.cardRef}
+          style={{
+            width: "100%",
+            borderRadius: radii.xl,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            borderColor: dragging() ? palette().accent : palette().border,
+            backgroundColor: dragging() ? palette().accentSoft : palette().inputBg,
+            boxShadow: palette().shadowComposer,
+            overflow: "hidden",
+            ...paintTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={{
+            borderColor: dragging() ? palette().accent : palette().borderStrong,
+          }}
+          focusWithinStyle={{
+            borderColor: palette().fieldFocusBorder,
+            boxShadow: palette().shadowComposerFocus,
+          }}
+        >
+          {props.children}
+        </View>
+        {props.belowCard}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Shared Send / Stop primary action button used by Primary, Secondary Split, and BTW composers.
+ */
+function ComposerSubmitAction(props: {
+  running: () => boolean;
+  canSend: () => boolean;
+  disabled?: () => boolean;
+  compact?: () => boolean;
+  sendLabel?: string;
+  stopLabel?: string;
+  onSend: () => void;
+  onStop: () => void;
+}) {
+  const showStop = () => props.running() && !props.canSend();
+  const isDisabled = () => Boolean(props.disabled?.()) || !props.canSend();
+  const useTouch = () => Boolean(props.compact?.()) || compactLayout();
+  return (
+    <>
+      <If when={showStop()}>
+        <View style={{ flexShrink: 0, paddingLeft: props.compact?.() ? space.hair : space.xs }}>
+          <If
+            when={useTouch()}
+            else={
+              <View
+                role="button"
+                accessibilityLabel={props.stopLabel ?? "Stop"}
+                tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
+                onPress={props.onStop}
+                style={{
+                  boxSizing: "border-box",
+                  width: 32,
+                  height: 32,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().actionPrimaryBg,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().danger }}
+                activeStyle={tactileActiveStyle(0.94)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <View
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2.5,
+                    backgroundColor: palette().actionPrimaryFg,
+                    pointerEvents: "none",
+                  }}
+                />
+              </View>
+            }
+          >
+            <View
+              role="button"
+              accessibilityLabel={props.stopLabel ?? "Stop"}
+              onPress={props.onStop}
+              style={{
+                width: layout.touchTarget,
+                height: layout.touchTarget,
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
+              }}
+              activeStyle={tactileActiveStyle(0.94)}
+              focusVisibleStyle={focusRingStyle(-4)}
+            >
+              <View
+                style={{
+                  boxSizing: "border-box",
+                  width: 34,
+                  height: 34,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().actionPrimaryBg,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  pointerEvents: "none",
+                }}
+              >
+                <View
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2.5,
+                    backgroundColor: palette().actionPrimaryFg,
+                  }}
+                />
+              </View>
+            </View>
+          </If>
+        </View>
+      </If>
+
+      <If when={!showStop()}>
+        <View style={{ flexShrink: 0, paddingLeft: props.compact?.() ? 0 : space.xs }}>
+          <If
+            when={Boolean(props.compact?.())}
+            else={
+              <IconCircleButton
+                icon="arrow-up"
+                variant={isDisabled() ? "subtle" : "primary"}
+                size={32}
+                iconSize={16}
+                accessibilityLabel={props.sendLabel ?? "Send"}
+                tooltip={tr("sessions.sendMessage")}
+                disabled={isDisabled()}
+                onPress={props.onSend}
+              />
+            }
+          >
+            <TouchTargetButton
+              icon="arrow-up"
+              tone={isDisabled() ? "subtle" : "primary"}
+              disabled={isDisabled()}
+              accessibilityLabel={props.sendLabel ?? "Send"}
+              onPress={props.onSend}
+            />
+          </If>
+        </View>
+      </If>
+    </>
+  );
+}
+
 function ComposerDock() {
   ensureModelsLoaded();
   ensureQuickActions();
@@ -5465,454 +5853,330 @@ function ComposerDock() {
     mentionSelectedIndex.set(0);
   });
 
+  const paneWidth = signal(0);
   const compactComposer = () => sessionsCompact();
+  const collapseInlineControls = () => compactComposer() || (paneWidth() > 0 && paneWidth() < 420);
+  const hasPayload = () =>
+    composerText().trim().length > 0 || imageAttachments().length > 0 || fileAttachments().length > 0;
 
   return (
-    <View
-      onFileDragEnter={() => composerFileDragActive.set(true)}
-      onFileDragLeave={() => composerFileDragActive.set(false)}
-      onFileDrop={event => handleComposerFileDrop(event)}
-      style={{
-        paddingHorizontal: sessionsPadX(),
-        paddingTop: space.chip,
-        paddingBottom: space.lg,
-        gap: space.chip,
-      }}
-    >
-      <View
-        style={{
-          width: "100%",
-          maxWidth: contentWidth(),
-          alignSelf: "center",
-          gap: space.chip,
+    <View>
+      <ComposerCardShell
+        dragActive={composerFileDragActive}
+        cardRef={el => composerCardAnchor.set(el)}
+        onLayoutWidth={w => {
+          if (Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
         }}
-      >
-        {/* Band 1: Pending Agent Mode Confirmation Banner (when triggered) */}
-        <If when={pendingAgentSession()}>
-          {mode => (
-            <InlineBanner
-              tone="info"
-              icon="bot"
-              message={tr("sessions.switchAgentPrompt", {
-                current: agentLabel(agentTypeOf(activeSessionId())),
-                next: agentLabel(mode()),
-              })}
-              action={
-                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.chip }}>
-                  <Button
-                    label={tr("sessions.startSession")}
-                    variant="primary"
-                    size="xs"
-                    pill={true}
-                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-                    onPress={() => void startSessionAs(mode())}
-                  />
-                  <Button
-                    label={tr("common.cancel")}
-                    variant="ghost"
-                    size="xs"
-                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-                    onPress={() => pendingAgentSession.set(null)}
-                  />
-                </View>
-              }
-            />
-          )}
-        </If>
+        onFileDragEnter={() => composerFileDragActive.set(true)}
+        onFileDragLeave={() => composerFileDragActive.set(false)}
+        onFileDrop={event => handleComposerFileDrop(event)}
+        aboveCard={
+          <>
+            {/* Band 1: Pending Agent Mode Confirmation Banner (when triggered) */}
+            <If when={pendingAgentSession()}>
+              {mode => (
+                <InlineBanner
+                  tone="info"
+                  icon="bot"
+                  message={tr("sessions.switchAgentPrompt", {
+                    current: agentLabel(agentTypeOf(activeSessionId())),
+                    next: agentLabel(mode()),
+                  })}
+                  action={
+                    <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.chip }}>
+                      <Button
+                        label={tr("sessions.startSession")}
+                        variant="primary"
+                        size="xs"
+                        pill={true}
+                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                        onPress={() => void startSessionAs(mode())}
+                      />
+                      <Button
+                        label={tr("common.cancel")}
+                        variant="ghost"
+                        size="xs"
+                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                        onPress={() => pendingAgentSession.set(null)}
+                      />
+                    </View>
+                  }
+                />
+              )}
+            </If>
 
-        {/* Band 2: Collapsible Pending Queue Drawer */}
-        <QueueHostNotice />
-        <QueuedPanel />
-
-        {/* Band 3: One Cohesive Floating Elevated Composer Card */}
-        <View
-          ref={el => composerCardAnchor.set(el)}
-          style={{
-            width: "100%",
-            borderRadius: radii.xl,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: composerFileDragActive() ? palette().accent : palette().border,
-            backgroundColor: composerFileDragActive()
-              ? palette().accentSoft
-              : palette().inputBg,
-            boxShadow: palette().shadowComposer,
-            overflow: "hidden",
-            ...paintTransition(MOTION_DURATION.fast),
-          }}
-          hoverStyle={{
-            borderColor: composerFileDragActive() ? palette().accent : palette().borderStrong,
-          }}
-          focusWithinStyle={{
-            borderColor: palette().fieldFocusBorder,
-            boxShadow: palette().shadowComposerFocus,
-          }}
-        >
-          {/* Attachment Strip (uniform 36px images & file chips above a hairline divider) */}
-          <ComposerAttachmentStrip
-            images={imageAttachments}
-            files={fileAttachments}
-            notice={attachmentNotice}
-            onRemoveImage={id => removeAttachment(id)}
-            onRemoveFile={id => removeFileAttachment(id)}
-          />
-
-          <VoiceDictationBar actions={composerVoiceActions} />
-
-          {/* Multiline Editor */}
-          <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs }}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
-              <Input
-                ref={composerInputRef}
-                value={composerText()}
-                placeholder={
-                  composerDisabled()
-                    ? offlineNoticeText() || tr("sessions.noSessionSelected")
-                    : runningTurnId()
-                      ? midTurnSendPolicy() === "queue"
-                        ? tr("sessions.composerQueuePlaceholder")
-                        : tr("session.placeholderRunning")
-                      : activePromptSuggestion() || tr("session.placeholder")
-                }
-                accessibilityLabel="composer"
-                multiline={true}
-                readonly={composerDisabled()}
-                submitBehavior="submit"
-                pasteBehavior="report"
+            {/* Band 2: Collapsible Pending Queue Drawer */}
+            <QueueHostNotice />
+            <QueuedPanel />
+          </>
+        }
+        belowCard={
+          <If when={composerDisabled()}>
+            <View style={{ paddingHorizontal: space.chip, flexDirection: "row", alignItems: "center" }}>
+              <Text
                 style={{
+                  ...textStyle("caption"),
                   flex: 1,
                   minWidth: 0,
-                  minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-                  maxHeight: 160,
-                  fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
-                  lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
-                  color: palette().text,
-                  placeholderColor: palette().textMuted,
-                  caretColor: palette().accent,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
                 }}
-                onFocus={() => {
-                  if (splitPaneOpen()) focusPane(0);
+              >
+                {offlineNoticeText() || tr("sessions.noSessionSelected")}
+              </Text>
+            </View>
+          </If>
+        }
+      >
+        {/* Attachment Strip (uniform 34px images & compact file chips) */}
+        <ComposerAttachmentStrip
+          images={imageAttachments}
+          files={fileAttachments}
+          notice={attachmentNotice}
+          onRemoveImage={id => removeAttachment(id)}
+          onRemoveFile={id => removeFileAttachment(id)}
+        />
+
+        <VoiceDictationBar actions={composerVoiceActions} />
+
+        {/* Multiline Editor — right edge aligned with bottom Send button */}
+        <View
+          style={{
+            paddingLeft: space.lg,
+            paddingRight: collapseInlineControls() ? space.sm : space.md,
+            paddingTop: space.md,
+            paddingBottom: space.xs,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
+            <Input
+              ref={composerInputRef}
+              value={composerText()}
+              placeholder={
+                composerDisabled()
+                  ? offlineNoticeText() || tr("sessions.noSessionSelected")
+                  : runningTurnId()
+                    ? midTurnSendPolicy() === "queue"
+                      ? tr("sessions.composerQueuePlaceholder")
+                      : tr("session.placeholderRunning")
+                    : activePromptSuggestion() || tr("session.placeholder")
+              }
+              accessibilityLabel="composer"
+              multiline={true}
+              readonly={composerDisabled()}
+              submitBehavior="submit"
+              pasteBehavior="report"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+                maxHeight: 160,
+                fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
+                lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
+                color: palette().text,
+                placeholderColor: palette().textMuted,
+                caretColor: palette().accent,
+              }}
+              onFocus={() => {
+                if (splitPaneOpen()) focusPane(0);
+              }}
+              onChange={event => {
+                const prev = composerText();
+                const next = event.value;
+                composerText.set(next);
+                const prevCaret = composerCaretPos();
+                const delta = next.length - prev.length;
+                const estimatedCaret =
+                  prevCaret >= 0 && prevCaret <= prev.length
+                    ? Math.max(0, Math.min(next.length, prevCaret + delta))
+                    : next.length;
+                composerCaretPos.set(estimatedCaret);
+                syncInlineMention(next, estimatedCaret);
+              }}
+              onCompositionChange={event => composerComposing.set(event.composing)}
+              onSelectionChange={event => {
+                composerCaretPos.set(event.end);
+                syncInlineMention(composerText(), event.end, true);
+              }}
+              onCaretMove={event => composerCaretBounds.set(event.pageBounds)}
+              onPaste={event => void handleComposerPaste(event)}
+              onKeyPress={event => {
+                if (mentionOpen() && mentionInline()) {
+                  handleMentionKeyNavigation(event.key);
+                  return;
+                }
+                if (slashPopoverVisible() && handleSlashKeyNavigation(event.key)) {
+                  return;
+                }
+                if (
+                  !composerComposing() &&
+                  !composerText() &&
+                  (event.key === "Tab" || event.key === "ArrowRight")
+                ) {
+                  acceptActivePromptSuggestion();
+                }
+              }}
+              onSubmit={() => void submitComposer()}
+            />
+            <If when={activePromptSuggestion()}>
+              <View
+                role="button"
+                accessibilityLabel="accept-prompt-suggestion"
+                tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
+                onPress={() => acceptActivePromptSuggestion()}
+                style={{
+                  boxSizing: "border-box",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  marginTop: 2,
+                  width: compactLayout() ? layout.touchTarget : 32,
+                  height: compactLayout() ? layout.touchTarget : 22,
+                  borderRadius: radii.pill,
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().surfaceSubtle,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
                 }}
-                onChange={event => {
-                  const prev = composerText();
-                  const next = event.value;
-                  composerText.set(next);
-                  const prevCaret = composerCaretPos();
-                  const delta = next.length - prev.length;
-                  const estimatedCaret =
-                    prevCaret >= 0 && prevCaret <= prev.length
-                      ? Math.max(0, Math.min(next.length, prevCaret + delta))
-                      : next.length;
-                  composerCaretPos.set(estimatedCaret);
-                  syncInlineMention(next, estimatedCaret);
+                hoverStyle={{
+                  backgroundColor: palette().panelHover,
+                  borderColor: palette().borderStrong,
                 }}
-                onCompositionChange={event => composerComposing.set(event.composing)}
-                onSelectionChange={event => {
-                  composerCaretPos.set(event.end);
-                  syncInlineMention(composerText(), event.end, true);
-                }}
-                onCaretMove={event => composerCaretBounds.set(event.pageBounds)}
-                onPaste={event => void handleComposerPaste(event)}
-                onKeyPress={event => {
-                  if (mentionOpen() && mentionInline()) {
-                    handleMentionKeyNavigation(event.key);
-                    return;
-                  }
-                  if (slashPopoverVisible() && handleSlashKeyNavigation(event.key)) {
-                    return;
-                  }
-                  if (
-                    !composerComposing() &&
-                    !composerText() &&
-                    (event.key === "Tab" || event.key === "ArrowRight")
-                  ) {
-                    acceptActivePromptSuggestion();
-                  }
-                }}
-                onSubmit={() => void submitComposer()}
-              />
-              <If when={activePromptSuggestion()}>
-                <View
+                activeStyle={tactileActiveStyle(0.95)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <Text
                   style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: space.hair,
-                    flexShrink: 0,
-                    paddingTop: 2,
+                    color: palette().textMuted,
+                    fontSize: textSize(10.5),
+                    lineHeight: textLineHeight(10.5, 1.15),
+                    fontWeight: "500",
+                    fontFamily: compactLayout() ? undefined : fontMono,
                   }}
                 >
-                  <View
-                    role="button"
-                    accessibilityLabel="accept-prompt-suggestion"
-                    tooltip={<TooltipBubble text={tr("sessions.promptSuggestionAcceptTooltip")} />}
-                    onPress={() => acceptActivePromptSuggestion()}
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      paddingHorizontal: space.sm,
-                      height: compactLayout() ? layout.touchTarget : 22,
-                      minWidth: compactLayout() ? layout.touchTarget : undefined,
-                      borderRadius: radii.pill,
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      backgroundColor: palette().surfaceSubtle,
-                      cursor: "pointer",
-                      userSelect: "none",
-                      ...pressTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{
-                      backgroundColor: palette().panelHover,
-                      borderColor: palette().borderStrong,
-                    }}
-                    activeStyle={tactileActiveStyle(0.95)}
-                    focusVisibleStyle={focusRingStyle()}
-                  >
-                    <Text
-                      style={{
-                        color: palette().textMuted,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.15),
-                        fontWeight: "500",
-                        fontFamily: compactLayout() ? undefined : fontMono,
-                      }}
-                    >
-                      {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
-                    </Text>
-                  </View>
+                  {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
+                </Text>
+              </View>
+            </If>
+          </View>
+        </View>
+
+        {/* Calm Bottom Action Bar (single-row, legible even in 4-region split) */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: collapseInlineControls() ? space.xs : space.chip,
+            paddingHorizontal: collapseInlineControls() ? space.sm : space.md,
+            paddingTop: space.xs,
+            paddingBottom: space.sm,
+          }}
+        >
+          {/* Left: "+" (rarely used items), agent, model. Narrow: "+" holds them all. */}
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+              overflow: "hidden",
+            }}
+          >
+            <View
+              ref={el => {
+                composerPlusAnchor.set(el);
+                quickActionsAnchor.set(el);
+                permissionPillAnchor.set(el);
+              }}
+              style={{ flexShrink: 0 }}
+            >
+              <If
+                when={compactComposer()}
+                else={
                   <IconButton
-                    icon="close"
-                    size="xs"
-                    iconSize={11}
-                    accessibilityLabel="dismiss-prompt-suggestion"
-                    tooltip={tr("sessions.promptSuggestionDismiss")}
+                    icon="plus"
+                    size="sm"
+                    iconSize={15}
+                    active={composerPlusOpen()}
+                    accessibilityLabel="composer-plus"
+                    tooltip={tr("chat.polish.moreControls")}
                     style={{ borderRadius: radii.pill }}
-                    onPress={() => dismissActivePromptSuggestion()}
+                    onPress={toggleComposerPlus}
                   />
-                </View>
+                }
+              >
+                <TouchTargetButton
+                  icon="plus"
+                  tone={composerPlusOpen() ? "active" : "ghost"}
+                  accessibilityLabel="composer-plus"
+                  onPress={toggleComposerPlus}
+                />
               </If>
             </View>
+            <If when={!collapseInlineControls()}>
+              <View
+                style={{
+                  width: 1,
+                  height: 14,
+                  marginHorizontal: space.hair,
+                  flexShrink: 0,
+                  backgroundColor: palette().borderSubtle,
+                }}
+              />
+              <AgentPickerTrigger compact={compactComposer} />
+              <ModelReasoningCapsule compact={compactComposer} />
+            </If>
           </View>
 
-          {/* Calm Bottom Action Bar (single-row, legible even on 1100px + AuxPane) */}
+          {/* Right: quiet status utilities (full-access shield, voice, context ring) + primary Send / Stop */}
           <View
             style={{
               flexDirection: "row",
               alignItems: "center",
-              justifyContent: "space-between",
-              gap: compactComposer() ? space.xs : space.chip,
-              paddingHorizontal: compactComposer() ? space.sm : space.md,
-              paddingTop: space.xs,
-              paddingBottom: space.sm,
+              flexShrink: 0,
+              gap: compactComposer() ? space.hair : space.xs,
             }}
           >
-            {/* Left: "+" (rarely used items), attach, agent, model. Narrow: "+" holds them all. */}
-            <View
-              style={{
-                flex: 1,
-                minWidth: 0,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: space.xs,
-                overflow: "hidden",
+            <ComposerFullAccessShield
+              sessionId={activeSessionId}
+              compact={compactComposer}
+              accessibilityLabel="permission-mode-warning"
+              onPress={anchor => {
+                permissionModeTarget.set(null);
+                permissionPillAnchor.set(anchor);
+                permissionModeAlign.set("end");
+                const next = !permissionModePickerOpen();
+                closePickers();
+                permissionModePickerOpen.set(next);
               }}
-            >
-              <View
-                ref={el => {
-                  composerPlusAnchor.set(el);
-                  quickActionsAnchor.set(el);
-                  permissionPillAnchor.set(el);
-                }}
-                style={{ flexShrink: 0 }}
-              >
-                <If
-                  when={compactComposer()}
-                  else={
-                    <IconButton
-                      icon="plus"
-                      size="sm"
-                      iconSize={15}
-                      active={composerPlusOpen()}
-                      accessibilityLabel="composer-plus"
-                      tooltip={tr("chat.polish.moreControls")}
-                      style={{ borderRadius: radii.pill }}
-                      onPress={toggleComposerPlus}
-                    />
-                  }
-                >
-                  <TouchTargetButton
-                    icon="plus"
-                    tone={composerPlusOpen() ? "active" : "ghost"}
-                    accessibilityLabel="composer-plus"
-                    onPress={toggleComposerPlus}
-                  />
-                </If>
-              </View>
-              <If when={!compactComposer()}>
-                <View
-                  style={{
-                    width: 1,
-                    height: 14,
-                    marginHorizontal: space.hair,
-                    flexShrink: 0,
-                    backgroundColor: palette().borderSubtle,
-                  }}
-                />
-                <AgentPickerTrigger compact={compactComposer} />
-                <ModelReasoningCapsule compact={compactComposer} />
-              </If>
-            </View>
-
-            {/* Right: quiet status utilities (full-access shield, voice, context ring) + primary Send / Stop */}
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                flexShrink: 0,
-                gap: compactComposer() ? space.hair : space.xs,
-              }}
-            >
-              <FullAccessNotice />
-              <VoiceInputButtons actions={composerVoiceActions} />
-              <If when={!compactComposer()}>
-                <ContextUsageRing />
-              </If>
-
-              <If when={Boolean(runningTurnId() && !composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0)}>
-                <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? space.hair : space.xs }}>
-                  <If
-                    when={compactComposer() || compactLayout()}
-                    else={
-                      <View
-                        role="button"
-                        accessibilityLabel="Stop"
-                        tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
-                        onPress={() => void stopRunningTurn()}
-                        style={{
-                          boxSizing: "border-box",
-                          width: 32,
-                          height: 32,
-                          borderRadius: radii.pill,
-                          backgroundColor: palette().actionPrimaryBg,
-                          alignItems: "center",
-                          justifyContent: "center",
-                          cursor: "pointer",
-                          userSelect: "none",
-                          ...pressTransition(MOTION_DURATION.fast),
-                        }}
-                        hoverStyle={{
-                          backgroundColor: palette().danger,
-                        }}
-                        activeStyle={tactileActiveStyle(0.94)}
-                        focusVisibleStyle={focusRingStyle()}
-                      >
-                        <View
-                          style={{
-                            width: 10,
-                            height: 10,
-                            borderRadius: 2.5,
-                            backgroundColor: palette().actionPrimaryFg,
-                            pointerEvents: "none",
-                          }}
-                        />
-                      </View>
-                    }
-                  >
-                    <View
-                      role="button"
-                      accessibilityLabel="Stop"
-                      onPress={() => void stopRunningTurn()}
-                      style={{
-                        width: layout.touchTarget,
-                        height: layout.touchTarget,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        ...pressTransition(MOTION_DURATION.fast),
-                      }}
-                      activeStyle={tactileActiveStyle(0.94)}
-                      focusVisibleStyle={focusRingStyle(-4)}
-                    >
-                      <View
-                        style={{
-                          boxSizing: "border-box",
-                          width: 34,
-                          height: 34,
-                          borderRadius: radii.pill,
-                          backgroundColor: palette().actionPrimaryBg,
-                          alignItems: "center",
-                          justifyContent: "center",
-                          pointerEvents: "none",
-                        }}
-                      >
-                        <View
-                          style={{
-                            width: 10,
-                            height: 10,
-                            borderRadius: 2.5,
-                            backgroundColor: palette().actionPrimaryFg,
-                          }}
-                        />
-                      </View>
-                    </View>
-                  </If>
-                </View>
-              </If>
-
-              <If when={!runningTurnId() || composerText().trim().length > 0 || imageAttachments().length > 0 || fileAttachments().length > 0}>
-                <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 0 : space.xs }}>
-                  <If
-                    when={compactComposer()}
-                    else={
-                      <IconCircleButton
-                        icon="arrow-up"
-                        variant={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0) ? "subtle" : "primary"}
-                        size={32}
-                        iconSize={16}
-                        accessibilityLabel="Send"
-                        tooltip={tr("sessions.sendMessage")}
-                        disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0)}
-                        onPress={() => void submitComposer()}
-                      />
-                    }
-                  >
-                    <TouchTargetButton
-                      icon="arrow-up"
-                      tone={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0) ? "subtle" : "primary"}
-                      disabled={composerDisabled() || (!composerText().trim() && imageAttachments().length === 0 && fileAttachments().length === 0)}
-                      accessibilityLabel="Send"
-                      onPress={() => void submitComposer()}
-                    />
-                  </If>
-                </View>
-              </If>
-            </View>
+            />
+            <VoiceInputButtons actions={composerVoiceActions} />
+            <If when={!compactComposer()}>
+              <ContextUsageRing />
+            </If>
+            <ComposerSubmitAction
+              running={() => Boolean(runningTurnId())}
+              canSend={hasPayload}
+              disabled={composerDisabled}
+              compact={compactComposer}
+              sendLabel="Send"
+              stopLabel="Stop"
+              onSend={() => void submitComposer()}
+              onStop={() => void stopRunningTurn()}
+            />
           </View>
         </View>
-
-        {/* Only show a footer notice when the composer cannot send (offline or no session). */}
-        <If when={composerDisabled()}>
-          <View style={{ paddingHorizontal: space.chip, flexDirection: "row", alignItems: "center" }}>
-            <Text
-              style={{
-                ...textStyle("caption"),
-                flex: 1,
-                minWidth: 0,
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {offlineNoticeText() || tr("sessions.noSessionSelected")}
-            </Text>
-          </View>
-        </If>
-      </View>
+      </ComposerCardShell>
 
       <DropdownMenu
         open={composerPlusOpen()}
         anchor={composerPlusAnchor()}
-        items={composerPlusItems(compactComposer())}
+        items={composerPlusItems(collapseInlineControls())}
         placement="top"
         align="start"
         onClose={() => composerPlusOpen.set(false)}
@@ -6086,10 +6350,17 @@ function agentModeIcon(mode: string | null | undefined): IconName {
   return "bot";
 }
 
-function AgentPickerTrigger(props: { compact: () => boolean }) {
+function AgentPickerTrigger(props: {
+  compact: () => boolean;
+  sessionId?: () => string | null;
+  locked?: () => boolean;
+  accessibilityLabel?: string;
+  onFocusPane?: () => void;
+}) {
   let triggerRef: ViewRef | null = null;
-  const locked = () => agentModeLockedToSingle();
-  const modeType = () => agentTypeOf(activeSessionId());
+  const locked = () => (props.locked ? props.locked() : agentModeLockedToSingle());
+  const modeType = () => agentTypeOf((props.sessionId ?? activeSessionId)());
+  const label = props.accessibilityLabel ?? "agent-picker";
   return (
     <If
       when={locked()}
@@ -6097,16 +6368,17 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
         <View
           ref={el => {
             triggerRef = el;
-            agentPickerAnchor.set(el);
+            if (!props.onFocusPane) agentPickerAnchor.set(el);
           }}
           role="button"
-          accessibilityLabel="agent-picker"
+          accessibilityLabel={label}
           tooltip={
             <TooltipBubble
               text={tr("sessions.agentLabel", { name: agentLabel(modeType()) })}
             />
           }
           onPress={() => {
+            props.onFocusPane?.();
             agentPickerAnchor.set(triggerRef);
             const next = !agentPickerOpen();
             closePickers(next ? "agent" : undefined);
@@ -6155,7 +6427,7 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
       }
     >
       <View
-        accessibilityLabel="agent-picker"
+        accessibilityLabel={label}
         tooltip={
           <TooltipBubble
             text={tr("sessions.agentLabel", { name: agentLabel(modeType()) })}
@@ -6194,7 +6466,12 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
 }
 
 /** Compact icon-anchored Model pill paired with a quiet icon-first Reasoning toggle. */
-function ModelReasoningCapsule(props: { compact: () => boolean }) {
+function ModelReasoningCapsule(props: {
+  compact: () => boolean;
+  modelAccessibilityLabel?: string;
+  reasoningAccessibilityLabel?: string;
+  onFocusPane?: () => void;
+}) {
   let modelTriggerRef: ViewRef | null = null;
   let reasoningTriggerRef: ViewRef | null = null;
   const reasoningElevated = computed(() => {
@@ -6214,10 +6491,10 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
       <View
         ref={el => {
           modelTriggerRef = el;
-          modelPickerAnchor.set(el);
+          if (!props.onFocusPane) modelPickerAnchor.set(el);
         }}
         role="button"
-        accessibilityLabel="bot-capsule-trigger"
+        accessibilityLabel={props.modelAccessibilityLabel ?? "bot-capsule-trigger"}
         tooltip={
           <TooltipBubble
             text={tr("sessions.modelLabel", {
@@ -6226,6 +6503,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
           />
         }
         onPress={() => {
+          props.onFocusPane?.();
           modelPickerAnchor.set(modelTriggerRef);
           const next = !modelPickerOpen();
           closePickers(next ? "model" : undefined);
@@ -6283,16 +6561,17 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         <View
           ref={el => {
             reasoningTriggerRef = el;
-            reasoningPickerAnchor.set(el);
+            if (!props.onFocusPane) reasoningPickerAnchor.set(el);
           }}
           role="button"
-          accessibilityLabel="reasoning-picker"
+          accessibilityLabel={props.reasoningAccessibilityLabel ?? "reasoning-picker"}
           tooltip={
             <TooltipBubble
               text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
             />
           }
           onPress={() => {
+            props.onFocusPane?.();
             reasoningPickerAnchor.set(reasoningTriggerRef);
             const next = !reasoningPickerOpen();
             closePickers(next ? "reasoning" : undefined);
@@ -8279,94 +8558,6 @@ const secondaryDeviceLabel = computed<AttentionDevice | null>(() => {
   };
 });
 
-function SecondaryDeviationChip() {
-  const mode = () => {
-    const id = secondarySessionId();
-    if (!id || permissionModeSupported() === false || followsDefaultMode(id)) return null;
-    const current = effectivePermissionMode(id);
-    return current === permissionMode() ? null : current;
-  };
-  return (
-    <If when={mode()}>
-      {current => (
-        <View
-          accessibilityLabel="secondary-session-permission-deviation"
-          style={{
-            height: 20,
-            justifyContent: "center",
-            paddingHorizontal: space.chip,
-            borderRadius: radii.sm,
-            borderCurve: "continuous",
-            backgroundColor: palette().chip,
-            flexShrink: 0,
-          }}
-        >
-          <Text style={textStyle("caption", { color: palette().textSecondary })}>
-            {current() === "ask" ? tr("session.askFirst") : permissionModeLabel(current())}
-          </Text>
-        </View>
-      )}
-    </If>
-  );
-}
-
-function SecondarySessionBreadcrumb() {
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flexShrink: 1 }}>
-      <If when={secondaryDeviceLabel()}>
-        {device => (
-          <DeviceBadge
-            name={device().name}
-            kind={device().kind}
-            exception={device().exception}
-            onPress={device().onPress}
-          />
-        )}
-      </If>
-      <If when={!compactLayout() ? secondaryWorkspaceName() : ""}>
-        {name => (
-          <>
-            <If
-              when={secondaryDeviceLabel()}
-              else={<Text style={textStyle("caption", { color: palette().textMuted })}>·</Text>}
-            >
-              <Icon name="chevron-right" size={12} color={palette().textMuted} />
-            </If>
-            <View
-              role="button"
-              onPress={() => openAllSessions("by-device")}
-              style={{
-                minWidth: 0,
-                flexShrink: 1,
-                borderRadius: radii.xs,
-                paddingHorizontal: space.hair,
-                cursor: "pointer",
-                userSelect: "none",
-                ...pressTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{ backgroundColor: palette().panelHover }}
-              activeStyle={tactileActiveStyle(0.98)}
-              focusVisibleStyle={focusRingStyle()}
-            >
-              <Text
-                style={{
-                  ...textStyle("caption", { color: palette().textSecondary }),
-                  fontWeight: "500",
-                  minWidth: 0,
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {name()}
-              </Text>
-            </View>
-          </>
-        )}
-      </If>
-    </View>
-  );
-}
-
 function SecondaryHeader() {
   const menuOpen = signal(false);
   const menuAnchor = signal<ViewRef | null>(null);
@@ -8402,79 +8593,32 @@ function SecondaryHeader() {
   });
 
   return (
-    <View
+    <SessionHeaderBar
       testID="secondary-session-header"
-      style={{
-        position: "relative",
-        height: layout.topBarHeight,
-        minHeight: layout.topBarHeight,
-        paddingHorizontal: space.lg,
-        justifyContent: "center",
-        backgroundColor: palette().canvas,
-        borderBottomWidth: 1,
-        borderColor: palette().borderSubtle,
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-    >
-      <If when={focusedPane() === 1}>
-        <View
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 2,
-            backgroundColor: palette().accent,
-            pointerEvents: "none",
-          }}
+      titleTestID="secondary-session-title"
+      title={secondarySessionTitle}
+      dimmed={() => focusedPane() !== 1}
+      focused={() => focusedPane() === 1}
+      bordered={() => true}
+      focusAccessibilityLabel="secondary-pane-focus"
+      onFocus={() => focusPane(1)}
+      breadcrumb={
+        <SessionBreadcrumb
+          device={secondaryDeviceLabel}
+          workspaceName={secondaryWorkspaceName}
         />
-      </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
-        <View
-          role="button"
-          accessibilityLabel="secondary-pane-focus"
-          onPress={() => focusPane(1)}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: space.md,
-            cursor: "pointer",
-            userSelect: "none",
-          }}
-        >
-          <Text
-            testID="secondary-session-title"
-            style={{
-              ...textStyle("sectionTitle", {
-                color: focusedPane() === 1 ? palette().text : palette().textSecondary,
-              }),
-              minWidth: 0,
-              flexShrink: 1,
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {secondarySessionTitle()}
-          </Text>
-          <SecondarySessionBreadcrumb />
-          <SecondaryDeviationChip />
-        </View>
-
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
-          <If when={secondaryHeaderState()}>
-            {state => (
-              <View accessibilityLabel={`secondary-session-status-${state()}`} style={{ marginRight: space.xs }}>
-                <StateMark state={state()} withWord={true} />
-              </View>
-            )}
-          </If>
-          <If when={!compactLayout() && sessionsPaneWidth() >= 680}>
-            <Each of={TOOL_TOGGLES} key={tool => tool.id}>
-              {tool => <ToolToggle id={tool().id} icon={tool().icon} label={tr(tool().label)} />}
-            </Each>
-          </If>
+      }
+      deviation={
+        <DeviationChip
+          sessionId={secondarySessionId}
+          accessibilityLabel="secondary-session-permission-deviation"
+        />
+      }
+      statusState={secondaryHeaderState}
+      statusLabelPrefix="secondary-session-status-"
+      showTools={() => !compactLayout() && sessionsPaneWidth() >= 680}
+      actions={
+        <>
           <View ref={el => menuAnchor.set(el)} style={{ flexShrink: 0 }}>
             <IconButton
               icon="more"
@@ -8505,9 +8649,9 @@ function SecondaryHeader() {
             tooltip={tr("sessions.splitClosePane")}
             onPress={() => closeSplitPane(1)}
           />
-        </View>
-      </View>
-    </View>
+        </>
+      }
+    />
   );
 }
 
@@ -8628,25 +8772,71 @@ function SecondaryEmptyPicker() {
 
 function SecondaryTranscript() {
   let scrollRef: ScrollRef | undefined;
+  let lastSession = secondarySessionId();
+  let secSuppressAutoFollowUntil = 0;
   const secFollowLatest = signal(true);
   const loadingEarlierSec = signal(false);
+  const secActiveRailKey = signal("");
+  const secTurnRowRefs = new Map<string, ViewRef>();
+  const secTurnOffsets = new Map<string, number>();
+
+  const syncSecRail = (scrollY: number) => {
+    const rows = secondaryVisibleTurnRows();
+    if (rows.length === 0) {
+      if (secActiveRailKey() !== "") secActiveRailKey.set("");
+      return;
+    }
+    if (secFollowLatest()) {
+      const last = rows[rows.length - 1]!.key;
+      if (secActiveRailKey() !== last) secActiveRailKey.set(last);
+      return;
+    }
+    const threshold = scrollY + 96;
+    let current = rows[0]!.key;
+    for (const row of rows) {
+      const offset = secTurnOffsets.get(row.key);
+      if (offset !== undefined && offset <= threshold) current = row.key;
+    }
+    if (secActiveRailKey() !== current) secActiveRailKey.set(current);
+  };
+
+  const jumpToSecTurn = (rowKey: string) => {
+    const ref = rowKey ? secTurnRowRefs.get(rowKey) : undefined;
+    if (!ref) return;
+    secFollowLatest.set(false);
+    secSuppressAutoFollowUntil = Date.now() + 500;
+    secActiveRailKey.set(rowKey);
+    ref.reveal({ vertical: "start", animated: true });
+  };
 
   effect(() => {
-    secondarySessionId();
+    const id = secondarySessionId();
+    if (id !== lastSession) {
+      lastSession = id;
+      secTurnRowRefs.clear();
+      secTurnOffsets.clear();
+      secActiveRailKey.set("");
+      secFollowLatest.set(true);
+    }
     secondaryTurns().length;
     secondaryOptimisticUserText();
     secondaryStreamScrollTick();
     secondaryLiveRounds().length;
     if (secFollowLatest()) {
       scrollRef?.scrollToEnd({ animated: false });
+      syncSecRail(0);
     }
   });
 
   const handleScroll = (event: ScrollEvent) => {
     const max = Math.max(0, event.contentSize.height - event.size.height);
     const atBottom = event.offset.y >= max - 24;
-    if (atBottom && !secFollowLatest()) secFollowLatest.set(true);
-    else if (!atBottom && secFollowLatest() && event.offset.y < max - 48) secFollowLatest.set(false);
+    if (atBottom && !secFollowLatest() && Date.now() >= secSuppressAutoFollowUntil) {
+      secFollowLatest.set(true);
+    } else if (!atBottom && secFollowLatest() && event.offset.y < max - 48) {
+      secFollowLatest.set(false);
+    }
+    syncSecRail(event.offset.y);
   };
 
   return (
@@ -8658,9 +8848,10 @@ function SecondaryTranscript() {
         style={{ flex: 1, minHeight: 0 }}
         contentStyle={{
           flexGrow: 1,
-          paddingHorizontal: space.lg,
-          paddingTop: space.lg,
-          paddingBottom: space.xxl,
+          paddingLeft: paneTranscriptPadLeft(secondaryVisibleTurnRows().length >= 2),
+          paddingRight: sessionsPadX(),
+          paddingTop: space.xl,
+          paddingBottom: space.x3l,
         }}
         onScroll={handleScroll}
       >
@@ -8673,9 +8864,7 @@ function SecondaryTranscript() {
           }}
         >
           <If when={secondaryTranscriptNotice()}>
-            {notice => (
-              <InlineBanner tone="info" message={notice()} />
-            )}
+            {notice => <InlineBanner tone="info" message={notice()} />}
           </If>
 
           <If when={secondaryHasEarlierTurns() && secondaryTurns().length > 0}>
@@ -8703,47 +8892,23 @@ function SecondaryTranscript() {
           </If>
 
           <Each of={secondaryVisibleTurnRows()} key={row => row.key}>
-            {row => {
-              const turn = () => row().turn;
-              const tKey = () => row().key;
-              const items = computed(() => turnItems(turn()));
-              return (
-                <View style={{ gap: space.md }}>
-                  <Each of={userPartsOf(turn())} key="index">
-                    {part => (
-                      <UserBubble
-                        partKey={`sec-${turnPartKey(turn(), part())}`}
-                        text={part().text}
-                        timestamp={turnTimestampOf(turn())}
-                        turnId={tKey()}
-                        images={userImagesOf(turn())}
-                      />
-                    )}
-                  </Each>
-                  <TranscriptItems items={items()} />
-                  <If when={publishedFiguresOf(turn()).length > 0}>
-                    <View style={{ gap: space.xs }}>
-                      <Each of={publishedFiguresOf(turn())} key={fig => fig.path}>
-                        {fig => <InlineFigureCard figure={fig()} />}
-                      </Each>
-                    </View>
-                  </If>
-                  <If when={turnFailureOf(turn())}>
-                    {failure => <TurnFailureNotice turn={turn()} failure={failure()} />}
-                  </If>
-                  <If when={turnFileChangesOf(turn()).length > 0}>
-                    <TurnFileChangesCard
-                      turnId={tKey()}
-                      changes={turnFileChangesOf(turn())}
-                      onReview={filePath => openTurnChangesReview(tKey(), turnFileChangesOf(turn()), filePath)}
-                    />
-                  </If>
-                  <If when={items().length > 0}>
-                    <TurnFooter turn={turn()} visible={true} />
-                  </If>
-                </View>
-              );
-            }}
+            {row => (
+              <TranscriptTurn
+                turn={() => row().turn}
+                rowKey={row().key}
+                pane={1}
+                onRegisterRef={(_turnId, rowKey, el) => {
+                  if (el) secTurnRowRefs.set(rowKey, el);
+                  else {
+                    secTurnRowRefs.delete(rowKey);
+                    secTurnOffsets.delete(rowKey);
+                  }
+                }}
+                onLayoutOffset={(rowKey, y) => {
+                  if (Number.isFinite(y)) secTurnOffsets.set(rowKey, y);
+                }}
+              />
+            )}
           </Each>
 
           <If
@@ -8813,21 +8978,24 @@ function SecondaryTranscript() {
         </View>
       </Scroll>
 
+      <TurnJumpRail
+        rows={secondaryVisibleTurnRows}
+        previewOf={key => turnJumpPreview(secondaryVisibleTurnRows(), key)}
+        activeKey={secActiveRailKey}
+        onJump={jumpToSecTurn}
+        accessibilityLabel="secondary-turn-jump-rail"
+        tickPrefix="secondary-turn-jump-"
+      />
+
       <If when={!secFollowLatest()}>
-        <View style={{ position: "absolute", bottom: space.md, alignSelf: "center" }}>
-          <Button
-            label={tr("sessions.latest")}
-            variant="secondary"
-            size="xs"
-            pill={true}
-            leadingIcon="arrow-down"
-            accessibilityLabel="secondary-jump-latest"
-            onPress={() => {
-              secFollowLatest.set(true);
-              scrollRef?.scrollToEnd({ animated: true });
-            }}
-          />
-        </View>
+        <LatestPill
+          accessibilityLabel="secondary-jump-latest"
+          onPress={() => {
+            secSuppressAutoFollowUntil = 0;
+            secFollowLatest.set(true);
+            scrollRef?.scrollToEnd({ animated: true });
+          }}
+        />
       </If>
     </View>
   );
@@ -8835,9 +9003,6 @@ function SecondaryTranscript() {
 
 function SecondaryComposerDock() {
   let inputRef: InputRef | undefined;
-  let secModelTriggerRef: ViewRef | null = null;
-  let secReasoningTriggerRef: ViewRef | null = null;
-  let secFullAccessTriggerRef: ViewRef | null = null;
   const dragActive = signal(false);
   const composing = signal(false);
   const plusOpen = signal(false);
@@ -8858,11 +9023,6 @@ function SecondaryComposerDock() {
   });
 
   const compactSecondary = computed(() => paneWidth() > 0 && paneWidth() < 420);
-  const secAgentType = computed(() => agentTypeOf(secondarySessionId()));
-  const reasoningElevated = computed(() => {
-    const id = activeReasoningId();
-    return Boolean(id && id !== "default");
-  });
 
   const openSecondaryPermissionPicker = (anchor: ViewRef | null, align: "start" | "end") => {
     const id = secondarySessionId();
@@ -9079,44 +9239,18 @@ function SecondaryComposerDock() {
   };
 
   return (
-    <View
-      onLayout={event => {
-        const w = event.bounds.size.width;
-        if (w > 0 && Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
-      }}
-      onFileDragEnter={() => dragActive.set(true)}
-      onFileDragLeave={() => dragActive.set(false)}
-      onFileDrop={event => {
-        dragActive.set(false);
-        focusPane(1);
-        if (event.uris?.length) handleSecondaryUris(event.uris, event.mimeTypes ?? []);
-      }}
-      style={{
-        paddingHorizontal: space.lg,
-        paddingTop: space.chip,
-        paddingBottom: space.lg,
-      }}
-    >
-      <View
-        style={{
-          width: "100%",
-          maxWidth: contentWidth(),
-          alignSelf: "center",
-          borderRadius: radii.xl,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: dragActive() ? palette().accent : palette().border,
-          backgroundColor: dragActive() ? palette().accentSoft : palette().inputBg,
-          boxShadow: palette().shadowComposer,
-          overflow: "hidden",
-          ...paintTransition(MOTION_DURATION.fast),
+    <View>
+      <ComposerCardShell
+        dragActive={dragActive}
+        onLayoutWidth={w => {
+          if (Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
         }}
-        hoverStyle={{
-          borderColor: dragActive() ? palette().accent : palette().borderStrong,
-        }}
-        focusWithinStyle={{
-          borderColor: palette().fieldFocusBorder,
-          boxShadow: palette().shadowComposerFocus,
+        onFileDragEnter={() => dragActive.set(true)}
+        onFileDragLeave={() => dragActive.set(false)}
+        onFileDrop={event => {
+          dragActive.set(false);
+          focusPane(1);
+          if (event.uris?.length) handleSecondaryUris(event.uris, event.mimeTypes ?? []);
         }}
       >
         <ComposerAttachmentStrip
@@ -9127,7 +9261,14 @@ function SecondaryComposerDock() {
           idPrefix="secondary-"
         />
 
-        <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs }}>
+        <View
+          style={{
+            paddingLeft: space.lg,
+            paddingRight: compactSecondary() ? space.sm : space.md,
+            paddingTop: space.md,
+            paddingBottom: space.xs,
+          }}
+        >
           <Input
             ref={el => {
               inputRef = el;
@@ -9161,7 +9302,6 @@ function SecondaryComposerDock() {
           />
         </View>
 
-        {/* Bottom Action Bar — matches primary ComposerDock UI/UX */}
         <View
           style={{
             flexDirection: "row",
@@ -9170,7 +9310,7 @@ function SecondaryComposerDock() {
             paddingHorizontal: compactSecondary() ? space.sm : space.md,
             paddingTop: space.xs,
             paddingBottom: space.sm,
-            gap: space.chip,
+            gap: compactSecondary() ? space.xs : space.chip,
           }}
         >
           <View
@@ -9208,290 +9348,38 @@ function SecondaryComposerDock() {
                   backgroundColor: palette().borderSubtle,
                 }}
               />
-              {/* Agent Mode Pill (reflects Pane 1's own session agentType) */}
-              <View
+              <AgentPickerTrigger
+                compact={compactSecondary}
+                sessionId={secondarySessionId}
+                locked={() => true}
                 accessibilityLabel="secondary-agent-picker"
-                tooltip={
-                  <TooltipBubble
-                    text={tr("sessions.agentLabel", { name: agentLabel(secAgentType()) })}
-                  />
-                }
-                style={{
-                  height: 28,
-                  minWidth: 0,
-                  flexShrink: 1,
-                  maxWidth: 132,
-                  paddingHorizontal: space.sm,
-                  borderRadius: radii.pill,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: space.chip,
-                  userSelect: "none",
-                }}
-              >
-                <Icon name={agentModeIcon(secAgentType())} size={13} color={palette().textMuted} />
-                <Text
-                  style={{
-                    flexShrink: 1,
-                    minWidth: 0,
-                    color: palette().textSecondary,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                    fontWeight: "500",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {agentLabel(secAgentType())}
-                </Text>
-              </View>
-
-              {/* Model + Reasoning Capsule (reuses shared ModelPickerSurface / ReasoningPickerSurface) */}
-              <View
-                style={{
-                  flexShrink: 1,
-                  minWidth: 64,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: space.xs,
-                }}
-              >
-                <View
-                  ref={el => {
-                    secModelTriggerRef = el;
-                  }}
-                  role="button"
-                  accessibilityLabel="secondary-bot-capsule-trigger"
-                  tooltip={
-                    <TooltipBubble
-                      text={tr("sessions.modelLabel", {
-                        name: activeModelDetail()
-                          ? `${activeModelLabel()} · ${activeModelDetail()}`
-                          : activeModelLabel(),
-                      })}
-                    />
-                  }
-                  onPress={() => {
-                    focusPane(1);
-                    modelPickerAnchor.set(secModelTriggerRef);
-                    const next = !modelPickerOpen();
-                    closePickers(next ? "model" : undefined);
-                    modelPickerOpen.set(next);
-                    if (next) void refreshFleetModels();
-                  }}
-                  style={{
-                    height: 28,
-                    minWidth: 56,
-                    flexShrink: 1,
-                    maxWidth: 196,
-                    paddingHorizontal: space.sm,
-                    borderRadius: radii.pill,
-                    borderWidth: 1,
-                    borderColor: modelPickerOpen() ? palette().border : "transparent",
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: space.chip,
-                    backgroundColor: modelPickerOpen() ? palette().surfaceSubtle : "transparent",
-                    cursor: "pointer",
-                    userSelect: "none",
-                    ...pressTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{
-                    backgroundColor: palette().surfaceSubtle,
-                    borderColor: palette().borderSubtle,
-                  }}
-                  activeStyle={tactileActiveStyle(0.96)}
-                  focusVisibleStyle={focusRingStyle(-1)}
-                >
-                  <Icon name="cpu" size={13} color={palette().textMuted} />
-                  <Text
-                    style={{
-                      flexShrink: 1,
-                      minWidth: 0,
-                      color: palette().text,
-                      fontSize: textSize(12.5),
-                      lineHeight: textLineHeight(12.5, 1.35),
-                      fontWeight: "500",
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {activeModelLabel()}
-                  </Text>
-                  <Icon
-                    name={modelPickerOpen() ? "chevron-up" : "chevron-down"}
-                    size={10}
-                    color={palette().textMuted}
-                  />
-                </View>
-
-                <If when={activeReasoningChoices().length > 0}>
-                  <View
-                    ref={el => {
-                      secReasoningTriggerRef = el;
-                    }}
-                    role="button"
-                    accessibilityLabel="secondary-reasoning-picker"
-                    tooltip={
-                      <TooltipBubble
-                        text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
-                      />
-                    }
-                    onPress={() => {
-                      focusPane(1);
-                      reasoningPickerAnchor.set(secReasoningTriggerRef);
-                      const next = !reasoningPickerOpen();
-                      closePickers(next ? "reasoning" : undefined);
-                      reasoningPickerOpen.set(next);
-                    }}
-                    style={{
-                      height: 28,
-                      width: reasoningElevated() ? undefined : 28,
-                      minWidth: 28,
-                      flexShrink: 0,
-                      maxWidth: 96,
-                      paddingHorizontal: reasoningElevated() ? space.sm : 0,
-                      borderRadius: radii.pill,
-                      borderWidth: 1,
-                      borderColor: reasoningPickerOpen()
-                        ? palette().border
-                        : reasoningElevated()
-                          ? palette().accentBorder
-                          : "transparent",
-                      flexDirection: "row",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: space.xs,
-                      backgroundColor: reasoningPickerOpen()
-                        ? palette().surfaceSubtle
-                        : reasoningElevated()
-                          ? palette().accentSoft
-                          : "transparent",
-                      cursor: "pointer",
-                      userSelect: "none",
-                      ...pressTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{
-                      backgroundColor: reasoningElevated() ? palette().accentSoft : palette().surfaceSubtle,
-                      borderColor: reasoningElevated() ? palette().accent : palette().borderSubtle,
-                    }}
-                    activeStyle={tactileActiveStyle(0.95)}
-                    focusVisibleStyle={focusRingStyle(-1)}
-                  >
-                    <Icon
-                      name="bulb"
-                      size={reasoningElevated() ? 12 : 14}
-                      color={reasoningElevated() ? palette().accent : palette().textMuted}
-                    />
-                    <If when={reasoningElevated()}>
-                      <Text
-                        style={{
-                          flexShrink: 1,
-                          minWidth: 0,
-                          color: palette().accent,
-                          fontSize: textSize(11.5),
-                          lineHeight: textLineHeight(11.5, 1.3),
-                          fontWeight: "600",
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {activeReasoningLabel()}
-                      </Text>
-                    </If>
-                  </View>
-                </If>
-              </View>
+              />
+              <ModelReasoningCapsule
+                compact={compactSecondary}
+                modelAccessibilityLabel="secondary-bot-capsule-trigger"
+                reasoningAccessibilityLabel="secondary-reasoning-picker"
+                onFocusPane={() => focusPane(1)}
+              />
             </If>
           </View>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-            <If
-              when={
-                permissionModeSupported() !== false &&
-                Boolean(secondarySessionId()) &&
-                effectivePermissionMode(secondarySessionId()) === "full_access"
-              }
-            >
-              <View
-                ref={el => {
-                  secFullAccessTriggerRef = el;
-                }}
-                role="button"
-                accessibilityLabel="secondary-permission-mode-warning"
-                tooltip={
-                  <TooltipBubble
-                    text={`${permissionModeLabel("full_access")} · ${tr("chat.permissionMode.tooltip")}`}
-                  />
-                }
-                onPress={() => openSecondaryPermissionPicker(secFullAccessTriggerRef, "end")}
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: radii.pill,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: permissionModePickerOpen() ? palette().warningSoft : "transparent",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{ backgroundColor: palette().warningSoft }}
-                activeStyle={tactileActiveStyle(0.95)}
-                focusVisibleStyle={focusRingStyle()}
-              >
-                <Icon name="shield" size={15} color={palette().warning} />
-              </View>
-            </If>
-
-            <If when={Boolean(secondaryRunningTurnId()) && !canSend()}>
-              <View
-                role="button"
-                accessibilityLabel="secondary-stop-turn"
-                tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
-                onPress={() => void stopSecondaryTurn()}
-                style={{
-                  boxSizing: "border-box",
-                  width: 32,
-                  height: 32,
-                  borderRadius: radii.pill,
-                  backgroundColor: palette().actionPrimaryBg,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{ backgroundColor: palette().danger }}
-                activeStyle={tactileActiveStyle(0.94)}
-                focusVisibleStyle={focusRingStyle()}
-              >
-                <View
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2.5,
-                    backgroundColor: palette().actionPrimaryFg,
-                    pointerEvents: "none",
-                  }}
-                />
-              </View>
-            </If>
-            <If when={!secondaryRunningTurnId() || canSend()}>
-              <IconCircleButton
-                icon="arrow-up"
-                variant={canSend() ? "primary" : "subtle"}
-                size={32}
-                iconSize={16}
-                disabled={!canSend()}
-                accessibilityLabel="secondary-send-turn"
-                tooltip={tr("sessions.sendMessage")}
-                onPress={submitSecondary}
-              />
-            </If>
+            <ComposerFullAccessShield
+              sessionId={secondarySessionId}
+              accessibilityLabel="secondary-permission-mode-warning"
+              onPress={anchor => openSecondaryPermissionPicker(anchor, "end")}
+            />
+            <ComposerSubmitAction
+              running={() => Boolean(secondaryRunningTurnId())}
+              canSend={canSend}
+              sendLabel="secondary-send-turn"
+              stopLabel="secondary-stop-turn"
+              onSend={submitSecondary}
+              onStop={() => void stopSecondaryTurn()}
+            />
           </View>
         </View>
-      </View>
+      </ComposerCardShell>
 
       <DropdownMenu
         open={plusOpen()}
@@ -9525,6 +9413,413 @@ function SecondarySessionPane() {
         <QuestionPrompts sessionId={secondarySessionId} />
         <SecondaryComposerDock />
       </If>
+    </View>
+  );
+}
+
+/**
+ * Unified ephemeral `/btw` side-question pane reusing Primary's exact
+ * `SessionHeaderBar`, `UserBubble`, `MarkdownBody`, `CopyChip`, `TurnJumpRail`,
+ * `LatestPill`, `ComposerCardShell`, and `ComposerSubmitAction`.
+ */
+function BtwSessionPane(props?: { compact?: boolean }) {
+  let scrollRef: ScrollRef | undefined;
+  let btwSuppressAutoFollowUntil = 0;
+  const composing = signal(false);
+  const btwFollowLatest = signal(true);
+  const btwActiveRailKey = signal("");
+  const btwTurnRowRefs = new Map<string, ViewRef>();
+  const btwTurnOffsets = new Map<string, number>();
+
+  const current = () => sideQuestion();
+  const history = () => sideQuestionHistory();
+  const running = computed(() => current()?.state === "running");
+  const canSend = computed(
+    () =>
+      !running() &&
+      Boolean(sideQuestionDraft().trim()) &&
+      Boolean(activeSessionId()) &&
+      !sideQuestionUnsupported(),
+  );
+  const firstSubtitle = computed(() => {
+    const first = history()[0]?.question ?? "";
+    return first ? collapsedExcerpt(first, 40) : "";
+  });
+  const btwJumpRows = computed(() => history().map(item => ({ key: item.requestId })));
+  const btwPreviewOf = (key: string): TurnJumpPreviewData | null => {
+    const item = history().find(entry => entry.requestId === key);
+    if (!item) return null;
+    return {
+      prompt: collapsedExcerpt(item.question, 140),
+      reply: collapsedExcerpt(item.answer, 220),
+    };
+  };
+
+  const syncBtwRail = (scrollY: number) => {
+    const rows = btwJumpRows();
+    if (rows.length === 0) {
+      if (btwActiveRailKey() !== "") btwActiveRailKey.set("");
+      return;
+    }
+    if (btwFollowLatest()) {
+      const last = rows[rows.length - 1]!.key;
+      if (btwActiveRailKey() !== last) btwActiveRailKey.set(last);
+      return;
+    }
+    const threshold = scrollY + 96;
+    let active = rows[0]!.key;
+    for (const row of rows) {
+      const offset = btwTurnOffsets.get(row.key);
+      if (offset !== undefined && offset <= threshold) active = row.key;
+    }
+    if (btwActiveRailKey() !== active) btwActiveRailKey.set(active);
+  };
+
+  const jumpToBtwTurn = (rowKey: string) => {
+    const ref = rowKey ? btwTurnRowRefs.get(rowKey) : undefined;
+    if (!ref) return;
+    btwFollowLatest.set(false);
+    btwSuppressAutoFollowUntil = Date.now() + 500;
+    btwActiveRailKey.set(rowKey);
+    ref.reveal({ vertical: "start", animated: true });
+  };
+
+  effect(() => {
+    const list = history();
+    list.length;
+    current()?.answer.length;
+    if (btwFollowLatest()) {
+      scrollRef?.scrollToEnd({ animated: false });
+      syncBtwRail(0);
+    }
+  });
+
+  const submit = () => {
+    const sid = activeSessionId();
+    if (!canSend() || !sid) return;
+    btwFollowLatest.set(true);
+    void askSideQuestion(
+      {
+        sessionId: sid,
+        deviceId: activeSessionDevice(),
+        workspaceId: activeWorkspaceId(),
+        workspacePath: activeWorkspaceRoot() || null,
+      },
+      sideQuestionDraft(),
+    );
+  };
+
+  const handleScroll = (event: ScrollEvent) => {
+    const max = Math.max(0, event.contentSize.height - event.size.height);
+    const atBottom = event.offset.y >= max - 24;
+    if (atBottom && !btwFollowLatest() && Date.now() >= btwSuppressAutoFollowUntil) {
+      btwFollowLatest.set(true);
+    } else if (!atBottom && btwFollowLatest() && event.offset.y < max - 48) {
+      btwFollowLatest.set(false);
+    }
+    syncBtwRail(event.offset.y);
+  };
+
+  const isCompact = Boolean(props?.compact);
+
+  return (
+    <View
+      testID={isCompact ? undefined : "side-question-pane"}
+      accessibilityLabel="side-question-sheet"
+      style={
+        isCompact
+          ? { flex: 1, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }
+          : {
+              flexGrow: 1 - sessionSplitRatio(),
+              flexBasis: 0,
+              minWidth: 260,
+              minHeight: 0,
+              flexDirection: "column",
+              backgroundColor: palette().canvas,
+            }
+      }
+    >
+      <If when={!isCompact}>
+        <SessionHeaderBar
+          testID="side-question-header"
+          title={() => tr("btw.title")}
+          subtitle={firstSubtitle}
+          leadingIcon="sparkles"
+          bordered={() => true}
+          actions={
+            <>
+              <If when={history().length > 0}>
+                <IconButton
+                  icon="plus"
+                  size="sm"
+                  accessibilityLabel="side-question-new"
+                  tooltip={tr("nav.newSession")}
+                  onPress={() => resetSideQuestionThread()}
+                />
+              </If>
+              <IconButton
+                icon="close"
+                size="sm"
+                accessibilityLabel="side-question-close"
+                tooltip={tr("common.close")}
+                onPress={() => closeSideQuestion()}
+              />
+            </>
+          }
+        />
+      </If>
+
+      {/* Transcript — shares Primary's exact spacing, UserBubble, MarkdownBody, CopyChip & TurnJumpRail */}
+      <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <Scroll
+          ref={el => {
+            scrollRef = el;
+          }}
+          style={{ flex: 1, minHeight: 0 }}
+          contentStyle={{
+            flexGrow: 1,
+            paddingLeft: isCompact ? space.lg : paneTranscriptPadLeft(history().length >= 2),
+            paddingRight: isCompact ? space.lg : sessionsPadX(),
+            paddingTop: space.xl,
+            paddingBottom: space.x3l,
+          }}
+          onScroll={handleScroll}
+        >
+          <View
+            style={{
+              width: "100%",
+              maxWidth: contentWidth(),
+              alignSelf: "center",
+              flexGrow: history().length === 0 ? 1 : 0,
+              gap: 16,
+            }}
+          >
+            <If when={sideQuestionUnsupported()}>
+              <InlineBanner
+                tone="warning"
+                accessibilityLabel="side-question-unsupported"
+                message={tr("btw.hostUpdate")}
+              />
+            </If>
+
+            <If when={history().length === 0 && !sideQuestionUnsupported()}>
+              <View
+                style={{
+                  flexGrow: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                  paddingVertical: space.xxl,
+                  gap: space.md,
+                }}
+              >
+                <View
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: radii.lg,
+                    borderCurve: "continuous",
+                    backgroundColor: palette().surfaceTertiary,
+                    borderWidth: 1,
+                    borderColor: palette().borderSubtle,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Icon name="sparkles" size={18} color={palette().accent} />
+                </View>
+                <Text
+                  style={{
+                    ...textStyle("caption", { color: palette().textMuted }),
+                    textAlign: "center",
+                    maxWidth: 320,
+                  }}
+                >
+                  {tr("btw.body")}
+                </Text>
+              </View>
+            </If>
+
+            <Each of={history()} key={item => item.requestId}>
+              {entry => (
+                <View
+                  ref={el => {
+                    const key = entry().requestId;
+                    if (el) btwTurnRowRefs.set(key, el);
+                    else {
+                      btwTurnRowRefs.delete(key);
+                      btwTurnOffsets.delete(key);
+                    }
+                  }}
+                  onLayout={event => {
+                    const y = event.bounds.origin.y;
+                    if (Number.isFinite(y)) btwTurnOffsets.set(entry().requestId, y);
+                  }}
+                  style={{ gap: space.md }}
+                >
+                  <UserBubble
+                    partKey={`btw-${entry().requestId}`}
+                    text={entry().question}
+                    showCopy={true}
+                  />
+
+                  <If when={entry().answer.length > 0}>
+                    <View accessibilityLabel="side-question-answer" style={{ width: "100%", gap: space.xs }}>
+                      <MarkdownBody text={entry().answer} live={entry().state === "running"} />
+                      <If when={entry().state !== "running"}>
+                        <View style={{ flexDirection: "row", alignItems: "center", paddingTop: space.hair }}>
+                          <CopyChip partKey={`btw-ans-${entry().requestId}`} text={entry().answer} />
+                        </View>
+                      </If>
+                    </View>
+                  </If>
+
+                  <If when={entry().state === "running"}>
+                    <View
+                      accessibilityLabel="side-question-state"
+                      style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}
+                    >
+                      <BrandSpinner size={13} />
+                      <Text style={textStyle("caption", { color: palette().textMuted })}>
+                        {tr("btw.thinking")}
+                      </Text>
+                    </View>
+                  </If>
+
+                  <If when={entry().state === "cancelled"}>
+                    <View
+                      accessibilityLabel="side-question-state"
+                      style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}
+                    >
+                      <Icon name="info" size={14} color={palette().textMuted} />
+                      <Text style={textStyle("label", { color: palette().textMuted })}>
+                        {tr("btw.stopped")}
+                      </Text>
+                    </View>
+                  </If>
+
+                  <If when={entry().state === "failed"}>
+                    <View
+                      accessibilityLabel="side-question-state"
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "flex-start",
+                        gap: space.sm,
+                        paddingLeft: space.md,
+                        borderLeftWidth: 2,
+                        borderColor: palette().danger,
+                      }}
+                    >
+                      <Icon name="close" size={14} color={palette().danger} />
+                      <Text style={{ ...textStyle("body", { color: palette().text }), flex: 1, minWidth: 0 }}>
+                        {tr("btw.failed", { error: entry().error ? localizeHostError(entry().error!) : "" })}
+                      </Text>
+                    </View>
+                  </If>
+                </View>
+              )}
+            </Each>
+          </View>
+        </Scroll>
+
+        <If when={!isCompact}>
+          <TurnJumpRail
+            rows={btwJumpRows}
+            previewOf={btwPreviewOf}
+            activeKey={btwActiveRailKey}
+            onJump={jumpToBtwTurn}
+            accessibilityLabel="btw-turn-jump-rail"
+            tickPrefix="btw-turn-jump-"
+          />
+        </If>
+
+        <If when={!btwFollowLatest()}>
+          <LatestPill
+            accessibilityLabel="btw-jump-latest"
+            onPress={() => {
+              btwSuppressAutoFollowUntil = 0;
+              btwFollowLatest.set(true);
+              scrollRef?.scrollToEnd({ animated: true });
+            }}
+          />
+        </If>
+      </View>
+
+      {/* Composer — reuses Primary's exact ComposerCardShell + 2-band layout + ComposerSubmitAction */}
+      <ComposerCardShell>
+        <View
+          style={{
+            paddingLeft: space.lg,
+            paddingRight: space.md,
+            paddingTop: space.md,
+            paddingBottom: space.xs,
+          }}
+        >
+          <Input
+            value={sideQuestionDraft()}
+            placeholder={tr("btw.placeholder")}
+            accessibilityLabel="side-question-input"
+            multiline={true}
+            autoFocus={true}
+            submitBehavior="submit"
+            onChange={event => sideQuestionDraft.set(event.value)}
+            onCompositionChange={event => composing.set(event.composing)}
+            onSubmit={() => {
+              if (!composing()) submit();
+            }}
+            style={{
+              minHeight: controlHeight.sm,
+              maxHeight: 160,
+              fontSize: textSize(15),
+              lineHeight: textLineHeight(15, 24 / 15),
+              color: palette().text,
+              placeholderColor: palette().textMuted,
+              caretColor: palette().accent,
+            }}
+          />
+        </View>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingHorizontal: space.md,
+            paddingTop: space.xs,
+            paddingBottom: space.sm,
+            gap: space.chip,
+          }}
+        >
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+            }}
+          >
+            <Icon name="git-branch" size={12} color={palette().textMuted} />
+            <Text
+              style={{
+                ...textStyle("caption", { color: palette().textMuted }),
+                flex: 1,
+                minWidth: 0,
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {tr("btw.body")}
+            </Text>
+          </View>
+          <ComposerSubmitAction
+            running={running}
+            canSend={canSend}
+            sendLabel="side-question-ask"
+            stopLabel="side-question-stop"
+            onSend={submit}
+            onStop={() => void cancelSideQuestion()}
+          />
+        </View>
+      </ComposerCardShell>
     </View>
   );
 }
@@ -9606,10 +9901,22 @@ export function SessionsScene() {
           }}
           onReset={() => setSessionSplitRatio(SESSION_SPLIT_DEFAULT_RATIO)}
         />
-        <If when={showSecondarySplit()} else={<SideQuestionSplitPane />}>
+        <If when={showSecondarySplit()} else={<BtwSessionPane />}>
           <SecondarySessionPane />
         </If>
       </If>
+
+      <ModalDialog
+        open={sideQuestionOpen() && compactLayout()}
+        title={tr("btw.title")}
+        size="lg"
+        accessibilityLabel="side-question-compact-sheet"
+        onClose={() => closeSideQuestion()}
+      >
+        <View style={{ minHeight: 340, maxHeight: 560 }}>
+          <BtwSessionPane compact={true} />
+        </View>
+      </ModalDialog>
 
       <SessionExtrasDialogs />
       <TurnChangesDiffModal

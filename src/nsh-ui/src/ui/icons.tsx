@@ -43,6 +43,7 @@ export type IconName =
   | "link"
   | "sliders"
   | "plus"
+  | "minus"
   | "arrow-up"
   | "arrow-down"
   | "arrow-left"
@@ -181,6 +182,7 @@ const PATH_MAP: Partial<Record<IconName, string>> = {
   sliders:
     "M4.0 7.0 H8.0 M12.0 7.0 H20.0 M10.0 5.0 V9.0 M4.0 12.0 H14.0 M18.0 12.0 H20.0 M16.0 10.0 V14.0 M4.0 17.0 H7.0 M11.0 17.0 H20.0 M9.0 15.0 V19.0",
   plus: "M12.0 5.0 V19.0 M5.0 12.0 H19.0",
+  minus: "M5.0 12.0 H19.0",
   "arrow-up": "M12.0 19.0 V5.0 M6.5 10.5 L12.0 5.0 L17.5 10.5",
   "arrow-down": "M12.0 5.0 V19.0 M6.5 13.5 L12.0 19.0 L17.5 13.5",
   "arrow-left": "M19.0 12.0 H5.0 M11.0 6.0 L5.0 12.0 L11.0 18.0",
