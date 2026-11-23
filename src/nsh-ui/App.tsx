@@ -3023,8 +3023,10 @@ function AuxPaneSheet() {
   const motion = drawerEnterMotion(onLeft() ? "left" : "right");
   cleanup(registerEscapeDismiss(() => toggleAuxPane()));
   return (
-    <Overlay
-      onCancel={() => toggleAuxPane()}
+    // Mounted in-tree (not inside `<Overlay>`) so `<BrowserPageLayer />` can
+    // sit directly above it and display native WebViews inside the sheet's
+    // Browser tab, while global overlays (⌘K, Inbox, modals, dropdowns) stay on top.
+    <View
       style={{
         position: "absolute",
         left: 0,
@@ -3060,7 +3062,7 @@ function AuxPaneSheet() {
         onPress={() => toggleAuxPane()}
         style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
       />
-    </Overlay>
+    </View>
   );
 }
 
@@ -3407,13 +3409,16 @@ function StudioApp() {
         <If when={compactShell() && phoneTabScenes().includes(activeScene())}>
           <PhoneTabs />
         </If>
-        {/* Embedded browser pages outlive the Browser scene (agents drive them hidden). */}
-        <BrowserPageLayer />
       </View>
 
       <If when={auxPaneOpen() && auxAsSheet()}>
         <AuxPaneSheet />
       </If>
+      {/* Embedded browser pages sit at shell root above both the canvas and AuxPaneSheet,
+          so native WebViews stay visible in docked, full-width, and sheet inspectors alike. */}
+      <BrowserPageLayer
+        overlayOccluded={Boolean((overlayNav() && drawerOpen()) || (compactShell() && drawerOpen() && superAgentUi()))}
+      />
       <If when={compactShell() && drawerOpen() && superAgentUi()}>
         <CompactDrawer />
       </If>

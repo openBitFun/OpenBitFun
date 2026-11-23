@@ -607,3 +607,29 @@ test("over the fleet, a browser's live view asks the device that runs the sessio
   expect(app.texts()).toContain("Live view from MacBook");
   expect(host.fleetCalls.some(item => item.command === "browser_webview_create")).toBe(false);
 });
+
+test("medium-width inspector sheet keeps the embedded browser page visible above the sheet", async () => {
+  const wire = browserBackendHost();
+  // 1100px with docked sidebar + 460px AuxPane pushes canvas below 560px, so AuxPane opens as AuxPaneSheet.
+  const app = await open("./fixtures/browserApp.tsx", { width: 1100, height: 800, platform: "macos", host: { handlers: wire.handlers } });
+  await openSession(app, "NSH skeleton");
+
+  await app.waitFor("session-tool-browser");
+  await app.press("session-tool-browser");
+  await app.waitFor("aux-pane-sheet");
+  await app.waitFor("browser-toolbar");
+
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  const create = wire.invokes.find(call => call.command === "browser_webview_create")?.args.request as { label: string };
+  const [created] = await pump(app, wire);
+  expect(created.ok).toBe(true);
+
+  // Page renders visibly on top of AuxPaneSheet (not hidden under an Overlay or off-screen).
+  await app.waitFor(`browser-page-${create.label}`);
+  const [clicked] = await ask(app, wire, [{ op: "browser.input", args: { label: create.label, input: { type: "click", x: 16, y: 24 } } }]);
+  expect(clicked.value).toEqual({ delivered: true });
+
+  // Closing the sheet releases the viewport so the page parks off-screen.
+  await app.press("aux-pane-sheet-scrim");
+  await app.waitUntil(() => !app.shows("aux-pane-sheet"));
+});

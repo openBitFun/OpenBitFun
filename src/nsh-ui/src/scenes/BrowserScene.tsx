@@ -87,7 +87,17 @@ import {
   remoteFileBrowserOpen,
   sshConnectionModalOpen,
 } from "../sshRemoteStore";
-import { activeSessionDevice, activeSessionId, activeWorkspaceKey, deviceContext, drawerOpen } from "../state";
+import {
+  activeSessionDevice,
+  activeSessionId,
+  activeWorkspaceKey,
+  auxPaneMaximized,
+  auxPaneSide,
+  auxPaneWidth,
+  deviceContext,
+  drawerOpen,
+  navWidth,
+} from "../state";
 import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
 import { aboutOpen } from "../ui/AboutDialog";
 import { accountAuthModalOpen } from "../ui/AccountAuthModal";
@@ -97,7 +107,7 @@ import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import { Button, EmptyStateCard, IconButton, InlineBanner, TextField } from "../ui/primitives";
 
 let layerRef: ViewRef | undefined;
-const layerPageX = signal<number | null>(null);
+const shellOverlayOccluded = signal(false);
 
 /** Count of open local browser toolbar menus across mounted instances. */
 const openBrowserMenuCount = signal(0);
@@ -108,6 +118,7 @@ const openBrowserMenuCount = signal(0);
  */
 const globalOverlayOccludingBrowser = computed(() => {
   if (
+    shellOverlayOccluded() ||
     searchOpen() ||
     inboxSheetOpen() ||
     aboutOpen() ||
@@ -123,13 +134,6 @@ const globalOverlayOccludingBrowser = computed(() => {
     Boolean(mcpAppOpen())
   ) {
     return true;
-  }
-  if (drawerOpen()) {
-    if (compactLayout()) return true;
-    const originX = layerPageX();
-    // When the sidebar is docked (>=960px), BrowserPageLayer sits beside it (originX >= navMinWidth).
-    // When the sidebar is an overlay drawer (720-959px), BrowserPageLayer starts near x = 0.
-    if (originX !== null && originX < layout.navMinWidth - 32) return true;
   }
   return false;
 });
@@ -172,11 +176,14 @@ function releaseViewport(id: number): void {
   next?.measure();
 }
 
+function remeasureActiveViewport(): void {
+  const owner = viewportOwner();
+  if (owner === null) return;
+  viewportClaims.find(claim => claim.id === owner)?.measure();
+}
+
 async function layerOrigin(): Promise<{ x: number; y: number }> {
   const measured = await layerRef?.measure();
-  if (measured) {
-    layerPageX.set(measured.pagePosition.x);
-  }
   return measured?.pagePosition ?? { x: 0, y: 0 };
 }
 
@@ -244,10 +251,15 @@ function BrowserPageView(props: { page: () => BrowserPage }) {
   );
 }
 
-/** Every page's web view; mounted once around the scenes. */
-export function BrowserPageLayer() {
+/** Every page's web view; mounted once at the shell root above the canvas and AuxPaneSheet. */
+export function BrowserPageLayer(props: { overlayOccluded?: boolean } = {}) {
   startBrowserEvents();
   effect(() => {
+    shellOverlayOccluded.set(Boolean(props.overlayOccluded));
+    syncBrowserOcclusion();
+  });
+  cleanup(() => {
+    shellOverlayOccluded.set(false);
     syncBrowserOcclusion();
   });
   return (
@@ -255,6 +267,7 @@ export function BrowserPageLayer() {
       ref={(node: ViewRef) => {
         layerRef = node ?? undefined;
       }}
+      onLayout={() => remeasureActiveViewport()}
       style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, pointerEvents: "box-none" }}
     >
       <Each of={browserPages()} key={page => page.label}>
@@ -459,9 +472,32 @@ function NativeBody(props: { compact: boolean }) {
   claim = claimViewport(measureViewport);
 
   // Leaving hides the page; its document keeps running.
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSettleMeasure = () => {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      measureViewport();
+    }, 250);
+  };
   cleanup(() => {
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
     releaseViewport(claim);
     cancelElementPicker();
+  });
+  effect(() => {
+    // Re-measure when surrounding shell layout shifts the viewport's pagePosition
+    // even if the viewport's own local size inside AuxPane stayed constant.
+    drawerOpen();
+    navWidth();
+    auxPaneWidth();
+    auxPaneSide();
+    auxPaneMaximized();
+    measureViewport();
+    scheduleSettleMeasure();
   });
   effect(() => {
     if (browserAvailability() === "available") void ensureUserPage();
