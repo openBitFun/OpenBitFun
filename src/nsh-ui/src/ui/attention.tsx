@@ -33,7 +33,7 @@ import { tr } from "../i18n";
 import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
 import { DeviceBadge, StateMark, deviceException, markState, type DeviceException, type MarkState } from "./fleet";
 import { Icon } from "./icons";
-import { MOTION_DURATION, MOTION_EASE_STANDARD, animateLayout, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
+import { MOTION_DURATION, MOTION_EASE_STANDARD, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { Button, EmptyStateCard, SkeletonBlock, TextField, focusRingStyle } from "./primitives";
 
 export { ANSWERED_HOLD_MS };
@@ -540,7 +540,6 @@ export function PromptAttention(props: PromptAttentionProps) {
     props.onAnswered?.(answer);
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
-      animateLayout(undefined, "spring");
       props.onSettled?.();
     }, ANSWERED_HOLD_MS);
   };

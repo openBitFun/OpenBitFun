@@ -229,6 +229,7 @@ import {
   hasEarlierTurns,
   isSessionArchived,
   loadEarlierTurns,
+  evictTranscriptCache,
   loadTurns,
   openInAuxPane,
   openSessionIds,
@@ -281,14 +282,14 @@ import {
 import {
   MOTION_DURATION,
   MOTION_EASE_STANDARD_BEZIER,
-  animateLayout,
   BrandSpinner,
   enterMotion,
-  nonUniformStaggerMotion,
   paintTransition,
   popoverEnterMotion,
   popoverOrigin,
   pressTransition,
+  rotatingChevronStyle,
+  subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "../ui/motion";
 import { DropdownMenu, pushToast, registerEscapeDismiss, type DropdownMenuItem } from "../ui/overlays";
@@ -1276,7 +1277,6 @@ function ConversationHeader() {
                 const id = activeSessionId();
                 const next = renameValue().trim();
                 if (id && next) void renameSession(id, next);
-                animateLayout();
                 renaming.set(false);
               }}
             />
@@ -1289,7 +1289,6 @@ function ConversationHeader() {
                 const id = activeSessionId();
                 const next = renameValue().trim();
                 if (id && next) void renameSession(id, next);
-                animateLayout();
                 renaming.set(false);
               }}
             />
@@ -1299,7 +1298,6 @@ function ConversationHeader() {
               size="sm"
               style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => {
-                animateLayout();
                 renaming.set(false);
               }}
             />
@@ -1401,7 +1399,6 @@ function ConversationHeader() {
               tooltip={tr("sessions.closeSearch")}
               style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => {
-                animateLayout();
                 transcriptSearchOpen.set(false);
                 transcriptSearchQuery.set("");
               }}
@@ -1473,7 +1470,6 @@ function ThreadActionsSurface(props: { placement: Placement }) {
           accessibilityLabel="transcript-search-toggle"
           onPress={() => {
             closeThreadMenu();
-            animateLayout();
             const next = !transcriptSearchOpen();
             transcriptSearchOpen.set(next);
             if (!next) transcriptSearchQuery.set("");
@@ -1539,7 +1535,6 @@ function ThreadActionsSurface(props: { placement: Placement }) {
               label={tr("common.rename")}
               onPress={() => {
                 closeThreadMenu();
-                animateLayout();
                 renameValue.set("");
                 renaming.set(true);
               }}
@@ -2020,7 +2015,6 @@ function UserBubble(props: {
             role="button"
             accessibilityLabel={`user-message-toggle-${props.partKey}`}
             onPress={() => {
-              animateLayout();
               const current = expandedUserMessages();
               expandedUserMessages.set(
                 current.includes(props.partKey)
@@ -2096,7 +2090,6 @@ const rerunTarget = signal<{ turnId: string; text: string; images: ImageAttachme
 const rerunBusy = signal(false);
 
 function beginRerun(turnId: string, text: string, images?: UserImage[]): void {
-  animateLayout();
   rerunTarget.set({
     turnId,
     text,
@@ -2114,6 +2107,7 @@ async function confirmRerun(): Promise<void> {
   rerunBusy.set(true);
   try {
     clearPromptSuggestion(sessionId, activeSessionDevice());
+    evictTranscriptCache(activeSessionKey());
     await rollbackSessionToTurn({ sessionId, targetTurnId: target.turnId, workspaceId });
     rerunTarget.set(null);
     await loadTurns(sessionId);
@@ -2204,7 +2198,6 @@ function RerunEditor() {
             danger={true}
             onConfirm={() => void confirmRerun()}
             onCancel={() => {
-              animateLayout();
               rerunTarget.set(null);
             }}
           />
@@ -2240,7 +2233,6 @@ function ThinkingBlock(props: {
         role="button"
         accessibilityLabel={`thinking-${props.partKey}`}
         onPress={() => {
-          animateLayout();
           thinkingOverrides.update(current => ({ ...current, [props.partKey]: !expanded() }));
         }}
         style={{
@@ -2271,28 +2263,38 @@ function ThinkingBlock(props: {
               ? tr("chat.thinkingSummary")
               : tr("chat.thinking")}
         </Text>
-        <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
+        <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
+          <Icon name="chevron-right" size={12} color={palette().textMuted} />
+        </View>
       </View>
       <If when={expanded()}>
-        <View
-          style={{
-            marginLeft: 6,
-            paddingLeft: 12,
-            borderLeftWidth: 2,
-            borderColor: props.live ? palette().accentBorder : palette().borderSubtle,
-          }}
-        >
-          <Scroll ref={tailRef} style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
-            <TextView
-              markdown={props.text}
-              selectable
-              links="report"
-              onLinkPress={handleMarkdownLink}
-              options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
-              styles={createMarkdownStyles({ compact: true, baseFontSize: 13 })}
-            />
-          </Scroll>
-        </View>
+        {() => {
+          const reveal = subtleCrossfadeMotion();
+          return (
+            <View
+              style={[
+                {
+                  marginLeft: 6,
+                  paddingLeft: 12,
+                  borderLeftWidth: 2,
+                  borderColor: props.live ? palette().accentBorder : palette().borderSubtle,
+                },
+                reveal.style,
+              ]}
+            >
+              <Scroll ref={tailRef} style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+                <TextView
+                  markdown={props.text}
+                  selectable
+                  links="report"
+                  onLinkPress={handleMarkdownLink}
+                  options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
+                  styles={createMarkdownStyles({ compact: true, baseFontSize: 13 })}
+                />
+              </Scroll>
+            </View>
+          );
+        }}
       </If>
     </View>
   );
@@ -2545,6 +2547,7 @@ function TranscriptItemView(props: { item: TranscriptItem; live?: boolean; prese
           calls={(props.item as ItemOf<"explore">).calls}
           cardId={props.item.key}
           stateOf={persistedToolState}
+          live={props.live}
         />
       );
   }
@@ -3045,7 +3048,7 @@ function handleTranscriptScroll(event: ScrollEvent): void {
 }
 
 function WelcomeStudio() {
-  const heroMotion = nonUniformStaggerMotion(0, 1, "fadeInUp");
+  const heroMotion = subtleCrossfadeMotion();
   return (
     <View
       style={{
@@ -3657,11 +3660,16 @@ function Transcript() {
   resetTranscriptScrollTracking();
   let lastSessionId = activeSessionId();
   let lastOptimisticText = optimisticUserText();
+  let pendingInitialBottomSnap = Boolean(lastSessionId);
+  let transcriptSwapMounts = 0;
+  const transcriptSwapKey = () =>
+    activeSessionKey() ? `${activeSessionKey()}:${turnsLoading() ? "loading" : "ready"}` : "welcome";
 
   effect(() => {
     const id = activeSessionId();
     if (id !== lastSessionId) {
       lastSessionId = id;
+      pendingInitialBottomSnap = Boolean(id);
       resetTranscriptScrollTracking();
       rerunTarget.set(null);
       turnChangesReview.set(null);
@@ -3728,22 +3736,39 @@ function Transcript() {
           }
         }}
       >
-        <View
-          onLayout={event => {
-            const height = event.bounds.size.height;
-            if (height > 0 && Math.abs(height - lastContentHeight) > 1) {
-              lastContentHeight = height;
-              if (followLatest()) stickToTranscriptEnd();
-            }
-          }}
-          style={{
-            width: "100%",
-            maxWidth: contentWidth(),
-            alignSelf: "center",
-            flexGrow: isTranscriptEmpty() ? 1 : 0,
-            gap: 16,
-          }}
-        >
+        <Each of={[transcriptSwapKey()]} key={k => k}>
+          {() => {
+            const shouldAnimate = transcriptSwapMounts > 0;
+            transcriptSwapMounts += 1;
+            const swapMotion = shouldAnimate ? subtleCrossfadeMotion() : null;
+            return (
+              <View
+                onLayout={event => {
+                  const height = event.bounds.size.height;
+                  if (height > 0 && Math.abs(height - lastContentHeight) > 1) {
+                    lastContentHeight = height;
+                    if (followLatest()) {
+                      if (pendingInitialBottomSnap && sessionTurns().length > 0) {
+                        pendingInitialBottomSnap = false;
+                        cancelScheduledTranscriptScroll();
+                        transcriptScrollRef?.scrollToEnd({ animated: false });
+                      } else {
+                        stickToTranscriptEnd();
+                      }
+                    }
+                  }
+                }}
+                style={[
+                  {
+                    width: "100%",
+                    maxWidth: contentWidth(),
+                    alignSelf: "center",
+                    flexGrow: isTranscriptEmpty() ? 1 : 0,
+                    gap: 16,
+                  },
+                  swapMotion?.style,
+                ]}
+              >
           <If when={isTranscriptEmpty()}>
             <WelcomeStudio />
           </If>
@@ -3819,6 +3844,7 @@ function Transcript() {
                           calls={(block() as Extract<LiveDisplayBlock, { kind: "explore" }>).calls}
                           cardId={block().key}
                           stateOf={persistedToolState}
+                          live={true}
                         />
                       </If>
                     )}
@@ -3860,7 +3886,10 @@ function Transcript() {
               />
             )}
           </If>
-        </View>
+              </View>
+            );
+          }}
+        </Each>
       </Scroll>
 
       <TurnJumpRail />
@@ -4197,18 +4226,16 @@ function FullAccessNotice() {
           width: compactLayout() || sessionsCompact() ? layout.touchTarget : 28,
           height: compactLayout() || sessionsCompact() ? layout.touchTarget : 28,
           borderRadius: radii.pill,
-          borderWidth: 1,
-          borderColor: permissionModePickerOpen() ? palette().warning : palette().warningBorder,
-          backgroundColor: palette().warningSoft,
+          backgroundColor: permissionModePickerOpen() ? palette().warningSoft : "transparent",
           cursor: "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={{ borderColor: palette().warning }}
+        hoverStyle={{ backgroundColor: palette().warningSoft }}
         activeStyle={tactileActiveStyle(0.95)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <Icon name="shield" size={14} color={palette().warning} />
+        <Icon name="shield" size={15} color={palette().warning} />
       </View>
     </If>
   );
@@ -5069,13 +5096,21 @@ function ComposerDock() {
                     void attachImageFromClipboard();
                   }}
                 />
+                <View
+                  style={{
+                    width: 1,
+                    height: 14,
+                    marginHorizontal: space.hair,
+                    flexShrink: 0,
+                    backgroundColor: palette().borderSubtle,
+                  }}
+                />
                 <AgentPickerTrigger compact={compactComposer} />
                 <ModelReasoningCapsule compact={compactComposer} />
               </If>
-              <FullAccessNotice />
             </View>
 
-            {/* Right: context ring, then unified circular Send / Stop */}
+            {/* Right: quiet status utilities (full-access shield, voice, context ring) + primary Send / Stop */}
             <View
               style={{
                 flexDirection: "row",
@@ -5084,6 +5119,7 @@ function ComposerDock() {
                 gap: compactComposer() ? space.hair : space.xs,
               }}
             >
+              <FullAccessNotice />
               <VoiceInputButtons actions={composerVoiceActions} />
               <If when={!compactComposer()}>
                 <ContextUsageRing />
@@ -5387,9 +5423,18 @@ function ComposerDock() {
 }
 
 /** Compact readable agent selector pill matching Codex / Claude Desktop composer chrome. */
+function agentModeIcon(mode: string | null | undefined): IconName {
+  const lower = (mode ?? "").toLowerCase();
+  if (lower.includes("minimal") || lower.includes("fast")) return "zap";
+  if (lower.includes("creative")) return "sparkles";
+  if (lower.includes("ultimate") || lower.includes("plan")) return "layers";
+  return "bot";
+}
+
 function AgentPickerTrigger(props: { compact: () => boolean }) {
   let triggerRef: ViewRef | null = null;
   const locked = () => agentModeLockedToSingle();
+  const modeType = () => agentTypeOf(activeSessionId());
   return (
     <If
       when={locked()}
@@ -5403,7 +5448,7 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
           accessibilityLabel="agent-picker"
           tooltip={
             <TooltipBubble
-              text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
+              text={tr("sessions.agentLabel", { name: agentLabel(modeType()) })}
             />
           }
           onPress={() => {
@@ -5414,17 +5459,17 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
           }}
           style={{
             height: 28,
-            minWidth: props.compact() ? 48 : 56,
+            minWidth: 0,
             flexShrink: 1,
-            maxWidth: props.compact() ? 132 : 168,
-            paddingHorizontal: props.compact() ? space.chip : space.sm,
+            maxWidth: props.compact() ? 120 : 148,
+            paddingHorizontal: space.sm,
             borderRadius: radii.pill,
             borderWidth: 1,
             borderColor: agentPickerOpen() ? palette().border : "transparent",
             backgroundColor: agentPickerOpen() ? palette().surfaceSubtle : "transparent",
             flexDirection: "row",
             alignItems: "center",
-            gap: space.xs,
+            gap: space.chip,
             cursor: "pointer",
             userSelect: "none",
             ...pressTransition(MOTION_DURATION.fast),
@@ -5436,25 +5481,21 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
           activeStyle={tactileActiveStyle(0.96)}
           focusVisibleStyle={focusRingStyle(-1)}
         >
+          <Icon name={agentModeIcon(modeType())} size={13} color={palette().textMuted} />
           <Text
             style={{
               flexShrink: 1,
               minWidth: 0,
               color: palette().textSecondary,
-              fontSize: textSize(12.5),
-              lineHeight: textLineHeight(12.5, 1.35),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.35),
               fontWeight: "500",
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
           >
-            {agentLabel(agentTypeOf(activeSessionId()))}
+            {agentLabel(modeType())}
           </Text>
-          <Icon
-            name={agentPickerOpen() ? "chevron-up" : "chevron-down"}
-            size={11}
-            color={palette().textMuted}
-          />
         </View>
       }
     >
@@ -5462,43 +5503,49 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
         accessibilityLabel="agent-picker"
         tooltip={
           <TooltipBubble
-            text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
+            text={tr("sessions.agentLabel", { name: agentLabel(modeType()) })}
           />
         }
         style={{
           height: 28,
           flexShrink: 1,
-          maxWidth: props.compact() ? 132 : 168,
-          paddingHorizontal: props.compact() ? space.chip : space.sm,
+          maxWidth: props.compact() ? 120 : 148,
+          paddingHorizontal: space.sm,
           borderRadius: radii.pill,
           flexDirection: "row",
           alignItems: "center",
+          gap: space.chip,
           userSelect: "none",
         }}
       >
+        <Icon name={agentModeIcon(modeType())} size={13} color={palette().textMuted} />
         <Text
           style={{
             flexShrink: 1,
             minWidth: 0,
             color: palette().textSecondary,
-            fontSize: textSize(12.5),
-            lineHeight: textLineHeight(12.5, 1.35),
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
             fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
         >
-          {agentLabel(agentTypeOf(activeSessionId()))}
+          {agentLabel(modeType())}
         </Text>
       </View>
     </If>
   );
 }
 
-/** Compact readable Model & Reasoning selector pills separated by a thin hairline. */
+/** Compact icon-anchored Model pill paired with a quiet icon-first Reasoning toggle. */
 function ModelReasoningCapsule(props: { compact: () => boolean }) {
   let modelTriggerRef: ViewRef | null = null;
   let reasoningTriggerRef: ViewRef | null = null;
+  const reasoningElevated = computed(() => {
+    const id = activeReasoningId();
+    return Boolean(id && id !== "default");
+  });
   return (
     <View
       style={{
@@ -5506,7 +5553,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         minWidth: props.compact() ? 56 : 72,
         flexDirection: "row",
         alignItems: "center",
-        gap: space.hair,
+        gap: space.xs,
       }}
     >
       <View
@@ -5533,20 +5580,16 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         }}
         style={{
           height: 28,
-          minWidth: props.compact()
-            ? activeReasoningChoices().length > 0
-              ? 52
-              : 56
-            : 64,
+          minWidth: props.compact() ? 52 : 64,
           flexShrink: 1,
           maxWidth: props.compact() ? 172 : 216,
-          paddingHorizontal: props.compact() ? space.chip : space.sm,
+          paddingHorizontal: space.sm,
           borderRadius: radii.pill,
           borderWidth: 1,
           borderColor: modelPickerOpen() ? palette().border : "transparent",
           flexDirection: "row",
           alignItems: "center",
-          gap: space.xs,
+          gap: space.chip,
           backgroundColor: modelPickerOpen() ? palette().surfaceSubtle : "transparent",
           cursor: "pointer",
           userSelect: "none",
@@ -5559,11 +5602,12 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         activeStyle={tactileActiveStyle(0.96)}
         focusVisibleStyle={focusRingStyle(-1)}
       >
+        <Icon name="cpu" size={13} color={palette().textMuted} />
         <Text
           style={{
             flexShrink: 1,
             minWidth: 0,
-            color: palette().textSecondary,
+            color: palette().text,
             fontSize: textSize(12.5),
             lineHeight: textLineHeight(12.5, 1.35),
             fontWeight: "500",
@@ -5575,85 +5619,85 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         </Text>
         <Icon
           name={modelPickerOpen() ? "chevron-up" : "chevron-down"}
-          size={11}
+          size={10}
           color={palette().textMuted}
         />
       </View>
 
       <If when={activeReasoningChoices().length > 0}>
         <View
+          ref={el => {
+            reasoningTriggerRef = el;
+            reasoningPickerAnchor.set(el);
+          }}
+          role="button"
+          accessibilityLabel="reasoning-picker"
+          tooltip={
+            <TooltipBubble
+              text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
+            />
+          }
+          onPress={() => {
+            reasoningPickerAnchor.set(reasoningTriggerRef);
+            const next = !reasoningPickerOpen();
+            closePickers(next ? "reasoning" : undefined);
+            reasoningPickerOpen.set(next);
+          }}
           style={{
-            minWidth: props.compact() ? 44 : 52,
-            flexShrink: 1,
+            height: 28,
+            width: reasoningElevated() ? undefined : 28,
+            minWidth: 28,
+            flexShrink: 0,
+            maxWidth: 100,
+            paddingHorizontal: reasoningElevated() ? space.sm : 0,
+            borderRadius: radii.pill,
+            borderWidth: 1,
+            borderColor: reasoningPickerOpen()
+              ? palette().border
+              : reasoningElevated()
+                ? palette().accentBorder
+                : "transparent",
             flexDirection: "row",
             alignItems: "center",
-            gap: space.hair,
+            justifyContent: "center",
+            gap: space.xs,
+            backgroundColor: reasoningPickerOpen()
+              ? palette().surfaceSubtle
+              : reasoningElevated()
+                ? palette().accentSoft
+                : "transparent",
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
           }}
+          hoverStyle={{
+            backgroundColor: reasoningElevated() ? palette().accentSoft : palette().surfaceSubtle,
+            borderColor: reasoningElevated() ? palette().accent : palette().borderSubtle,
+          }}
+          activeStyle={tactileActiveStyle(0.95)}
+          focusVisibleStyle={focusRingStyle(-1)}
         >
-          <View style={{ width: 1, height: space.sm + 2, flexShrink: 0, backgroundColor: palette().borderSubtle }} />
-          <View
-            ref={el => {
-              reasoningTriggerRef = el;
-              reasoningPickerAnchor.set(el);
-            }}
-            role="button"
-            accessibilityLabel="reasoning-picker"
-            tooltip={
-              <TooltipBubble
-                text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
-              />
-            }
-            onPress={() => {
-              reasoningPickerAnchor.set(reasoningTriggerRef);
-              const next = !reasoningPickerOpen();
-              closePickers(next ? "reasoning" : undefined);
-              reasoningPickerOpen.set(next);
-            }}
-            style={{
-              height: 28,
-              minWidth: 0,
-              flexShrink: 1,
-              maxWidth: props.compact() ? 88 : 112,
-              paddingHorizontal: props.compact() ? space.chip : space.sm,
-              borderRadius: radii.pill,
-              borderWidth: 1,
-              borderColor: reasoningPickerOpen() ? palette().border : "transparent",
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.xs,
-              backgroundColor: reasoningPickerOpen() ? palette().surfaceSubtle : "transparent",
-              cursor: "pointer",
-              userSelect: "none",
-              ...pressTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{
-              backgroundColor: palette().surfaceSubtle,
-              borderColor: palette().borderSubtle,
-            }}
-            activeStyle={tactileActiveStyle(0.96)}
-            focusVisibleStyle={focusRingStyle(-1)}
-          >
-            <Icon name="bulb" size={12} color={palette().textMuted} />
+          <Icon
+            name="bulb"
+            size={reasoningElevated() ? 12 : 14}
+            color={reasoningElevated() ? palette().accent : palette().textMuted}
+          />
+          <If when={reasoningElevated()}>
             <Text
               style={{
                 flexShrink: 1,
                 minWidth: 0,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 16 / 12),
-                fontWeight: "500",
+                color: palette().accent,
+                fontSize: textSize(11.5),
+                lineHeight: textLineHeight(11.5, 1.3),
+                fontWeight: "600",
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
             >
               {activeReasoningLabel()}
             </Text>
-            <Icon
-              name={reasoningPickerOpen() ? "chevron-up" : "chevron-down"}
-              size={11}
-              color={palette().textMuted}
-            />
-          </View>
+          </If>
         </View>
       </If>
     </View>
@@ -6898,7 +6942,6 @@ function questionPageOf(toolId: string, total: number): number {
 }
 
 function stepQuestionPage(toolId: string, direction: -1 | 1, total: number): void {
-  animateLayout();
   const next = Math.max(0, Math.min(total - 1, questionPageOf(toolId, total) + direction));
   questionPages.update(current => ({ ...current, [toolId]: next }));
 }
@@ -7153,7 +7196,6 @@ function QueuedPanel() {
           role="button"
           accessibilityLabel="queued-panel-toggle"
           onPress={() => {
-            animateLayout();
             queueCollapsed.update(v => !v);
           }}
           style={{
@@ -7186,11 +7228,9 @@ function QueuedPanel() {
           >
             {tr("sessions.queuedSummary", { count: formatCount(queuedForActive().length) })}
           </Text>
-          <Icon
-            name={queueCollapsed() ? "chevron-right" : "chevron-down"}
-            size={12}
-            color={palette().textMuted}
-          />
+          <View style={{ flexShrink: 0, ...rotatingChevronStyle(!queueCollapsed()) }}>
+            <Icon name="chevron-right" size={12} color={palette().textMuted} />
+          </View>
         </View>
         <If when={!queueCollapsed()}>
           <Scroll style={{ maxHeight: 168, minHeight: 0 }} scrollbar={true}>
@@ -7477,7 +7517,9 @@ export function SessionsScene() {
       <SessionReviewNotes />
       <ReviewLauncherDialog />
       <BackgroundCommandsStrip />
-      <ComposerDock />
+      <If when={Boolean(activeSessionId())}>
+        <ComposerDock />
+      </If>
       <SessionExtrasDialogs />
       <TurnChangesDiffModal
         review={turnChangesReview}

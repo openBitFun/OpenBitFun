@@ -503,6 +503,7 @@ import {
   paintTransition,
   pressTransition,
   Spinner,
+  subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "../ui/motion";
 import { DropdownMenu, ModalDialog, SelectDropdown, pushToast, type SelectDropdownOption } from "../ui/overlays";
@@ -9784,7 +9785,9 @@ export function SettingsScene() {
                   <Each of={ALL_SETTINGS_PAGES.map(entry => entry.id)} key={id => id}>
                     {id => (
                       <If when={selectedSettingsPage() === id()}>
-                        <SettingsPageBody pageId={id()} />
+                        <View style={subtleCrossfadeMotion().style}>
+                          <SettingsPageBody pageId={id()} />
+                        </View>
                       </If>
                     )}
                   </Each>

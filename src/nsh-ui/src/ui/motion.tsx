@@ -11,10 +11,13 @@ import {
   Canvas,
   LayoutAnimation,
   ShaderTransition,
+  Text,
   View,
+  computed,
   createMotion,
   reduceMotion,
   shadersAvailable,
+  untracked,
   type Align,
   type Easing,
   type JSX,
@@ -24,6 +27,7 @@ import {
   type MotionSpec,
   type Placement,
   type StyleProp,
+  type TextStyle,
   type ViewStyle,
 } from "nsh";
 import { palette, radii } from "../theme";
@@ -589,5 +593,140 @@ export function BrandSpinner(props: BrandSpinnerProps) {
         </Each>
       </View>
     </If>
+  );
+}
+
+/**
+ * GPU-composited chevron rotation (`0deg → 90deg` on `cubic-bezier(0.23, 1, 0.32, 1)`).
+ * Replaces abrupt `chevron-right` / `chevron-down` icon swaps on collapsible rows.
+ */
+export function rotatingChevronStyle(expanded: boolean): ViewStyle {
+  if (reduceMotion()) {
+    return { transform: [{ rotate: expanded ? "90deg" : "0deg" }] };
+  }
+  return {
+    transform: [{ rotate: expanded ? "90deg" : "0deg" }],
+    transitionProperty: "transform",
+    transitionDuration: MOTION_DURATION.fast,
+    transitionTimingFunction: MOTION_EASE_STANDARD,
+  };
+}
+
+/**
+ * Ultra-fast opacity-only settle (`0.86 → 1` over `110ms`) for scene/tab/page
+ * swaps: readable and interactive immediately at `t = 0`, removing harsh binary
+ * hard-cuts without introducing sluggish travel or layout shift.
+ */
+export function subtleCrossfadeMotion(): Motion {
+  const reduced = reduceMotion();
+  return createMotion({
+    enter: {
+      keyframes: { opacity: [reduced ? 0.94 : 0.86, 1] },
+      duration: reduced ? 60 : 110,
+      easing: MOTION_EASE_STANDARD_BEZIER,
+      ...(reduced ? { ignoreReduceMotion: true } : {}),
+    },
+  });
+}
+
+/** Wraps a switching scene/tab/page body so every key change settles smoothly on the GPU. */
+export function SmoothSwap(props: {
+  swapKey: () => string;
+  skipInitial?: boolean;
+  style?: StyleProp<ViewStyle>;
+  children: (key: string) => JSX.Element;
+}) {
+  let mountCount = 0;
+  return (
+    <Each of={[props.swapKey()]} key={k => k}>
+      {k => {
+        const keyVal = untracked(k);
+        const shouldAnimate = !(props.skipInitial && mountCount === 0);
+        mountCount += 1;
+        const motion = shouldAnimate ? subtleCrossfadeMotion() : null;
+        return (
+          <View style={[{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }, props.style, motion?.style]}>
+            {props.children(keyVal)}
+          </View>
+        );
+      }}
+    </Each>
+  );
+}
+
+function RollingDigit(props: {
+  text: string;
+  animate: boolean;
+  direction: 1 | -1;
+  style?: StyleProp<TextStyle>;
+}) {
+  const motion =
+    props.animate && !reduceMotion()
+      ? createMotion({
+          enter: {
+            keyframes: {
+              opacity: [0.15, 1],
+              translateY: [props.direction > 0 ? 6 : -6, 0],
+            },
+            duration: 160,
+            easing: MOTION_EASE_STANDARD_BEZIER,
+          },
+        })
+      : null;
+  return (
+    <Text
+      style={[
+        {
+          fontVariant: ["tabular-nums"],
+        },
+        props.style,
+        motion?.style,
+      ]}
+    >
+      {props.text}
+    </Text>
+  );
+}
+
+/**
+ * Smooth in-place numeric ticker: initial value renders statically; subsequent
+ * increments/decrements slide only the digits vertically inside a clipped box
+ * while surrounding row labels stay completely still.
+ */
+export function RollingCount(props: {
+  value: () => number;
+  format?: (n: number) => string;
+  style?: StyleProp<TextStyle>;
+}) {
+  let prev = untracked(() => props.value());
+  let dir: 1 | -1 = 1;
+  let tick = 0;
+  const entry = computed(() => {
+    const next = props.value();
+    if (next !== prev) {
+      dir = next >= prev ? 1 : -1;
+      prev = next;
+      tick += 1;
+    }
+    return {
+      key: `${tick}:${next}`,
+      text: props.format ? props.format(next) : String(next),
+      animate: tick > 0,
+      direction: dir,
+    };
+  });
+  return (
+    <View style={{ overflow: "hidden", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <Each of={[entry()]} key={item => item.key}>
+        {item => (
+          <RollingDigit
+            text={item().text}
+            animate={item().animate}
+            direction={item().direction}
+            style={props.style}
+          />
+        )}
+      </Each>
+    </View>
   );
 }

@@ -12,7 +12,7 @@
  */
 
 import { McpAppLauncher } from "./sessionExtras"; // wave22-p5
-import { cleanup, Clipboard, computed, Image, openUrl, Scroll, signal, Text, View } from "nsh";
+import { cleanup, Clipboard, computed, effect, Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import type { JSX, Signal, ViewStyle } from "nsh";
 import { DiffView } from "nsh/base";
 import {
@@ -35,10 +35,12 @@ import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { createDiffViewStyles, extractVisualizeDirectives, inferCodeLanguage, stripVisualizeDirectives } from "./markdown";
 import {
-  animateLayout,
   BrandSpinner,
   MOTION_DURATION,
+  RollingCount,
   pressTransition,
+  rotatingChevronStyle,
+  subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "./motion";
 import { Button, IconButton, InputBox, StatusDot, focusRingStyle } from "./primitives";
@@ -451,7 +453,6 @@ export function resetExpandedCards(): void {
 }
 
 function toggleCard(cardId: string): void {
-  animateLayout();
   const entry = expandedSignal(cardId);
   entry.set(!entry());
 }
@@ -1046,7 +1047,6 @@ function SubagentSteps(props: { call: ToolCallView; cardId: string }) {
           role="button"
           accessibilityLabel={`subagent-steps-all-${props.cardId}`}
           onPress={() => {
-            animateLayout();
             subagentStepsOpen.update(current => ({ ...current, [props.cardId]: true }));
           }}
           style={{
@@ -1512,7 +1512,9 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
             )}
           </If>
           <If when={expandable()}>
-            <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
+            <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
+              <Icon name="chevron-right" size={12} color={palette().textMuted} />
+            </View>
           </If>
         </View>
         <If when={filePath() ?? ""}>
@@ -1548,9 +1550,48 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
         </If>
       </View>
       <If when={expanded()}>
-        <View style={{ paddingLeft: space.xxl, paddingRight: space.chip, paddingTop: space.xs, paddingBottom: space.sm }}>
-          <ToolBody call={props.call} cardId={props.cardId} kind={kind()} />
-        </View>
+        {() => {
+          const reveal = subtleCrossfadeMotion();
+          return (
+            <View
+              style={[
+                { paddingLeft: space.xxl, paddingRight: space.chip, paddingTop: space.xs, paddingBottom: space.sm },
+                reveal.style,
+              ]}
+            >
+              <ToolBody call={props.call} cardId={props.cardId} kind={kind()} />
+            </View>
+          );
+        }}
+      </If>
+    </View>
+  );
+}
+
+const COUNT_SPLIT_SENTINEL = "\u0000";
+
+function splitCountTemplate(count: number, one: MessageKey, other: MessageKey): { prefix: string; suffix: string } {
+  const rendered = tr(count === 1 ? one : other, { count: COUNT_SPLIT_SENTINEL });
+  const idx = rendered.indexOf(COUNT_SPLIT_SENTINEL);
+  if (idx < 0) return { prefix: "", suffix: rendered };
+  return { prefix: rendered.slice(0, idx), suffix: rendered.slice(idx + 1) };
+}
+
+function ExploreCountSegment(props: { count: () => number; one: MessageKey; other: MessageKey }) {
+  const parts = computed(() => splitCountTemplate(props.count(), props.one, props.other));
+  const textStyleObj = () => ({
+    color: palette().textMuted,
+    fontSize: textSize(13),
+    lineHeight: textLineHeight(13, 1.35),
+  });
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0 }}>
+      <If when={parts().prefix}>
+        <Text style={textStyleObj()}>{parts().prefix}</Text>
+      </If>
+      <RollingCount value={props.count} style={textStyleObj()} />
+      <If when={parts().suffix}>
+        <Text style={textStyleObj()}>{parts().suffix}</Text>
       </If>
     </View>
   );
@@ -1559,21 +1600,53 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
 /**
  * Consecutive reads, searches and listings folded into one row ("Explored 3
  * files, 2 searches"); opening it shows each call as its own row.
+ * Uses a fixed 16×16 leading icon slot, running-state settle hysteresis, and
+ * in-place `RollingCount` digits so live tool counts tick smoothly without
+ * flickering or shifting the row.
  */
 export function ExploreGroupCard(props: {
   calls: ToolCallView[];
   cardId: string;
   stateOf: (call: ToolCallView) => ToolRunState;
+  live?: boolean;
 }) {
   const expanded = computed(() => isCardExpanded(props.cardId));
-  const running = computed(() => props.calls.some(call => props.stateOf(call) === "running"));
-  const summary = computed(() => {
-    const counts = exploreCounts(props.calls);
-    const parts: string[] = [];
-    if (counts.reads) parts.push(formatPlural(counts.reads, "chat.tool.fileOne", "chat.tool.fileOther"));
-    if (counts.searches) parts.push(formatPlural(counts.searches, "chat.tool.searchOne", "chat.tool.searchOther"));
-    return parts.join(", ");
+  const rawRunning = computed(() => props.calls.some(call => props.stateOf(call) === "running"));
+  const displayRunning = signal(rawRunning());
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  effect(() => {
+    const active = rawRunning();
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+    if (active) {
+      displayRunning.set(true);
+      return;
+    }
+    if (props.live) {
+      // Hold the spinning state briefly across inter-tool gaps so consecutive
+      // read/search calls never flicker between "Exploring" and "Explored".
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        if (!rawRunning()) displayRunning.set(false);
+      }, 380);
+    } else {
+      displayRunning.set(false);
+    }
   });
+  cleanup(() => {
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+  });
+
+  const counts = computed(() => exploreCounts(props.calls));
+  const reads = computed(() => counts().reads);
+  const searches = computed(() => counts().searches);
+
   return (
     <View style={{ gap: space.hair }}>
       <View
@@ -1597,9 +1670,19 @@ export function ExploreGroupCard(props: {
         activeStyle={tactileActiveStyle(0.985)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <If when={running()} else={<Icon name="compass" size={16} color={palette().textSecondary} />}>
-          <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
-        </If>
+        <View
+          style={{
+            width: 16,
+            height: 16,
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <If when={displayRunning()} else={<Icon name="compass" size={15} color={palette().textSecondary} />}>
+            <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
+          </If>
+        </View>
         <Text
           style={{
             flexShrink: 0,
@@ -1609,35 +1692,56 @@ export function ExploreGroupCard(props: {
             fontWeight: "500",
           }}
         >
-          {running() ? tr("chat.tool.exploring") : tr("chat.tool.explored")}
+          {displayRunning() ? tr("chat.tool.exploring") : tr("chat.tool.explored")}
         </Text>
-        <Text
+        <View
           style={{
             flex: 1,
             minWidth: 0,
-            color: palette().textMuted,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.35),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
+            flexDirection: "row",
+            alignItems: "center",
+            overflow: "hidden",
           }}
         >
-          {summary()}
-        </Text>
-        <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={14} color={palette().textMuted} />
+          <If when={reads() > 0}>
+            <ExploreCountSegment count={reads} one="chat.tool.fileOne" other="chat.tool.fileOther" />
+          </If>
+          <If when={reads() > 0 && searches() > 0}>
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.35),
+              }}
+            >
+              {", "}
+            </Text>
+          </If>
+          <If when={searches() > 0}>
+            <ExploreCountSegment count={searches} one="chat.tool.searchOne" other="chat.tool.searchOther" />
+          </If>
+        </View>
+        <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
+          <Icon name="chevron-right" size={14} color={palette().textMuted} />
+        </View>
       </View>
       <If when={expanded()}>
-        <View style={{ paddingLeft: space.lg, gap: space.hair }}>
-          <Each of={props.calls} key={(call: ToolCallView, index: number) => call.id ?? `${index}:${call.name}-${call.detail}`}>
-            {(call, index) => (
-              <ToolCard
-                call={call()}
-                status={props.stateOf(call())}
-                cardId={`${props.cardId}|${call().id ?? `${index()}:${call().name}-${call().detail}`}`}
-              />
-            )}
-          </Each>
-        </View>
+        {() => {
+          const reveal = subtleCrossfadeMotion();
+          return (
+            <View style={[{ paddingLeft: space.lg, gap: space.hair }, reveal.style]}>
+              <Each of={props.calls} key={(call: ToolCallView, index: number) => call.id ?? `${index}:${call.name}-${call.detail}`}>
+                {(call, index) => (
+                  <ToolCard
+                    call={call()}
+                    status={props.stateOf(call())}
+                    cardId={`${props.cardId}|${call().id ?? `${index()}:${call().name}-${call().detail}`}`}
+                  />
+                )}
+              </Each>
+            </View>
+          );
+        }}
       </If>
     </View>
   );

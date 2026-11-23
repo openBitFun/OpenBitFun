@@ -941,8 +941,9 @@ test("the composer offers the reasoning the chosen model supports", async () => 
 
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
-  // The session reported no preset, which is the model's own default.
-  await app.waitFor("label:reasoning-picker >> text:Default");
+  // The session reported no preset (model default): icon-only button without "Default" text clutter.
+  await app.waitFor("reasoning-picker");
+  expect(app.shows("label:reasoning-picker >> text:Default")).toBe(false);
 
   await app.press("reasoning-picker");
   await app.waitFor("reasoning-option-high");
@@ -955,16 +956,16 @@ test("the composer offers the reasoning the chosen model supports", async () => 
     reasoningPreset: "high",
     workspaceId: "workspace-1",
   });
-  // The chip follows what the host accepted, not what was pressed.
+  // Elevated reasoning expands into a compact tinted chip with the host-accepted label.
   await app.waitFor("label:reasoning-picker >> text:High");
 
   // Back to the model's own default, written as a null rather than dropped: the
-  // host distinguishes "clear it" from "leave it alone".
+  // host distinguishes "clear it" from "leave it alone", and the button returns to icon-only.
   await app.press("reasoning-picker");
   await app.press("reasoning-option-default");
   const cleared = backend.calls.filter(call => call.action === "update_session_model").at(-1);
   expect(cleared?.request).toMatchObject({ reasoningPreset: null });
-  await app.waitFor("label:reasoning-picker >> text:Default");
+  await app.waitUntil(() => app.shows("reasoning-picker") && !app.shows("label:reasoning-picker >> text:High"));
 });
 
 test("a host that declares no reasoning settings draws no control", async () => {

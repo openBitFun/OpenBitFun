@@ -211,6 +211,7 @@ import {
 import { Icon, type IconName } from "./src/ui/icons";
 import {
   MOTION_DURATION,
+  SmoothSwap,
   Spinner,
   drawerEnterMotion,
   paintTransition,
@@ -634,25 +635,51 @@ function workspaceKindIcon(ws: {
   return "folder";
 }
 
-function sceneElement() {
+function sceneGroupKey(): string {
   switch (activeScene()) {
     case "home":
     case "openbitfun":
-      // wave23-E: the Super Agent scene draws only while that gate is on (`productGates.ts`).
-      return superAgentUi() ? <OpenBitFunScene /> : <SessionsScene />;
+      return superAgentUi() ? "openbitfun" : "sessions";
     case "inbox":
-      return <InboxScene />;
+      return "inbox";
     case "all-sessions":
     case "devices":
-      return <AllSessionsScene />;
+      return "all-sessions";
     case "device":
-      return <DeviceScene />;
+      return "device";
     case "library":
     case "assistants":
     case "agents":
     case "skills":
     case "routines":
     case "spaces":
+      return "library";
+    case "files":
+      return "files";
+    case "git":
+      return "git";
+    case "terminal":
+      return "terminal";
+    case "settings":
+      return "settings";
+    case "browser":
+      return "browser";
+    default:
+      return "sessions";
+  }
+}
+
+function sceneElementForGroup(group: string) {
+  switch (group) {
+    case "openbitfun":
+      return <OpenBitFunScene />;
+    case "inbox":
+      return <InboxScene />;
+    case "all-sessions":
+      return <AllSessionsScene />;
+    case "device":
+      return <DeviceScene />;
+    case "library":
       return <LibraryScene />;
     case "files":
       return <FilesScene />;
@@ -669,8 +696,8 @@ function sceneElement() {
   }
 }
 
-function auxElement() {
-  switch (auxPaneTab()) {
+function auxElementForTab(tab: string) {
+  switch (tab) {
     case "git":
       return <GitScene compact />;
     case "terminal":
@@ -1773,9 +1800,9 @@ function AuxPane() {
         <ErrorBoundary
           fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="aux" />}
         >
-          <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
-            {auxElement()}
-          </View>
+          <SmoothSwap swapKey={() => auxPaneTab()} skipInitial>
+            {tab => auxElementForTab(tab)}
+          </SmoothSwap>
         </ErrorBoundary>
       </View>
     </View>
@@ -3400,10 +3427,10 @@ function StudioApp() {
               <ErrorBoundary
                 fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="scene" />}
               >
-                {/* The switch lives in a view so it stays reactive under the boundary. */}
-                <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
-                  {sceneElement()}
-                </View>
+                {/* Keyed by canonical scene group so switching primary routes gets a crisp 110ms GPU settle without remounting Library sub-tabs. */}
+                <SmoothSwap swapKey={sceneGroupKey} skipInitial>
+                  {group => sceneElementForGroup(group)}
+                </SmoothSwap>
               </ErrorBoundary>
             </View>
           </If>

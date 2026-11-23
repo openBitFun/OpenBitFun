@@ -8,7 +8,7 @@
 // the entry serves it), the host's own catalogue otherwise. Nothing here sorts
 // rows; the only local state is which rows are folded and the search text.
 
-import { effect, Scroll, Text, View, signal, type JSX, type ViewRef } from "nsh";
+import { batch, effect, Scroll, Text, View, signal, type JSX, type ViewRef } from "nsh";
 import { listSessions, type SessionSummary } from "../api";
 import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
 import { fleetDevices, fleetNavigator } from "../fleetStore";
@@ -50,7 +50,7 @@ import {
   type MarkState,
 } from "../ui/fleet";
 import { Icon } from "../ui/icons";
-import { MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
+import { MOTION_DURATION, paintTransition, pressTransition, rotatingChevronStyle, tactileActiveStyle } from "../ui/motion";
 import {
   Button,
   EmptyStateCard,
@@ -152,13 +152,15 @@ function workspaceLabel(workspace: { name?: string; rootPath?: string }): string
 // wave23-E: the device tree's projection and row actions are shared with the
 // sidebar tree (`ui/deviceSidebar.tsx`), so both draw the same backend rows.
 export function openSessionRow(sessionId: string, deviceId: string, workspaceId: string): void {
-  if (fleetActive()) {
-    selectSession(sessionId, deviceId, workspaceId || undefined);
-  } else {
-    if (workspaceId && workspaceId !== activeWorkspaceId()) selectWorkspace(workspaceId);
-    selectSession(sessionId);
-  }
-  navigateScene("sessions");
+  batch(() => {
+    if (fleetActive()) {
+      selectSession(sessionId, deviceId, workspaceId || undefined);
+    } else {
+      if (workspaceId && workspaceId !== activeWorkspaceId()) selectWorkspace(workspaceId);
+      selectSession(sessionId);
+    }
+    navigateScene("sessions");
+  });
 }
 
 export async function newSessionHere(workspaceId: string, deviceId: string): Promise<void> {
@@ -723,7 +725,9 @@ function DeviceHeader(props: { node: DeviceTreeNode }) {
         }}
         hoverStyle={phone() ? undefined : rowHover()}
       >
-        <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
+        <View style={rotatingChevronStyle(open())}>
+          <Icon name="chevron-right" size={12} color={palette().textMuted} />
+        </View>
       </View>
       <View
         role="button"
@@ -1075,7 +1079,9 @@ function RecentlyClosed(props: { node: DeviceTreeNode }) {
           }}
           hoverStyle={phone() ? undefined : rowHover()}
         >
-          <Icon name={recentlyClosedOpen() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
+          <View style={rotatingChevronStyle(recentlyClosedOpen())}>
+            <Icon name="chevron-right" size={12} color={palette().textMuted} />
+          </View>
           <Text style={textStyle("caption")}>{tr("allSessions.recentlyClosed", { count: rows().length })}</Text>
         </View>
         <If when={recentlyClosedOpen()}>
@@ -1223,7 +1229,9 @@ function ByDeviceList() {
             }}
             hoverStyle={phone() ? undefined : rowHover()}
           >
-            <Icon name={offlineGroupOpen() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
+            <View style={rotatingChevronStyle(offlineGroupOpen())}>
+              <Icon name="chevron-right" size={12} color={palette().textMuted} />
+            </View>
             <Text style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "600" }}>
               {tr("allSessions.offlineGroup", { count: split().offline.length })}
             </Text>

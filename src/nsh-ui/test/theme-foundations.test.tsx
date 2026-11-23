@@ -3,6 +3,7 @@
 // the teal accent family with its contrast, and the motion tokens.
 import { expect, test } from "nsh/test";
 import { currentLocale } from "../src/i18n";
+import { createMarkdownStyles } from "../src/ui/markdown";
 import {
   APPEARANCE_PRESETS,
   SPACE_SCALE,
@@ -193,5 +194,31 @@ test("the other presets keep the accents they had", () => {
     if (preset.id === "openbitfun-dark" || preset.id === "openbitfun-light") continue;
     expect([preset.id, preset.palette.switchOn]).toEqual([preset.id, "#059cb0"]);
     expect(preset.palette.accent).not.toBe("#3fb6c4");
+  }
+});
+
+test("session markdown typography uses native 15px prose, distinct heading scale, and tight container-driven list spacing", () => {
+  const obj = (style: unknown) => (style ?? {}) as Record<string, number | string | undefined>;
+  const before = currentLocale();
+  try {
+    currentLocale.set("en-US");
+    const en = createMarkdownStyles();
+    const enRoot = obj(en.root);
+    const enParagraph = obj(en.paragraph);
+    expect(enRoot.fontSize).toBe(15);
+    expect(enRoot.fontFamily).toBeUndefined();
+    expect(Number(obj(en.heading1).fontSize ?? 0) > Number(obj(en.heading2).fontSize ?? 0)).toBe(true);
+    expect(Number(obj(en.heading2).fontSize ?? 0) > Number(obj(en.heading3).fontSize ?? 0)).toBe(true);
+    expect(Number(obj(en.heading3).fontSize ?? 0) > Number(enRoot.fontSize ?? 0)).toBe(true);
+    expect(enParagraph.marginTop).toBe(0);
+    expect(enParagraph.marginBottom).toBe(0);
+    expect(Number(enRoot.gap ?? 0)).toBeGreaterThanOrEqual(8);
+    expect(Number(obj(en.unorderedList).gap ?? 99)).toBeLessThan(Number(obj(en.orderedList).gap ?? 0));
+
+    currentLocale.set("zh-CN");
+    const zh = createMarkdownStyles();
+    expect(Number(obj(zh.root).lineHeight ?? 0)).toBeGreaterThan(Number(enRoot.lineHeight ?? 0));
+  } finally {
+    currentLocale.set(before);
   }
 });

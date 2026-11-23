@@ -129,6 +129,7 @@ import {
   MOTION_DURATION,
   paintTransition,
   pressTransition,
+  rotatingChevronStyle,
   Spinner,
   tactileActiveStyle,
 } from "../ui/motion";
@@ -500,11 +501,9 @@ function GroupHeader(props: {
       activeStyle={{ opacity: 0.88 }}
       focusVisibleStyle={focusRingStyle()}
     >
-      <Icon
-        name={props.expanded ? "chevron-down" : "chevron-right"}
-        size={12}
-        color={palette().textMuted}
-      />
+      <View style={rotatingChevronStyle(props.expanded)}>
+        <Icon name="chevron-right" size={12} color={palette().textMuted} />
+      </View>
       <Text
         style={{
           flex: 1,

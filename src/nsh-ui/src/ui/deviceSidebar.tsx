@@ -39,7 +39,7 @@ import { controlHeight, palette, radii, space, textStyle } from "../theme";
 import { formatRelativeTime } from "../format";
 import { StateMark, deviceException, deviceGlyphIcon, stateColor, type MarkState } from "./fleet";
 import { Icon, type IconName } from "./icons";
-import { MOTION_DURATION, paintTransition } from "./motion";
+import { MOTION_DURATION, paintTransition, rotatingChevronStyle } from "./motion";
 import { DropdownMenu, type DropdownMenuItem } from "./overlays";
 import { IconButton, focusRingStyle } from "./primitives";
 import { sessionMenuItems } from "./sessionActions";
@@ -327,7 +327,9 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
             when={hovered()}
             else={<Icon name={workspaceIcon(props.workspace, open())} size={16} color={palette().chromeTextMuted} />}
           >
-            <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} color={palette().chromeTextMuted} />
+            <View style={rotatingChevronStyle(open())}>
+              <Icon name="chevron-right" size={12} color={palette().chromeTextMuted} />
+            </View>
           </If>
         }
         trailing={
@@ -474,7 +476,9 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
             when={hovered()}
             else={<Icon name={deviceGlyphIcon(props.node.kind)} size={16} color={palette().chromeTextMuted} />}
           >
-            <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} color={palette().chromeTextMuted} />
+            <View style={rotatingChevronStyle(open())}>
+              <Icon name="chevron-right" size={12} color={palette().chromeTextMuted} />
+            </View>
           </If>
         }
         trailing={

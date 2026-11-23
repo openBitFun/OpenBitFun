@@ -117,7 +117,6 @@ import {
 } from "../ui/markdownEditor";
 import {
   MOTION_DURATION,
-  animateLayout,
   paintTransition,
   popoverEnterMotion,
   pressTransition,
@@ -1469,7 +1468,6 @@ function PersonaStudioPane() {
                               accessibilityLabel="persona-reset-files"
                               style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                               onPress={() => {
-                                animateLayout();
                                 confirmingPersonaReset.set(true);
                               }}
                             />
@@ -1540,11 +1538,9 @@ function PersonaStudioPane() {
                             message={tr("assistants.resetFilesConfirmMessage")}
                             confirmLabel={tr("assistants.confirmResetFiles")}
                             onCancel={() => {
-                              animateLayout();
                               confirmingPersonaReset.set(false);
                             }}
                             onConfirm={() => {
-                              animateLayout();
                               void resetSelectedPersonaFiles();
                             }}
                           />

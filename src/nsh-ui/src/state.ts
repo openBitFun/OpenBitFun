@@ -209,22 +209,26 @@ export function openDevicePage(deviceId: string): void {
 
 export function navigateScene(requested: SceneId): void {
   const scene = resolveSceneAlias(requested);
-  openSceneTab(scene);
-  const history = navHistory();
-  const idx = navIndex();
-  if (history[idx] === scene) return;
-  const next = [...history.slice(0, idx + 1), scene];
-  navHistory.set(next);
-  navIndex.set(next.length - 1);
+  batch(() => {
+    openSceneTab(scene);
+    const history = navHistory();
+    const idx = navIndex();
+    if (history[idx] === scene) return;
+    const next = [...history.slice(0, idx + 1), scene];
+    navHistory.set(next);
+    navIndex.set(next.length - 1);
+  });
 }
 
 /** Starts the history over at `scene` (the phone's first screen replacing the landing scene). */
 export function resetNavigation(scene: SceneId): void {
   const resolved = resolveSceneAlias(scene);
-  openSceneTabs.set([resolved]);
-  activeScene.set(resolved);
-  navHistory.set([resolved]);
-  navIndex.set(0);
+  batch(() => {
+    openSceneTabs.set([resolved]);
+    activeScene.set(resolved);
+    navHistory.set([resolved]);
+    navIndex.set(0);
+  });
 }
 
 export function goBackScene(): void {
@@ -233,8 +237,10 @@ export function goBackScene(): void {
   const nextIdx = idx - 1;
   const target = navHistory()[nextIdx];
   if (!target) return;
-  navIndex.set(nextIdx);
-  openSceneTab(target);
+  batch(() => {
+    navIndex.set(nextIdx);
+    openSceneTab(target);
+  });
 }
 
 export function goForwardScene(): void {
@@ -244,8 +250,10 @@ export function goForwardScene(): void {
   const nextIdx = idx + 1;
   const target = history[nextIdx];
   if (!target) return;
-  navIndex.set(nextIdx);
-  openSceneTab(target);
+  batch(() => {
+    navIndex.set(nextIdx);
+    openSceneTab(target);
+  });
 }
 
 /** Right/left auxiliary workbench pane state (`WorkbenchLayout` / `AuxPane`). */
@@ -610,6 +618,7 @@ export function removeSessionFromEvent(sessionId: string): void {
     sessionTotal.update(total => Math.max(0, total - 1));
   }
   const key = sessionKey(sessionId);
+  evictTranscriptCache(key);
   openSessionKeys.set(openSessionKeys().filter(item => item !== key));
   if (activeSessionId() === sessionId) {
     setActiveSession(null);
@@ -719,17 +728,20 @@ export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Pr
 }
 
 function clearWorkspaceSelection(): void {
-  setActiveWorkspaceKey(null);
-  setActiveSession(null);
-  sessionTurns.set([]);
-  sessions.set([]);
-  sessionCursor.set(null);
-  sessionHasMore.set(false);
-  sessionTotal.set(0);
-  runningTurnId.set(null);
-  clearPendingTurn();
-  clearStreamedText();
-  notifyWorkspaceChanged();
+  clearTranscriptCache();
+  batch(() => {
+    setActiveWorkspaceKey(null);
+    setActiveSession(null);
+    sessionTurns.set([]);
+    sessions.set([]);
+    sessionCursor.set(null);
+    sessionHasMore.set(false);
+    sessionTotal.set(0);
+    runningTurnId.set(null);
+    clearPendingTurn();
+    clearStreamedText();
+    notifyWorkspaceChanged();
+  });
 }
 
 /**
@@ -786,18 +798,22 @@ export function selectWorkspace(
       return;
     }
   }
-  setActiveWorkspaceKey(workspaceId, device);
-  setActiveSession(null);
-  sessionTurns.set([]);
-  sessions.set([]);
-  sessionCursor.set(null);
-  runningTurnId.set(null);
-  clearPendingTurn();
-  clearStreamedText();
-  notifyWorkspaceChanged();
+  batch(() => {
+    setActiveWorkspaceKey(workspaceId, device);
+    setActiveSession(null);
+    sessionTurns.set([]);
+    sessions.set([]);
+    sessionCursor.set(null);
+    runningTurnId.set(null);
+    clearPendingTurn();
+    clearStreamedText();
+    notifyWorkspaceChanged();
+    if (fleetActive()) {
+      // The host's own current workspace is that host's preference, not this view's.
+      applyFleetWorkspaceRows();
+    }
+  });
   if (fleetActive()) {
-    // The host's own current workspace is that host's preference, not this view's.
-    applyFleetWorkspaceRows();
     if (options?.loadSessions !== false) void loadSessions();
     return;
   }
@@ -940,6 +956,41 @@ export const openSessionKeys = signal<string[]>([]);
 /** The open sessions' ids, in tab order (read-only view of `openSessionKeys`). */
 export const openSessionIds = computed<string[]>(() => openSessionKeys().map(sessionIdOfKey));
 
+/** Small LRU transcript cache so switching between recently viewed sessions is 0ms instant with zero blank flash. */
+interface CachedTranscript {
+  turns: TranscriptTurnView[];
+  cursor: string | null;
+  limit: number;
+}
+const MAX_CACHED_TRANSCRIPTS = 16;
+const sessionTranscriptCache = new Map<string, CachedTranscript>();
+
+function readTranscriptCache(key: string): CachedTranscript | undefined {
+  const entry = sessionTranscriptCache.get(key);
+  if (!entry) return undefined;
+  // Refresh LRU order.
+  sessionTranscriptCache.delete(key);
+  sessionTranscriptCache.set(key, entry);
+  return entry;
+}
+
+function writeTranscriptCache(key: string, entry: CachedTranscript): void {
+  sessionTranscriptCache.delete(key);
+  sessionTranscriptCache.set(key, entry);
+  if (sessionTranscriptCache.size > MAX_CACHED_TRANSCRIPTS) {
+    const oldest = sessionTranscriptCache.keys().next().value;
+    if (oldest !== undefined) sessionTranscriptCache.delete(oldest);
+  }
+}
+
+export function evictTranscriptCache(key: string | null | undefined): void {
+  if (key) sessionTranscriptCache.delete(key);
+}
+
+function clearTranscriptCache(): void {
+  sessionTranscriptCache.clear();
+}
+
 export function selectSession(sessionId: string, deviceId?: string, workspaceId?: string): void {
   const previous = activeSessionId();
   const previousKey = activeSessionKey();
@@ -949,30 +1000,52 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   // workspace, so it is selected first when the session lives elsewhere.
   const owner = fleetActive() ? workspaceId || fleetSessionRow(device, sessionId)?.workspaceId || "" : "";
   const current = activeWorkspaceKey();
-  if (owner && (current?.workspaceId !== owner || current?.deviceId !== device)) {
-    selectWorkspace(owner, { deviceId: device });
-  }
   const key = `${device}/${sessionId}`;
-  setActiveSession(sessionId, device);
-  if (!openSessionKeys().includes(key)) openSessionKeys.update(keys => [...keys, key]);
-  if (previousKey !== key) {
-    evictTurnWindow(previousKey);
-    transcriptCursor = null;
-    turnsLoadSeq += 1;
-    notifySessionSwitch("leave", previous, previousKey);
-    swapComposerDraft(previousKey, key);
-    sessionTurns.set([]);
-    turnsLoading.set(true);
-    clearPendingTurn();
-    clearStreamedText();
-    turnError.set("");
+
+  if (previousKey && previousKey !== key && !turnsLoading()) {
+    const previousTurns = sessionTurns();
+    if (previousTurns.length > 0) {
+      writeTranscriptCache(previousKey, {
+        turns: previousTurns,
+        cursor: transcriptCursor && transcriptCursor.sessionKey === previousKey ? transcriptCursor.cursor : null,
+        limit: turnWindowOf(previous ?? "", previousKey),
+      });
+    }
   }
-  runningTurnId.set(runningTurns()[key] ?? null);
-  if (previousKey !== key) notifySessionSwitch("enter", sessionId, key);
+
+  const cached = previousKey !== key ? readTranscriptCache(key) : undefined;
+  batch(() => {
+    if (owner && (current?.workspaceId !== owner || current?.deviceId !== device)) {
+      selectWorkspace(owner, { deviceId: device });
+    }
+    setActiveSession(sessionId, device);
+    if (!openSessionKeys().includes(key)) openSessionKeys.update(keys => [...keys, key]);
+    if (previousKey !== key) {
+      evictTurnWindow(previousKey);
+      turnsLoadSeq += 1;
+      notifySessionSwitch("leave", previous, previousKey);
+      swapComposerDraft(previousKey, key);
+      if (cached) {
+        if (cached.limit !== TURN_WINDOW_STEP) setTurnWindow(key, cached.limit);
+        transcriptCursor = cached.cursor ? { sessionKey: key, limit: cached.limit, cursor: cached.cursor } : null;
+        sessionTurns.set(cached.turns);
+        turnsLoading.set(false);
+      } else {
+        transcriptCursor = null;
+        sessionTurns.set([]);
+        turnsLoading.set(true);
+      }
+      clearPendingTurn();
+      clearStreamedText();
+      turnError.set("");
+    }
+    runningTurnId.set(runningTurns()[key] ?? null);
+    if (previousKey !== key) notifySessionSwitch("enter", sessionId, key);
+  });
   // Opening a session is what makes it read; its row compares against this stamp.
   const row = sessions().find(item => item.sessionId === sessionId);
   markSessionSeen(sessionId, sessionLastActivityMs(row));
-  void loadTurns(sessionId);
+  void loadTurns(sessionId, { silent: true });
   // A question asked before this surface looked at the session has no event left
   // to replay, so the host's mailbox is read on every open.
   void loadQuestionMailbox(sessionId);
@@ -1115,22 +1188,32 @@ export async function loadTurns(
         if (seq === turnsLoadSeq && activeSessionKey() === key) turnsLoading.set(false);
       }
       if (seq !== turnsLoadSeq || activeSessionKey() !== key || !view) return;
-      const list =
-        view.mode === "after"
-          ? [...held.filter(turn => turn.turnIndex <= (view.keptThroughIndex ?? -1)), ...view.turns]
+      const unchanged =
+        view.mode === "after" &&
+        view.turns.length === 0 &&
+        held.length > 0 &&
+        held.every(turn => turn.turnIndex <= (view!.keptThroughIndex ?? -1));
+      const list = unchanged
+        ? held
+        : view.mode === "after"
+          ? [...held.filter(turn => turn.turnIndex <= (view!.keptThroughIndex ?? -1)), ...view.turns]
           : Array.isArray(view.turns)
             ? view.turns
             : [];
       transcriptCursor = view.cursor ? { sessionKey: key, limit, cursor: view.cursor } : null;
-      transcriptNotice.set("");
-      sessionTurns.set(list);
-      reconcilePendingTurnWithPersisted(sessionId, list, key);
-      hydratePromptSuggestionFromTranscript(
-        sessionId,
-        view.runningTurn?.activeTurnId ? null : view.promptSuggestion,
-        list[list.length - 1],
-        activeSessionDevice(),
-      );
+      writeTranscriptCache(key, { turns: list, cursor: view.cursor ?? null, limit });
+      batch(() => {
+        transcriptNotice.set("");
+        turnsLoading.set(false);
+        if (!unchanged) sessionTurns.set(list);
+        reconcilePendingTurnWithPersisted(sessionId, list, key);
+        hydratePromptSuggestionFromTranscript(
+          sessionId,
+          view.runningTurn?.activeTurnId ? null : view.promptSuggestion,
+          list[list.length - 1],
+          activeSessionDevice(),
+        );
+      });
       if (view.runningTurn?.activeTurnId) notifyRunningTurn(sessionId, view.runningTurn);
       loaded = list;
     },
@@ -1631,6 +1714,7 @@ export async function archiveSessionRow(sessionId: string, archived: boolean): P
       // An archived session leaves the tab strip with its header actions.
       const key = sessionKey(sessionId);
       evictTurnWindow(key);
+      evictTranscriptCache(key);
       composerDrafts.delete(key);
       openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     }
@@ -1658,6 +1742,7 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     clearPromptSuggestion(sessionId, device);
     clearPendingTurn(sessionId, key);
     evictTurnWindow(key);
+    evictTranscriptCache(key);
     composerDrafts.delete(key);
     openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     if (activeSessionId() === sessionId) {

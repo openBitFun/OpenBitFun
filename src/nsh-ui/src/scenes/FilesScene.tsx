@@ -152,6 +152,7 @@ import {
   MOTION_DURATION,
   paintTransition,
   pressTransition,
+  rotatingChevronStyle,
   Spinner,
   tactileActiveStyle,
 } from "../ui/motion";
@@ -941,11 +942,9 @@ function ChangedFiles(props: { compact?: boolean }) {
         activeStyle={{ opacity: 0.88 }}
         focusVisibleStyle={focusRingStyle()}
       >
-        <Icon
-          name={gitListOpen() ? "chevron-down" : "chevron-right"}
-          size={12}
-          color={palette().textMuted}
-        />
+        <View style={rotatingChevronStyle(gitListOpen())}>
+          <Icon name="chevron-right" size={12} color={palette().textMuted} />
+        </View>
         <Text
           style={{
             ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
@@ -1379,11 +1378,13 @@ function renderExplorerRow(
         }}
       >
         <If when={entry.folder || knownDirectoryPaths().has(entry.id)}>
-          <Icon
-            name={expandedDirs().includes(entry.id) ? "chevron-down" : "chevron-right"}
-            size={12}
-            color={selectedPath() === entry.id ? palette().accent : palette().textMuted}
-          />
+          <View style={rotatingChevronStyle(expandedDirs().includes(entry.id))}>
+            <Icon
+              name="chevron-right"
+              size={12}
+              color={selectedPath() === entry.id ? palette().accent : palette().textMuted}
+            />
+          </View>
         </If>
       </View>
       <Icon

@@ -19,12 +19,13 @@ import type {
 } from "nsh/base";
 import { currentLocale, tr, type AppLocale } from "../i18n";
 import {
+  cjkTypography,
   fontMono,
-  fontSans,
   palette,
   textLineHeight,
   textSize,
   textTracking,
+  typeScale,
   uiFontBasePx,
   type Palette,
 } from "../theme";
@@ -82,76 +83,102 @@ export interface MarkdownStyleOptions {
 interface StyleCacheSlot<T> {
   palette: Palette;
   fontPx: number;
+  cjk?: boolean;
   styles: T;
 }
 
 function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextViewStyles {
-  const codeBase = Math.max(11, base - 1);
-  const inlineCodeBase = Math.max(11, base - 1);
+  const proseLineHeight = textLineHeight(base, 1.6);
+  const codeBase = Math.max(11, base - 2);
+  const inlineCodeBase = Math.max(11, base - 2);
   const tableBase = Math.max(12, base - 1);
+  const h1Size = base + (compact ? 5 : 6);
+  const h2Size = base + 3;
+  const h3Size = base + 1;
+  const h5Size = Math.max(12, base - 1);
+  const h6Size = Math.max(11, base - 2);
 
   return {
+    // Omit `fontFamily` so prose inherits the OS native UI font (SF Pro + PingFang SC on macOS),
+    // matching `textStyle("prose")` and `UserBubble` 1:1. Drive block spacing through `root.gap`
+    // and container gaps instead of `paragraph.marginBottom` so list items and quotes never double-space.
     root: {
       color: p.text,
-      fontFamily: fontSans,
       fontSize: textSize(base),
-      lineHeight: textLineHeight(base, 1.58),
+      lineHeight: proseLineHeight,
       letterSpacing: textTracking(base),
+      gap: compact ? 8 : 10,
     },
     paragraph: {
       color: p.text,
       fontSize: textSize(base),
-      lineHeight: textLineHeight(base, 1.58),
-      marginBottom: compact ? 8 : 12,
+      lineHeight: proseLineHeight,
+      marginTop: 0,
+      marginBottom: 0,
     },
-    // The desktop's Markdown.scss rhythm: headings sit 20 below the prose they
-    // follow and 8 above their own, h1 at +3, the rest at +1 / 600.
     heading: {
       color: p.text,
       fontWeight: "600",
-      marginTop: compact ? 14 : 20,
-      marginBottom: 8,
-      lineHeight: textLineHeight(base + 1, 1.3),
+      marginTop: compact ? 8 : 10,
+      marginBottom: 0,
+      lineHeight: textLineHeight(h2Size, 1.35),
     },
     heading1: {
-      fontSize: textSize(base + 3),
+      fontSize: textSize(h1Size),
       fontWeight: "600",
-      lineHeight: textLineHeight(base + 3, 1.28),
-      letterSpacing: textTracking(base + 3),
+      lineHeight: textLineHeight(h1Size, 1.28),
+      letterSpacing: textTracking(h1Size),
+      marginTop: compact ? 10 : 14,
+      marginBottom: compact ? 2 : 2,
     },
     heading2: {
-      fontSize: textSize(base + 1),
+      fontSize: textSize(h2Size),
       fontWeight: "600",
-      lineHeight: textLineHeight(base + 1, 1.3),
-      letterSpacing: textTracking(base + 1),
+      lineHeight: textLineHeight(h2Size, 1.34),
+      letterSpacing: textTracking(h2Size),
+      marginTop: compact ? 8 : 12,
+      marginBottom: 0,
     },
     heading3: {
-      fontSize: textSize(base + 1),
+      fontSize: textSize(h3Size),
       fontWeight: "600",
-      lineHeight: textLineHeight(base + 1, 1.32),
-      letterSpacing: textTracking(base + 1),
+      lineHeight: textLineHeight(h3Size, 1.38),
+      letterSpacing: textTracking(h3Size),
+      marginTop: compact ? 6 : 8,
+      marginBottom: 0,
     },
     heading4: {
       fontSize: textSize(base),
       fontWeight: "600",
+      lineHeight: textLineHeight(base, 1.42),
       letterSpacing: textTracking(base),
+      marginTop: compact ? 4 : 6,
+      marginBottom: 0,
     },
     heading5: {
-      fontSize: textSize(base),
+      fontSize: textSize(h5Size),
       fontWeight: "600",
+      lineHeight: textLineHeight(h5Size, 1.42),
       color: p.textSecondary,
+      marginTop: compact ? 4 : 6,
+      marginBottom: 0,
     },
     heading6: {
-      fontSize: textSize(Math.max(11, base - 1)),
+      fontSize: textSize(h6Size),
       fontWeight: "600",
+      lineHeight: textLineHeight(h6Size, 1.42),
       color: p.textMuted,
+      marginTop: compact ? 4 : 6,
+      marginBottom: 0,
     },
     blockquote: {
-      borderLeftWidth: 2,
+      borderLeftWidth: 3,
       borderColor: p.borderStrong,
-      paddingLeft: 13,
-      paddingVertical: 3,
-      marginVertical: compact ? 8 : 10,
+      paddingLeft: 14,
+      paddingVertical: 4,
+      marginTop: compact ? 2 : 4,
+      marginBottom: compact ? 2 : 4,
+      gap: compact ? 6 : 8,
       color: p.textSecondary,
     },
     alert: {
@@ -162,7 +189,9 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       backgroundColor: p.surfaceTertiary,
       paddingHorizontal: 13,
       paddingVertical: 10,
-      marginVertical: compact ? 8 : 10,
+      marginTop: compact ? 2 : 4,
+      marginBottom: compact ? 2 : 4,
+      gap: compact ? 6 : 8,
     },
     alertNote: {
       borderColor: p.accentBorder,
@@ -185,15 +214,34 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       backgroundColor: p.dangerSoft,
     },
     list: {
-      marginBottom: compact ? 8 : 12,
-      gap: 4,
+      marginTop: 0,
+      marginBottom: 0,
+      gap: compact ? 4 : 6,
+    },
+    orderedList: {
+      marginTop: 0,
+      marginBottom: 0,
+      gap: compact ? 6 : 10,
+    },
+    unorderedList: {
+      marginTop: 0,
+      marginBottom: 0,
+      gap: compact ? 3 : 5,
     },
     listItem: {
       color: p.text,
-      lineHeight: textLineHeight(base, 1.58),
+      fontSize: textSize(base),
+      lineHeight: proseLineHeight,
+      marginTop: 0,
+      marginBottom: 0,
+    },
+    listItemContent: {
+      gap: compact ? 4 : 6,
     },
     listMarker: {
       color: p.textMuted,
+      fontSize: textSize(base),
+      lineHeight: proseLineHeight,
       fontVariant: ["tabular-nums"],
     },
     taskMarker: {
@@ -211,7 +259,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       borderWidth: 1,
       borderColor: p.borderSubtle,
       backgroundColor: p.surfaceTertiary,
-      marginVertical: compact ? 8 : 12,
+      marginTop: compact ? 2 : 4,
+      marginBottom: compact ? 2 : 4,
       overflow: "hidden",
     },
     // The floating action row stays see-through so the copy button reads as part
@@ -224,19 +273,19 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
     codeBlockCode: {
       fontFamily: fontMono,
       fontSize: textSize(codeBase),
-      lineHeight: textLineHeight(codeBase, 1.52),
+      lineHeight: textLineHeight(codeBase, 1.54),
       color: p.text,
-      paddingHorizontal: 16,
+      paddingHorizontal: 14,
       paddingVertical: 12,
     },
     code: {
       fontFamily: fontMono,
       fontSize: textSize(inlineCodeBase),
       color: p.text,
-      backgroundColor: p.surfaceSubtle,
-      borderRadius: 4,
-      paddingHorizontal: 4,
-      paddingVertical: 0,
+      backgroundColor: p.surfaceTertiary,
+      borderRadius: 5,
+      paddingHorizontal: 5,
+      paddingVertical: 1,
     },
     keyboard: {
       fontFamily: fontMono,
@@ -276,7 +325,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       backgroundColor: p.surfaceTertiary,
       paddingHorizontal: 14,
       paddingVertical: 10,
-      marginVertical: compact ? 8 : 10,
+      marginTop: compact ? 2 : 4,
+      marginBottom: compact ? 2 : 4,
     },
     table: {
       borderRadius: 10,
@@ -284,7 +334,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       borderWidth: 1,
       borderColor: p.borderSubtle,
       backgroundColor: p.surfaceTertiary,
-      marginVertical: compact ? 8 : 12,
+      marginTop: compact ? 2 : 4,
+      marginBottom: compact ? 2 : 4,
       overflow: "hidden",
     },
     tableHead: {
@@ -295,8 +346,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       borderColor: p.borderSubtle,
     },
     tableCell: {
-      paddingHorizontal: 16,
-      paddingVertical: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
       fontSize: textSize(tableBase),
       lineHeight: textLineHeight(tableBase, 1.48),
       color: p.text,
@@ -308,7 +359,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
     rule: {
       borderTopWidth: 1,
       borderColor: p.borderSubtle,
-      marginVertical: compact ? 12 : 16,
+      marginTop: compact ? 6 : 8,
+      marginBottom: compact ? 6 : 8,
     },
     details: {
       borderRadius: 10,
@@ -318,7 +370,9 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       backgroundColor: p.surfaceTertiary,
       paddingHorizontal: 13,
       paddingVertical: 9,
-      marginVertical: compact ? 8 : 10,
+      marginTop: compact ? 2 : 4,
+      marginBottom: compact ? 2 : 4,
+      gap: compact ? 6 : 8,
     },
     summary: {
       color: p.text,
@@ -345,28 +399,28 @@ let compactMarkdownCache: StyleCacheSlot<TextViewStyles> | null = null;
 const customMarkdownStylesCache = new Map<string, StyleCacheSlot<TextViewStyles>>();
 
 /**
- * Memoized reactive `TextViewStyles` tuned to `src/web-ui`'s `Markdown.scss` craft:
- * calm `14px/1.62` reading prose, optical heading tracking, subtle hairline
- * `surfaceTertiary` code blocks and tables, semantic alerts, and quiet left-rail
- * blockquotes. Reads `palette()` and `uiFontBasePx()` directly in the caller's
- * reactive scope and returns the cached reference with zero allocations until
- * either changes.
+ * Memoized reactive `TextViewStyles` tuned for chat reading ergonomics:
+ * `15px` prose matching `typeScale.prose` and `UserBubble`, distinct H1–H6 scale,
+ * container-gap rhythm (zero double spacing inside lists and quotes), hairline
+ * `surfaceTertiary` code blocks/tables, and native system font inheritance.
  */
 export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewStyles {
   const p = palette();
   const fontPx = uiFontBasePx();
+  const cjk = cjkTypography();
 
-  // Zero-allocation hot paths for default (14px) and compact (13px) styles.
+  // Zero-allocation hot paths for default (15px prose) and compact (13px) styles.
   if (!options || (!options.compact && options.baseFontSize === undefined)) {
     if (
       defaultMarkdownCache &&
       defaultMarkdownCache.palette === p &&
-      defaultMarkdownCache.fontPx === fontPx
+      defaultMarkdownCache.fontPx === fontPx &&
+      defaultMarkdownCache.cjk === cjk
     ) {
       return defaultMarkdownCache.styles;
     }
-    const styles = buildMarkdownStyles(p, false, 14);
-    defaultMarkdownCache = { palette: p, fontPx, styles };
+    const styles = buildMarkdownStyles(p, false, typeScale.prose);
+    defaultMarkdownCache = { palette: p, fontPx, cjk, styles };
     return styles;
   }
 
@@ -374,27 +428,28 @@ export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewSt
     if (
       compactMarkdownCache &&
       compactMarkdownCache.palette === p &&
-      compactMarkdownCache.fontPx === fontPx
+      compactMarkdownCache.fontPx === fontPx &&
+      compactMarkdownCache.cjk === cjk
     ) {
       return compactMarkdownCache.styles;
     }
     const styles = buildMarkdownStyles(p, true, 13);
-    compactMarkdownCache = { palette: p, fontPx, styles };
+    compactMarkdownCache = { palette: p, fontPx, cjk, styles };
     return styles;
   }
 
   const compact = Boolean(options.compact);
-  const base = options.baseFontSize ?? (compact ? 13 : 14);
+  const base = options.baseFontSize ?? (compact ? 13 : typeScale.prose);
   const key = `${compact ? "c" : "d"}:${base}`;
   const cached = customMarkdownStylesCache.get(key);
-  if (cached && cached.palette === p && cached.fontPx === fontPx) {
+  if (cached && cached.palette === p && cached.fontPx === fontPx && cached.cjk === cjk) {
     return cached.styles;
   }
   const styles = buildMarkdownStyles(p, compact, base);
   if (customMarkdownStylesCache.size > 16) {
     customMarkdownStylesCache.clear();
   }
-  customMarkdownStylesCache.set(key, { palette: p, fontPx, styles });
+  customMarkdownStylesCache.set(key, { palette: p, fontPx, cjk, styles });
   return styles;
 }
 

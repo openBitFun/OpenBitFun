@@ -1398,15 +1398,39 @@ test("consecutive live explore rounds fold directly into one collapsed group wit
     },
   });
 
-  // Both explore-only rounds fold immediately into one collapsed ExploreGroupCard.
+  // Both explore-only rounds fold immediately into one collapsed ExploreGroupCard with in-place RollingCount digits.
   await app.waitFor("label:explore-group-explore:tool:read-1");
-  expect(app.texts()).toContain("2 files");
+  expect(app.texts().join("")).toContain("2 files");
   expect(app.texts().join("\n")).not.toContain("a.ts");
   expect(app.texts().join("\n")).not.toContain("b.ts");
+
+  // A third explore tool ticks the numeric counter in-place under the exact same card key.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-explore-live",
+      roundId: "r-explore-3",
+      toolEvent: { event_type: "Started", tool_id: "read-3", tool_name: "Read", params: { file_path: "/repo/c.ts" } },
+    },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-explore-live",
+      roundId: "r-explore-3",
+      toolEvent: { event_type: "Completed", tool_id: "read-3", tool_name: "Read", result: { content: "c" } },
+    },
+  });
+  await app.waitFor("label:explore-group-explore:tool:read-1");
+  expect(app.texts().join("")).toContain("3 files");
+  expect(app.texts().join("\n")).not.toContain("c.ts");
 
   await app.press("label:explore-group-explore:tool:read-1");
   await app.waitFor("a.ts");
   await app.waitFor("b.ts");
+  await app.waitFor("c.ts");
 });
 
 test("composer clears immediately on submit before the host RPC resolves and restores on failure", async () => {
@@ -1842,4 +1866,60 @@ test("per-turn snapshot file changes start collapsed, expand on click, and open 
     filePath: "/repo/src/nsh-ui/src/agentEvents.ts",
     operationId: "op-1",
   });
+});
+
+test("welcome page with no active session hides the disabled composer dock until a session opens", async () => {
+  const backend = createBackend({ sessions: [] });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("How can I help today?");
+
+  // No session is selected yet: composer dock and its disabled caption must not clutter the welcome screen.
+  expect(app.shows("composer")).toBe(false);
+  expect(app.shows("agent-picker")).toBe(false);
+  expect(app.shows("bot-capsule-trigger")).toBe(false);
+  expect(app.texts()).not.toContain("No session selected");
+
+  // Creating a session immediately mounts the composer dock on the fresh empty session.
+  await app.hover("sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-new-session-workspace-1");
+  await app.waitFor("composer");
+  expect(app.shows("agent-picker")).toBe(true);
+  expect(app.shows("bot-capsule-trigger")).toBe(true);
+});
+
+test("switching back to a previously viewed session restores cached turns immediately without blanking", async () => {
+  const backend = createBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  let holdSession1Revalidate = false;
+  const revalidateGate: { release: (() => void) | null } = { release: null };
+  let delayedResponse: unknown = null;
+
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: { sessionId?: string } };
+    if (args.action === "get_session_transcript_view" && args.request?.sessionId === "session-1" && holdSession1Revalidate) {
+      delayedResponse = baseInvoke(data);
+      return new Promise(resolve => {
+        revalidateGate.release = () => resolve(delayedResponse);
+      });
+    }
+    return baseInvoke(data);
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+
+  // Switch to a second session so session-1 enters the in-memory LRU transcript cache.
+  await openSession(app, "Terminal migration");
+  await app.waitFor("Port the terminal.");
+
+  // Block the host revalidation RPC for session-1 and switch back: turns must render immediately from cache.
+  holdSession1Revalidate = true;
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+  expect(app.texts()).not.toContain("How can I help today?");
+
+  // Releasing the background revalidation settles cleanly without dropping or duplicating turns.
+  revalidateGate.release?.();
+  await app.waitFor("Add the plan and fix the imports.");
 });

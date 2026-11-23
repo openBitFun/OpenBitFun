@@ -11,11 +11,12 @@ import {
 import { basename, formatCount } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
-  animateLayout,
   MOTION_DURATION,
   paintTransition,
   pressTransition,
+  rotatingChevronStyle,
   Spinner,
+  subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "./motion";
 import {
@@ -132,7 +133,6 @@ export function TurnFileChangesCard(props: {
           accessibilityLabel={`turn-changes-toggle-${props.turnId}`}
           accessibilityState={{ expanded: expanded() }}
           onPress={() => {
-            animateLayout();
             expanded.update(v => !v);
           }}
           style={{
@@ -190,11 +190,9 @@ export function TurnFileChangesCard(props: {
               {`-${formatCount(totalRemoved())}`}
             </Text>
           </View>
-          <Icon
-            name={expanded() ? "chevron-down" : "chevron-right"}
-            size={13}
-            color={palette().textMuted}
-          />
+          <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
+            <Icon name="chevron-right" size={13} color={palette().textMuted} />
+          </View>
         </View>
 
         <View
@@ -240,14 +238,20 @@ export function TurnFileChangesCard(props: {
 
       {/* Expanded changed-file list */}
       <If when={expanded()}>
-        <View
-          style={{
-            borderTopWidth: 1,
-            borderColor: palette().borderSubtle,
-            paddingVertical: space.xs,
-          }}
-        >
-          <Each of={props.changes} key={item => item.filePath}>
+        {() => {
+          const reveal = subtleCrossfadeMotion();
+          return (
+            <View
+              style={[
+                {
+                  borderTopWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  paddingVertical: space.xs,
+                },
+                reveal.style,
+              ]}
+            >
+              <Each of={props.changes} key={item => item.filePath}>
             {item => {
               const parts = computed(() => splitFilePath(item().filePath));
               const badge = computed(() => fileBadge(parts().name));
@@ -358,8 +362,10 @@ export function TurnFileChangesCard(props: {
                 </View>
               );
             }}
-          </Each>
-        </View>
+              </Each>
+            </View>
+          );
+        }}
       </If>
     </View>
   );

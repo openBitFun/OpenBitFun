@@ -16,7 +16,7 @@ import { deviceContext, LIBRARY_TABS, libraryTab, selectDeviceContext, type Libr
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { deviceException, deviceGlyphIcon } from "../ui/fleet";
 import { Icon } from "../ui/icons";
-import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
+import { MOTION_DURATION, SmoothSwap, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
 import { InlineBanner, SegmentedTabs, focusRingStyle } from "../ui/primitives";
 import { studioCompact, trackStudioWidth } from "../ui/studio";
@@ -224,8 +224,8 @@ function LibraryHeader() {
   );
 }
 
-function tabScene() {
-  switch (libraryTab()) {
+function tabScene(tab: LibraryTab) {
+  switch (tab) {
     case "agents":
       return <AgentsScene embedded />;
     case "skills":
@@ -250,7 +250,9 @@ export function LibraryScene() {
       <If when={!(libraryTab() === "assistants" && assistantDetailShown())}>
         <LibraryHeader />
       </If>
-      <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>{tabScene()}</View>
+      <SmoothSwap swapKey={libraryTab} skipInitial>
+        {tab => tabScene(tab as LibraryTab)}
+      </SmoothSwap>
     </View>
   );
 }

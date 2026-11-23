@@ -886,9 +886,9 @@ export function getAppearancePreset(id: AppearanceId): AppearancePreset {
 export const APPEARANCE_STORAGE_KEY = "openbitfun.nsh.appearance.v1";
 export const APPEARANCE_ID_STORAGE_KEY = "openbitfun.nsh.appearance-id.v1";
 
-/** Desktop UI sans-serif font stack aligned with `src/web-ui`. */
+/** Native-first sans-serif stack matching the OS UI font across macOS, Windows, and Linux. */
 export const fontSans =
-  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "HarmonyOS Sans SC", "Inter", "Segoe UI", system-ui, sans-serif';
+  'system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif';
 
 /** Code / monospace font stack aligned with `src/web-ui`. */
 export const fontMono =
