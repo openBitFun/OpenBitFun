@@ -1259,6 +1259,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "settings.appearance.chooseTheme": "选择主题",
   "settings.appearance.colorScheme": "配色方案",
   "settings.appearance.colorSchemeHint": "跟随系统外观，或锁定浅色/深色模式。",
+  "settings.appearance.followSystem": "界面配色跟随系统",
   "settings.appearance.schemeSystem": "跟随系统",
   "settings.appearance.schemeLight": "浅色",
   "settings.appearance.schemeDark": "深色",

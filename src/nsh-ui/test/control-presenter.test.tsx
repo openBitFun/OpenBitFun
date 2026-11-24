@@ -82,3 +82,26 @@ test("a persisted language change from the executor is applied and acknowledged"
   await app.waitFor("资源库");
   expect(backend.controlReports?.[0]).toMatchObject({ requestId: "e-1", success: true, result: { status: "applied" } });
 });
+
+test("a persisted appearance change to system is applied and acknowledged without rolling back", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, colorScheme: "dark", host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://openbitfun-control-effect",
+    payload: { requestId: "e-light", phase: "commit", changedPaths: ["appearance.selection"], value: "openbitfun-light" },
+  });
+  await app.waitFor("Showing the light scheme");
+  await app.waitFor("appearance-swatch-openbitfun-light");
+  expect(backend.controlReports?.[0]).toMatchObject({ requestId: "e-light", success: true, result: { status: "applied" } });
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://openbitfun-control-effect",
+    payload: { requestId: "e-system", phase: "commit", changedPaths: ["appearance.selection"], value: "system" },
+  });
+  await app.waitFor("Showing the dark scheme");
+  expect(app.shows("appearance-swatch-openbitfun-light")).toBe(false);
+  expect(backend.controlReports?.[1]).toMatchObject({ requestId: "e-system", success: true, result: { status: "applied" } });
+});

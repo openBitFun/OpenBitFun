@@ -599,8 +599,10 @@ test("markdown TextView repaints from Dark to Light + 16px after unmounting Sess
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("appearance-light");
-  await app.press("appearance-light");
+  await app.waitFor("appearance-follow-system");
+  await app.press("appearance-follow-system");
+  await app.waitFor("appearance-swatch-openbitfun-light");
+  await app.press("appearance-swatch-openbitfun-light");
   await app.press("font-level-large");
   // Back to the session the way the new shell reaches it (All sessions › Recent).
   await openSession(app, "NSH skeleton");

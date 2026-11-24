@@ -383,8 +383,10 @@ test("sessions scene repaints reactively across dark and light Tauri palettes", 
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("appearance-light");
-  await app.press("appearance-light");
+  await app.waitFor("appearance-follow-system");
+  await app.press("appearance-follow-system");
+  await app.waitFor("appearance-swatch-openbitfun-light");
+  await app.press("appearance-swatch-openbitfun-light");
   // Back to the session through All sessions (the new shell has no settings back row).
   await openSession(app, "NSH skeleton");
   await app.waitFor("NavPanel.tsx");

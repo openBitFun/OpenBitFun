@@ -1260,6 +1260,7 @@ export const enUSMessages = {
   "settings.appearance.chooseTheme": "Choose theme",
   "settings.appearance.colorScheme": "Color scheme",
   "settings.appearance.colorSchemeHint": "Follow the system appearance or lock Light or Dark.",
+  "settings.appearance.followSystem": "Follow system appearance",
   "settings.appearance.schemeSystem": "System",
   "settings.appearance.schemeLight": "Light",
   "settings.appearance.schemeDark": "Dark",

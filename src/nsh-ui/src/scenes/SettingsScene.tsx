@@ -482,7 +482,7 @@ import {
   touchSlop,
   type AppearanceId,
 } from "../theme";
-import { applyAppearance, chooseAppearancePreset, type AppearanceMode } from "../themeStore";
+import { chooseAppearancePreset, setFollowSystemAppearance } from "../themeStore";
 // wave24-replica: MCP servers from the account that still need a secret here.
 import { loadAccountRecords, mcpSecretsNote } from "../accountRecordsStore";
 import {
@@ -1268,12 +1268,6 @@ function usePresenceFlag(predicate: () => boolean): () => boolean {
   });
   return flag;
 }
-
-const APPEARANCE_MODES: ReadonlyArray<{ value: AppearanceMode; labelKey: MessageKey }> = [
-  { value: "system", labelKey: "settings.appearance.schemeSystem" },
-  { value: "light", labelKey: "settings.appearance.schemeLight" },
-  { value: "dark", labelKey: "settings.appearance.schemeDark" },
-];
 
 /** Text typed into a field and not saved yet, by field id. */
 const drafts = signal<Record<string, string>>({});
@@ -7399,6 +7393,7 @@ function AppearanceSwatchGallery() {
 }
 
 function AppearanceSection() {
+  const followSystem = () => appearanceMode() === "system" && appearanceId() === null;
   return (
     <SettingsSection
       flush={true}
@@ -7406,31 +7401,27 @@ function AppearanceSection() {
       subtitle={tr("settings.appearance.subtitle")}
     >
       <View>
-        <AppearanceSwatchGallery />
         <SettingsConfigRow
-          label={tr("settings.appearance.colorScheme")}
+          label={tr("settings.appearance.followSystem")}
           description={
             resolvedScheme() === "light"
               ? tr("settings.appearance.showingLight")
               : tr("settings.appearance.showingDark")
           }
-          topDivider={true}
           divider={false}
         >
-          <SegmentedTabs
-            size="sm"
-            value={appearanceMode()}
-            options={APPEARANCE_MODES.map(mode => ({
-              value: mode.value,
-              label: tr(mode.labelKey),
-              accessibilityLabel: `appearance-${mode.value}`,
-            }))}
-            onChange={mode => {
-              appearanceId.set(null);
-              applyAppearance(mode as AppearanceMode);
-            }}
+          <ToggleSwitch
+            value={followSystem()}
+            accessibilityLabel="appearance-follow-system"
+            onChange={next => setFollowSystemAppearance(next)}
           />
         </SettingsConfigRow>
+        <If when={!followSystem()}>
+          <View style={{ position: "relative" }}>
+            <RowSeparator edge="top" />
+            <AppearanceSwatchGallery />
+          </View>
+        </If>
         <FontSizeRows />
         <ContentWidthRow />
       </View>

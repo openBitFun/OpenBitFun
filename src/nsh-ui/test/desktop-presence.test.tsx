@@ -220,8 +220,11 @@ test("the pet window follows the fleet's attention and a press opens the Inbox",
   expect(posts.find(post => post.id === "openbitfun-pet")?.level).toBe("floating");
   await app.waitUntil(() => host.fleetCalls.some(call => call.command === "load_agent_companion_pet_spritesheet") ||
     host.calls.some(call => call.command === "load_agent_companion_pet_spritesheet"));
-  // Nothing waits and nothing runs: the pet rests.
+  // Nothing waits and nothing runs: the pet rests and never pops a status helper on hover.
   await app.waitFor("id:pet-bitblob-idle");
+  await app.hover("label:pet-open-inbox");
+  await app.wait(800);
+  expect(app.shows("text:Idle")).toBe(false);
 
   // A job on another device needs you: the Inbox's first group wakes the pet.
   state.attention = {

@@ -119,10 +119,24 @@ export function applyAppearance(mode: AppearanceMode): void {
   storeOnHost(currentAppearanceSelection());
 }
 
-function applyLocalAppearance(mode: AppearanceMode): void {
+/** Toggles whether interface colors follow the OS light/dark appearance. */
+export function setFollowSystemAppearance(follow: boolean): void {
+  if (follow) {
+    applyAppearance("system");
+    return;
+  }
+  chooseAppearancePreset(resolvedScheme() === "light" ? LIGHT_SELECTION : DARK_SELECTION);
+}
+
+/** Applies a local appearance scheme without writing back to the host. */
+export function applyLocalAppearance(mode: AppearanceMode): void {
   appearanceId.set(null);
   appearanceMode.set(mode);
-  setColorScheme(mode);
+  try {
+    setColorScheme(mode);
+  } catch {
+    // Ignore if host forbids runtime scheme override.
+  }
   syncGlobalNativeTheme();
   void Storage.setItem(APPEARANCE_STORAGE_KEY, mode).catch(() => {
     // A full store still shows the choice for this run.

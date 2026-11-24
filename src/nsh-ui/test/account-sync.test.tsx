@@ -78,6 +78,10 @@ test("the appearance is kept on the host, and an applied account change repaints
   const app = await open("../App.tsx", { ...DESKTOP, colorScheme: "dark", host: { handlers: backend.handlers } });
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
+  await app.waitFor("appearance-follow-system");
+  expect(app.shows("appearance-swatch-openbitfun-monochrome")).toBe(false);
+  await app.press("appearance-follow-system");
+  await app.waitFor("appearance-swatch-openbitfun-monochrome");
   await app.press("appearance-swatch-openbitfun-monochrome");
   await app.waitFor("Showing the light scheme");
   await app.waitUntil(() =>
@@ -94,6 +98,18 @@ test("the appearance is kept on the host, and an applied account change repaints
     payload: { keys: ["appearance.selection"] },
   });
   await app.waitFor("Showing the dark scheme");
+  expect(app.shows("appearance-swatch-openbitfun-monochrome")).toBe(true);
+
+  // Another device switched back to Follow System; the swatch gallery hides again.
+  await backend.handlers["openbitfun.invoke"]({
+    action: "set_config",
+    request: { path: "appearance.selection", value: "system" },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "account://settings-applied",
+    payload: { keys: ["appearance.selection"] },
+  });
+  await app.waitUntil(() => !app.shows("appearance-swatch-openbitfun-monochrome"));
 });
 
 test("Account › Profile surfaces an inline error when saving the sync switch fails", async () => {

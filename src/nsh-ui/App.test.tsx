@@ -215,16 +215,23 @@ test("settings switches the scheme it draws and remembers the choice", async () 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
   await app.waitFor("Showing the dark scheme");
+  // Follow system starts ON and hides the theme gallery until turned off.
+  expect(app.shows("appearance-swatch-openbitfun-light")).toBe(false);
 
-  await app.press("appearance-light");
+  await app.press("appearance-follow-system");
+  await app.waitFor("appearance-swatch-openbitfun-light");
+  await app.press("appearance-swatch-openbitfun-light");
   await app.waitFor("Showing the light scheme");
   // The choice survives a restart of the surface.
   expect(app.storage()["openbitfun.nsh.appearance.v1"]).toBe("light");
+  expect(app.storage()["openbitfun.nsh.appearance-id.v1"]).toBe("openbitfun-light");
   // The light scheme's own muted text: the scene repainted, not just its state.
   expect(app.spanStyle("Showing the light scheme").color).toBe("#5c6672ff");
 
-  await app.press("appearance-system");
+  await app.press("appearance-follow-system");
   await app.waitFor("Showing the dark scheme");
+  expect(app.shows("appearance-swatch-openbitfun-light")).toBe(false);
+  expect(app.storage()["openbitfun.nsh.appearance.v1"]).toBe("system");
 });
 
 test("a message sent while a turn runs steers that turn instead of starting another", async () => {

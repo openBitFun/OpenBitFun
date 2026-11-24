@@ -1259,6 +1259,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "settings.appearance.chooseTheme": "選擇主題",
   "settings.appearance.colorScheme": "配色方案",
   "settings.appearance.colorSchemeHint": "跟隨系統外觀，或鎖定淺色／深色模式。",
+  "settings.appearance.followSystem": "介面配色跟隨系統",
   "settings.appearance.schemeSystem": "跟隨系統",
   "settings.appearance.schemeLight": "淺色",
   "settings.appearance.schemeDark": "深色",

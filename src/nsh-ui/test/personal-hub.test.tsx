@@ -548,8 +548,10 @@ test("assistants repaint when switching between dark and light color schemes", a
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("appearance-light");
-  await app.press("appearance-light");
+  await app.waitFor("appearance-follow-system");
+  await app.press("appearance-follow-system");
+  await app.waitFor("appearance-swatch-openbitfun-light");
+  await app.press("appearance-swatch-openbitfun-light");
   await app.waitFor("Showing the light scheme");
 
   // Settings swaps the navigation panel for its own page list; its Back returns to the app's.

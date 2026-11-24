@@ -927,13 +927,16 @@ test("settings scene renders subscription quotas and switches OpenBitFun appeara
   // provider key: the quota is never asked for by the account's email.
   expect(backend.quotaCalls.at(-1)).toMatchObject({ provider: "openai_codex", accountId: "openai_codex" });
 
-  // Select light preset directly from the 3×3 theme gallery.
+  // Turn off Follow System to reveal the 3×3 theme gallery and pick Monochrome.
   await app.press("nav-settings-page-appearance");
+  await app.waitFor("appearance-follow-system");
+  await app.press("appearance-follow-system");
+  await app.waitFor("appearance-swatch-openbitfun-monochrome");
   await app.press("appearance-swatch-openbitfun-monochrome");
   await app.waitFor("Showing the light scheme");
 
-  // Switching scheme back to Dark updates resolved scheme cleanly.
-  await app.press("appearance-dark");
+  // Switching preset back to Dark updates resolved scheme cleanly.
+  await app.press("appearance-swatch-openbitfun-dark");
   await app.waitFor("Showing the dark scheme");
 });
 

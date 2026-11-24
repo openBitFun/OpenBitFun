@@ -25,6 +25,7 @@ import { servedBackendParams } from "./servedBackend";
 import { loadSettingsValues } from "./settingsStore";
 import { navigateScene, type SceneId } from "./state";
 import { APPEARANCE_PRESETS, selectAppearancePreset, type AppearanceId } from "./theme";
+import { applyLocalAppearance } from "./themeStore";
 import { controllerPort } from "./controller/controllerPort";
 
 const REQUEST_EVENT = "agentic://openbitfun-control-request";
@@ -256,7 +257,10 @@ export async function applyControlEffect(effect: ControlEffect): Promise<void> {
     }
     if (paths.includes("appearance.selection")) {
       const id = typeof effect.value === "string" ? effect.value : "";
-      if (APPEARANCE_PRESETS.some(preset => preset.id === id)) {
+      if (id === "system") {
+        applyLocalAppearance("system");
+        status = "applied";
+      } else if (APPEARANCE_PRESETS.some(preset => preset.id === id)) {
         selectAppearancePreset(id as AppearanceId);
         status = "applied";
       } else {

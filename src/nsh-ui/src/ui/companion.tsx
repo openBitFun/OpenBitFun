@@ -217,7 +217,6 @@ export function PetWindowContent(props: PetWindowContentProps) {
         role="button"
         accessibilityLabel="pet-open-inbox"
         hitSlop={touchSlop(props.height)}
-        tooltip={compactLayout() ? undefined : <TooltipBubble text={stateWord(petState())} />}
         onPress={() => props.onOpen()}
         activeStyle={tactileActiveStyle(0.96)}
         focusVisibleStyle={focusRingStyle()}
