@@ -544,3 +544,44 @@ test("centered split divider swap button exchanges left and right sessions and z
   await app.waitFor("Port the terminal.");
   await app.waitFor("Port the session list.");
 });
+
+test("primary, split, and BTW composers paste text via controlled selection insertion without InputRef.insertText", async () => {
+  const backend = createBackend();
+  withCommands(backend, {
+    btw_ask_stream: () => ({ ok: true }),
+    btw_cancel: () => null,
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Message");
+
+  // Primary composer: type + consecutive pastes + CRLF normalization.
+  await app.type("composer", "hello ");
+  await app.paste("composer", { text: "world" });
+  await app.waitUntil(() => app.value("composer") === "hello world");
+  await app.paste("composer", { text: "!" });
+  await app.waitUntil(() => app.value("composer") === "hello world!");
+  await app.clear("composer");
+  await app.paste("composer", { text: "line1\r\nline2" });
+  await app.waitUntil(() => app.value("composer") === "line1\nline2");
+
+  // Secondary split composer: type + consecutive pastes.
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("id:secondary-session-pane");
+  await app.type("secondary-composer", "sec: ");
+  await app.paste("secondary-composer", { text: "alpha" });
+  await app.waitUntil(() => app.value("secondary-composer") === "sec: alpha");
+  await app.paste("secondary-composer", { text: " beta" });
+  await app.waitUntil(() => app.value("secondary-composer") === "sec: alpha beta");
+
+  // BTW composer: open via /btw and paste text.
+  await app.clear("composer");
+  await app.type("composer", "/btw");
+  await app.press("Send");
+  await app.waitFor("side-question-sheet");
+  await app.type("side-question-input", "btw: ");
+  await app.paste("side-question-input", { text: "note" });
+  await app.waitUntil(() => app.value("side-question-input") === "btw: note");
+});

@@ -969,13 +969,21 @@ async function attachRemoteDroppedImage(uri: string, name: string, mime: string)
   }
 }
 
-function insertTextIntoComposer(text: string): void {
-  if (!text) return;
-  if (composerInputRef && typeof composerInputRef.insertText === "function") {
-    composerInputRef.insertText(text);
-    return;
+/** Computes the post-edit caret index directly from `prev` and `next` text (order-independent of `onSelectionChange`). */
+function estimateCaretAfterEdit(prev: string, next: string): number {
+  let prefix = 0;
+  const minLen = Math.min(prev.length, next.length);
+  while (prefix < minLen && prev.charCodeAt(prefix) === next.charCodeAt(prefix)) {
+    prefix += 1;
   }
-  composerText.set(`${composerText()}${text}`);
+  let suffix = 0;
+  while (
+    suffix < minLen - prefix &&
+    prev.charCodeAt(prev.length - 1 - suffix) === next.charCodeAt(next.length - 1 - suffix)
+  ) {
+    suffix += 1;
+  }
+  return next.length - suffix;
 }
 
 function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
@@ -1030,7 +1038,7 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
   }
 }
 
-async function handleComposerPaste(event: PasteEvent): Promise<void> {
+async function handleComposerPaste(event: PasteEvent, insertText: (text: string) => void): Promise<void> {
   let handledMediaOrFiles = false;
   if (event.files && event.files.length > 0) {
     for (const file of event.files) {
@@ -1084,7 +1092,7 @@ async function handleComposerPaste(event: PasteEvent): Promise<void> {
     }
     pushToast(tr("sessions.pastedSaveFailed"), "warning");
   }
-  insertTextIntoComposer(text);
+  insertText(text);
 }
 
 function handleComposerFileDrop(event: { uris: string[]; mimeTypes: string[] }): void {
@@ -6545,7 +6553,7 @@ interface SessionComposerProps {
   onSubmit: () => void;
   onStop: () => void;
   onFocusPane?: () => void;
-  onPaste?: (event: PasteEvent) => void;
+  onPaste?: (event: PasteEvent, insertText: (text: string) => void) => void;
   dragActive?: Signal<boolean>;
   onFileDrop?: (event: { uris: string[]; mimeTypes: string[] }) => void;
   cardRef?: (el: ViewRef | null) => void;
@@ -6574,7 +6582,7 @@ interface SessionComposerProps {
   voiceActions?: VoiceComposerActions;
   promptSuggestion?: () => string;
   onAcceptPromptSuggestion?: () => void;
-  onInputChange?: (value: string) => void;
+  onInputChange?: (value: string, caret: number) => void;
   onSelectionChange?: (end: number) => void;
   onCaretMove?: (bounds: Bounds) => void;
   onKeyPress?: (key: string) => void;
@@ -6598,6 +6606,37 @@ function SessionComposer(props: SessionComposerProps) {
   const collapseInline = () => isCompact() || (paneWidth() > 0 && paneWidth() < 420);
   const isDisabled = () => Boolean(props.disabled?.());
   const btwMode = props.pane === "btw";
+  let localInputRef: InputRef | undefined;
+  let selectionStart: number | null = null;
+  let selectionEnd: number | null = null;
+  let lastTrackedText = props.draft();
+
+  const applyDraftValue = (next: string, caret: number) => {
+    selectionStart = caret;
+    selectionEnd = caret;
+    lastTrackedText = next;
+    if (props.onInputChange) props.onInputChange(next, caret);
+    else props.draft.set(next);
+  };
+
+  // Controlled insertion at the tracked selection range + caret restore via `setSelection`.
+  // Avoids `InputRef.insertText`, which is unimplemented on NSH macOS and GPUI hosts.
+  const insertTextAtSelection = (rawText: string) => {
+    if (isDisabled()) return;
+    const text = rawText.replace(/\r\n?/g, "\n");
+    if (!text) return;
+    const cur = props.draft();
+    const selectionFresh = cur === lastTrackedText && selectionStart !== null && selectionEnd !== null;
+    const start = selectionFresh ? Math.max(0, Math.min(cur.length, selectionStart!)) : cur.length;
+    const end = selectionFresh ? Math.max(start, Math.min(cur.length, selectionEnd!)) : cur.length;
+    const next = `${cur.slice(0, start)}${text}${cur.slice(end)}`;
+    const caret = start + text.length;
+    applyDraftValue(next, caret);
+    queueMicrotask(() => {
+      localInputRef?.focus();
+      localInputRef?.setSelection(caret, caret);
+    });
+  };
 
   const voiceActions: VoiceComposerActions = props.voiceActions ?? {
     insert(text) {
@@ -6667,7 +6706,10 @@ function SessionComposer(props: SessionComposerProps) {
         >
           <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.xs }}>
             <Input
-              ref={el => props.inputRef?.(el)}
+              ref={el => {
+                localInputRef = el;
+                props.inputRef?.(el);
+              }}
               value={props.draft()}
               placeholder={props.placeholder()}
               accessibilityLabel={props.inputAccessibilityLabel}
@@ -6689,18 +6731,29 @@ function SessionComposer(props: SessionComposerProps) {
               }}
               onFocus={() => props.onFocusPane?.()}
               onChange={event => {
-                if (props.onInputChange) props.onInputChange(event.value);
-                else props.draft.set(event.value);
+                const prev = props.draft();
+                const next = event.value;
+                const caret = next === prev ? (selectionEnd ?? next.length) : estimateCaretAfterEdit(prev, next);
+                applyDraftValue(next, caret);
               }}
               onCompositionChange={event => {
                 localComposing.set(event.composing);
                 props.onComposingChange?.(event.composing);
               }}
-              onSelectionChange={
-                props.onSelectionChange ? event => props.onSelectionChange!(event.end) : undefined
-              }
+              onSelectionChange={event => {
+                selectionStart = event.start;
+                selectionEnd = event.end;
+                lastTrackedText = props.draft();
+                props.onSelectionChange?.(event.end);
+              }}
               onCaretMove={props.onCaretMove ? event => props.onCaretMove!(event.pageBounds) : undefined}
-              onPaste={props.onPaste}
+              onPaste={
+                props.onPaste
+                  ? event => {
+                      if (!isDisabled()) props.onPaste!(event, insertTextAtSelection);
+                    }
+                  : undefined
+              }
               onKeyPress={props.onKeyPress ? event => props.onKeyPress!(event.key) : undefined}
               onSubmit={() => {
                 if (!localComposing()) props.onSubmit();
@@ -7180,7 +7233,7 @@ function ComposerDock() {
       onFocusPane={() => {
         if (splitPaneOpen()) focusPane(0);
       }}
-      onPaste={event => void handleComposerPaste(event)}
+      onPaste={(event, insertText) => void handleComposerPaste(event, insertText)}
       dragActive={composerFileDragActive}
       onFileDrop={event => handleComposerFileDrop(event)}
       cardRef={el => composerCardAnchor.set(el)}
@@ -7219,17 +7272,10 @@ function ComposerDock() {
       voiceActions={composerVoiceActions}
       promptSuggestion={activePromptSuggestion}
       onAcceptPromptSuggestion={acceptActivePromptSuggestion}
-      onInputChange={next => {
-        const prev = composerText();
+      onInputChange={(next, caret) => {
         composerText.set(next);
-        const prevCaret = composerCaretPos();
-        const delta = next.length - prev.length;
-        const estimatedCaret =
-          prevCaret >= 0 && prevCaret <= prev.length
-            ? Math.max(0, Math.min(next.length, prevCaret + delta))
-            : next.length;
-        composerCaretPos.set(estimatedCaret);
-        syncInlineMention(next, estimatedCaret);
+        composerCaretPos.set(caret);
+        syncInlineMention(next, caret);
       }}
       onComposingChange={composing => composerComposing.set(composing)}
       onSelectionChange={end => {
@@ -9889,15 +9935,6 @@ function SecondaryComposerDock() {
     permissionModePickerOpen.set(next);
   };
 
-  const insertSecondaryText = (text: string) => {
-    if (!text) return;
-    if (inputRef) {
-      inputRef.insertText(text);
-    } else {
-      secondaryComposerText.update(curr => `${curr}${text}`);
-    }
-  };
-
   const secondaryDropOpts = () => ({
     workspaceRoot: secondaryWorkspaceRoot() || activeWorkspaceRoot() || "",
     idPrefix: "sec-",
@@ -9905,7 +9942,7 @@ function SecondaryComposerDock() {
     onAddFile: addSecondaryFileAttachment,
   });
 
-  const handleSecondaryPaste = async (event: PasteEvent) => {
+  const handleSecondaryPaste = async (event: PasteEvent, insertText: (text: string) => void) => {
     focusPane(1);
     const ws = secondaryWorkspaceRecord();
     const isRemote = Boolean(
@@ -9918,7 +9955,7 @@ function SecondaryComposerDock() {
       ...secondaryDropOpts(),
       workspaceId: secondaryWorkspaceId() || activeWorkspaceId() || undefined,
       isRemote,
-      onInsertText: insertSecondaryText,
+      onInsertText: insertText,
       onFocusInput: () => inputRef?.focus(),
     });
   };
@@ -9970,7 +10007,7 @@ function SecondaryComposerDock() {
       onSubmit={submitSecondary}
       onStop={() => void stopSecondaryTurn()}
       onFocusPane={() => focusPane(1)}
-      onPaste={event => void handleSecondaryPaste(event)}
+      onPaste={(event, insertText) => void handleSecondaryPaste(event, insertText)}
       onFileDrop={event => {
         if (event.uris?.length) handlePaneUriDrop(event.uris, event.mimeTypes ?? [], secondaryDropOpts());
       }}
@@ -10181,15 +10218,6 @@ function BtwSessionPane(props?: { compact?: boolean }) {
     }
   });
 
-  const insertBtwText = (text: string) => {
-    if (!text) return;
-    if (inputRef) {
-      inputRef.insertText(text);
-    } else {
-      sideQuestionDraft.update(curr => `${curr}${text}`);
-    }
-  };
-
   const btwDropOpts = () => ({
     workspaceRoot: activeWorkspaceRoot() || "",
     idPrefix: "btw-",
@@ -10197,7 +10225,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
     onAddFile: addSideQuestionFileAttachment,
   });
 
-  const handleBtwPaste = async (event: PasteEvent) => {
+  const handleBtwPaste = async (event: PasteEvent, insertText: (text: string) => void) => {
     const ws = activeWorkspace() as
       | ({ workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined);
     const isRemote = Boolean(
@@ -10211,7 +10239,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
       ...btwDropOpts(),
       workspaceId: activeWorkspaceId() || undefined,
       isRemote,
-      onInsertText: insertBtwText,
+      onInsertText: insertText,
       onFocusInput: () => inputRef?.focus(),
     });
   };
@@ -10495,7 +10523,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
           onRemoveFile={id => removeSideQuestionFileAttachment(id)}
           onSubmit={submit}
           onStop={() => void cancelSideQuestion()}
-          onPaste={event => void handleBtwPaste(event)}
+          onPaste={(event, insertText) => void handleBtwPaste(event, insertText)}
           onFileDrop={event => {
             if (event.uris?.length) handlePaneUriDrop(event.uris, event.mimeTypes ?? [], btwDropOpts());
           }}
