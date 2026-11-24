@@ -3999,6 +3999,8 @@ export function fleetDeviceRow(
     rootPath: string;
     kind?: string;
     sshHost?: string;
+    connectionId?: string;
+    connectionName?: string;
     sessions: Array<Record<string, unknown>>;
     isHostCurrent?: boolean;
   }>,

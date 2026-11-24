@@ -1,4 +1,5 @@
 import { expect, open, test } from "nsh/test";
+import { markdownPreviewCut, markdownPreviewSlice } from "../src/format";
 import { createBackend, openSession, showAllSessions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -865,9 +866,13 @@ test("a long history opens on its newest turns and loads earlier ones on request
   await app.waitUntil(() =>
     transcriptCalls.filter(call => typeof call.before_turn_index === "number").length > beforeCount,
   );
-  // Earlier turns prepend cleanly while newest Answer 24 remains mounted.
-  await app.waitFor("Answer 5");
+  // Earlier turns prepend without jumping the viewport away from Answer 24,
+  // and the jump rail reflects all 20 loaded turns (5..24) so jumping to
+  // turn 1 reveals Answer 5 cleanly.
   expect(app.texts().join("\n")).toContain("Answer 24");
+  await app.waitFor("turn-jump-20");
+  await app.press("turn-jump-1");
+  await app.waitFor("Answer 5");
   // Never re-fetched a full 24-turn window.
   expect(transcriptCalls.every(call => Number(call.limit ?? 0) <= 10)).toBe(true);
 });
@@ -927,10 +932,12 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
 
   await openSession(app, "Long day");
   const started = Date.now();
-  await app.waitFor("Answer 199", { timeout: 20_000 });
+  // List virtualization opens directly at the newest turn without mounting all 200 turns.
+  await app.waitFor("Paragraph 0: the long reply keeps going.", { timeout: 20_000 });
   const renderMs = Date.now() - started;
   expect(renderMs).toBeLessThan(20_000);
-  // Tool output stays collapsed and is not laid out until the row is opened.
+  // Early offscreen turns and collapsed tool output stay unmounted at the bottom.
+  expect(app.texts().join("\n")).not.toContain("Question 1");
   expect(app.texts().join("\n")).not.toContain("step 1 done");
   // The oversized reply opens as a preview and lays out the rest on request.
   expect(app.texts().join("\n")).toContain("Paragraph 0:");
@@ -940,10 +947,18 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
   await app.press(fullReply!);
   await app.waitFor("Paragraph 599: the long reply keeps going.");
 
-  // A settled card opens on press.
+  // Jumping to Turn 1 mounts it on demand; its settled tool card stays collapsed until pressed.
+  await app.press("turn-jump-1");
+  await app.waitFor("Question 1");
   const outputShown = () => app.texts().some(text => text.includes("step 1 done"));
+  expect(outputShown()).toBe(false);
   await app.press("tool-card-ExecCommand >> nth=0");
   await app.waitUntil(outputShown);
+
+  // Return to the bottom for the live stream, then confirm the settled card's open state
+  // survives both virtualization unmount/remount and post-turn history reload.
+  await app.press("Latest");
+  await app.waitFor("Paragraph 599: the long reply keeps going.");
 
   const send = (event: string, payload: Record<string, unknown>) =>
     app.host.send("openbitfun.event", { event, payload: { sessionId: "session-perf", turnId: "perf-live", ...payload } });
@@ -953,15 +968,16 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
     await send("agentic://text-chunk", { roundId: "r-live", text: chunk === 1999 ? " stream-finished." : `w${chunk} ` });
   }
   await app.waitUntil(() => app.texts().some(text => text.includes("stream-finished.")), { timeout: 20_000 });
-  // About a millisecond per chunk headless with 200 settled turns on screen: the
-  // settled rows are not evaluated again while the live reply grows.
+  // About a millisecond per chunk headless with 200 settled turns in the list:
+  // settled rows stay virtualized and are not evaluated again while the live reply grows.
   expect(Date.now() - streamStarted).toBeLessThan(30_000);
   await send("agentic://dialog-turn-completed", {});
   // The host's durable fence settles the turn (transcript view, wave 4).
   await send("agentic://session-history-changed", { settledTurnId: "perf-live" });
   await app.waitFor("Streaming response…", { state: "gone", timeout: 10_000 });
-  // The settled card the reader opened stays open across the reload.
-  expect(outputShown()).toBe(true);
+  // Jumping back to Turn 1 confirms the settled card the reader opened stays open across reload.
+  await app.press("turn-jump-1");
+  await app.waitUntil(outputShown);
 }, 120_000);
 
 test("a narrow chat runs full width with the composer controls in its + menu", async () => {
@@ -1996,4 +2012,145 @@ test("switching away from a session releases hidden transcript state and reloads
   await switchPromise;
   await app.waitFor("Port the session list.");
   await app.waitFor("Add the plan and fix the imports.");
+});
+
+test("a single heavy turn with hundreds of items virtualizes its cells and halts auto-backfill", async () => {
+  const makeHeavyTurn = (turnIndex: number, itemCount: number) => ({
+    turnId: `heavy-turn-${turnIndex}`,
+    turnIndex,
+    kind: "user_dialog",
+    status: "completed",
+    settled: true,
+    user: { id: `u-${turnIndex}`, text: `Heavy prompt ${turnIndex}`, timestampMs: 1763100000000 + turnIndex * 1000 },
+    items: [
+      ...Array.from({ length: itemCount }, (_, i) => ({
+        kind: "tool" as const,
+        id: `t-${turnIndex}-${i}`,
+        roundIndex: 0,
+        tool: {
+          id: `t-${turnIndex}-${i}`,
+          name: "ExecCommand",
+          status: "completed",
+          startMs: 1763100000000 + i,
+          inputPreview: `step-${turnIndex}-${i}`,
+          input: { cmd: `echo step-${turnIndex}-${i}`, payload: "x".repeat(2048) },
+          result: { output: `output-${turnIndex}-${i}: ${"y".repeat(2048)}`, exit_code: 0 },
+          success: true,
+        },
+      })),
+      {
+        kind: "text" as const,
+        id: `final-${turnIndex}`,
+        roundIndex: 0,
+        text: `Heavy conclusion ${turnIndex}`,
+      },
+    ],
+    startTimeMs: 1763100000000 + turnIndex * 1000,
+    assistantTimestampMs: 1763100000500 + turnIndex * 1000,
+  });
+
+  const allTurns = [
+    makeHeavyTurn(0, 20),
+    makeHeavyTurn(1, 20),
+    makeHeavyTurn(2, 20),
+    makeHeavyTurn(3, 20),
+    makeHeavyTurn(4, 240),
+    makeHeavyTurn(5, 240),
+  ];
+  const backend = createBackend({
+    sessions: [
+      {
+        sessionId: "session-heavy",
+        sessionName: "Heavy agent turn",
+        lastUpdated: 1763100006000,
+        messageCount: 12,
+        turnCount: allTurns.length,
+        agentType: "Standard",
+      } as never,
+    ],
+  });
+  const transcriptCalls: Array<Record<string, unknown>> = [];
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (payload: unknown) => {
+    const args = (payload ?? {}) as { action?: string; request?: Record<string, unknown> };
+    if (args.action === "get_session_transcript_view" && args.request?.session_id === "session-heavy") {
+      transcriptCalls.push({ ...(args.request ?? {}) });
+      const limit = Math.max(1, Number(args.request?.limit ?? 10));
+      const before = typeof args.request?.before_turn_index === "number" ? args.request.before_turn_index : undefined;
+      if (before !== undefined) {
+        const end = Math.min(allTurns.length, Math.max(0, before));
+        const start = Math.max(0, end - limit);
+        return {
+          ok: true,
+          value: { sessionId: "session-heavy", mode: "before", turns: allTurns.slice(start, end), hasEarlier: start > 0 },
+          transport: "dev",
+        };
+      }
+      const cursor = typeof args.request?.cursor === "string" ? args.request.cursor : undefined;
+      const latestTurn = allTurns[allTurns.length - 1]!;
+      if (cursor && cursor === `tv1:${latestTurn.turnIndex}:fake:${latestTurn.turnId}`) {
+        return {
+          ok: true,
+          value: {
+            sessionId: "session-heavy",
+            mode: "after",
+            keptThroughIndex: latestTurn.turnIndex,
+            turns: [],
+            cursor,
+            hasEarlier: true,
+          },
+          transport: "dev",
+        };
+      }
+      const start = Math.max(0, allTurns.length - limit);
+      const slice = allTurns.slice(start);
+      const last = slice[slice.length - 1];
+      return {
+        ok: true,
+        value: {
+          sessionId: "session-heavy",
+          mode: "full",
+          turns: slice,
+          cursor: last ? `tv1:${last.turnIndex}:fake:${last.turnId}` : undefined,
+          hasEarlier: start > 0,
+        },
+        transport: "dev",
+      };
+    }
+    return baseInvoke(payload);
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Heavy agent turn");
+  await app.waitFor("Heavy conclusion 5");
+
+  // Block-level virtualization keeps the top items of the 240-item turn unmounted while at the bottom.
+  const screenText = app.texts().join("\n");
+  expect(screenText).toContain("Heavy conclusion 5");
+  expect(screenText).not.toContain("step-5-0");
+  expect(screenText).not.toContain("Heavy prompt 4");
+
+  // Stage 1 already exceeded INITIAL_BACKFILL_MAX_ITEMS (482 > 120), so auto-backfill must not fire.
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(transcriptCalls.filter(call => typeof call.before_turn_index === "number")).toHaveLength(0);
+
+  // Jumping to the top of the loaded tail triggers upward paging (`onLoadMoreAtStart`)
+  // using the smaller adaptive batch size (4, not 10) for heavy turns.
+  await app.press("turn-jump-1");
+  await app.waitUntil(() => transcriptCalls.some(call => typeof call.before_turn_index === "number"));
+  const beforeCall = transcriptCalls.find(call => typeof call.before_turn_index === "number");
+  expect(beforeCall).toMatchObject({ before_turn_index: 4, limit: 4 });
+  await app.waitFor("turn-jump-6");
+});
+
+test("markdownPreviewCut and markdownPreviewSlice bound oversized fenced code blocks cleanly", () => {
+  const singleFence = "```rust\n" + Array.from({ length: 400 }, (_, i) => `let line_${i} = ${i};`).join("\n") + "\n```";
+  const cut = markdownPreviewCut(singleFence);
+  expect(cut).toBeGreaterThan(0);
+  expect(cut).toBeLessThan(singleFence.length);
+  expect(cut).toBeLessThanOrEqual(4_000);
+  const preview = markdownPreviewSlice(singleFence, cut);
+  // Preview closes the open fence so the Markdown renderer does not ingest an unterminated code block.
+  const fenceCount = (preview.match(/^```/gm) ?? []).length;
+  expect(fenceCount % 2).toBe(0);
 });

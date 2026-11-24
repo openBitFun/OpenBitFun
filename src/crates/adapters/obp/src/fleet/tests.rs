@@ -904,7 +904,7 @@ async fn old_mesh_peer_indexed_by_polling_and_forwarded() {
     let navigator = json!({
         "opened": [
             {"id": "local_old", "name": "legacy-repo", "rootPath": "C:\\src\\legacy", "workspaceKind": "normal", "sshHost": "localhost"},
-            {"id": "remote_x", "name": "server", "rootPath": "/srv/app", "workspaceKind": "remote", "sshHost": "build.example"}
+            {"id": "remote_x", "name": "server", "rootPath": "/srv/app", "workspaceKind": "remote", "sshHost": "build.example", "connectionId": "ssh-root@build.example", "connectionName": "Build Server"}
         ],
         "recent": [{"id": "asst_1", "name": "Helper", "rootPath": "/a", "workspaceKind": "assistant"}],
         "selectedId": "local_old",
@@ -979,6 +979,11 @@ async fn old_mesh_peer_indexed_by_polling_and_forwarded() {
         .unwrap();
     assert_eq!(remote.kind, FleetWorkspaceKind::RemoteSsh);
     assert_eq!(remote.ssh_host.as_deref(), Some("build.example"));
+    assert_eq!(
+        remote.connection_id.as_deref(),
+        Some("ssh-root@build.example")
+    );
+    assert_eq!(remote.connection_name.as_deref(), Some("Build Server"));
     let prompts = fleet.index.prompts();
     let prompt = prompts
         .prompts

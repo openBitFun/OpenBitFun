@@ -30,6 +30,7 @@ import { tr } from "./i18n";
 import { clearPermissionsForSession } from "./permissionStore";
 import { clearPromptSuggestion, hydratePromptSuggestionFromTranscript } from "./promptSuggestionStore";
 import { markSessionSeen } from "./sessionStatusStore";
+import { ensureRemoteConnected } from "./sshRemoteStore";
 import {
   activeSessionDevice,
   activeSessionId,
@@ -54,8 +55,8 @@ import {
   secondarySessionKey,
   BACKFILL_DELAY_MS,
   BACKFILL_TURN_BATCH,
+  earlierPageSizeFor,
   earliestTurnIndexOf,
-  INITIAL_BACKFILL_TARGET,
   INITIAL_FAST_TURN_COUNT,
   mergePrependedTurns,
   secondaryWorkspaceId,
@@ -63,9 +64,9 @@ import {
   sessionKey,
   sessionLastActivityMs,
   sessions,
+  shouldAutoBackfillTurns,
   splitPaneOpen,
   TAIL_REFRESH_MIN_LIMIT,
-  TURN_WINDOW_STEP,
   workspaces,
   type PendingTurnState,
 } from "./state";
@@ -136,6 +137,8 @@ export const secondaryWorkspaceRecord = computed<WorkspaceRecord | null>(() => {
         rootPath: row.rootPath,
         workspaceKind: row.kind === "remote_ssh" ? "remote" : row.kind,
         ...(row.sshHost ? { sshHost: row.sshHost } : {}),
+        ...(row.connectionId ? { connectionId: row.connectionId } : {}),
+        ...(row.connectionName ? { connectionName: row.connectionName } : {}),
       };
     }
   }
@@ -374,6 +377,8 @@ export function selectSecondarySession(
   });
 
   markSessionSeen(sessionId, sessionLastActivityMs(row) ?? fleetRow?.lastActivityMs);
+  const secondaryWs = secondaryWorkspaceRecord();
+  if (secondaryWs) void ensureRemoteConnected(secondaryWs);
   void loadSecondaryTurns(sessionId, { silent: true });
   void loadQuestionMailbox(sessionId);
 }
@@ -477,12 +482,12 @@ export function clearSecondarySession(): void {
 function scheduleSecondaryBackfill(sessionId: string, key: string, expectedLoadSeq: number): void {
   cancelPendingSecondaryBackfill();
   if (!secondaryTranscriptHasEarlier()) return;
-  if (secondaryTurns().length >= INITIAL_BACKFILL_TARGET) return;
+  if (!shouldAutoBackfillTurns(secondaryTurns())) return;
   secondaryBackfillTimer = setTimeout(() => {
     secondaryBackfillTimer = null;
     if (!splitPaneOpen() || secondaryTurnsLoadSeq !== expectedLoadSeq || secondarySessionKey() !== key) return;
     if (secondaryEarlierInFlight || !secondaryTranscriptHasEarlier()) return;
-    if (secondaryTurns().length === 0 || secondaryTurns().length >= INITIAL_BACKFILL_TARGET) return;
+    if (!shouldAutoBackfillTurns(secondaryTurns())) return;
     if (secondaryAutoBackfillGuard && !secondaryAutoBackfillGuard()) return;
     void fetchSecondaryEarlierPage(sessionId, key, BACKFILL_TURN_BATCH, {
       isAutoBackfill: true,
@@ -545,7 +550,7 @@ async function fetchSecondaryEarlierPage(
       options?.isAutoBackfill &&
       more &&
       older.length > 0 &&
-      secondaryTurns().length < INITIAL_BACKFILL_TARGET
+      shouldAutoBackfillTurns(secondaryTurns())
     ) {
       scheduleSecondaryBackfill(sessionId, key, loadSeqSnapshot);
     }
@@ -654,7 +659,7 @@ export async function loadSecondaryTurns(
       if (view.runningTurn?.activeTurnId) {
         notifySecondaryRunningTurn(sessionId, device, view.runningTurn);
       }
-      if (view.mode === "full" && view.hasEarlier && list.length < INITIAL_BACKFILL_TARGET) {
+      if (view.mode === "full" && view.hasEarlier && shouldAutoBackfillTurns(list)) {
         scheduleSecondaryBackfill(sessionId, key, seq);
       }
       loaded = list;
@@ -669,7 +674,7 @@ export async function loadSecondaryEarlierTurns(): Promise<void> {
   const key = secondarySessionKey();
   if (!sessionId || !key) return;
   cancelPendingSecondaryBackfill();
-  await fetchSecondaryEarlierPage(sessionId, key, TURN_WINDOW_STEP, { isAutoBackfill: false });
+  await fetchSecondaryEarlierPage(sessionId, key, earlierPageSizeFor(secondaryTurns()), { isAutoBackfill: false });
 }
 
 export async function sendSecondaryTurn(

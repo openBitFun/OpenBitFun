@@ -6,12 +6,13 @@
  */
 
 import { Buffer } from "buffer";
-import { Canvas, cleanup, Clipboard, computed, effect, Image, openUrl, Overlay, reduceMotion, Scroll, signal, Text, untracked, View } from "nsh";
+import { Canvas, cleanup, Clipboard, computed, effect, Image, List, openUrl, Overlay, reduceMotion, Scroll, signal, Text, untracked, View } from "nsh";
 import type {
   Align,
   Bounds,
   InputRef,
   JSX,
+  ListRef,
   Motion,
   PasteEvent,
   Placement,
@@ -20,6 +21,7 @@ import type {
   Signal,
   ViewRef,
   ViewStyle,
+  ViewToken,
 } from "nsh";
 import { DiffView, Input, TextView } from "nsh/base";
 import { invokeCommand } from "../bridge";
@@ -99,6 +101,7 @@ import {
   LARGE_MARKDOWN_CHARS,
   lineCountOf,
   markdownPreviewCut,
+  markdownPreviewSlice,
   groupExploreItems,
   isExploreTool,
   pathOf,
@@ -260,6 +263,7 @@ import {
   runningTurnId,
   secondarySessionDevice,
   secondarySessionId,
+  secondarySessionKey,
   secondaryWorkspaceId,
   sendNotice,
   sendTurn,
@@ -323,6 +327,7 @@ import {
 } from "../theme";
 import { searchRevealTurn } from "../globalSearchStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
+import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import { Icon, type IconName } from "../ui/icons";
 import { openImageLightbox } from "../ui/ImageLightbox";
 import { OpenBitFunLogoMark } from "../ui/studio";
@@ -676,6 +681,7 @@ const transcriptMatchKeys = computed(() => {
     .map((turn, index) => turnKeyOf(turn) || `index-${index}`);
 });
 const transcriptMatchCount = computed(() => transcriptMatchKeys().length);
+const matchingSearchTurnIds = computed(() => new Set(transcriptMatchKeys()));
 const searchMatchIndex = signal(0);
 const activeSearchTurnKey = computed(() => {
   const keys = transcriptMatchKeys();
@@ -683,37 +689,25 @@ const activeSearchTurnKey = computed(() => {
   return keys[Math.min(searchMatchIndex(), keys.length - 1)] ?? "";
 });
 
-/** The rendered view of each persisted turn, keyed by `turnKeyOf`, for search and external turn jumps. */
-const turnRefs = new Map<string, ViewRef>();
-/** The rendered view of each persisted turn, keyed by `TurnRow.key`, for the left-edge jump rail. */
-const turnRowRefs = new Map<string, ViewRef>();
-/** Y-offset of each rendered turn inside the transcript column (keyed by `TurnRow.key`), for rail tracking. */
-const turnOffsets = new Map<string, number>();
 const activeRailTurnKey = signal("");
+const hoveredPrimaryTurnKey = signal("");
+const hoveredSecondaryTurnKey = signal("");
 /** Briefly prevents an upward animated rail jump from re-locking `followLatest` on its first frames near the bottom. */
 let suppressAutoFollowUntil = 0;
 
-function registerTurnRef(key: string, el: ViewRef | null | undefined): void {
-  if (!key) return;
-  if (el) turnRefs.set(key, el);
-  else turnRefs.delete(key);
-}
-
-function registerTurnRowRef(rowKey: string, el: ViewRef | null | undefined): void {
-  if (!rowKey) return;
-  if (el) turnRowRefs.set(rowKey, el);
-  else {
-    turnRowRefs.delete(rowKey);
-    turnOffsets.delete(rowKey);
+function syncActiveRailForLatest(): void {
+  const rows = visibleTurnRows();
+  if (rows.length === 0) {
+    if (activeRailTurnKey() !== "") activeRailTurnKey.set("");
+    return;
+  }
+  if (followLatest()) {
+    const last = rows[rows.length - 1]!.key;
+    if (activeRailTurnKey() !== last) activeRailTurnKey.set(last);
   }
 }
 
-function recordTurnOffset(rowKey: string, y: number): void {
-  if (!rowKey || !Number.isFinite(y)) return;
-  turnOffsets.set(rowKey, y);
-}
-
-function syncActiveRailTurn(scrollY: number): void {
+function syncActiveRailFromViewable(viewableItems: ReadonlyArray<ViewToken<TranscriptBlockRow>>): void {
   const rows = visibleTurnRows();
   if (rows.length === 0) {
     if (activeRailTurnKey() !== "") activeRailTurnKey.set("");
@@ -724,33 +718,29 @@ function syncActiveRailTurn(scrollY: number): void {
     if (activeRailTurnKey() !== last) activeRailTurnKey.set(last);
     return;
   }
-  const threshold = scrollY + 96;
-  let current = rows[0]!.key;
-  for (const row of rows) {
-    const offset = turnOffsets.get(row.key);
-    if (offset !== undefined && offset <= threshold) {
-      current = row.key;
-    }
+  const firstTurnKey = viewableItems[0]?.item?.turnKey;
+  if (firstTurnKey && activeRailTurnKey() !== firstTurnKey) {
+    activeRailTurnKey.set(firstTurnKey);
   }
-  if (activeRailTurnKey() !== current) activeRailTurnKey.set(current);
 }
 
 function jumpToTurn(rowKey: string): void {
-  const ref = rowKey ? turnRowRefs.get(rowKey) : undefined;
-  if (!ref) return;
+  const index = rowKey ? primaryTranscriptBlocks().firstIndexByTurnKey.get(rowKey) : undefined;
+  if (index === undefined) return;
   followLatest.set(false);
   suppressAutoFollowUntil = Date.now() + 500;
   cancelScheduledTranscriptScroll();
   activeRailTurnKey.set(rowKey);
-  ref.reveal({ vertical: "start", animated: true });
+  transcriptListRef?.scrollToIndex({ index, viewPosition: 0, animated: true });
 }
 
 function revealSearchMatch(): void {
   const key = activeSearchTurnKey();
-  const ref = key ? turnRefs.get(key) : undefined;
-  if (!ref) return;
+  const index = key ? primaryTranscriptBlocks().firstIndexByTurnId.get(key) : undefined;
+  if (index === undefined) return;
   followLatest.set(false);
-  ref.reveal({ vertical: "start" });
+  cancelScheduledTranscriptScroll();
+  transcriptListRef?.scrollToIndex({ index, viewPosition: 0, animated: false });
 }
 
 /** Steps to the previous (-1) or next (1) matching turn, wrapping at the ends. */
@@ -1246,19 +1236,6 @@ function SessionHeaderBar(props: {
             ...(focusActive() ? { cursor: "pointer", userSelect: "none" } : {}),
           }}
         >
-          <If when={Boolean(props.focused?.())}>
-            <View
-              testID={props.focusIndicatorTestID}
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: radii.pill,
-                backgroundColor: palette().accent,
-                flexShrink: 0,
-                pointerEvents: "none",
-              }}
-            />
-          </If>
           <If when={Boolean(props.leadingIcon)}>
             <Icon
               name={props.leadingIcon!}
@@ -1266,20 +1243,43 @@ function SessionHeaderBar(props: {
               color={props.leadingIconColor ? props.leadingIconColor() : palette().accent}
             />
           </If>
-          <Text
-            testID={props.titleTestID}
+          <View
             style={{
-              ...textStyle("sectionTitle", {
-                color: props.dimmed?.() ? palette().textMuted : palette().text,
-              }),
+              position: "relative",
               minWidth: 0,
               flexShrink: props.subtitle ? 0 : 1,
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
+              justifyContent: "center",
             }}
           >
-            {props.title()}
-          </Text>
+            <Text
+              testID={props.titleTestID}
+              style={{
+                ...textStyle("sectionTitle", {
+                  color: props.dimmed?.() ? palette().textMuted : palette().text,
+                }),
+                minWidth: 0,
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {props.title()}
+            </Text>
+            <If when={Boolean(props.focused?.())}>
+              <View
+                testID={props.focusIndicatorTestID}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: -3,
+                  height: 2,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().accent,
+                  pointerEvents: "none",
+                }}
+              />
+            </If>
+          </View>
           <If when={props.subtitle?.() ?? ""}>
             {sub => (
               <Text
@@ -2229,6 +2229,11 @@ function UserBubble(props: {
   images?: UserImage[];
 }) {
   const hovered = signal(false);
+  effect(() => {
+    // Reset local hover when a virtualized list cell is recycled for another turn.
+    props.partKey;
+    hovered.set(false);
+  });
   const parsed = computed(() => extractUserMessageFileTags(props.text));
   const displayText = computed(() => parsed().text);
   const long = computed(
@@ -2823,7 +2828,7 @@ function AnswerMarkdown(props: { text: string; live?: boolean; itemKey?: string;
         when={collapsed()}
         else={<MarkdownBody text={props.text} live={props.live} />}
       >
-        <MarkdownBody text={props.text.slice(0, cut())} />
+        <MarkdownBody text={markdownPreviewSlice(props.text, cut())} />
         <View style={{ alignSelf: "flex-start" }}>
           <Button
             label={tr("chat.polish.showFullReply", { count: formatCount(lineCountOf(props.text.slice(cut()))) })}
@@ -2843,65 +2848,61 @@ type ItemOf<K extends TranscriptItem["kind"]> = Extract<TranscriptItem, { kind: 
 
 /**
  * One ordered transcript item, drawn the same way whether it is live or
- * persisted. A key always names the same kind (the key carries it), so the
- * branch is chosen once; the fields are read through `props` so a streamed
- * item updates in place.
+ * persisted. Branches reactively on `props.item.kind` so recycled virtualized
+ * `<List>` cells can cleanly swap between text, thinking, tool, and explore rows.
  */
 function TranscriptItemView(props: { item: TranscriptItem; live?: boolean; preserveFullReply?: boolean }) {
-  switch (props.item.kind) {
-    case "text":
-      return (
+  const kind = () => props.item.kind;
+  const isGenUI = () => kind() === "tool" && isGenUICall((props.item as ItemOf<"tool">).call);
+  return (
+    <View style={{ width: "100%" }}>
+      <If when={kind() === "text"}>
         <AnswerMarkdown
           text={(props.item as ItemOf<"text">).text}
           live={props.live}
           itemKey={props.item.key}
           preserveFullReply={props.preserveFullReply}
         />
-      );
-    case "thinking":
-      return (
+      </If>
+      <If when={kind() === "thinking"}>
         <ThinkingBlock
           partKey={props.item.key}
           text={(props.item as ItemOf<"thinking">).text}
           kind={(props.item as ItemOf<"thinking">).reasoningKind}
           live={(props.item as ItemOf<"thinking">).live}
         />
-      );
-    case "tool":
-      if (isGenUICall((props.item as ItemOf<"tool">).call)) {
-        // A GenerativeUI answer is drawn as the interface it describes.
-        return (
-          <GenUIToolItem
-            call={(props.item as ItemOf<"tool">).call}
-            cardId={props.item.key}
-            status={persistedToolState((props.item as ItemOf<"tool">).call)}
-            fallback={
-              <ToolCard
-                call={(props.item as ItemOf<"tool">).call}
-                cardId={props.item.key}
-                status={persistedToolState((props.item as ItemOf<"tool">).call)}
-              />
-            }
-          />
-        );
-      }
-      return (
+      </If>
+      <If when={isGenUI()}>
+        <GenUIToolItem
+          call={(props.item as ItemOf<"tool">).call}
+          cardId={props.item.key}
+          status={persistedToolState((props.item as ItemOf<"tool">).call)}
+          fallback={
+            <ToolCard
+              call={(props.item as ItemOf<"tool">).call}
+              cardId={props.item.key}
+              status={persistedToolState((props.item as ItemOf<"tool">).call)}
+            />
+          }
+        />
+      </If>
+      <If when={kind() === "tool" && !isGenUI()}>
         <ToolCard
           call={(props.item as ItemOf<"tool">).call}
           cardId={props.item.key}
           status={persistedToolState((props.item as ItemOf<"tool">).call)}
         />
-      );
-    case "explore":
-      return (
+      </If>
+      <If when={kind() === "explore"}>
         <ExploreGroupCard
           calls={(props.item as ItemOf<"explore">).calls}
           cardId={props.item.key}
           stateOf={persistedToolState}
           live={props.live}
         />
-      );
-  }
+      </If>
+    </View>
+  );
 }
 
 /** Renders an ordered item list; rows are kept by the item's key. */
@@ -3306,16 +3307,12 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure; pane?: 
 }
 
 const followLatest = signal(true);
-let transcriptScrollRef: ScrollRef | undefined;
+let transcriptListRef: ListRef | undefined;
 let transcriptScrollRafId: number | null = null;
 let peakFollowScrollY = 0;
 let lastObservedScrollY = 0;
-let lastContentHeight = 0;
-let lastViewportHeight = 0;
 let lastEventContentHeight = 0;
 let lastEventViewportHeight = 0;
-let pendingSyncBottomSnap = false;
-let pendingPrependScrollAnchor: { prevHeight: number; prevScrollY: number; anchorKey: string } | null = null;
 
 function cancelScheduledTranscriptScroll(): void {
   if (transcriptScrollRafId !== null && typeof cancelAnimationFrame === "function") {
@@ -3328,14 +3325,10 @@ function resetTranscriptScrollTracking(): void {
   cancelScheduledTranscriptScroll();
   peakFollowScrollY = 0;
   lastObservedScrollY = 0;
-  lastContentHeight = 0;
-  lastViewportHeight = 0;
   lastEventContentHeight = 0;
   lastEventViewportHeight = 0;
-  pendingSyncBottomSnap = false;
-  pendingPrependScrollAnchor = null;
-  turnOffsets.clear();
   suppressAutoFollowUntil = 0;
+  hoveredPrimaryTurnKey.set("");
   activeRailTurnKey.set("");
   followLatest.set(true);
 }
@@ -3356,11 +3349,11 @@ function stickToTranscriptEnd(): void {
     transcriptScrollRafId = requestAnimationFrame(() => {
       transcriptScrollRafId = null;
       if (!followLatest()) return;
-      transcriptScrollRef?.scrollToEnd({ animated: false });
+      transcriptListRef?.scrollToEnd({ animated: false });
     });
     return;
   }
-  transcriptScrollRef?.scrollToEnd({ animated: false });
+  transcriptListRef?.scrollToEnd({ animated: false });
 }
 
 function jumpToTranscriptEnd(): void {
@@ -3368,9 +3361,9 @@ function jumpToTranscriptEnd(): void {
   followLatest.set(true);
   peakFollowScrollY = lastObservedScrollY;
   cancelScheduledTranscriptScroll();
-  transcriptScrollRef?.scrollToEnd({ animated: false });
+  transcriptListRef?.scrollToEnd({ animated: false });
   stickToTranscriptEnd();
-  syncActiveRailTurn(lastObservedScrollY);
+  syncActiveRailForLatest();
 }
 
 function handleTranscriptScroll(event: ScrollEvent): void {
@@ -3394,34 +3387,23 @@ function handleTranscriptScroll(event: ScrollEvent): void {
     if (followLatest()) {
       peakFollowScrollY = y;
     }
-    syncActiveRailTurn(y);
+    syncActiveRailForLatest();
     return;
   }
 
   if (followLatest()) {
-    // Adjust the high-water mark for browser scrollTop clamping when the
-    // viewport grows (e.g. composer shrinks on submit / ambient strip unmounts)
-    // or content shrinks (e.g. live thinking collapses), so layout clamping is
-    // never mistaken for a manual upward scroll.
+    // Adjust the high-water mark for scroll clamping when the viewport grows
+    // (e.g. composer shrinks on submit) or content shrinks (e.g. thinking collapses),
+    // so layout clamping is never mistaken for a manual upward scroll.
     if (viewportGrow > 0 || contentShrink > 0) {
       peakFollowScrollY = Math.max(0, peakFollowScrollY - viewportGrow - contentShrink);
     }
-    // Only unlock when the user genuinely scrolls upward away from the
-    // bottom-following offset — never when streamed content grows
-    // `contentSize.height` or the ambient strip/composer shrinks the viewport
-    // under a stationary scroll position.
     if (y < peakFollowScrollY - 4) {
       followLatest.set(false);
       cancelScheduledTranscriptScroll();
     } else if (y > peakFollowScrollY) {
       peakFollowScrollY = y;
     }
-  }
-  syncActiveRailTurn(y);
-  // Proactively lazy-load earlier turns as the reader nears the top of a windowed
-  // history, keeping scrollback smooth without slamming into the top boundary.
-  if (y <= 140 && !followLatest() && contentHeight > viewportHeight && hasEarlierTurns() && !loadingEarlier()) {
-    void showEarlierTurns();
   }
 }
 
@@ -3664,45 +3646,22 @@ const visibleTurnRows = computed<TurnRow[]>(() => {
 const visibleTurns = computed(() => visibleTurnRows().map(row => row.turn));
 
 const loadingEarlier = signal(false);
-let earlierRevealTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * Widens the history window and keeps the turn that was first on screen where
- * the reader left it, so older turns appear above instead of jumping the view.
+ * Widens the history window while NSH `<List maintainVisibleContentPosition>`
+ * natively keeps the visible rows anchored in place above the reader's viewport.
  */
 async function showEarlierTurns(): Promise<void> {
   if (loadingEarlier() || !hasEarlierTurns()) return;
-  const anchorKey = turnKeyOf(visibleTurns()[0]);
   loadingEarlier.set(true);
   followLatest.set(false);
-  pendingPrependScrollAnchor = {
-    prevHeight: lastContentHeight,
-    prevScrollY: lastObservedScrollY,
-    anchorKey,
-  };
   try {
     await loadEarlierTurns();
   } finally {
     loadingEarlier.set(false);
   }
-  // Fallback reveal only if `onLayout` has not already restored the exact offset.
-  if (anchorKey && pendingPrependScrollAnchor?.anchorKey === anchorKey) {
-    if (earlierRevealTimer) clearTimeout(earlierRevealTimer);
-    earlierRevealTimer = setTimeout(() => {
-      earlierRevealTimer = null;
-      if (pendingPrependScrollAnchor?.anchorKey === anchorKey) {
-        pendingPrependScrollAnchor = null;
-        turnRefs.get(anchorKey)?.reveal({ vertical: "start", animated: false });
-      }
-    }, 32);
-  }
 }
 
-/**
- * One settled turn. Its row is kept by the turn's id and its record keeps its
- * identity while unchanged (`stableTurnRows`), so a streaming chunk, a reload or
- * "Load earlier" never evaluates this subtree again.
- */
 function turnFileChangesOf(turn: unknown) {
   if (!turn || typeof turn !== "object") return [];
   const changes = (turn as { fileChanges?: TranscriptTurnView["fileChanges"] }).fileChanges;
@@ -3727,102 +3686,325 @@ function openTurnChangesReview(
   });
 }
 
-function TranscriptTurn(props: {
-  turn: () => unknown;
-  rowKey: string;
-  pane?: 0 | 1;
-  onRegisterRef?: (turnId: string, rowKey: string, el: ViewRef | null) => void;
-  onLayoutOffset?: (rowKey: string, y: number) => void;
-}) {
+/**
+ * Flat virtualized row rendered inside NSH `<List>`. Flattening each turn's
+ * user bubble, individual assistant items (text / thinking / tool / explore),
+ * figures, failure notice, file changes, and footer into independent list cells
+ * guarantees that even a single 1,200-tool agent turn only ever mounts the
+ * ~30–60 cells near the viewport instead of thousands of native NSViews at once.
+ */
+type TranscriptBlockRow =
+  | {
+      kind: "user";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      partKey: string;
+      text: string;
+      timestamp?: number;
+      images: UserImage[];
+      showRerunSlot: boolean;
+      topGap: number;
+    }
+  | {
+      kind: "item";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      item: TranscriptItem;
+      preserveFullReply: boolean;
+      topGap: number;
+    }
+  | {
+      kind: "figures";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      figures: InlineFigureDirective[];
+      topGap: number;
+    }
+  | {
+      kind: "failure";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      turn: unknown;
+      failure: TurnFailure;
+      topGap: number;
+    }
+  | {
+      kind: "fileChanges";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      changes: NonNullable<TranscriptTurnView["fileChanges"]>;
+      topGap: number;
+    }
+  | {
+      kind: "footer";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      turn: unknown;
+      topGap: number;
+    };
+
+interface TranscriptBlockProjection {
+  rows: TranscriptBlockRow[];
+  firstIndexByTurnKey: Map<string, number>;
+  firstIndexByTurnId: Map<string, number>;
+}
+
+const cachedPrimaryTurnBlocks = new WeakMap<object, { turnKey: string; blocks: TranscriptBlockRow[] }>();
+const cachedSecondaryTurnBlocks = new WeakMap<object, { turnKey: string; blocks: TranscriptBlockRow[] }>();
+
+function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): TranscriptBlockRow[] {
+  const turn = turnRow.turn;
+  const cache = isSecondary ? cachedSecondaryTurnBlocks : cachedPrimaryTurnBlocks;
+  if (turn && typeof turn === "object") {
+    const hit = cache.get(turn);
+    if (hit && hit.turnKey === turnRow.key) return hit.blocks;
+  }
+
+  const turnKey = turnRow.key;
+  const turnId = turnKeyOf(turn);
+  const blocks: TranscriptBlockRow[] = [];
+  const userParts = userPartsOf(turn);
+  const images = userImagesOf(turn);
+  const timestamp = turnTimestampOf(turn);
+  const prefix = isSecondary ? "sec-" : "";
+
+  userParts.forEach((part, index) => {
+    blocks.push({
+      kind: "user",
+      key: `${turnKey}|u:${index}`,
+      turnKey,
+      turnId,
+      partKey: `${prefix}${turnPartKey(turn, part)}`,
+      text: part.text,
+      timestamp,
+      images,
+      showRerunSlot: !isSecondary && index === userParts.length - 1,
+      topGap: 0,
+    });
+  });
+
+  const items = turnItems(turn);
+  const preserveFullReply = !isSecondary && liveStreamedTurnIds.has(turnId);
+  const seenItemKeys = new Set<string>();
+  items.forEach((item, index) => {
+    const rawKey = `${turnKey}|${item.key}`;
+    const key = seenItemKeys.has(rawKey) ? `${rawKey}#${index}` : rawKey;
+    seenItemKeys.add(key);
+    blocks.push({
+      kind: "item",
+      key,
+      turnKey,
+      turnId,
+      item,
+      preserveFullReply,
+      topGap: index === 0 && userParts.length > 0 ? space.xs : 0,
+    });
+  });
+
+  const figures = publishedFiguresOf(turn);
+  if (figures.length > 0) {
+    blocks.push({
+      kind: "figures",
+      key: `${turnKey}|figures`,
+      turnKey,
+      turnId,
+      figures,
+      topGap: 0,
+    });
+  }
+
+  const failure = turnFailureOf(turn);
+  if (failure) {
+    blocks.push({
+      kind: "failure",
+      key: `${turnKey}|failure`,
+      turnKey,
+      turnId,
+      turn,
+      failure,
+      topGap: space.xs,
+    });
+  }
+
+  const fileChanges = turnFileChangesOf(turn);
+  if (fileChanges.length > 0) {
+    blocks.push({
+      kind: "fileChanges",
+      key: `${turnKey}|fileChanges`,
+      turnKey,
+      turnId,
+      changes: fileChanges,
+      topGap: space.xs,
+    });
+  }
+
+  if (items.length > 0) {
+    blocks.push({
+      kind: "footer",
+      key: `${turnKey}|footer`,
+      turnKey,
+      turnId,
+      turn,
+      topGap: 0,
+    });
+  }
+
+  if (turn && typeof turn === "object") {
+    cache.set(turn, { turnKey, blocks });
+  }
+  return blocks;
+}
+
+function buildTranscriptBlockProjection(
+  turnRows: ReadonlyArray<TurnRow>,
+  isSecondary: boolean,
+): TranscriptBlockProjection {
+  const rows: TranscriptBlockRow[] = [];
+  const firstIndexByTurnKey = new Map<string, number>();
+  const firstIndexByTurnId = new Map<string, number>();
+  for (let t = 0; t < turnRows.length; t += 1) {
+    const turnRow = turnRows[t]!;
+    const turnBlocks = blocksForSingleTurn(turnRow, isSecondary);
+    if (turnBlocks.length === 0) continue;
+    const startIdx = rows.length;
+    firstIndexByTurnKey.set(turnRow.key, startIdx);
+    const tid = turnBlocks[0]!.turnId;
+    if (tid && !firstIndexByTurnId.has(tid)) {
+      firstIndexByTurnId.set(tid, startIdx);
+    }
+    const interTurnGap = t > 0 ? space.sm : 0;
+    for (let i = 0; i < turnBlocks.length; i += 1) {
+      const block = turnBlocks[i]!;
+      if (i === 0 && interTurnGap !== block.topGap) {
+        rows.push({ ...block, topGap: interTurnGap });
+      } else {
+        rows.push(block);
+      }
+    }
+  }
+  return { rows, firstIndexByTurnKey, firstIndexByTurnId };
+}
+
+const primaryTranscriptBlocks = computed<TranscriptBlockProjection>(() =>
+  buildTranscriptBlockProjection(visibleTurnRows(), false),
+);
+
+/**
+ * One recycled virtualized cell inside `<List>`. Every branch reads `props.row()`
+ * reactively and keeps per-item state external, so cell recycling across turns
+ * and item kinds never leaks stale UI state.
+ */
+function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 1 }) {
   const isSecondary = props.pane === 1;
-  const key = computed(() => turnKeyOf(props.turn()));
-  const matches = computed(() =>
-    isSecondary ? false : turnMatchesSearch(props.turn(), transcriptSearchQuery()),
-  );
-  const items = computed(() => turnItems(props.turn()));
-  const hovered = signal(false);
+  const hoveredSignal = isSecondary ? hoveredSecondaryTurnKey : hoveredPrimaryTurnKey;
+  const turnKey = () => props.row().turnKey;
+  const turnId = () => props.row().turnId;
+  const kind = () => props.row().kind;
+  const matches = computed(() => !isSecondary && Boolean(turnId()) && matchingSearchTurnIds().has(turnId()));
+
   return (
-    <View
-      ref={el => {
-        if (props.onRegisterRef) {
-          props.onRegisterRef(key(), props.rowKey, el);
-        } else {
-          registerTurnRef(key(), el);
-          registerTurnRowRef(props.rowKey, el);
-        }
-      }}
-      onLayout={event => {
-        if (props.onLayoutOffset) props.onLayoutOffset(props.rowKey, event.bounds.origin.y);
-        else recordTurnOffset(props.rowKey, event.bounds.origin.y);
-      }}
-      onMouseEnter={() => hovered.set(true)}
-      onMouseLeave={() => hovered.set(false)}
-      style={{
-        gap: space.md,
-        marginHorizontal: matches() ? -space.sm : 0,
-        paddingHorizontal: matches() ? space.sm : 0,
-        paddingVertical: matches() ? space.sm : 0,
-        borderRadius: radii.lg,
-        borderCurve: "continuous",
-        borderWidth: matches() ? 1 : 0,
-        borderColor: activeSearchTurnKey() === key() ? palette().accent : palette().accentBorder,
-        backgroundColor: matches() ? palette().accentSoft : "transparent",
-      }}
-    >
-      <Each of={userPartsOf(props.turn())} key="index">
-        {part => (
-          <UserBubble
-            partKey={`${isSecondary ? "sec-" : ""}${turnPartKey(props.turn(), part())}`}
-            text={part().text}
-            timestamp={turnTimestampOf(props.turn())}
-            turnId={key()}
-            images={userImagesOf(props.turn())}
+    <View style={{ width: "100%", alignItems: "center" }}>
+      <View
+        onMouseEnter={() => hoveredSignal.set(turnKey())}
+        onMouseLeave={() => {
+          if (hoveredSignal() === turnKey()) hoveredSignal.set("");
+        }}
+        style={{
+          width: "100%",
+          maxWidth: contentWidth(),
+          paddingTop: props.row().topGap,
+          paddingHorizontal: matches() ? space.sm : 0,
+          borderRadius: matches() ? radii.md : 0,
+          borderLeftWidth: matches() ? 2 : 0,
+          borderColor: activeSearchTurnKey() === turnId() ? palette().accent : palette().accentBorder,
+          backgroundColor: matches() ? palette().accentSoft : "transparent",
+        }}
+      >
+        <If when={kind() === "user"}>
+          <View style={{ gap: space.md }}>
+            <UserBubble
+              partKey={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).partKey}
+              text={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).text}
+              timestamp={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).timestamp}
+              turnId={turnId()}
+              images={(props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).images}
+            />
+            <If
+              when={
+                !isSecondary &&
+                (props.row() as Extract<TranscriptBlockRow, { kind: "user" }>).showRerunSlot &&
+                Boolean(rerunTarget() && rerunTarget()!.turnId === turnId())
+              }
+            >
+              <RerunEditor />
+            </If>
+          </View>
+        </If>
+
+        <If when={kind() === "item"}>
+          <TranscriptItemView
+            item={(props.row() as Extract<TranscriptBlockRow, { kind: "item" }>).item}
+            preserveFullReply={
+              !isSecondary &&
+              ((props.row() as Extract<TranscriptBlockRow, { kind: "item" }>).preserveFullReply ||
+                liveStreamedTurnIds.has(turnId()))
+            }
           />
-        )}
-      </Each>
+        </If>
 
-      <If when={!isSecondary && Boolean(rerunTarget() && rerunTarget()!.turnId === key())}>
-        <RerunEditor />
-      </If>
+        <If when={kind() === "figures"}>
+          <View style={{ gap: space.xs }}>
+            <Each
+              of={(props.row() as Extract<TranscriptBlockRow, { kind: "figures" }>).figures}
+              key={fig => fig.path}
+            >
+              {fig => <InlineFigureCard figure={fig()} />}
+            </Each>
+          </View>
+        </If>
 
-      <TranscriptItems items={items()} preserveFullReply={!isSecondary && liveStreamedTurnIds.has(key())} />
+        <If when={kind() === "failure"}>
+          <TurnFailureNotice
+            turn={(props.row() as Extract<TranscriptBlockRow, { kind: "failure" }>).turn}
+            failure={(props.row() as Extract<TranscriptBlockRow, { kind: "failure" }>).failure}
+            pane={props.pane}
+          />
+        </If>
 
-      <If when={publishedFiguresOf(props.turn()).length > 0}>
-        <View style={{ gap: space.xs }}>
-          <Each of={publishedFiguresOf(props.turn())} key={fig => fig.path}>
-            {fig => <InlineFigureCard figure={fig()} />}
-          </Each>
-        </View>
-      </If>
+        <If when={kind() === "fileChanges"}>
+          <TurnFileChangesCard
+            turnId={turnId()}
+            changes={(props.row() as Extract<TranscriptBlockRow, { kind: "fileChanges" }>).changes}
+            onReview={filePath =>
+              openTurnChangesReview(
+                turnId(),
+                (props.row() as Extract<TranscriptBlockRow, { kind: "fileChanges" }>).changes,
+                filePath,
+                isSecondary
+                  ? {
+                      sessionId: secondarySessionId() ?? undefined,
+                      workspaceId: secondaryWorkspaceId() ?? undefined,
+                      workspacePath: secondaryWorkspaceRoot() || undefined,
+                    }
+                  : undefined,
+              )
+            }
+          />
+        </If>
 
-      <If when={turnFailureOf(props.turn())}>
-        {failure => <TurnFailureNotice turn={props.turn()} failure={failure()} pane={props.pane} />}
-      </If>
-
-      <If when={turnFileChangesOf(props.turn()).length > 0}>
-        <TurnFileChangesCard
-          turnId={key()}
-          changes={turnFileChangesOf(props.turn())}
-          onReview={filePath =>
-            openTurnChangesReview(
-              key(),
-              turnFileChangesOf(props.turn()),
-              filePath,
-              isSecondary
-                ? {
-                    sessionId: secondarySessionId() ?? undefined,
-                    workspaceId: secondaryWorkspaceId() ?? undefined,
-                    workspacePath: secondaryWorkspaceRoot() || undefined,
-                  }
-                : undefined,
-            )
-          }
-        />
-      </If>
-
-      <If when={items().length > 0}>
-        <TurnFooter turn={props.turn()} visible={hovered() || compactLayout()} />
-      </If>
+        <If when={kind() === "footer"}>
+          <TurnFooter
+            turn={(props.row() as Extract<TranscriptBlockRow, { kind: "footer" }>).turn}
+            visible={hoveredSignal() === turnKey() || compactLayout()}
+          />
+        </If>
+      </View>
     </View>
   );
 }
@@ -4103,25 +4285,14 @@ function TurnJumpPreview(props: {
 function Transcript() {
   resetTranscriptScrollTracking();
   registerTranscriptAutoBackfillGuard(() => followLatest());
-  registerTranscriptBeforePrependListener(() => {
-    if (followLatest()) {
-      pendingSyncBottomSnap = true;
-    } else if (!pendingPrependScrollAnchor && lastContentHeight > 0) {
-      pendingPrependScrollAnchor = {
-        prevHeight: lastContentHeight,
-        prevScrollY: lastObservedScrollY,
-        anchorKey: turnKeyOf(visibleTurns()[0]),
-      };
-    }
-  });
+  registerTranscriptBeforePrependListener(null);
   cleanup(() => {
     registerTranscriptAutoBackfillGuard(null);
     registerTranscriptBeforePrependListener(null);
+    transcriptListRef = undefined;
   });
   let lastSessionId = activeSessionId();
   let lastOptimisticText = optimisticUserText();
-  let pendingInitialBottomSnap = Boolean(lastSessionId);
-  let transcriptSwapMounts = 0;
   const transcriptSwapKey = () =>
     activeSessionKey() ? `${activeSessionKey()}:${turnsLoading() ? "loading" : "ready"}` : "welcome";
 
@@ -4129,7 +4300,6 @@ function Transcript() {
     const id = activeSessionId();
     if (id !== lastSessionId) {
       lastSessionId = id;
-      pendingInitialBottomSnap = Boolean(id);
       resetTranscriptScrollTracking();
       rerunTarget.set(null);
       turnChangesReview.set(null);
@@ -4178,75 +4348,10 @@ function Transcript() {
     stickToTranscriptEnd();
   });
 
-  return (
-    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
-      <Scroll
-        ref={transcriptScrollRef}
-        style={{ flex: 1, minHeight: 0 }}
-        contentStyle={{
-          flexGrow: 1,
-          paddingLeft: paneTranscriptPadLeft(visibleTurnRows().length >= 2),
-          paddingRight: sessionsPadX(),
-          paddingTop: space.xl,
-          paddingBottom: space.x3l,
-        }}
-        onScroll={handleTranscriptScroll}
-        onLayout={event => {
-          const height = event.bounds.size.height;
-          if (height > 0 && Math.abs(height - lastViewportHeight) > 1) {
-            lastViewportHeight = height;
-            if (followLatest()) stickToTranscriptEnd();
-          }
-        }}
-      >
-        <Each of={[transcriptSwapKey()]} key={k => k}>
-          {() => {
-            const shouldAnimate = transcriptSwapMounts > 0;
-            transcriptSwapMounts += 1;
-            const swapMotion = shouldAnimate ? subtleCrossfadeMotion() : null;
-            return (
-              <View
-                onLayout={event => {
-                  const height = event.bounds.size.height;
-                  if (height > 0 && Math.abs(height - lastContentHeight) > 1) {
-                    const prevHeight = lastContentHeight;
-                    lastContentHeight = height;
-                    if (followLatest()) {
-                      if ((pendingInitialBottomSnap || pendingSyncBottomSnap) && sessionTurns().length > 0) {
-                        pendingInitialBottomSnap = false;
-                        pendingSyncBottomSnap = false;
-                        cancelScheduledTranscriptScroll();
-                        transcriptScrollRef?.scrollToEnd({ animated: false });
-                      } else {
-                        stickToTranscriptEnd();
-                      }
-                    } else if (pendingPrependScrollAnchor && height > prevHeight && prevHeight > 0) {
-                      const anchor = pendingPrependScrollAnchor;
-                      pendingPrependScrollAnchor = null;
-                      const delta = height - anchor.prevHeight;
-                      if (delta > 0) {
-                        const targetY = Math.max(0, anchor.prevScrollY + delta);
-                        lastObservedScrollY = targetY;
-                        transcriptScrollRef?.scrollTo({ y: targetY, animated: false });
-                      }
-                    }
-                  }
-                }}
-                style={[
-                  {
-                    width: "100%",
-                    maxWidth: contentWidth(),
-                    alignSelf: "center",
-                    flexGrow: isTranscriptEmpty() ? 1 : 0,
-                    gap: 16,
-                  },
-                  swapMotion?.style,
-                ]}
-              >
-          <If when={isTranscriptEmpty()}>
-            <WelcomeStudio />
-          </If>
-
+  const renderHeader = () => (
+    <If when={Boolean(transcriptNotice()) || (hasEarlierTurns() && sessionTurns().length > 0)}>
+      <View style={{ width: "100%", alignItems: "center", paddingBottom: space.sm }}>
+        <View style={{ width: "100%", maxWidth: contentWidth(), gap: space.md }}>
           <If when={transcriptNotice()}>
             {notice => (
               <View
@@ -4283,13 +4388,26 @@ function Transcript() {
               />
             </View>
           </If>
+        </View>
+      </View>
+    </If>
+  );
 
-          <Each of={visibleTurnRows()} key={row => row.key}>
-            {row => <TranscriptTurn turn={() => row().turn} rowKey={row().key} />}
-          </Each>
-
+  const renderFooter = () => (
+    <If
+      when={
+        Boolean(optimisticUserText()) ||
+        pendingTurnImages().length > 0 ||
+        liveDisplayBlocks().length > 0 ||
+        liveFallbackItems().length > 0 ||
+        Boolean(turnError()) ||
+        Boolean(sendNotice())
+      }
+    >
+      <View style={{ width: "100%", alignItems: "center", paddingTop: visibleTurnRows().length > 0 ? space.sm : 0 }}>
+        <View style={{ width: "100%", maxWidth: contentWidth(), gap: 16 }}>
           <If when={Boolean(optimisticUserText()) || pendingTurnImages().length > 0 || liveDisplayBlocks().length > 0 || liveFallbackItems().length > 0}>
-            {/* Mirrors `TranscriptTurn`'s exact `gap: space.md` and `TurnFooter` height so settling into a persisted turn causes 0px vertical jump. */}
+            {/* Mirrors settled turn spacing and footer height so settling into a persisted turn causes 0px vertical jump. */}
             <View style={{ gap: space.md }}>
               <If when={Boolean(optimisticUserText()) || pendingTurnImages().length > 0}>
                 <UserBubble
@@ -4360,11 +4478,63 @@ function Transcript() {
               />
             )}
           </If>
-              </View>
-            );
+        </View>
+      </View>
+    </If>
+  );
+
+  return (
+    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      <If
+        when={isTranscriptEmpty()}
+        else={
+          <Each of={[transcriptSwapKey()]} key={k => k}>
+            {() => (
+              <List<TranscriptBlockRow>
+                ref={el => {
+                  transcriptListRef = el;
+                }}
+                style={{ flex: 1, minHeight: 0 }}
+                each={primaryTranscriptBlocks().rows}
+                keyExtractor={row => row.key}
+                estimatedItemSize={44}
+                initialScrollAtEnd={true}
+                maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 24 }}
+                loadMoreAtStartThreshold={0.5}
+                onLoadMoreAtStart={() => {
+                  if (hasEarlierTurns() && !loadingEarlier()) void showEarlierTurns();
+                }}
+                onScroll={handleTranscriptScroll}
+                onViewableItemsChange={info => syncActiveRailFromViewable(info.viewableItems)}
+                contentStyle={{
+                  paddingLeft: paneTranscriptPadLeft(visibleTurnRows().length >= 2),
+                  paddingRight: sessionsPadX(),
+                  paddingTop: space.xl,
+                  paddingBottom: space.x3l,
+                  gap: 8,
+                }}
+                header={renderHeader}
+                footer={renderFooter}
+              >
+                {row => <TranscriptBlockCell row={row} />}
+              </List>
+            )}
+          </Each>
+        }
+      >
+        <Scroll
+          style={{ flex: 1, minHeight: 0 }}
+          contentStyle={{
+            flexGrow: 1,
+            paddingLeft: sessionsPadX(),
+            paddingRight: sessionsPadX(),
+            paddingTop: space.xl,
+            paddingBottom: space.x3l,
           }}
-        </Each>
-      </Scroll>
+        >
+          <WelcomeStudio />
+        </Scroll>
+      </If>
 
       <TurnJumpRail
         rows={visibleTurnRows}
@@ -8570,10 +8740,11 @@ function followSearchRevealRequests(): void {
     if (revealTimer) clearTimeout(revealTimer);
     revealTimer = setTimeout(() => {
       revealTimer = null;
-      const ref = turnRefs.get(request.turnId);
-      if (!ref) return;
+      const index = primaryTranscriptBlocks().firstIndexByTurnId.get(request.turnId);
+      if (index === undefined) return;
       followLatest.set(false);
-      ref.reveal({ vertical: "start" });
+      cancelScheduledTranscriptScroll();
+      transcriptListRef?.scrollToIndex({ index, viewPosition: 0, animated: false });
       searchRevealTurn.set(null);
     }, 0);
   });
@@ -8854,17 +9025,34 @@ function SecondaryEmptyPicker() {
   );
 }
 
+const secondaryTranscriptBlocks = computed<TranscriptBlockProjection>(() =>
+  buildTranscriptBlockProjection(secondaryVisibleTurnRows(), true),
+);
+
 function SecondaryTranscript() {
-  let scrollRef: ScrollRef | undefined;
+  let listRef: ListRef | undefined;
   let lastSession = secondarySessionId();
   let secSuppressAutoFollowUntil = 0;
+  let secPeakFollowScrollY = 0;
+  let secLastEventContentHeight = 0;
+  let secLastEventViewportHeight = 0;
   const secFollowLatest = signal(true);
   const loadingEarlierSec = signal(false);
   const secActiveRailKey = signal("");
-  const secTurnRowRefs = new Map<string, ViewRef>();
-  const secTurnOffsets = new Map<string, number>();
 
-  const syncSecRail = (scrollY: number) => {
+  const syncSecRailForLatest = () => {
+    const rows = secondaryVisibleTurnRows();
+    if (rows.length === 0) {
+      if (secActiveRailKey() !== "") secActiveRailKey.set("");
+      return;
+    }
+    if (secFollowLatest()) {
+      const last = rows[rows.length - 1]!.key;
+      if (secActiveRailKey() !== last) secActiveRailKey.set(last);
+    }
+  };
+
+  const syncSecRailFromViewable = (viewableItems: ReadonlyArray<ViewToken<TranscriptBlockRow>>) => {
     const rows = secondaryVisibleTurnRows();
     if (rows.length === 0) {
       if (secActiveRailKey() !== "") secActiveRailKey.set("");
@@ -8875,54 +9063,33 @@ function SecondaryTranscript() {
       if (secActiveRailKey() !== last) secActiveRailKey.set(last);
       return;
     }
-    const threshold = scrollY + 96;
-    let current = rows[0]!.key;
-    for (const row of rows) {
-      const offset = secTurnOffsets.get(row.key);
-      if (offset !== undefined && offset <= threshold) current = row.key;
+    const firstTurnKey = viewableItems[0]?.item?.turnKey;
+    if (firstTurnKey && secActiveRailKey() !== firstTurnKey) {
+      secActiveRailKey.set(firstTurnKey);
     }
-    if (secActiveRailKey() !== current) secActiveRailKey.set(current);
   };
 
   const jumpToSecTurn = (rowKey: string) => {
-    const ref = rowKey ? secTurnRowRefs.get(rowKey) : undefined;
-    if (!ref) return;
+    const index = rowKey ? secondaryTranscriptBlocks().firstIndexByTurnKey.get(rowKey) : undefined;
+    if (index === undefined) return;
     secFollowLatest.set(false);
     secSuppressAutoFollowUntil = Date.now() + 500;
     secActiveRailKey.set(rowKey);
-    ref.reveal({ vertical: "start", animated: true });
+    listRef?.scrollToIndex({ index, viewPosition: 0, animated: true });
   };
 
-  let secLastContentHeight = 0;
-  let secLastObservedScrollY = 0;
-  let secPeakFollowScrollY = 0;
-  let secPendingSyncBottomSnap = false;
-  let secPendingPrependAnchor: { prevHeight: number; prevScrollY: number } | null = null;
-
   registerSecondaryAutoBackfillGuard(() => secFollowLatest());
-  registerSecondaryBeforePrependListener(() => {
-    if (secFollowLatest()) {
-      secPendingSyncBottomSnap = true;
-    } else if (!secPendingPrependAnchor && secLastContentHeight > 0) {
-      secPendingPrependAnchor = {
-        prevHeight: secLastContentHeight,
-        prevScrollY: secLastObservedScrollY,
-      };
-    }
-  });
+  registerSecondaryBeforePrependListener(null);
   cleanup(() => {
     registerSecondaryAutoBackfillGuard(null);
     registerSecondaryBeforePrependListener(null);
+    listRef = undefined;
   });
 
   const showEarlierSecTurns = async (): Promise<void> => {
     if (loadingEarlierSec() || !secondaryHasEarlierTurns()) return;
     loadingEarlierSec.set(true);
     secFollowLatest.set(false);
-    secPendingPrependAnchor = {
-      prevHeight: secLastContentHeight,
-      prevScrollY: secLastObservedScrollY,
-    };
     try {
       await loadSecondaryEarlierTurns();
     } finally {
@@ -8930,27 +9097,27 @@ function SecondaryTranscript() {
     }
   };
 
+  const secSwapKey = () =>
+    secondarySessionKey() ? `${secondarySessionKey()}:${secondaryTurnsLoading() ? "loading" : "ready"}` : "empty";
+
   effect(() => {
     const id = secondarySessionId();
     if (id !== lastSession) {
       lastSession = id;
-      secTurnRowRefs.clear();
-      secTurnOffsets.clear();
+      hoveredSecondaryTurnKey.set("");
       secActiveRailKey.set("");
       secFollowLatest.set(true);
-      secLastContentHeight = 0;
-      secLastObservedScrollY = 0;
       secPeakFollowScrollY = 0;
-      secPendingSyncBottomSnap = true;
-      secPendingPrependAnchor = null;
+      secLastEventContentHeight = 0;
+      secLastEventViewportHeight = 0;
     }
     secondaryTurns().length;
     secondaryOptimisticUserText();
     secondaryStreamScrollTick();
     secondaryLiveRounds().length;
     if (secFollowLatest()) {
-      scrollRef?.scrollToEnd({ animated: false });
-      syncSecRail(secLastObservedScrollY);
+      listRef?.scrollToEnd({ animated: false });
+      syncSecRailForLatest();
     }
   });
 
@@ -8958,7 +9125,13 @@ function SecondaryTranscript() {
     const y = event.offset.y;
     const contentHeight = event.contentSize.height;
     const viewportHeight = event.size.height;
-    secLastObservedScrollY = y;
+    const viewportGrow =
+      secLastEventViewportHeight > 0 ? Math.max(0, viewportHeight - secLastEventViewportHeight) : 0;
+    const contentShrink =
+      secLastEventContentHeight > 0 ? Math.max(0, secLastEventContentHeight - contentHeight) : 0;
+    secLastEventContentHeight = contentHeight;
+    secLastEventViewportHeight = viewportHeight;
+
     const max = Math.max(0, contentHeight - viewportHeight);
     const atBottom = y >= max - 24;
     if (atBottom) {
@@ -8966,65 +9139,29 @@ function SecondaryTranscript() {
         secFollowLatest.set(true);
       }
       if (secFollowLatest()) secPeakFollowScrollY = y;
+      syncSecRailForLatest();
     } else if (secFollowLatest()) {
+      if (viewportGrow > 0 || contentShrink > 0) {
+        secPeakFollowScrollY = Math.max(0, secPeakFollowScrollY - viewportGrow - contentShrink);
+      }
       if (y < secPeakFollowScrollY - 4) {
         secFollowLatest.set(false);
       } else if (y > secPeakFollowScrollY) {
         secPeakFollowScrollY = y;
       }
     }
-    syncSecRail(y);
-    if (y <= 140 && !secFollowLatest() && contentHeight > viewportHeight && secondaryHasEarlierTurns() && !loadingEarlierSec()) {
-      void showEarlierSecTurns();
-    }
   };
 
-  return (
-    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
-      <Scroll
-        ref={el => {
-          scrollRef = el;
-        }}
-        style={{ flex: 1, minHeight: 0 }}
-        contentStyle={{
-          flexGrow: 1,
-          paddingLeft: paneTranscriptPadLeft(secondaryVisibleTurnRows().length >= 2),
-          paddingRight: sessionsPadX(),
-          paddingTop: space.xl,
-          paddingBottom: space.x3l,
-        }}
-        onScroll={handleScroll}
-      >
-        <View
-          onLayout={event => {
-            const height = event.bounds.size.height;
-            if (height > 0 && Math.abs(height - secLastContentHeight) > 1) {
-              const prevHeight = secLastContentHeight;
-              secLastContentHeight = height;
-              if (secFollowLatest()) {
-                if (secPendingSyncBottomSnap && secondaryTurns().length > 0) {
-                  secPendingSyncBottomSnap = false;
-                }
-                scrollRef?.scrollToEnd({ animated: false });
-              } else if (secPendingPrependAnchor && height > prevHeight && prevHeight > 0) {
-                const anchor = secPendingPrependAnchor;
-                secPendingPrependAnchor = null;
-                const delta = height - anchor.prevHeight;
-                if (delta > 0) {
-                  const targetY = Math.max(0, anchor.prevScrollY + delta);
-                  secLastObservedScrollY = targetY;
-                  scrollRef?.scrollTo({ y: targetY, animated: false });
-                }
-              }
-            }
-          }}
-          style={{
-            width: "100%",
-            maxWidth: contentWidth(),
-            alignSelf: "center",
-            gap: 16,
-          }}
-        >
+  const renderHeader = () => (
+    <If
+      when={
+        Boolean(secondaryTranscriptNotice()) ||
+        (secondaryHasEarlierTurns() && secondaryTurns().length > 0) ||
+        (secondaryTurnsLoading() && secondaryTurns().length === 0)
+      }
+    >
+      <View style={{ width: "100%", alignItems: "center", paddingBottom: space.sm }}>
+        <View style={{ width: "100%", maxWidth: contentWidth(), gap: space.md }}>
           <If when={secondaryTranscriptNotice()}>
             {notice => <InlineBanner tone="info" message={notice()} />}
           </If>
@@ -9048,27 +9185,23 @@ function SecondaryTranscript() {
               <BrandSpinner size={20} />
             </View>
           </If>
+        </View>
+      </View>
+    </If>
+  );
 
-          <Each of={secondaryVisibleTurnRows()} key={row => row.key}>
-            {row => (
-              <TranscriptTurn
-                turn={() => row().turn}
-                rowKey={row().key}
-                pane={1}
-                onRegisterRef={(_turnId, rowKey, el) => {
-                  if (el) secTurnRowRefs.set(rowKey, el);
-                  else {
-                    secTurnRowRefs.delete(rowKey);
-                    secTurnOffsets.delete(rowKey);
-                  }
-                }}
-                onLayoutOffset={(rowKey, y) => {
-                  if (Number.isFinite(y)) secTurnOffsets.set(rowKey, y);
-                }}
-              />
-            )}
-          </Each>
-
+  const renderFooter = () => (
+    <If
+      when={
+        Boolean(secondaryOptimisticUserText()) ||
+        secondaryPendingImages().length > 0 ||
+        secondaryLiveDisplayBlocks().length > 0 ||
+        Boolean(secondaryTurnError()) ||
+        Boolean(secondarySendNotice())
+      }
+    >
+      <View style={{ width: "100%", alignItems: "center", paddingTop: secondaryVisibleTurnRows().length > 0 ? space.sm : 0 }}>
+        <View style={{ width: "100%", maxWidth: contentWidth(), gap: 16 }}>
           <If
             when={
               Boolean(secondaryOptimisticUserText()) ||
@@ -9134,7 +9267,44 @@ function SecondaryTranscript() {
             )}
           </If>
         </View>
-      </Scroll>
+      </View>
+    </If>
+  );
+
+  return (
+    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      <Each of={[secSwapKey()]} key={k => k}>
+        {() => (
+          <List<TranscriptBlockRow>
+            ref={el => {
+              listRef = el;
+            }}
+            style={{ flex: 1, minHeight: 0 }}
+            each={secondaryTranscriptBlocks().rows}
+            keyExtractor={row => row.key}
+            estimatedItemSize={44}
+            initialScrollAtEnd={true}
+            maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 24 }}
+            loadMoreAtStartThreshold={0.5}
+            onLoadMoreAtStart={() => {
+              if (secondaryHasEarlierTurns() && !loadingEarlierSec()) void showEarlierSecTurns();
+            }}
+            onScroll={handleScroll}
+            onViewableItemsChange={info => syncSecRailFromViewable(info.viewableItems)}
+            contentStyle={{
+              paddingLeft: paneTranscriptPadLeft(secondaryVisibleTurnRows().length >= 2),
+              paddingRight: sessionsPadX(),
+              paddingTop: space.xl,
+              paddingBottom: space.x3l,
+              gap: 8,
+            }}
+            header={renderHeader}
+            footer={renderFooter}
+          >
+            {row => <TranscriptBlockCell row={row} pane={1} />}
+          </List>
+        )}
+      </Each>
 
       <TurnJumpRail
         rows={secondaryVisibleTurnRows}
@@ -9151,7 +9321,7 @@ function SecondaryTranscript() {
           onPress={() => {
             secSuppressAutoFollowUntil = 0;
             secFollowLatest.set(true);
-            scrollRef?.scrollToEnd({ animated: true });
+            listRef?.scrollToEnd({ animated: true });
           }}
         />
       </If>
@@ -9576,6 +9746,7 @@ function SecondarySessionPane() {
       }}
     >
       <SecondaryHeader />
+      <RemoteWorkspaceStatusBanner compact={true} workspace={secondaryWorkspaceRecord} />
       <If when={Boolean(secondarySessionId())} else={<SecondaryEmptyPicker />}>
         <SecondaryTranscript />
         <PermissionPrompts sessionId={secondarySessionId} />
@@ -10084,6 +10255,7 @@ export function SessionsScene() {
         }}
       >
         <ConversationHeader />
+        <RemoteWorkspaceStatusBanner />
         <GoalStrip />
         <Transcript />
         <SessionOfflineNotice />

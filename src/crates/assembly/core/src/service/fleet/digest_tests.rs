@@ -381,3 +381,78 @@ fn the_model_catalog_rides_every_answer_and_a_change_moves_the_revision() {
     let empty = journal.digest(&since(journal.revision()));
     assert_eq!(empty.models.map(|m| m.len()), Some(2));
 }
+
+#[test]
+fn workspace_summary_preserves_remote_connection_metadata() {
+    use openbitfun_services_core::workspace_records::{
+        WorkspaceInfo, WorkspaceKind, WorkspaceStatus, WorkspaceType,
+    };
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let make = |id: &str,
+                path: &str,
+                kind: WorkspaceKind,
+                metadata: HashMap<String, serde_json::Value>| {
+        WorkspaceInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            root_path: PathBuf::from(path),
+            workspace_type: WorkspaceType::Other,
+            workspace_kind: kind,
+            assistant_id: None,
+            status: WorkspaceStatus::Active,
+            languages: Vec::new(),
+            opened_at: chrono::Utc::now(),
+            last_accessed: chrono::Utc::now(),
+            description: None,
+            tags: Vec::new(),
+            statistics: None,
+            identity: None,
+            worktree: None,
+            related_paths: Vec::new(),
+            metadata,
+        }
+    };
+
+    let mut remote_meta = HashMap::new();
+    remote_meta.insert(
+        "sshHost".to_string(),
+        serde_json::Value::String("190.92.203.184".to_string()),
+    );
+    remote_meta.insert(
+        "connectionId".to_string(),
+        serde_json::Value::String("ssh-root@190.92.203.184".to_string()),
+    );
+    remote_meta.insert(
+        "connectionName".to_string(),
+        serde_json::Value::String("Prod SSH".to_string()),
+    );
+    let remote = make(
+        "remote_1",
+        "/root/repos",
+        WorkspaceKind::Remote,
+        remote_meta,
+    );
+
+    let projected = workspace_summary(&remote, Some(&remote.id));
+    assert_eq!(projected.kind, FleetWorkspaceKind::RemoteSsh);
+    assert_eq!(projected.ssh_host.as_deref(), Some("190.92.203.184"));
+    assert_eq!(
+        projected.connection_id.as_deref(),
+        Some("ssh-root@190.92.203.184")
+    );
+    assert_eq!(projected.connection_name.as_deref(), Some("Prod SSH"));
+    assert!(projected.is_host_current);
+
+    let local = make(
+        "local_1",
+        "/Users/dev/OpenBitFun",
+        WorkspaceKind::Normal,
+        HashMap::new(),
+    );
+    let projected_local = workspace_summary(&local, None);
+    assert_eq!(projected_local.kind, FleetWorkspaceKind::Local);
+    assert_eq!(projected_local.connection_id, None);
+    assert_eq!(projected_local.connection_name, None);
+}

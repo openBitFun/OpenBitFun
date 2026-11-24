@@ -942,11 +942,12 @@ export function selectWorkspace(
     runningTurnId.set(null);
     clearPendingTurn();
     clearStreamedText();
-    notifyWorkspaceChanged();
     if (fleetActive()) {
-      // The host's own current workspace is that host's preference, not this view's.
+      // Populate the selected device's workspace records before notifying listeners
+      // so `activeWorkspace()` already points at the newly selected workspace.
       applyFleetWorkspaceRows();
     }
+    notifyWorkspaceChanged();
   });
   if (fleetActive()) {
     if (options?.loadSessions !== false) void loadSessions();
@@ -1153,11 +1154,41 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
 export const INITIAL_FAST_TURN_COUNT = 2;
 export const BACKFILL_TURN_BATCH = 4;
 export const INITIAL_BACKFILL_TARGET = 10;
-export const BACKFILL_DELAY_MS = 48;
+/** Stop automatic idle backfill once the loaded tail already holds enough items to fill several screens. */
+export const INITIAL_BACKFILL_MAX_ITEMS = 120;
+export const BACKFILL_DELAY_MS = 160;
 export const TURN_WINDOW_STEP = 10;
 export const TAIL_REFRESH_MIN_LIMIT = 6;
+/** Average items per turn above which manual "Load earlier" uses a smaller turn page. */
+const HEAVY_TURN_AVG_ITEMS = 40;
 /** Authoritative `hasEarlier` from the last `full` or `before` host read. */
 const transcriptHasEarlier = signal(false);
+
+/** Counts total display items across a list of turns (1 user bubble + assistant items per turn). */
+export function countTranscriptItems(turns: ReadonlyArray<TranscriptTurnView>): number {
+  let total = 0;
+  for (const turn of turns) {
+    total += 1 + (Array.isArray(turn.items) ? turn.items.length : 0);
+  }
+  return total;
+}
+
+/** Whether idle auto-backfill should fetch another small page of earlier turns. */
+export function shouldAutoBackfillTurns(turns: ReadonlyArray<TranscriptTurnView>): boolean {
+  return (
+    turns.length > 0 &&
+    turns.length < INITIAL_BACKFILL_TARGET &&
+    countTranscriptItems(turns) < INITIAL_BACKFILL_MAX_ITEMS
+  );
+}
+
+/** Picks an adaptive page size for upward history loads so dense agent turns don't pull 10 multi-MB files at once. */
+export function earlierPageSizeFor(turns: ReadonlyArray<TranscriptTurnView>): number {
+  if (turns.length === 0) return TURN_WINDOW_STEP;
+  return countTranscriptItems(turns) / turns.length >= HEAVY_TURN_AVG_ITEMS
+    ? BACKFILL_TURN_BATCH
+    : TURN_WINDOW_STEP;
+}
 
 export function earliestTurnIndexOf(turns: ReadonlyArray<TranscriptTurnView>): number | undefined {
   let min: number | undefined;
@@ -1230,12 +1261,12 @@ let earlierLoadInFlight = false;
 function scheduleTranscriptBackfill(sessionId: string, key: string, expectedLoadSeq: number): void {
   cancelPendingTranscriptBackfill();
   if (!transcriptHasEarlier()) return;
-  if (sessionTurns().length >= INITIAL_BACKFILL_TARGET) return;
+  if (!shouldAutoBackfillTurns(sessionTurns())) return;
   transcriptBackfillTimer = setTimeout(() => {
     transcriptBackfillTimer = null;
     if (turnsLoadSeq !== expectedLoadSeq || activeSessionKey() !== key) return;
     if (earlierLoadInFlight || !transcriptHasEarlier()) return;
-    if (sessionTurns().length === 0 || sessionTurns().length >= INITIAL_BACKFILL_TARGET) return;
+    if (!shouldAutoBackfillTurns(sessionTurns())) return;
     if (transcriptAutoBackfillGuard && !transcriptAutoBackfillGuard()) return;
     void fetchEarlierTurnsPage(sessionId, key, BACKFILL_TURN_BATCH, {
       isAutoBackfill: true,
@@ -1282,7 +1313,7 @@ async function fetchEarlierTurnsPage(
       options?.isAutoBackfill &&
       more &&
       older.length > 0 &&
-      sessionTurns().length < INITIAL_BACKFILL_TARGET
+      shouldAutoBackfillTurns(sessionTurns())
     ) {
       scheduleTranscriptBackfill(sessionId, key, loadSeqSnapshot);
     }
@@ -1299,7 +1330,7 @@ export async function loadEarlierTurns(): Promise<void> {
   const key = activeSessionKey();
   if (!sessionId || !key) return;
   cancelPendingTranscriptBackfill();
-  await fetchEarlierTurnsPage(sessionId, key, TURN_WINDOW_STEP, { isAutoBackfill: false });
+  await fetchEarlierTurnsPage(sessionId, key, earlierPageSizeFor(sessionTurns()), { isAutoBackfill: false });
 }
 
 /** What the last view read returned, so the next one asks only for what changed. */
@@ -1388,7 +1419,7 @@ export async function loadTurns(
         );
       });
       if (view.runningTurn?.activeTurnId) notifyRunningTurn(sessionId, view.runningTurn);
-      if (view.mode === "full" && view.hasEarlier && list.length < INITIAL_BACKFILL_TARGET) {
+      if (view.mode === "full" && view.hasEarlier && shouldAutoBackfillTurns(list)) {
         scheduleTranscriptBackfill(sessionId, key, seq);
       }
       loaded = list;
@@ -2017,6 +2048,8 @@ function workspaceRecordOf(row: FleetWorkspace): WorkspaceRecord {
     rootPath: row.rootPath,
     workspaceKind: row.kind === "remote_ssh" ? "remote" : row.kind,
     ...(row.sshHost ? { sshHost: row.sshHost } : {}),
+    ...(row.connectionId ? { connectionId: row.connectionId } : {}),
+    ...(row.connectionName ? { connectionName: row.connectionName } : {}),
   };
 }
 

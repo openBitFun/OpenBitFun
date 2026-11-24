@@ -657,6 +657,14 @@ pub mod legacy {
                     .flatten()
                     .filter(|host| !LOCAL_SSH_HOSTS.contains(host))
                     .map(str::to_string);
+                let connection_id = (kind == FleetWorkspaceKind::RemoteSsh)
+                    .then(|| text(item, &["connectionId", "connection_id"]))
+                    .flatten()
+                    .map(str::to_string);
+                let connection_name = (kind == FleetWorkspaceKind::RemoteSsh)
+                    .then(|| text(item, &["connectionName", "connection_name"]))
+                    .flatten()
+                    .map(str::to_string);
                 out.push(FleetWorkspace {
                     device_id: device_id.to_string(),
                     workspace_id: id.to_string(),
@@ -666,6 +674,8 @@ pub mod legacy {
                         .replace('\\', "/"),
                     kind,
                     ssh_host,
+                    connection_id,
+                    connection_name,
                     link_state: None,
                     is_host_current: Some(id) == current,
                     sessions: Vec::new(),

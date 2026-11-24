@@ -304,32 +304,49 @@ pub async fn get_session_mode_catalog(
             description: mode.description,
         })
         .collect();
+    let mut persisted_metadata = None;
     let facts = match session_id.as_deref() {
         Some(session_id) => {
-            if session_mode_facts(&coordinator, session_id).is_none() {
-                if workspace_id.is_some() || workspace_path.is_some() {
-                    if let Err(error) = runtime
-                        .session_application()
-                        .ensure_session_loaded(
-                            desktop_session_scope(
-                                workspace_id.clone(),
-                                workspace_path.clone().unwrap_or_default(),
-                                remote_connection_id.clone(),
-                                remote_ssh_host.clone(),
-                            ),
-                            session_id,
-                            false,
-                        )
-                        .await
-                    {
+            if let Some(in_memory) = session_mode_facts(&coordinator, session_id) {
+                Some(in_memory)
+            } else if workspace_id.is_some() || workspace_path.is_some() {
+                // Read persisted metadata only: do NOT call `ensure_session_loaded`
+                // here, because restoring a cold multi-turn session reads every
+                // turn JSON file (tens of MB) and acquires an exclusive session
+                // lock just to check `agent_type` and whether any turns exist.
+                match runtime
+                    .session_application()
+                    .load_session_metadata(
+                        desktop_session_scope(
+                            workspace_id.clone(),
+                            workspace_path.clone().unwrap_or_default(),
+                            remote_connection_id.clone(),
+                            remote_ssh_host.clone(),
+                        ),
+                        session_id,
+                    )
+                    .await
+                {
+                    Ok(Some(metadata)) => {
+                        let facts = SessionModeFacts {
+                            mode_id: metadata.agent_type.clone(),
+                            started: metadata.turn_count > 0,
+                        };
+                        persisted_metadata = Some(metadata);
+                        Some(facts)
+                    }
+                    Ok(None) => None,
+                    Err(error) => {
                         warn!(
-                            "Mode catalog could not load its session: session_id={}, error={}",
+                            "Mode catalog could not read session metadata: session_id={}, error={}",
                             session_id, error
                         );
+                        None
                     }
                 }
+            } else {
+                None
             }
-            session_mode_facts(&coordinator, session_id)
         }
         None => None,
     };
@@ -350,6 +367,15 @@ pub async fn get_session_mode_catalog(
                 &state.workspace_service,
                 session.config.workspace_id.as_deref(),
                 session.config.workspace_path.as_deref(),
+                remote_connection_id.as_deref(),
+                remote_ssh_host.as_deref(),
+            )
+            .await;
+        } else if let Some(metadata) = persisted_metadata.as_ref() {
+            is_assistant = is_assistant_workspace(
+                &state.workspace_service,
+                metadata.workspace_id.as_deref(),
+                metadata.workspace_path.as_deref(),
                 remote_connection_id.as_deref(),
                 remote_ssh_host.as_deref(),
             )

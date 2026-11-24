@@ -18,6 +18,7 @@ import {
   View,
   type Point,
 } from "nsh";
+import type { WorkspaceRecord } from "../api";
 import { formatBytes, formatPlural } from "../format";
 // wave24-replica: account SSH profiles that still need a secret here.
 import { loadAccountRecords, sshSecretNote } from "../accountRecordsStore";
@@ -173,8 +174,9 @@ import {
   type WorkspaceEnvironment,
   type WorkspaceLocation,
   remoteLinkAttemptOf,
-  remoteLinkErrors,
+  remoteLinkErrorOf,
   remoteLinkStateOf,
+  resolvedConnectionIdOf,
   retryRemoteWorkspace,
 } from "../sshRemoteStore";
 import { activeWorkspace, deviceContext } from "../state";
@@ -3398,8 +3400,12 @@ export function SshWorkspaceModals() {
  * and Terminal show it above their content while the transport is down, being
  * restored, or waiting for credentials. Nothing shows while it is connected.
  */
-export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
-  const state = () => remoteLinkStateOf(activeWorkspace());
+export function RemoteWorkspaceStatusBanner(props: {
+  compact?: boolean;
+  workspace?: () => WorkspaceRecord | null;
+} = {}) {
+  const workspace = () => (props.workspace ? props.workspace() : activeWorkspace());
+  const state = () => remoteLinkStateOf(workspace());
   const visible = () => {
     const current = state();
     return (
@@ -3412,13 +3418,10 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
   const isWarning = () => state() === "reconnecting" || state() === "host-outdated";
   const accentColor = () => (isWarning() ? stateColor("needs_you") : stateColor("failed"));
   const host = () => {
-    const ws = activeWorkspace();
-    return ws?.sshHost || ws?.connectionId || ws?.name || "";
+    const ws = workspace();
+    return ws?.sshHost || resolvedConnectionIdOf(ws) || ws?.name || "";
   };
-  const detail = () => {
-    const ws = activeWorkspace();
-    return ws?.connectionId ? remoteLinkErrors()[ws.connectionId] ?? "" : "";
-  };
+  const detail = () => remoteLinkErrorOf(workspace());
   return (
     <If when={visible()}>
       <View
@@ -3454,10 +3457,10 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
             }}
           >
             {state() === "reconnecting"
-              ? remoteLinkAttemptOf(activeWorkspace()) > 1
+              ? remoteLinkAttemptOf(workspace()) > 1
                 ? tr("ssh.link.reconnectingAttempt", {
                     host: host(),
-                    attempt: String(remoteLinkAttemptOf(activeWorkspace())),
+                    attempt: String(remoteLinkAttemptOf(workspace())),
                   })
                 : tr("ssh.link.reconnecting", { host: host() })
               : state() === "auth-required"
@@ -3490,7 +3493,7 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
             size={compactLayout() ? "sm" : "xs"}
             leadingIcon={state() === "auth-required" ? "key" : "refresh"}
             style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
-            onPress={() => void retryRemoteWorkspace()}
+            onPress={() => void retryRemoteWorkspace(workspace())}
           />
         </If>
       </View>

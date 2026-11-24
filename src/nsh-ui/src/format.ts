@@ -82,21 +82,46 @@ export interface ToolCallView {
 function summarizeInput(value: unknown, limit = 160): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}…` : value;
-  try {
-    const text = JSON.stringify(value);
-    if (!text) return "";
-    return text.length > limit ? `${text.slice(0, limit)}…` : text;
-  } catch {
-    return "";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[${value.length} items]`;
+  if (typeof value === "object") {
+    // Build a bounded preview without `JSON.stringify`-ing multi-kilobyte file
+    // contents or nested payloads for every collapsed tool card on mount.
+    const record = value as Record<string, unknown>;
+    const parts: string[] = [];
+    let total = 0;
+    for (const key of Object.keys(record)) {
+      const entry = record[key];
+      let rendered: string;
+      if (typeof entry === "string") {
+        const snippet = entry.length > 80 ? `${entry.slice(0, 80)}…` : entry;
+        rendered = `${key}: ${snippet}`;
+      } else if (typeof entry === "number" || typeof entry === "boolean") {
+        rendered = `${key}: ${entry}`;
+      } else if (entry === null || entry === undefined) {
+        continue;
+      } else if (Array.isArray(entry)) {
+        rendered = `${key}: [${entry.length}]`;
+      } else {
+        rendered = `${key}: {…}`;
+      }
+      parts.push(rendered);
+      total += rendered.length + 2;
+      if (total >= limit || parts.length >= 4) break;
+    }
+    const joined = parts.join(", ");
+    return joined.length > limit ? `${joined.slice(0, limit)}…` : joined;
   }
+  return "";
 }
 
 /** A tool item of the view as a card reads it. */
 export function toolCallOf(tool: TranscriptToolView): ToolCallView {
+  const preview = typeof tool.inputPreview === "string" && tool.inputPreview.trim() ? tool.inputPreview.trim() : "";
   return {
     ...(tool.id ? { id: tool.id } : {}),
     name: tool.name,
-    detail: summarizeInput(tool.input),
+    detail: preview || summarizeInput(tool.input),
     ...(tool.input === undefined || tool.input === null ? {} : { input: tool.input }),
     ...(tool.status ? { status: tool.status } : {}),
     ...(typeof tool.success === "boolean" ? { success: tool.success } : {}),
@@ -628,24 +653,53 @@ export function formatBucket(iso: string, hourly: boolean): string {
 export const LARGE_MARKDOWN_CHARS = 12_000;
 
 /**
- * Where to cut a long markdown reply for its preview: at the last blank line
- * before `budget` that is outside a code fence, so the preview never ends in an
- * open fence. Returns the text's length when no cut is needed or none is safe.
+ * Where to cut a long markdown reply for its preview: prefers the last blank
+ * line before `budget` outside a code fence; if none exists (e.g. a giant code
+ * block, table, or log dump without blank lines), falls back to the last line
+ * break before `budget` (or `budget` itself) so oversized text never bypasses
+ * preview truncation and stalls native TextView layout.
  */
 export function markdownPreviewCut(text: string, budget = 4_000): number {
   if (text.length <= budget) return text.length;
   let inFence = false;
   let lastSafe = -1;
+  let lastNewline = -1;
   let index = 0;
   while (index < text.length && index <= budget) {
     const lineEnd = text.indexOf("\n", index);
     const end = lineEnd === -1 ? text.length : lineEnd;
+    if (end <= budget && end > 0) lastNewline = end;
     const line = text.slice(index, end);
     if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
     else if (!inFence && line.trim() === "" && index > 0) lastSafe = index;
     index = end + 1;
   }
-  return lastSafe > 0 ? lastSafe : text.length;
+  if (lastSafe > 0) return lastSafe;
+  if (lastNewline > 0) return lastNewline;
+  return budget;
+}
+
+/**
+ * Slices a markdown reply to `cut` and closes any unclosed code fence left
+ * open by a hard preview cut, so native Markdown parsing stays balanced.
+ */
+export function markdownPreviewSlice(text: string, cut: number): string {
+  const slice = text.slice(0, cut);
+  let openFence: string | null = null;
+  let index = 0;
+  while (index < slice.length) {
+    const lineEnd = slice.indexOf("\n", index);
+    const end = lineEnd === -1 ? slice.length : lineEnd;
+    const match = /^\s*(```+|~~~+)/.exec(slice.slice(index, end));
+    if (match) {
+      const marker = match[1]!;
+      if (openFence === null) openFence = marker;
+      else if (marker[0] === openFence[0] && marker.length >= openFence.length) openFence = null;
+    }
+    if (lineEnd === -1) break;
+    index = lineEnd + 1;
+  }
+  return openFence ? `${slice}\n${openFence}` : slice;
 }
 
 /** How many lines a text has, for "Show N more lines" labels. */

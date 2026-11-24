@@ -1531,13 +1531,7 @@ pub async fn remote_workspace_ensure_connected(
     };
     let normalized =
         openbitfun_core::service::remote_ssh::normalize_remote_workspace_path(&remote_path);
-    let already_active = state
-        .get_remote_workspace_async()
-        .await
-        .is_some_and(|active| {
-            active.connection_id == connection_id && active.remote_path == normalized
-        });
-    if already_active {
+    if is_remote_workspace_registered_and_active(&state, &connection_id, &normalized).await {
         return Ok(RemoteWorkspaceEnsureConnectedResponse {
             link,
             activated: false,
@@ -1557,6 +1551,49 @@ pub async fn remote_workspace_ensure_connected(
             activated: false,
         }),
     }
+}
+
+async fn is_remote_workspace_entry_active(
+    slot: Option<&crate::api::RemoteWorkspace>,
+    manager: Option<&openbitfun_core::service::remote_ssh::RemoteWorkspaceStateManager>,
+    connection_id: &str,
+    normalized_path: &str,
+) -> bool {
+    let slot_matches = slot.is_some_and(|active| {
+        active.connection_id == connection_id && active.remote_path == normalized_path
+    });
+    if !slot_matches {
+        return false;
+    }
+    let Some(manager) = manager else {
+        return false;
+    };
+    manager.get_ssh_manager().await.is_some()
+        && manager.get_file_service().await.is_some()
+        && manager
+            .lookup_scoped_connection(normalized_path, connection_id)
+            .await
+            .is_some()
+}
+
+/// True only when both `AppState::remote_workspace` and the process-wide
+/// `RemoteWorkspaceStateManager` hold `(connection_id, normalized_path)` with
+/// live SSH and file service handles. A persisted startup slot alone is not
+/// enough to skip `activate_remote_workspace`.
+async fn is_remote_workspace_registered_and_active(
+    state: &AppState,
+    connection_id: &str,
+    normalized_path: &str,
+) -> bool {
+    let slot = state.get_remote_workspace_async().await;
+    let manager = openbitfun_core::service::remote_ssh::get_remote_workspace_manager();
+    is_remote_workspace_entry_active(
+        slot.as_ref(),
+        manager.as_deref(),
+        connection_id,
+        normalized_path,
+    )
+    .await
 }
 
 /// The last link state of every connection this backend supervises (a client
@@ -1773,5 +1810,63 @@ mod tests {
         for name in ["CON", "nul.txt", "bad:name", "trailing."] {
             assert!(validate_remote_name_for_local_download(name).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn startup_preloaded_remote_slot_without_registry_entry_is_not_treated_as_active() {
+        use openbitfun_core::service::remote_ssh::{
+            RemoteFileService, RemoteWorkspaceStateManager, SSHConnectionManager,
+        };
+
+        let slot = crate::api::RemoteWorkspace {
+            connection_id: "ssh-root@190.92.203.184".to_string(),
+            remote_path: "/root/repos".to_string(),
+            connection_name: "Prod".to_string(),
+            ssh_host: "190.92.203.184".to_string(),
+        };
+
+        assert!(
+            !super::is_remote_workspace_entry_active(
+                Some(&slot),
+                None,
+                "ssh-root@190.92.203.184",
+                "/root/repos",
+            )
+            .await
+        );
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let ssh = SSHConnectionManager::new(data_dir.path().to_path_buf());
+        let fs = RemoteFileService::new(Arc::new(tokio::sync::RwLock::new(Some(ssh.clone()))));
+        let state_manager = RemoteWorkspaceStateManager::new();
+        state_manager.set_ssh_manager(ssh).await;
+        state_manager.set_file_service(fs).await;
+        assert!(
+            !super::is_remote_workspace_entry_active(
+                Some(&slot),
+                Some(&state_manager),
+                "ssh-root@190.92.203.184",
+                "/root/repos",
+            )
+            .await
+        );
+
+        state_manager
+            .register_remote_workspace(
+                "/root/repos".to_string(),
+                "ssh-root@190.92.203.184".to_string(),
+                "Prod".to_string(),
+                "190.92.203.184".to_string(),
+            )
+            .await;
+        assert!(
+            super::is_remote_workspace_entry_active(
+                Some(&slot),
+                Some(&state_manager),
+                "ssh-root@190.92.203.184",
+                "/root/repos",
+            )
+            .await
+        );
     }
 }

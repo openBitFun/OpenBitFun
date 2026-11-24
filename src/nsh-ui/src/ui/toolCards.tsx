@@ -1371,8 +1371,38 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
   );
 }
 
+/** O(1) zero-serialization check for whether a collapsed tool call has a result payload. */
+function hasRawResult(call: ToolCallView): boolean {
+  const result = call.result;
+  if (typeof result === "string") return result.trim().length > 0;
+  if (result !== undefined && result !== null) {
+    if (Array.isArray(result)) return result.length > 0;
+    if (typeof result === "object") {
+      for (const _ in result as Record<string, unknown>) return true;
+      return false;
+    }
+    return true;
+  }
+  return Boolean(call.resultForAssistant && call.resultForAssistant.trim());
+}
+
+/** O(1) zero-serialization check for whether a collapsed tool call has arguments to inspect. */
+function hasRawArguments(call: ToolCallView): boolean {
+  const input = call.input;
+  if (typeof input === "string") return input.trim().length > 0;
+  if (input !== undefined && input !== null) {
+    if (Array.isArray(input)) return input.length > 0;
+    if (typeof input === "object") {
+      for (const _ in input as Record<string, unknown>) return true;
+      return Boolean(call.detail);
+    }
+    return true;
+  }
+  return Boolean(call.detail);
+}
+
 function hasBody(call: ToolCallView, kind: ToolKind): boolean {
-  if (call.error || resultTextOf(call)) return true;
+  if (call.error || hasRawResult(call)) return true;
   if (kind === "todo") return todosOf(call.input).length > 0;
   if (kind === "edit") return diffOf(call.input) !== null;
   if (kind === "write") return Boolean(writeContentOf(call));
@@ -1380,8 +1410,7 @@ function hasBody(call: ToolCallView, kind: ToolKind): boolean {
   if (kind === "task") {
     return Boolean(firstStringOf(inputRecord(call), ["prompt"]) || subagentSessionOf(call) || call.subagentItems?.length);
   }
-  if (kind === "mcp" || kind === "generic" || kind === "question" || kind === "skill") return Boolean(argumentsTextOf(call));
-  if (visualizationFiguresOf(call).length > 0) return true;
+  if (kind === "mcp" || kind === "generic" || kind === "question" || kind === "skill") return hasRawArguments(call);
   return false;
 }
 

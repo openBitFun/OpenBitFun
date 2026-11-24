@@ -664,6 +664,22 @@ impl SnapshotCore {
         }
     }
 
+    async fn read_recorded_snapshot_text_if_within_size(
+        &self,
+        snapshot_id: Option<&str>,
+        max_bytes: u64,
+    ) -> SnapshotResult<Option<String>> {
+        match snapshot_id {
+            None => Ok(Some(String::new())),
+            Some(id) if id.starts_with("empty_snapshot_") => Ok(Some(String::new())),
+            Some(id) => {
+                self.snapshot_system
+                    .get_snapshot_content_if_within_size(id, max_bytes)
+                    .await
+            }
+        }
+    }
+
     pub async fn get_file_diff_with_anchor_before(
         &self,
         file_path: &Path,
@@ -902,50 +918,74 @@ impl SnapshotCore {
                     continue;
                 }
 
-                let before_bytes = self
-                    .session_snapshot_recorded_size(first.before_snapshot_id.as_deref())
-                    .await;
-                let after_bytes = if deleted_in_turn {
-                    0
-                } else {
-                    self.session_snapshot_recorded_size(last.after_snapshot_id.as_deref())
-                        .await
-                };
-                let too_large = before_bytes > SESSION_FILE_DIFF_STATS_MAX_SOURCE_BYTES
-                    || after_bytes > SESSION_FILE_DIFF_STATS_MAX_SOURCE_BYTES;
-
-                let (lines_added, lines_removed) = if too_large {
-                    let mut added = 0usize;
-                    let mut removed = 0usize;
-                    for op in file_ops {
-                        added += op.diff_summary.lines_added;
-                        removed += op.diff_summary.lines_removed;
-                    }
-                    (added, removed)
+                let (lines_added, lines_removed) = if file_ops.len() == 1
+                    && (first.diff_summary.lines_added > 0 || first.diff_summary.lines_removed > 0)
+                {
+                    // Single completed operation in this turn already recorded its
+                    // exact line diff summary at completion time: avoid reading
+                    // snapshot metadata/blobs and re-diffing on every transcript read.
+                    (
+                        first.diff_summary.lines_added,
+                        first.diff_summary.lines_removed,
+                    )
+                } else if !created_in_turn
+                    && !deleted_in_turn
+                    && !renamed_in_turn
+                    && first.before_snapshot_id.is_some()
+                    && first.before_snapshot_id == last.after_snapshot_id
+                {
+                    continue;
                 } else {
                     let before = match self
-                        .read_recorded_snapshot_text(first.before_snapshot_id.as_deref())
+                        .read_recorded_snapshot_text_if_within_size(
+                            first.before_snapshot_id.as_deref(),
+                            SESSION_FILE_DIFF_STATS_MAX_SOURCE_BYTES,
+                        )
                         .await
                     {
-                        Ok(text) => text,
+                        Ok(Some(text)) => Some(text),
+                        Ok(None) => None,
                         Err(_) => continue,
                     };
-                    let after = if deleted_in_turn {
-                        String::new()
+                    let after = if before.is_none() {
+                        None
+                    } else if deleted_in_turn {
+                        Some(String::new())
                     } else {
                         match self
-                            .read_recorded_snapshot_text(last.after_snapshot_id.as_deref())
+                            .read_recorded_snapshot_text_if_within_size(
+                                last.after_snapshot_id.as_deref(),
+                                SESSION_FILE_DIFF_STATS_MAX_SOURCE_BYTES,
+                            )
                             .await
                         {
-                            Ok(text) => text,
+                            Ok(Some(text)) => Some(text),
+                            Ok(None) => None,
                             Err(_) => continue,
                         }
                     };
-                    if !created_in_turn && !deleted_in_turn && !renamed_in_turn && before == after {
-                        continue;
+                    match (before, after) {
+                        (Some(before), Some(after)) => {
+                            if !created_in_turn
+                                && !deleted_in_turn
+                                && !renamed_in_turn
+                                && before == after
+                            {
+                                continue;
+                            }
+                            let summary = compute_diff_summary(&before, &after);
+                            (summary.lines_added, summary.lines_removed)
+                        }
+                        _ => {
+                            let mut added = 0usize;
+                            let mut removed = 0usize;
+                            for op in file_ops {
+                                added += op.diff_summary.lines_added;
+                                removed += op.diff_summary.lines_removed;
+                            }
+                            (added, removed)
+                        }
                     }
-                    let summary = compute_diff_summary(&before, &after);
-                    (summary.lines_added, summary.lines_removed)
                 };
 
                 let change_kind = if created_in_turn {
@@ -2372,5 +2412,68 @@ mod tests {
             .await
             .unwrap();
         assert!(empty_scope.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_op_turn_summary_reuses_recorded_diff_summary_without_reading_snapshots() {
+        let mut runtime = make_test_runtime("single-op-summary-fastpath").await;
+        let file_path = runtime.workspace.join("src/fast.rs");
+        tokio::fs::create_dir_all(file_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&file_path, "one\ntwo\n").await.unwrap();
+
+        let op_id = runtime
+            .core
+            .start_file_operation(
+                "session-fast",
+                0,
+                file_path.clone(),
+                OperationType::Modify,
+                "Edit".to_string(),
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&file_path, "one\ntwo_updated\nthree\n")
+            .await
+            .unwrap();
+        runtime
+            .core
+            .complete_file_operation("session-fast", &op_id, 1)
+            .await
+            .unwrap();
+
+        // Remove the stored snapshot blobs from disk: single-op turn summary
+        // must still succeed from the precomputed `diff_summary` with zero blob reads.
+        let op = runtime
+            .core
+            .get_operation("session-fast", &op_id)
+            .expect("recorded operation");
+        for sid in [
+            op.before_snapshot_id.as_deref(),
+            op.after_snapshot_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let _ = runtime.core.snapshot_system.delete_snapshot(sid).await;
+        }
+
+        let summaries = runtime
+            .core
+            .get_turn_file_change_summaries_for_turns(
+                "session-fast",
+                &std::collections::BTreeSet::from([0usize]),
+            )
+            .await
+            .unwrap();
+        let entries = summaries.get(&0).expect("turn 0 entry");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].change_kind, "modify");
+        assert_eq!(entries[0].lines_added, 2);
+        assert_eq!(entries[0].lines_removed, 1);
+        assert_eq!(entries[0].operation_id, op_id);
     }
 }

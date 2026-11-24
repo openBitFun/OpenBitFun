@@ -636,6 +636,7 @@ export function deviceTree(): DeviceTreeNode[] {
             sshHost: remoteWorkspaceHost({
               kind: workspace.kind,
               sshHost: workspace.sshHost,
+              connectionId: workspace.connectionId,
             }),
             total: workspace.sessionTotal,
             sessions: workspace.sessions.map(row => ({

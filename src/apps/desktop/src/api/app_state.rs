@@ -310,11 +310,15 @@ impl AppState {
         *remote_file_service_clone.write().await = Some(fs_for_state);
         *remote_terminal_manager_clone.write().await = Some(tm_for_state);
 
-        // Note: We do NOT activate the global remote workspace state here because
-        // there is no live SSH connection yet. The persisted workspace info is loaded
-        // into self.remote_workspace so the frontend can query it via remote_get_workspace_info
-        // and drive the reconnection flow. The global state will be activated when the
-        // frontend successfully reconnects and calls remote_open_workspace → set_remote_workspace.
+        // Bind the shared SSH providers into the process-wide remote workspace
+        // manager at startup without registering unverified workspace entries.
+        // This guarantees coordinator/tool/remote-control/split-pane callers
+        // never fail with "remote workspace state is not initialized" and share
+        // AppState's single SSHConnectionManager (which auto-reconnects on use).
+        let state_manager = init_remote_workspace_manager();
+        state_manager.set_ssh_manager((*manager_arc).clone()).await;
+        state_manager.set_file_service(fs.clone()).await;
+        state_manager.set_terminal_manager(tm.clone()).await;
 
         log::info!("SSH Remote services initialized with SFTP, PTY, and known hosts support");
 

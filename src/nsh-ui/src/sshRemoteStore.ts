@@ -2829,12 +2829,14 @@ interface EnsureConnectedAnswer {
   activated?: boolean;
 }
 
-/** Liveness per connection id; the scenes read it through `remoteLinkStateOf`. */
+/** Liveness per connection id (or `ws:<workspaceId>` before a host reveals the connection id). */
 export const remoteLinkStates = signal<Record<string, RemoteLinkState>>({});
 /** Why a connection is offline, as the host said it. */
 export const remoteLinkErrors = signal<Record<string, string>>({});
 /** The reconnect attempt the host is on, per connection, while `reconnecting`. */
 export const remoteLinkAttempts = signal<Record<string, number>>({});
+/** Connection ids learned from `remote_workspace_ensure_connected` for workspaces whose fleet row omitted one. */
+const workspaceConnectionIds = signal<Record<string, string>>({});
 
 interface ReconnectTarget {
   workspaceId: string;
@@ -2846,6 +2848,44 @@ const ensureInFlight = new Map<string, Promise<boolean>>();
 const linkRevisions = new Map<string, number>();
 let pendingAuthReconnect: ReconnectTarget | null = null;
 let linkEventsBound = false;
+
+function workspaceFallbackLinkKey(workspaceId: string): string {
+  return `ws:${workspaceId}`;
+}
+
+/** The SSH connection id of a remote workspace, including ids resolved dynamically from the host. */
+export function resolvedConnectionIdOf(ws: WorkspaceRecord | null): string | null {
+  if (!ws || !isRemoteWorkspace(ws)) return null;
+  const direct = ws.connectionId?.trim();
+  if (direct) return direct;
+  return workspaceConnectionIds()[ws.id] ?? null;
+}
+
+function linkStateKeyOf(ws: WorkspaceRecord | null): string | null {
+  if (!ws || !isRemoteWorkspace(ws)) return null;
+  return resolvedConnectionIdOf(ws) ?? (ws.id ? workspaceFallbackLinkKey(ws.id) : null);
+}
+
+function clearLinkKey(key: string): void {
+  if (key in remoteLinkStates()) {
+    remoteLinkStates.update(prev => {
+      const { [key]: _dropped, ...rest } = prev;
+      return rest;
+    });
+  }
+  if (key in remoteLinkErrors()) {
+    remoteLinkErrors.update(prev => {
+      const { [key]: _dropped, ...rest } = prev;
+      return rest;
+    });
+  }
+  if (key in remoteLinkAttempts()) {
+    remoteLinkAttempts.update(prev => {
+      const { [key]: _dropped, ...rest } = prev;
+      return rest;
+    });
+  }
+}
 
 function setLinkState(connectionId: string, state: RemoteLinkState, error?: string, attempt?: number): void {
   remoteLinkStates.update(prev => (prev[connectionId] === state ? prev : { ...prev, [connectionId]: state }));
@@ -2861,7 +2901,7 @@ function setLinkState(connectionId: string, state: RemoteLinkState, error?: stri
     const { [connectionId]: _dropped, ...rest } = prev;
     return rest;
   });
-  if (state === "connected" || state === "offline") {
+  if (!connectionId.startsWith("ws:") && (state === "connected" || state === "offline")) {
     connectionStatuses.update(prev => ({
       ...prev,
       [connectionId]: state === "connected" ? "connected" : "error",
@@ -2871,14 +2911,23 @@ function setLinkState(connectionId: string, state: RemoteLinkState, error?: stri
 
 /** The link state of a remote workspace, or null for a local one (or one not checked yet). */
 export function remoteLinkStateOf(ws: WorkspaceRecord | null): RemoteLinkState | null {
-  if (!ws || !isRemoteWorkspace(ws) || !ws.connectionId) return null;
-  return remoteLinkStates()[ws.connectionId] ?? null;
+  const key = linkStateKeyOf(ws);
+  if (!key) return null;
+  return remoteLinkStates()[key] ?? null;
 }
 
 /** The reconnect attempt the host reports for a remote workspace, or 0. */
 export function remoteLinkAttemptOf(ws: WorkspaceRecord | null): number {
-  if (!ws?.connectionId) return 0;
-  return remoteLinkAttempts()[ws.connectionId] ?? 0;
+  const key = linkStateKeyOf(ws);
+  if (!key) return 0;
+  return remoteLinkAttempts()[key] ?? 0;
+}
+
+/** The link error detail reported for a remote workspace, or empty string. */
+export function remoteLinkErrorOf(ws: WorkspaceRecord | null): string {
+  const key = linkStateKeyOf(ws);
+  if (!key) return "";
+  return remoteLinkErrors()[key] ?? "";
 }
 
 function findSavedConnection(connectionId: string): SavedConnection | undefined {
@@ -2896,6 +2945,10 @@ function targetFor(ws: WorkspaceRecord, connectionId: string): ReconnectTarget {
 function applyHostLink(link: HostRemoteLink | undefined, target: ReconnectTarget | null = null): void {
   if (!link?.connectionId) return;
   const id = link.connectionId;
+  if (target?.workspaceId) {
+    workspaceConnectionIds.update(prev => (prev[target.workspaceId] === id ? prev : { ...prev, [target.workspaceId]: id }));
+    clearLinkKey(workspaceFallbackLinkKey(target.workspaceId));
+  }
   if (typeof link.revision === "number") {
     const seen = linkRevisions.get(id) ?? 0;
     if (link.revision < seen) return;
@@ -2919,9 +2972,13 @@ function applyHostLink(link: HostRemoteLink | undefined, target: ReconnectTarget
     case "failed":
       if (link.reason === "auth_required") {
         setLinkState(id, "auth-required", link.detail);
+        const activeWs = activeWorkspace();
         const reconnect =
-          target ??
-          (activeWorkspace()?.connectionId === id ? targetFor(activeWorkspace()!, id) : null);
+          target
+            ? { ...target, connectionId: id }
+            : resolvedConnectionIdOf(activeWs) === id && activeWs
+              ? targetFor(activeWs, id)
+              : null;
         if (reconnect) void promptForLinkCredentials(reconnect);
         return;
       }
@@ -2971,26 +3028,28 @@ async function requestEnsureConnected(
   activate: boolean,
 ): Promise<boolean> {
   bindLinkEvents();
-  if (remoteLinkStates()[target.connectionId] !== "connected") setLinkState(target.connectionId, "checking");
+  const stateKey = target.connectionId || workspaceFallbackLinkKey(target.workspaceId);
+  if (remoteLinkStates()[stateKey] !== "connected") setLinkState(stateKey, "checking");
   let answer: EnsureConnectedAnswer;
   try {
     answer = await invokeCommand<EnsureConnectedAnswer>("remote_workspace_ensure_connected", {
       ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}),
-      connectionId: target.connectionId,
+      ...(target.connectionId ? { connectionId: target.connectionId } : {}),
       remotePath: target.remotePath,
       activate,
     });
   } catch (error) {
     if (isCommandUnavailable(error, "remote_workspace_ensure_connected")) {
       // An older host: it cannot restore links, and this surface no longer does it either.
-      setLinkState(target.connectionId, "host-outdated");
+      setLinkState(stateKey, "host-outdated");
       return true;
     }
-    setLinkState(target.connectionId, "offline", errorMessage(error));
+    setLinkState(stateKey, "offline", errorMessage(error));
     return false;
   }
   applyHostLink(answer?.link, target);
-  return answer?.link?.state === "connected" && remoteLinkStates()[target.connectionId] === "connected";
+  const resolvedId = answer?.link?.connectionId || stateKey;
+  return answer?.link?.state === "connected" && remoteLinkStates()[resolvedId] === "connected";
 }
 
 /**
@@ -3001,14 +3060,16 @@ export function ensureRemoteConnected(
   ws: WorkspaceRecord | null,
   options: { activate?: boolean } = {},
 ): Promise<boolean> {
-  if (!ws || !isRemoteWorkspace(ws) || !ws.connectionId) return Promise.resolve(true);
-  const connectionId = ws.connectionId;
-  const running = ensureInFlight.get(connectionId);
+  if (!ws || !isRemoteWorkspace(ws)) return Promise.resolve(true);
+  const connectionId = resolvedConnectionIdOf(ws) ?? "";
+  if (!connectionId && !ws.id) return Promise.resolve(true);
+  const flightKey = connectionId || workspaceFallbackLinkKey(ws.id);
+  const running = ensureInFlight.get(flightKey);
   if (running) return running;
   const flight = requestEnsureConnected(targetFor(ws, connectionId), options.activate !== false).finally(() => {
-    ensureInFlight.delete(connectionId);
+    ensureInFlight.delete(flightKey);
   });
-  ensureInFlight.set(connectionId, flight);
+  ensureInFlight.set(flightKey, flight);
   return flight;
 }
 
@@ -3016,15 +3077,16 @@ export function ensureRemoteConnected(
 async function activateReconnectedWorkspace(target: ReconnectTarget, connectionId: string): Promise<void> {
   await requestEnsureConnected({ ...target, connectionId }, true);
   if (connectionId !== target.connectionId && remoteLinkStates()[connectionId] === "connected") {
-    setLinkState(target.connectionId, "connected");
+    if (target.connectionId) setLinkState(target.connectionId, "connected");
   }
 }
 
 /** The workspace's Reconnect action: ask the host again, or the user when it needs credentials. */
 export async function retryRemoteWorkspace(ws: WorkspaceRecord | null = activeWorkspace()): Promise<boolean> {
-  if (!ws?.connectionId) return true;
-  if (remoteLinkStates()[ws.connectionId] === "auth-required") {
-    await promptForLinkCredentials(targetFor(ws, ws.connectionId));
+  if (!ws || !isRemoteWorkspace(ws)) return true;
+  const connectionId = resolvedConnectionIdOf(ws);
+  if (connectionId && remoteLinkStates()[connectionId] === "auth-required") {
+    await promptForLinkCredentials(targetFor(ws, connectionId));
     return false;
   }
   return ensureRemoteConnected(ws);

@@ -1434,33 +1434,61 @@ pub(crate) async fn get_session_mode_catalog(
     let mode_dtos = get_available_modes(state, args).await?;
     let rows = mode_sources_from_available_modes(&mode_dtos);
 
+    let mut persisted_metadata = None;
     let loaded_session = match session_id.as_deref() {
         Some(sid) => {
             let existing = openbitfun_core::agentic::coordination::get_global_coordinator()
                 .and_then(|coordinator| coordinator.get_session_manager().get_session(sid));
             if existing.is_none() && has_session_workspace_scope(request) {
-                if let Err(error) = ensure_coordinator_session(state, args).await {
-                    tracing::warn!(
-                        "Peer mode catalog could not load its session: session_id={}, error={}",
-                        sid,
-                        error
-                    );
+                match resolved_session_storage_path(state, request).await {
+                    Ok(storage_path) => {
+                        match state
+                            .compatibility
+                            .load_persisted_session_metadata(&storage_path, sid)
+                            .await
+                        {
+                            Ok(metadata) => {
+                                persisted_metadata = metadata;
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    "Peer mode catalog could not read session metadata: session_id={}, error={}",
+                                    sid,
+                                    error
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Peer mode catalog could not resolve session storage path: session_id={}, error={}",
+                            sid,
+                            error
+                        );
+                    }
                 }
-                openbitfun_core::agentic::coordination::get_global_coordinator()
-                    .and_then(|coordinator| coordinator.get_session_manager().get_session(sid))
-            } else {
-                existing
             }
+            existing
         }
         None => None,
     };
 
-    let facts = loaded_session.as_ref().map(|session| {
-        openbitfun_core::agentic::session_policy::SessionModeFacts {
-            mode_id: session.agent_type.clone(),
-            started: !session.dialog_turn_ids.is_empty(),
-        }
-    });
+    let facts = loaded_session
+        .as_ref()
+        .map(
+            |session| openbitfun_core::agentic::session_policy::SessionModeFacts {
+                mode_id: session.agent_type.clone(),
+                started: !session.dialog_turn_ids.is_empty(),
+            },
+        )
+        .or_else(|| {
+            persisted_metadata.as_ref().map(|metadata| {
+                openbitfun_core::agentic::session_policy::SessionModeFacts {
+                    mode_id: metadata.agent_type.clone(),
+                    started: metadata.turn_count > 0,
+                }
+            })
+        });
 
     let mut is_assistant = is_assistant_workspace(
         state,
@@ -1476,6 +1504,15 @@ pub(crate) async fn get_session_mode_catalog(
                 state,
                 session.config.workspace_id.as_deref(),
                 session.config.workspace_path.as_deref(),
+                remote_connection_id.as_deref(),
+                remote_ssh_host.as_deref(),
+            )
+            .await;
+        } else if let Some(metadata) = persisted_metadata.as_ref() {
+            is_assistant = is_assistant_workspace(
+                state,
+                metadata.workspace_id.as_deref(),
+                metadata.workspace_path.as_deref(),
                 remote_connection_id.as_deref(),
                 remote_ssh_host.as_deref(),
             )

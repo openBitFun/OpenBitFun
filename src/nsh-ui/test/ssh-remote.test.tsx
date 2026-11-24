@@ -1,5 +1,15 @@
 import { expect, open, test } from "nsh/test";
-import { showDevices, openToolScene, type BackendOptions, createBackend, createDeviceBackend, projectWorkspaceNavigator } from "./support";
+import {
+  showDevices,
+  openToolScene,
+  type BackendOptions,
+  createBackend,
+  createDeviceBackend,
+  fleetDeviceRow,
+  fleetObpHost,
+  fleetSessionRow,
+  projectWorkspaceNavigator,
+} from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -1240,4 +1250,118 @@ test("an account SSH profile without its key on this device says so", async () =
   await openSshModalViaUi(app);
   await app.waitFor("label:ssh-needs-secret-conn-prod-1");
   expect(app.texts()).toContain("Needs a key on this device");
+});
+
+test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even when an older entry omits connectionId) and surface offline banner in Sessions", async () => {
+  const ssh = createSshBackend();
+  const inner = ssh.base.handlers["openbitfun.invoke"] as (data: unknown) => unknown;
+  const ensureCalls: Array<Record<string, unknown>> = [];
+  ssh.base.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = asRecord(data);
+    const action = String(args.action ?? "");
+    const request = asRecord(args.request);
+    if (action === "remote_workspace_ensure_connected") {
+      ensureCalls.push(request);
+      if (request.workspaceId === "ws-remote-legacy") {
+        return {
+          ok: true,
+          value: {
+            link: {
+              connectionId: "conn-legacy-9",
+              state: "failed",
+              reason: "unreachable",
+              detail: "Connection refused by 10.0.0.9",
+              revision: 2,
+            },
+            activated: false,
+          },
+          transport: "dev",
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          link: {
+            connectionId: String(request.connectionId || "conn-prod-1"),
+            state: "connected",
+            revision: 1,
+          },
+          activated: true,
+        },
+        transport: "dev",
+      };
+    }
+    return inner(data);
+  };
+
+  const nav = {
+    revision: 5,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "ws-local",
+            name: "OpenBitFun",
+            rootPath: "/Users/me/OpenBitFun",
+            kind: "local",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "ws-local", "s-local", "Local thread")],
+          },
+          {
+            workspaceId: "ws-remote",
+            name: "repos",
+            rootPath: "/root/repos",
+            kind: "remote_ssh",
+            sshHost: "190.92.203.184",
+            connectionId: "ssh-root@190.92.203.184",
+            connectionName: "Prod SSH",
+            sessions: [fleetSessionRow("dev-a", "ws-remote", "s-remote", "Remote thread")],
+          },
+          {
+            workspaceId: "ws-remote-legacy",
+            name: "legacy-remote",
+            rootPath: "/srv/legacy",
+            kind: "remote_ssh",
+            sshHost: "10.0.0.9",
+            // Intentionally omits connectionId to simulate an older fleet entry.
+            sessions: [fleetSessionRow("dev-a", "ws-remote-legacy", "s-legacy", "Legacy remote thread")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+    ],
+  };
+
+  const host = fleetObpHost(ssh.base, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: nav,
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("id:sidebar-session-s-remote");
+
+  // Selecting a Fleet remote workspace with connectionId activates it via remote_workspace_ensure_connected.
+  await app.press("id:sidebar-session-s-remote");
+  await app.waitUntil(() => ensureCalls.some(call => call.workspaceId === "ws-remote"));
+  expect(ensureCalls.find(call => call.workspaceId === "ws-remote")).toMatchObject({
+    workspaceId: "ws-remote",
+    connectionId: "ssh-root@190.92.203.184",
+    remotePath: "/root/repos",
+    activate: true,
+  });
+
+  // Selecting an older Fleet remote workspace without connectionId still ensures by workspaceId and renders the offline banner in SessionsScene.
+  await app.press("id:sidebar-session-s-legacy");
+  await app.waitUntil(() => ensureCalls.some(call => call.workspaceId === "ws-remote-legacy"));
+  expect(ensureCalls.find(call => call.workspaceId === "ws-remote-legacy")).toMatchObject({
+    workspaceId: "ws-remote-legacy",
+    remotePath: "/srv/legacy",
+    activate: true,
+  });
+  await app.waitFor("remote-link-offline");
+  await app.waitFor("Connection refused by 10.0.0.9");
 });

@@ -528,17 +528,23 @@ fn posix(path: &Path) -> String {
 
 /// A workspace record as a fleet workspace summary.
 pub fn workspace_summary(info: &WorkspaceInfo, current_id: Option<&str>) -> FleetWorkspace {
-    let (kind, ssh_host) = match info.workspace_kind {
-        WorkspaceKind::Assistant => (FleetWorkspaceKind::Assistant, None),
+    let meta_str = |key: &str| {
+        info.metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let (kind, ssh_host, connection_id, connection_name) = match info.workspace_kind {
+        WorkspaceKind::Assistant => (FleetWorkspaceKind::Assistant, None, None, None),
         WorkspaceKind::Remote => (
             FleetWorkspaceKind::RemoteSsh,
-            info.metadata
-                .get("sshHost")
-                .and_then(Value::as_str)
-                .filter(|host| !host.is_empty())
-                .map(str::to_string),
+            meta_str("sshHost"),
+            meta_str("connectionId"),
+            meta_str("connectionName"),
         ),
-        _ => (FleetWorkspaceKind::Local, None),
+        _ => (FleetWorkspaceKind::Local, None, None, None),
     };
     FleetWorkspace {
         device_id: String::new(),
@@ -547,6 +553,8 @@ pub fn workspace_summary(info: &WorkspaceInfo, current_id: Option<&str>) -> Flee
         root_path: posix(&info.root_path),
         kind,
         ssh_host,
+        connection_id,
+        connection_name,
         link_state: None,
         is_host_current: current_id == Some(info.id.as_str()),
         sessions: Vec::new(),

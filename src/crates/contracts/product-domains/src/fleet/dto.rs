@@ -320,6 +320,12 @@ pub struct FleetWorkspace {
     pub kind: FleetWorkspaceKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_host: Option<String>,
+    /// Saved remote connection id for an SSH/Docker/WSL workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    /// Display name of the saved remote connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_name: Option<String>,
     /// The remote link phase of an SSH workspace (owner's wire value).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_state: Option<String>,
@@ -806,6 +812,8 @@ mod tests {
                     root_path: "/home/u/proj".into(),
                     kind: FleetWorkspaceKind::RemoteSsh,
                     ssh_host: Some("box".into()),
+                    connection_id: Some("conn-box".into()),
+                    connection_name: Some("Box".into()),
                     link_state: Some("connected".into()),
                     is_host_current: true,
                     sessions: vec![FleetSession {
@@ -859,6 +867,8 @@ mod tests {
                         "rootPath": "/home/u/proj",
                         "kind": "remote_ssh",
                         "sshHost": "box",
+                        "connectionId": "conn-box",
+                        "connectionName": "Box",
                         "linkState": "connected",
                         "isHostCurrent": true,
                         "sessions": [{
@@ -1115,6 +1125,8 @@ mod tests {
             "prompts": [{"promptId": "p", "kind": "permission", "revision": 1}]
         });
         let digest: FleetDigest = serde_json::from_value(legacy).unwrap();
+        assert_eq!(digest.workspaces[0].connection_id, None);
+        assert_eq!(digest.workspaces[0].connection_name, None);
         assert!(!digest.prompts[0].answerable);
         assert_eq!(digest.prompts[0].answer_route, FleetAnswerRoute::Runtime);
         assert_eq!(digest.prompts[0].job_id, None);

@@ -704,6 +704,27 @@ impl FileSnapshotSystem {
         Ok(snapshot)
     }
 
+    /// Gets snapshot content (string) in a single metadata read when the recorded
+    /// logical size does not exceed `max_bytes`. Returns `Ok(None)` when the
+    /// snapshot exceeds `max_bytes`, avoiding both duplicate metadata reads and
+    /// reading oversized content blobs.
+    pub async fn get_snapshot_content_if_within_size(
+        &self,
+        snapshot_id: &str,
+        max_bytes: u64,
+    ) -> SnapshotResult<Option<String>> {
+        let snapshot = self.load_snapshot_from_disk(snapshot_id).await?;
+        if snapshot.metadata.size > max_bytes {
+            return Ok(None);
+        }
+        let content_bytes = self
+            .restore_loaded_snapshot_content(snapshot_id, &snapshot)
+            .await?;
+        String::from_utf8(content_bytes).map(Some).map_err(|e| {
+            SnapshotError::ConfigError(format!("Snapshot content is not valid UTF-8: {}", e))
+        })
+    }
+
     /// Gets snapshot content (string), read directly from disk.
     pub async fn get_snapshot_content(&self, snapshot_id: &str) -> SnapshotResult<String> {
         let content_bytes = self.restore_snapshot_content(snapshot_id).await?;
@@ -715,7 +736,15 @@ impl FileSnapshotSystem {
     /// Restores snapshot content (read directly from disk, without using in-memory cache).
     pub async fn restore_snapshot_content(&self, snapshot_id: &str) -> SnapshotResult<Vec<u8>> {
         let snapshot = self.load_snapshot_from_disk(snapshot_id).await?;
+        self.restore_loaded_snapshot_content(snapshot_id, &snapshot)
+            .await
+    }
 
+    async fn restore_loaded_snapshot_content(
+        &self,
+        snapshot_id: &str,
+        snapshot: &FileSnapshot,
+    ) -> SnapshotResult<Vec<u8>> {
         let path = self.get_content_path(&snapshot.content_hash);
         if snapshot.metadata.size > CONTENT_LIMIT as u64 {
             return Err(limit_error(&snapshot.file_path, CONTENT_LIMIT));

@@ -41,8 +41,29 @@ const GENUI_TOOL_NAMES: &[&str] = &["GenerativeUI", "generative_ui", "GenUI"];
 /// frontend JSON parsing on collapsed history cards.
 const MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES: usize = 32_768;
 
+/// Upper bound for cumulative string bytes inside one non-GenUI tool result
+/// value, preventing wide nested objects (such as GUI accessibility trees) from
+/// multiplying past the per-string cap across hundreds of fields.
+const MAX_TRANSCRIPT_TOOL_RESULT_TOTAL_BYTES: usize = 32_768;
+
+/// Maximum elements kept per array and keys kept per object inside a bounded
+/// non-GenUI tool result payload.
+const MAX_TOOL_RESULT_ARRAY_ITEMS: usize = 120;
+const MAX_TOOL_RESULT_OBJECT_KEYS: usize = 80;
+
+/// Raw base64 payload keys that UI tool cards never render directly (image
+/// previews read `data_url`/`dataUrl`/`url`). Replacing oversized raw base64
+/// values avoids shipping tens of megabytes of broken truncated base64 over IPC.
+const RAW_BASE64_RESULT_KEYS: &[&str] = &[
+    "data_base64",
+    "image_base64",
+    "screenshot_base64",
+    "raw_base64",
+    "base64",
+];
+
 /// Duplicate `resultForAssistant` text larger than this is omitted when
-/// `result` already carries displayable text, avoiding double-shipping huge
+/// `result` already carries displayable content, avoiding double-shipping huge
 /// tool outputs over IPC.
 const MAX_REDUNDANT_RESULT_FOR_ASSISTANT_BYTES: usize = 4_096;
 
@@ -68,44 +89,100 @@ fn truncate_utf8_with_ellipsis(mut value: String, max_bytes: usize) -> String {
     value
 }
 
-fn bound_tool_result_value(value: serde_json::Value, depth: usize) -> serde_json::Value {
+fn is_raw_base64_key(key: &str) -> bool {
+    RAW_BASE64_RESULT_KEYS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
+fn bound_tool_result_value(
+    value: serde_json::Value,
+    depth: usize,
+    budget: &mut usize,
+) -> serde_json::Value {
     if depth >= MAX_TOOL_RESULT_TRAVERSAL_DEPTH {
-        return value;
+        return serde_json::Value::String("…".to_string());
     }
     match value {
-        serde_json::Value::String(text) => serde_json::Value::String(truncate_utf8_with_ellipsis(
-            text,
-            MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES,
-        )),
-        serde_json::Value::Array(items) => serde_json::Value::Array(
-            items
-                .into_iter()
-                .map(|entry| bound_tool_result_value(entry, depth + 1))
-                .collect(),
-        ),
-        serde_json::Value::Object(map) => serde_json::Value::Object(
-            map.into_iter()
-                .map(|(key, entry)| (key, bound_tool_result_value(entry, depth + 1)))
-                .collect(),
-        ),
+        serde_json::Value::String(text) => {
+            if should_preserve_raw_tool_string(&text) {
+                return serde_json::Value::String(text);
+            }
+            let cap = (*budget).min(MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES);
+            let bounded = if cap == 0 && text.len() > 64 {
+                "…".to_string()
+            } else {
+                truncate_utf8_with_ellipsis(text, cap.max(64))
+            };
+            *budget = budget.saturating_sub(bounded.len());
+            serde_json::Value::String(bounded)
+        }
+        serde_json::Value::Array(items) => {
+            let total = items.len();
+            let mut out = Vec::with_capacity(total.min(MAX_TOOL_RESULT_ARRAY_ITEMS + 1));
+            for entry in items.into_iter().take(MAX_TOOL_RESULT_ARRAY_ITEMS) {
+                out.push(bound_tool_result_value(entry, depth + 1, budget));
+            }
+            if total > MAX_TOOL_RESULT_ARRAY_ITEMS {
+                out.push(serde_json::Value::String(format!(
+                    "… ({} more items)",
+                    total - MAX_TOOL_RESULT_ARRAY_ITEMS
+                )));
+            }
+            serde_json::Value::Array(out)
+        }
+        serde_json::Value::Object(map) => {
+            let total = map.len();
+            let mut out = serde_json::Map::with_capacity(total.min(MAX_TOOL_RESULT_OBJECT_KEYS));
+            for (key, entry) in map.into_iter().take(MAX_TOOL_RESULT_OBJECT_KEYS) {
+                if is_raw_base64_key(&key) && entry.as_str().is_some_and(|raw| raw.len() > 512) {
+                    out.insert(
+                        key,
+                        serde_json::Value::String("[omitted binary payload]".to_string()),
+                    );
+                    continue;
+                }
+                let bounded_entry = bound_tool_result_value(entry, depth + 1, budget);
+                out.insert(key, bounded_entry);
+            }
+            serde_json::Value::Object(out)
+        }
         other => other,
     }
 }
 
-fn result_has_display_text(value: Option<&serde_json::Value>) -> bool {
+fn value_has_display_text(value: &serde_json::Value, depth: usize) -> bool {
+    if depth > 3 {
+        return false;
+    }
     match value {
-        Some(serde_json::Value::String(text)) => !text.trim().is_empty(),
-        Some(serde_json::Value::Object(map)) => [
-            "output", "content", "text", "stdout", "result", "summary", "message",
-        ]
-        .iter()
-        .any(|key| {
-            map.get(*key)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|text| !text.trim().is_empty())
-        }),
+        serde_json::Value::String(text) => !text.trim().is_empty(),
+        serde_json::Value::Object(map) => {
+            [
+                "output",
+                "content",
+                "text",
+                "stdout",
+                "result",
+                "summary",
+                "message",
+                "tree_text",
+            ]
+            .iter()
+            .any(|key| {
+                map.get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+            }) || map
+                .values()
+                .any(|entry| entry.is_object() && value_has_display_text(entry, depth + 1))
+        }
         _ => false,
     }
+}
+
+fn result_has_display_text(value: Option<&serde_json::Value>) -> bool {
+    value.is_some_and(|entry| value_has_display_text(entry, 0))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,7 +478,10 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
             let bounded_result = if preserve_full_result {
                 item.result
             } else {
-                item.result.map(|value| bound_tool_result_value(value, 0))
+                item.result.map(|value| {
+                    let mut budget = MAX_TRANSCRIPT_TOOL_RESULT_TOTAL_BYTES;
+                    bound_tool_result_value(value, 0, &mut budget)
+                })
             };
             let bounded_result_for_assistant = if preserve_full_result {
                 item.result_for_assistant
@@ -1117,5 +1197,91 @@ mod tests {
         assert!(vis_output.len() > 40_000);
         let genui_output = tools[2].result.as_ref().unwrap()["html"].as_str().unwrap();
         assert_eq!(genui_output.len(), huge_genui_html.len());
+    }
+
+    #[test]
+    fn computer_use_nested_tree_base64_and_cumulative_budget_are_bounded() {
+        let mut turn = history_turn(0, false);
+        let huge_base64 = "A".repeat(40_000);
+        let huge_tree = (0..1_200)
+            .map(|i| format!("AXButton#{i} label='item-{i}'"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let many_entries = (0..200)
+            .map(|i| serde_json::json!({ "k": format!("entry-{i}"), "body": "m".repeat(400) }))
+            .collect::<Vec<_>>();
+        turn.rounds[0].tool_items = vec![
+            RemoteChatHistoryToolItem {
+                id: "tool-cu".to_string(),
+                name: "ComputerUse".to_string(),
+                call: RemoteChatHistoryToolCall {
+                    id: "c-cu".to_string(),
+                    input: serde_json::json!({ "action": "snapshot" }),
+                },
+                result: Some(serde_json::json!({
+                    "ok": true,
+                    "data_base64": huge_base64,
+                    "screenshot": {
+                        "mime_type": "image/png",
+                        "image_base64": "B".repeat(30_000),
+                    },
+                    "app_state": {
+                        "tree_text": huge_tree,
+                    }
+                })),
+                has_result: true,
+                success: Some(true),
+                result_for_assistant: Some("C".repeat(15_000)),
+                start_ms: 10,
+                ..Default::default()
+            },
+            RemoteChatHistoryToolItem {
+                id: "tool-wide".to_string(),
+                name: "Search".to_string(),
+                call: RemoteChatHistoryToolCall {
+                    id: "c-wide".to_string(),
+                    input: serde_json::json!({ "query": "foo" }),
+                },
+                result: Some(serde_json::json!({ "matches": many_entries })),
+                has_result: true,
+                success: Some(true),
+                start_ms: 11,
+                ..Default::default()
+            },
+        ];
+
+        let view = build_transcript_view(vec![turn]);
+        let tools: Vec<&TranscriptToolView> = view[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItemView::Tool { tool, .. } => Some(tool),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools.len(), 2);
+
+        // Raw base64 screenshot payloads are replaced with compact placeholders,
+        // nested app_state.tree_text is recognized as display text so redundant
+        // resultForAssistant is dropped, and the whole result stays bounded.
+        let cu_res = tools[0].result.as_ref().unwrap();
+        assert_eq!(
+            cu_res["data_base64"].as_str(),
+            Some("[omitted binary payload]")
+        );
+        assert_eq!(
+            cu_res["screenshot"]["image_base64"].as_str(),
+            Some("[omitted binary payload]")
+        );
+        assert!(tools[0].result_for_assistant.is_none());
+        let cu_serialized = serde_json::to_string(cu_res).unwrap();
+        assert!(cu_serialized.len() <= MAX_TRANSCRIPT_TOOL_RESULT_TOTAL_BYTES + 2_048);
+
+        // Wide arrays are capped in length and overall serialized size.
+        let wide_res = tools[1].result.as_ref().unwrap();
+        let matches = wide_res["matches"].as_array().unwrap();
+        assert!(matches.len() <= MAX_TOOL_RESULT_ARRAY_ITEMS + 1);
+        let wide_serialized = serde_json::to_string(wide_res).unwrap();
+        assert!(wide_serialized.len() <= MAX_TRANSCRIPT_TOOL_RESULT_TOTAL_BYTES + 4_096);
     }
 }

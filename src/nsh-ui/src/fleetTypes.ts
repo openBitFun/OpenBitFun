@@ -118,6 +118,8 @@ export interface FleetWorkspace {
   rootPath: string;
   kind: FleetWorkspaceKind;
   sshHost?: string;
+  connectionId?: string;
+  connectionName?: string;
   linkState?: string;
   isHostCurrent: boolean;
   sessions: FleetSession[];
