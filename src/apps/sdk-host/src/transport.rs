@@ -92,7 +92,7 @@ where
 
 pub async fn serve_streams<Reader, Writer>(
     runtime: AgentRuntime,
-    default_cwd: impl Into<String>,
+    workspaces: Arc<dyn openbitfun_sdk_host::host::SdkWorkspaces>,
     temporary_model_installer: Arc<dyn TemporaryModelInstaller>,
     reader: Reader,
     writer: Writer,
@@ -113,7 +113,7 @@ where
     let output_failed = output.failure_token();
     let connection = SdkHostConnection::with_output(
         runtime,
-        default_cwd,
+        workspaces,
         output.clone(),
         config.host,
         temporary_model_installer,
@@ -379,12 +379,12 @@ async fn drain_requests(requests: &mut JoinSet<ConnectionControl>, drain_timeout
 
 pub async fn serve_stdio(
     runtime: AgentRuntime,
-    default_cwd: impl Into<String>,
+    workspaces: Arc<dyn openbitfun_sdk_host::host::SdkWorkspaces>,
     temporary_model_installer: Arc<dyn TemporaryModelInstaller>,
 ) -> Result<(), std::io::Error> {
     serve_streams(
         runtime,
-        default_cwd,
+        workspaces,
         temporary_model_installer,
         tokio::io::stdin(),
         tokio::io::stdout(),

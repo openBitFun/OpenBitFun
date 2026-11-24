@@ -2159,7 +2159,12 @@ impl RoundExecutor {
                 permission_approval_strategy == PermissionApprovalStrategy::ImmediateAllow;
             let permission_user_input_available = context
                 .context_vars
-                .get(openbitfun_agent_runtime::user_questions::USER_INPUT_AVAILABLE_CONTEXT_KEY)
+                .get(openbitfun_agent_runtime::permission::PERMISSION_REPLIES_AVAILABLE_CONTEXT_KEY)
+                .or_else(|| {
+                    context.context_vars.get(
+                        openbitfun_agent_runtime::user_questions::USER_INPUT_AVAILABLE_CONTEXT_KEY,
+                    )
+                })
                 .and_then(|value| value.parse::<bool>().ok())
                 .unwrap_or(true);
             debug!(

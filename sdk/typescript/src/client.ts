@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { InitializeResult, QueryStartParams, QueryStartResult } from "./internal/wire/index.js";
 import type { JsonRpcConnection } from "./internal/json-rpc.js";
 import { resolveHostPath } from "./internal/host-path.js";
@@ -37,12 +38,13 @@ export class AgentClient {
       import("./internal/client.js"),
       import("./internal/managed-host.js"),
     ]);
+    const cwd = resolve(options.cwd);
     const transport = await startManagedHost({
       executable: hostPath,
-      cwd: options.cwd,
+      cwd,
     });
     try {
-      return await createAgentClient(transport, options);
+      return await createAgentClient(transport, { ...options, cwd });
     } catch (error) {
       await transport.close();
       throw error;

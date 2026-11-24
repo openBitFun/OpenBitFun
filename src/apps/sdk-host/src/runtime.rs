@@ -1,7 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use openbitfun_agent_runtime::sdk::AgentRuntime;
+use openbitfun_agent_runtime::sdk::{AgentRuntime, PortError, PortErrorKind};
 use openbitfun_core::agentic::system::{self, AgenticSystem};
 use openbitfun_core::product_assembly::{DeliveryProfile, ProductAssembler, ProductAssemblyInput};
 use openbitfun_core::product_runtime::{
@@ -9,15 +10,54 @@ use openbitfun_core::product_runtime::{
     CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
 };
 use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment};
-use std::sync::Arc;
+use openbitfun_core::service::workspace::{
+    set_global_workspace_service, WorkspaceManagerConfig, WorkspaceService,
+};
+use openbitfun_sdk_host::host::{SdkWorkspace, SdkWorkspaces};
+use openbitfun_services_core::workspace_identity::canonicalize_local_workspace_root;
 
 const RUNTIME_EVENT_BUFFER: usize = 256;
 const DELIVERY_PROFILE: DeliveryProfile = DeliveryProfile::Sdk;
 
 pub(crate) struct SdkHostRuntime {
-    workspace_root: PathBuf,
+    pub(crate) workspaces: Arc<dyn SdkWorkspaces>,
     agent_runtime: AgentRuntime,
     _agent_event_queue_owner: CoreProductEventQueueOwner,
+}
+
+struct LocalSdkWorkspaces {
+    service: Arc<WorkspaceService>,
+    default: SdkWorkspace,
+}
+
+#[async_trait::async_trait]
+impl SdkWorkspaces for LocalSdkWorkspaces {
+    fn default_workspace(&self) -> &SdkWorkspace {
+        &self.default
+    }
+
+    async fn workspace_for_cwd(&self, cwd: &str) -> Result<SdkWorkspace, PortError> {
+        let (path, _) = canonicalize_local_workspace_root(Path::new(cwd))
+            .map_err(|error| PortError::new(PortErrorKind::InvalidRequest, error))?;
+        if path == Path::new(&self.default.path) {
+            return Ok(self.default.clone());
+        }
+        if !path.is_dir() {
+            return Err(PortError::new(
+                PortErrorKind::InvalidRequest,
+                "SDK workspace must be a directory",
+            ));
+        }
+        let record = self
+            .service
+            .register_local_workspace_record(path)
+            .await
+            .map_err(|error| PortError::new(PortErrorKind::Backend, error.to_string()))?;
+        Ok(SdkWorkspace {
+            id: record.id,
+            path: record.root_path.to_string_lossy().into_owned(),
+        })
+    }
 }
 
 impl SdkHostRuntime {
@@ -39,6 +79,25 @@ impl SdkHostRuntime {
             deployment,
         )
         .map_err(|error| anyhow::anyhow!(error.startup_message(deployment, "sdk-host")))?;
+
+        let service = Arc::new(
+            WorkspaceService::with_config(WorkspaceManagerConfig {
+                add_session_activity_to_recent: false,
+                ..Default::default()
+            })
+            .await?,
+        );
+        let record = service
+            .register_local_workspace_record(workspace_root)
+            .await?;
+        set_global_workspace_service(service.clone());
+        let workspaces = Arc::new(LocalSdkWorkspaces {
+            service,
+            default: SdkWorkspace {
+                id: record.id,
+                path: record.root_path.to_string_lossy().into_owned(),
+            },
+        });
 
         // SDK Host keeps its own delivery profile while sharing the product-wide
         // workspace ownership identity with every first-party entrypoint.
@@ -67,14 +126,10 @@ impl SdkHostRuntime {
         .context("Failed to build Agent SDK runtime")?;
 
         Ok(Self {
-            workspace_root,
+            workspaces,
             agent_runtime,
             _agent_event_queue_owner: agent_event_queue_owner,
         })
-    }
-
-    pub(crate) fn workspace_root(&self) -> &Path {
-        &self.workspace_root
     }
 
     pub(crate) fn agent_runtime(&self) -> &AgentRuntime {

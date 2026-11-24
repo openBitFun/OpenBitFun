@@ -32,7 +32,7 @@ async fn run_host() -> Result<()> {
         .context("Failed to assemble Agent SDK Host")?;
     openbitfun_sdk_host_app::transport::serve_stdio(
         host.agent_runtime().clone(),
-        host.workspace_root().to_string_lossy().into_owned(),
+        host.workspaces.clone(),
         installer,
     )
     .await
@@ -47,6 +47,7 @@ fn main() {
 
     let worker = openbitfun_sdk_host_app::spawn_sdk_host_worker(|| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            .thread_stack_size(openbitfun_sdk_host_app::SDK_HOST_WORKER_STACK_BYTES)
             .enable_all()
             .build()
             .expect("failed to build SDK Host Tokio runtime");

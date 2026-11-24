@@ -615,6 +615,7 @@ fn copy_turn_control_context(
 ) {
     for key in [
         USER_INPUT_AVAILABLE_CONTEXT_KEY,
+        openbitfun_agent_runtime::permission::PERMISSION_REPLIES_AVAILABLE_CONTEXT_KEY,
         AUTO_APPROVE_ASK_CONTEXT_KEY,
         TOOL_CONTEXT_PEER_DEVICE_CONTROL_KEY,
     ] {

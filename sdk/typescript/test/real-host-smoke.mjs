@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { AgentClient, SdkError } from "../dist/sdk/typescript/src/index.js";
 
 const scriptPath = resolve(process.argv[1]);
-const packageRoot = resolve(dirname(scriptPath), "..");
 const MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024;
 const WORKER_TIMEOUT_MS = 120_000;
 
@@ -31,12 +30,14 @@ async function runParent() {
     ),
   );
 
+  const fileMarker = randomBytes(18).toString("hex");
+  const fixtureFile = "sdk-smoke.txt";
   const apiKey = `openbitfun-sdk-${randomBytes(24).toString("hex")}`;
   let requestCount = 0;
   const requestTraces = [];
   let fixtureFailure;
   const server = createServer(async (request, response) => {
-    requestCount += 1;
+    const index = ++requestCount;
     try {
       if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
         throw new Error("SSE fixture received an unexpected request target");
@@ -48,21 +49,61 @@ async function runParent() {
       if (body.model !== "fixture-model" || body.stream !== true) {
         throw new Error("SSE fixture received an invalid model request");
       }
-      requestTraces.push(summarizeModelRequest(requestCount, request.url, body));
+      requestTraces.push(summarizeModelRequest(index, request.url, body));
 
+      assert.ok(index <= 4, "unexpected model request");
+      let chunks;
+      if (index === 1) {
+        await writeFile(join(workspace, fixtureFile), fileMarker);
+        const configDir = join(workspace, ".openbitfun", "config");
+        await mkdir(configDir, { recursive: true });
+        await writeFile(join(configDir, "tool_permissions.json"), JSON.stringify({
+          rules: [{ action: "read", resource: "*", effect: "ask" }],
+        }));
+      }
+      if (index === 2) {
+        assert.ok(body.tools.some((tool) => tool.function?.name === "Read"), "Read must be offered");
+        assert.ok(!JSON.stringify(body.messages).includes(fileMarker));
+        chunks = [{
+          delta: {
+            role: "assistant",
+            tool_calls: [{
+              index: 0,
+              id: "call_sdk_read",
+              type: "function",
+              function: { name: "Read", arguments: JSON.stringify({ file_path: fixtureFile }) },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }];
+      } else {
+        if (index >= 3) {
+          const toolReply = body.messages.find((message) =>
+            message.role === "tool" && message.tool_call_id === "call_sdk_read");
+          assert.ok(toolReply, "model must receive the result for the requested tool call");
+          assert.ok(JSON.stringify(toolReply.content).includes(fileMarker), "Read must return the file contents");
+        }
+        const text = { 1: "fixture response", 3: "read completed", 4: "session resumed" }[index];
+        chunks = [
+          { delta: { role: "assistant", content: "OpenBitFun SDK " }, finish_reason: null },
+          { delta: { content: text }, finish_reason: null },
+          { delta: {}, finish_reason: "stop" },
+        ];
+      }
       response.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
       });
-      response.end(
-        [
-          'data: {"id":"fixture","object":"chat.completion.chunk","model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"OpenBitFun SDK "},"finish_reason":null}]}',
-          'data: {"id":"fixture","object":"chat.completion.chunk","model":"fixture-model","choices":[{"index":0,"delta":{"content":"fixture response"},"finish_reason":null}]}',
-          'data: {"id":"fixture","object":"chat.completion.chunk","model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
-          "data: [DONE]",
-          "",
-        ].join("\n\n"),
-      );
+      for (const choice of chunks) {
+        const event = {
+          id: "fixture",
+          object: "chat.completion.chunk",
+          model: "fixture-model",
+          choices: [{ index: 0, ...choice }],
+        };
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+      response.end("data: [DONE]\n\n");
     } catch (error) {
       fixtureFailure ??= error;
       response.writeHead(400, { "content-type": "text/plain" });
@@ -87,7 +128,7 @@ async function runParent() {
     assert.equal(Object.values(workerEnvironment).includes(apiKey), false);
 
     worker = spawn(process.execPath, [scriptPath, "--worker"], {
-      cwd: packageRoot,
+      cwd: isolatedRoot,
       env: workerEnvironment,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -114,15 +155,23 @@ async function runParent() {
     assert.equal(exit.signal, null, "real Host smoke worker was terminated");
     assert.equal(captured.stdout.includes(apiKey), false, "API key leaked to worker stdout");
     assert.equal(captured.stderr.includes(apiKey), false, "API key leaked to worker stderr");
+    if (fixtureFailure !== undefined) {
+      throw fixtureFailure;
+    }
     assert.equal(
       exit.code,
       0,
       `real Host smoke worker failed: ${captured.stderr}`,
     );
-    if (fixtureFailure !== undefined) {
-      throw fixtureFailure;
-    }
-    assert.equal(requestCount, 1, "real Host smoke must issue exactly one model request");
+    assert.equal(requestCount, 4);
+    const catalog = JSON.parse(await readFile(join(userRoot, "data", "workspace_data.json"), "utf8"));
+    const workspacePath = await realpath(workspace);
+    const records = Object.values(catalog.workspaces).filter((record) => record.rootPath === workspacePath);
+    assert.equal(records.length, 1, "the SDK workspace must retain one catalog identity after restart");
+    const [{ id }] = records;
+    assert.ok(!catalog.recent_workspaces.includes(id));
+    assert.ok(!catalog.opened_workspace_ids.includes(id));
+    assert.notEqual(catalog.current_workspace_id, id);
     await assertTreeDoesNotContain(isolatedRoot, apiKey);
     process.stdout.write("real-host-smoke: PASS\n");
   } finally {
@@ -179,11 +228,12 @@ async function runWorker() {
   process.stdout.write("phase:validation_complete\n");
 
   const client = await AgentClient.start({
-    cwd: workspace,
+    cwd: relative(process.cwd(), workspace),
     model: validModel,
   });
   process.stdout.write("phase:client_started\n");
   let query;
+  let sessionId;
   try {
     query = await client.query({ prompt: "Return the fixture response" });
     process.stdout.write("phase:query_started\n");
@@ -202,6 +252,27 @@ async function runWorker() {
     assert.equal(result.outputText, "OpenBitFun SDK fixture response");
     assert.equal(JSON.stringify(items).includes(apiKey), false);
     process.stdout.write("phase:result_received\n");
+
+    const session = await client.sessions.create({ sessionName: "SDK file read" });
+    sessionId = session.id;
+    const read = await session.startTurn({ prompt: "Read sdk-smoke.txt and report completion" });
+    const readEvents = [];
+    for await (const item of read) {
+      readEvents.push(item);
+      if (item.type === "permission_request") {
+        await read.respondPermission(item.requestId, { decision: "allow_once" });
+      }
+    }
+    const readResult = await read.result();
+    assert.equal(readResult.status, "completed");
+    assert.equal(readResult.outputText, "OpenBitFun SDK read completed");
+    assert.equal(readEvents.filter((item) => item.type === "permission_request").length, 1);
+    assert.ok(readEvents.some((item) => item.type === "tool_event" &&
+      item.toolName === "Read" && item.status === "completed"));
+    assert.equal(readEvents.filter((item) => item.type === "result").length, 1);
+    assert.equal(JSON.stringify(readEvents).includes(apiKey), false);
+    await read.close();
+    await session.close();
   } finally {
     if (query !== undefined) {
       await query.close();
@@ -209,6 +280,18 @@ async function runWorker() {
     }
     await client.close();
     process.stdout.write("phase:client_closed\n");
+  }
+
+  const next = await AgentClient.start({ cwd: workspace, model: validModel });
+  try {
+    const resumed = await next.sessions.resume(sessionId);
+    assert.equal(resumed.id, sessionId);
+    const followup = await resumed.startTurn({ prompt: "Confirm the previous read" });
+    const result = await followup.result();
+    assert.equal(result.status, "completed");
+    assert.equal(result.outputText, "OpenBitFun SDK session resumed");
+  } finally {
+    await next.close();
   }
 }
 

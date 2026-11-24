@@ -164,6 +164,12 @@ pnpm --dir sdk/typescript smoke:bun
 pnpm --dir sdk/typescript smoke:consumer
 ```
 
+After building the SDK and staging the native Host, `smoke:node` runs it with
+an isolated data directory and a local scripted model. It checks a text query
+from an empty workspace, approves a real file read, and checks that the next
+model request contains the file's random contents and the matching tool call ID.
+It then starts a fresh Host and resumes the persisted session.
+
 The internal TypeScript wire bindings are generated from the Rust SDK Host
 protocol with `ts-rs`. Runtime validators are generated from those same
 bindings, while only JSON-RPC envelope and cross-field semantic checks remain

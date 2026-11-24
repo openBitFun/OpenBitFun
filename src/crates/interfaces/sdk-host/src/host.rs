@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures_util::{stream::FuturesUnordered, FutureExt, StreamExt};
+use openbitfun_agent_runtime::permission::PERMISSION_REPLIES_AVAILABLE_CONTEXT_KEY;
 use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnRequest, AgentInputAttachment, AgentRuntime, AgentSessionCreateRequest,
     AgentSessionCreateResult, AgentSessionDeleteRequest, AgentSessionModelUpdateRequest,
@@ -111,6 +112,19 @@ pub enum TemporaryModelInstallError {
     Internal,
 }
 
+/// Authoritative local workspace selected by the host's workspace service.
+#[derive(Clone)]
+pub struct SdkWorkspace {
+    pub id: String,
+    pub path: String,
+}
+
+#[async_trait::async_trait]
+pub trait SdkWorkspaces: Send + Sync {
+    fn default_workspace(&self) -> &SdkWorkspace;
+    async fn workspace_for_cwd(&self, cwd: &str) -> Result<SdkWorkspace, PortError>;
+}
+
 struct ChannelHostOutput(mpsc::Sender<serde_json::Value>);
 
 #[async_trait::async_trait]
@@ -123,7 +137,7 @@ impl HostOutput for ChannelHostOutput {
 struct ConnectionInner {
     runtime: AgentRuntime,
     runtime_version: &'static str,
-    default_cwd: String,
+    workspaces: Arc<dyn SdkWorkspaces>,
     output: Arc<dyn HostOutput>,
     temporary_model_installer: Arc<dyn TemporaryModelInstaller>,
     state: Arc<Mutex<ConnectionState>>,
@@ -291,14 +305,14 @@ impl QueryLease {
 impl SdkHostConnection {
     pub fn new(
         runtime: AgentRuntime,
-        default_cwd: impl Into<String>,
+        workspaces: Arc<dyn SdkWorkspaces>,
         output: mpsc::Sender<serde_json::Value>,
         config: SdkHostConfig,
         temporary_model_installer: Arc<dyn TemporaryModelInstaller>,
     ) -> Self {
         Self::with_output(
             runtime,
-            default_cwd,
+            workspaces,
             Arc::new(ChannelHostOutput(output)),
             config,
             temporary_model_installer,
@@ -307,7 +321,7 @@ impl SdkHostConnection {
 
     pub fn with_output(
         runtime: AgentRuntime,
-        default_cwd: impl Into<String>,
+        workspaces: Arc<dyn SdkWorkspaces>,
         output: Arc<dyn HostOutput>,
         config: SdkHostConfig,
         temporary_model_installer: Arc<dyn TemporaryModelInstaller>,
@@ -316,7 +330,7 @@ impl SdkHostConnection {
             inner: Arc::new(ConnectionInner {
                 runtime,
                 runtime_version: env!("CARGO_PKG_VERSION"),
-                default_cwd: default_cwd.into(),
+                workspaces,
                 output,
                 temporary_model_installer,
                 state: Arc::new(Mutex::new(ConnectionState::default())),
@@ -1035,26 +1049,11 @@ impl SdkHostConnection {
             .await;
             return;
         };
-        let workspace_path = params.cwd.unwrap_or_else(|| self.inner.default_cwd.clone());
-        let model_id = self.inner.state.lock().await.model_id.clone();
         let result = self
             .create_leased_session(
-                AgentSessionCreateRequest {
-                    session_name: params
-                        .session_name
-                        .unwrap_or_else(|| DEFAULT_SESSION_NAME.to_string()),
-                    agent_type: params.agent.unwrap_or_else(|| DEFAULT_AGENT.to_string()),
-                    agent_route_key: None,
-                    workspace_path: Some(workspace_path.clone()),
-                    project_workspace_path: None,
-                    execution_target: None,
-                    workspace_id: None,
-                    remote_connection_id: None,
-                    remote_ssh_host: None,
-                    model_id,
-                    metadata: serde_json::Map::new(),
-                },
-                workspace_path,
+                params.session_name,
+                params.agent,
+                params.cwd.as_deref(),
                 session_budget,
                 SessionLifetime::Durable,
             )
@@ -1105,7 +1104,6 @@ impl SdkHostConnection {
             .await;
             return;
         };
-        let workspace_path = self.inner.default_cwd.clone();
         let Some(model_id) = self.inner.state.lock().await.model_id.clone() else {
             self.send_runtime_error(
                 request.id.clone(),
@@ -1121,7 +1119,7 @@ impl SdkHostConnection {
         };
         let session_id = params.session_id;
         match self
-            .restore_leased_session(session_id.clone(), workspace_path, model_id, session_budget)
+            .restore_leased_session(session_id.clone(), model_id, session_budget)
             .await
         {
             Ok(restored) => {
@@ -1247,33 +1245,11 @@ impl SdkHostConnection {
                     .await;
                     return;
                 };
-                let workspace_path = params
-                    .cwd
-                    .clone()
-                    .unwrap_or_else(|| self.inner.default_cwd.clone());
-                let model_id = self.inner.state.lock().await.model_id.clone();
                 match self
                     .create_leased_session(
-                        AgentSessionCreateRequest {
-                            session_name: params
-                                .session_name
-                                .clone()
-                                .unwrap_or_else(|| DEFAULT_SESSION_NAME.to_string()),
-                            agent_type: params
-                                .agent
-                                .clone()
-                                .unwrap_or_else(|| DEFAULT_AGENT.to_string()),
-                            agent_route_key: None,
-                            workspace_path: Some(workspace_path.clone()),
-                            project_workspace_path: None,
-                            execution_target: None,
-                            workspace_id: None,
-                            remote_connection_id: None,
-                            remote_ssh_host: None,
-                            model_id,
-                            metadata: serde_json::Map::new(),
-                        },
-                        workspace_path,
+                        params.session_name.clone(),
+                        params.agent.clone(),
+                        params.cwd.as_deref(),
                         session_budget,
                         SessionLifetime::Connection,
                     )
@@ -1358,6 +1334,10 @@ impl SdkHostConnection {
         submission_metadata.insert(
             USER_INPUT_AVAILABLE_CONTEXT_KEY.to_string(),
             serde_json::Value::Bool(false),
+        );
+        submission_metadata.insert(
+            PERMISSION_REPLIES_AVAILABLE_CONTEXT_KEY.to_string(),
+            serde_json::Value::Bool(self.inner.state.lock().await.permission_responses),
         );
         submission_metadata.insert(
             AUTO_APPROVE_ASK_CONTEXT_KEY.to_string(),
@@ -2189,11 +2169,30 @@ impl SdkHostConnection {
 
     async fn create_leased_session(
         &self,
-        request: AgentSessionCreateRequest,
-        workspace_path: String,
+        session_name: Option<String>,
+        agent: Option<String>,
+        cwd: Option<&str>,
         session_budget: OwnedSemaphorePermit,
         lifetime: SessionLifetime,
     ) -> Result<openbitfun_agent_runtime::sdk::AgentSessionCreateResult, RuntimeError> {
+        let workspace = match cwd {
+            Some(cwd) => self.inner.workspaces.workspace_for_cwd(cwd).await?,
+            None => self.inner.workspaces.default_workspace().clone(),
+        };
+        let workspace_path = workspace.path;
+        let request = AgentSessionCreateRequest {
+            session_name: session_name.unwrap_or_else(|| DEFAULT_SESSION_NAME.to_string()),
+            agent_type: agent.unwrap_or_else(|| DEFAULT_AGENT.to_string()),
+            agent_route_key: None,
+            workspace_path: Some(workspace_path.clone()),
+            project_workspace_path: None,
+            execution_target: None,
+            workspace_id: Some(workspace.id.clone()),
+            remote_connection_id: None,
+            remote_ssh_host: None,
+            model_id: self.inner.state.lock().await.model_id.clone(),
+            metadata: serde_json::Map::new(),
+        };
         let session_id = uuid::Uuid::new_v4().to_string();
         let runtime = self.inner.runtime.clone();
         let state = self.inner.state.clone();
@@ -2210,6 +2209,7 @@ impl SdkHostConnection {
         let task_session_id = session_id.clone();
         let cleanup_workspace_path = workspace_path.clone();
         let creation = tokio::spawn(async move {
+            let request_workspace_id = request.workspace_id.clone();
             let result = match lifetime {
                 SessionLifetime::Connection => {
                     runtime
@@ -2226,8 +2226,8 @@ impl SdkHostConnection {
                 task_state.lock().await.sessions.insert(
                     created.session_id.clone(),
                     SessionLease {
-                        workspace_id: created.workspace_id.clone(),
-                        workspace_path,
+                        workspace_id: created.workspace_id.clone().or(request_workspace_id),
+                        workspace_path: created.workspace_path.clone().unwrap_or(workspace_path),
                         remote_connection_id: None,
                         remote_ssh_host: None,
                         exposed: false,
@@ -2247,7 +2247,7 @@ impl SdkHostConnection {
             .push(PendingSessionTask {
                 session_cleanup: Some(SessionCleanup {
                     session_id,
-                    workspace_id: None,
+                    workspace_id: Some(workspace.id),
                     workspace_path: cleanup_workspace_path,
                     release_kind: match lifetime {
                         SessionLifetime::Connection => SessionReleaseKind::DiscardTransient,
@@ -2269,10 +2269,12 @@ impl SdkHostConnection {
     async fn restore_leased_session(
         &self,
         session_id: String,
-        workspace_path: String,
         model_id: String,
         session_budget: OwnedSemaphorePermit,
     ) -> Result<AgentSessionCreateResult, RuntimeError> {
+        let workspace = self.inner.workspaces.default_workspace();
+        let workspace_path = workspace.path.clone();
+        let workspace_id = workspace.id.clone();
         let runtime = self.inner.runtime.clone();
         let state = self.inner.state.clone();
         let task_state = state.clone();
@@ -2299,10 +2301,11 @@ impl SdkHostConnection {
         let task_session_id = session_id.clone();
         let task_workspace_path = workspace_path.clone();
         let cleanup_workspace_path = workspace_path.clone();
+        let task_workspace_id = workspace_id.clone();
         let restoration = tokio::spawn(async move {
             let restored = runtime
                 .restore_session(AgentSessionRestoreRequest {
-                    workspace_id: None,
+                    workspace_id: Some(task_workspace_id.clone()),
                     workspace_path: task_workspace_path.clone(),
                     session_id: task_session_id.clone(),
                     include_internal: false,
@@ -2331,9 +2334,10 @@ impl SdkHostConnection {
                             restored.session.agent_type,
                         );
                         result.model_id = Some(model_id);
+                        result.workspace_id = Some(task_workspace_id.clone());
                         if let Some(binding) = binding {
                             result.workspace_path = Some(binding.workspace_path);
-                            result.workspace_id = binding.workspace_id;
+                            result.workspace_id = binding.workspace_id.or(result.workspace_id);
                             result.project_workspace_path = binding.project_workspace_path;
                             result.execution_target = binding.execution_target;
                         } else {
@@ -2345,7 +2349,7 @@ impl SdkHostConnection {
                     if prepared.is_err() {
                         let release = runtime
                             .unload_persisted_session(AgentSessionReleaseRequest {
-                                workspace_id: None,
+                                workspace_id: Some(task_workspace_id.clone()),
                                 workspace_path: task_workspace_path.clone(),
                                 session_id: task_session_id.clone(),
                                 remote_connection_id: None,
@@ -2358,7 +2362,7 @@ impl SdkHostConnection {
                                 task_session_id.clone(),
                                 SessionCleanup {
                                     session_id: task_session_id.clone(),
-                                    workspace_id: None,
+                                    workspace_id: Some(task_workspace_id.clone()),
                                     workspace_path: task_workspace_path.clone(),
                                     release_kind: SessionReleaseKind::UnloadPersisted,
                                 },
@@ -2382,7 +2386,7 @@ impl SdkHostConnection {
                     restored.session_id.clone(),
                     SessionLease {
                         workspace_id: restored.workspace_id.clone(),
-                        workspace_path,
+                        workspace_path: restored.workspace_path.clone().unwrap_or(workspace_path),
                         remote_connection_id: None,
                         remote_ssh_host: None,
                         exposed: false,
@@ -2400,7 +2404,7 @@ impl SdkHostConnection {
             .push(PendingSessionTask {
                 session_cleanup: Some(SessionCleanup {
                     session_id: session_id.clone(),
-                    workspace_id: None,
+                    workspace_id: Some(workspace_id),
                     workspace_path: cleanup_workspace_path,
                     release_kind: SessionReleaseKind::UnloadPersisted,
                 }),

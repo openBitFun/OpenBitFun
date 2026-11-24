@@ -59,7 +59,6 @@ fn remote_connection_owner_missing(owner: &str, saved_connection_ids: &[String])
 /// Workspace service.
 pub struct WorkspaceService {
     manager: Arc<RwLock<WorkspaceManager>>,
-    #[allow(dead_code)]
     config: WorkspaceManagerConfig,
     persistence: Arc<PersistenceService>,
     path_manager: Arc<PathManager>,
@@ -907,7 +906,11 @@ impl WorkspaceService {
             .manager
             .write()
             .await
-            .touch_workspace_by_id(&workspace.id, true, refresh_worktree)
+            .touch_workspace_by_id(
+                &workspace.id,
+                self.config.add_session_activity_to_recent,
+                refresh_worktree,
+            )
             .await;
         if let Ok(workspace) = result.as_ref() {
             self.ensure_workspace_runtime_best_effort(workspace, "tracked")

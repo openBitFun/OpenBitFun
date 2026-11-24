@@ -835,6 +835,8 @@ pub struct WorkspaceManager {
 /// Workspace manager configuration.
 #[derive(Debug, Clone)]
 pub struct WorkspaceManagerConfig {
+    /// Whether session activity promotes its workspace in the recent list.
+    pub add_session_activity_to_recent: bool,
     pub max_recent_workspaces: usize,
     pub auto_cleanup_invalid: bool,
     pub default_scan_options: ScanOptions,
@@ -843,6 +845,7 @@ pub struct WorkspaceManagerConfig {
 impl Default for WorkspaceManagerConfig {
     fn default() -> Self {
         Self {
+            add_session_activity_to_recent: true,
             max_recent_workspaces: 20,
             auto_cleanup_invalid: true,
             default_scan_options: ScanOptions::default(),
