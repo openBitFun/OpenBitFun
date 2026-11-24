@@ -27,7 +27,7 @@
 // regular target directory and the compiled-in defaults.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -136,6 +136,7 @@ export async function buildAll({ profile, target, nshOut, webOut, productEnv = {
   const { syncVendorAssets } = await import("./sync-nsh-vendor-assets.mjs");
   syncVendorAssets();
   run("nsh", ["build", "src/apps/desktop-nsh", "--release", "--out", nshOut], { env: nshEnv });
+  rmSync(webOut, { recursive: true, force: true });
   run("nsh", ["package", "src/nsh-ui/WebApp.tsx", "--target", "web", "-o", webOut]);
   const targetArgs = target ? ["--target", target] : [];
   run("cargo", ["build", "-p", "openbitfun-desktop", "--lib", "--profile", profile, ...targetArgs], {
