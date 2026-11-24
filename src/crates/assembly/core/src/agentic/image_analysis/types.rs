@@ -3,20 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Image context data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageContextData {
-    /// Image ID
-    pub id: String,
-    /// Image file path (local file)
-    pub image_path: Option<String>,
-    /// Base64 encoded image data (clipboard/temporary file)
-    pub data_url: Option<String>,
-    /// MIME type
-    pub mime_type: String,
-    /// Metadata
-    pub metadata: Option<serde_json::Value>,
-}
+pub use openbitfun_agent_runtime::message::ImageContextData;
 
 /// Image analysis result
 #[derive(Debug, Clone, Serialize, Deserialize)]

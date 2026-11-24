@@ -92,14 +92,29 @@ impl<W> SessionResidency<W> {
             return Ok(false);
         };
         effects.save_before_unload(id, session).await?;
+        Ok(self.release_saved(
+            id,
+            || effects.clear_settlement(id),
+            || effects.clear_stores(id),
+        ))
+    }
+
+    /// Release only after persistence and while the caller still owns the
+    /// resident writer. Standalone sessions flush each checkpoint eagerly.
+    pub fn release_saved(
+        &self,
+        id: &str,
+        clear_settlement: impl FnOnce(),
+        clear_stores: impl FnOnce(),
+    ) -> bool {
         if self.sessions.remove(id).is_none() {
-            return Ok(false);
+            return false;
         }
-        effects.clear_settlement(id);
+        clear_settlement();
         self.release_reservation(id);
-        effects.clear_stores(id);
+        clear_stores();
         self.release_writer(id);
-        Ok(true)
+        true
     }
 
     pub async fn lock_mutation(&self, session_id: &str) -> KeyedAsyncLockGuard {

@@ -40,6 +40,8 @@ path = "tests/legacy_migration_contracts.rs"
 required-features = ["legacy-migration"]
 
 [dependencies]
+openbitfun-core-types = { path = "../core-types" }
+openbitfun-permission-contracts = { path = "../permission-contracts" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }
@@ -63,7 +65,7 @@ product-full = ["plugin-source", "miniapp", "function-agents", "external-sources
 # Derive `ts_rs::TS` on the wire types (permissions, etc.) for downstream
 # TypeScript binding export. Orthogonal to the product feature groups; does not
 # pull any optional integration dependency.
-ts = ["dep:ts-rs"]
+ts = ["dep:ts-rs", "openbitfun-core-types/ts", "openbitfun-permission-contracts/ts"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

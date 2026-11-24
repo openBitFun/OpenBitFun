@@ -1011,7 +1011,7 @@ export function runManifestParserSelfTest({
     }
   }
   const coreMessageRuleText = forbiddenRuleTextForPath(
-    'src/crates/assembly/core/src/agentic/core/message.rs',
+    'src/crates/execution/agent-runtime/src/message.rs',
   );
   if (!coreMessageRuleText) {
     throw new Error('missing core message boundary rule');
@@ -3699,14 +3699,12 @@ export function runManifestParserSelfTest({
         'DialogSubmitOutcome',
         'DialogSubmitQueueAction',
         'DialogSubmitQueueFacts',
-        'ActiveDialogTurnStore',
+        'DialogExecution',
         'AgentSessionReplyAction',
         'AgentSessionReplyPlan',
         'BackgroundInjectionKind',
-        'DialogReplySuppressionSet',
         'DialogSteeringAction',
         'DialogTurnQueue',
-        'SessionAbortFlags',
         'resolve_agent_session_reply_action',
         'resolve_background_delivery_injection',
         'resolve_dialog_submit_queue_action',
@@ -3738,7 +3736,7 @@ export function runManifestParserSelfTest({
       ],
     },
     {
-      path: 'src/crates/assembly/core/src/agentic/core/message.rs',
+      path: 'src/crates/execution/agent-runtime/src/message.rs',
       contracts: ['openbitfun_runtime_ports', 'CompressionContract', 'CompressionContractItem'],
     },
     {

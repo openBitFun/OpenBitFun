@@ -326,7 +326,8 @@ test('Agent Runtime leaf capabilities have one managed feature and source contra
     'native-hook-runtime',
     'native-hook-settings',
   ]);
-  assert.equal(rule.consumers.size, 11);
+  assert.equal(rule.consumers.size, 12);
+  assert.ok(rule.consumers.has('openbitfun-agent'));
   assert.ok(rule.consumers.has('openbitfun-legacy-migration-adapters'));
   assert.ok(
     guardedEmptyInternalDefaultManifestPaths.includes(
@@ -572,7 +573,7 @@ test('portable contract crates expose only capability-local feature slices', asy
   assert.deepEqual(runtimePortFeatures['agent-api'], ['dep:openbitfun-core-types']);
   assert.deepEqual(runtimePortFeatures['hook-function-runtime'], []);
   assert.deepEqual(runtimePortFeatures['plugin-runtime'], []);
-  assert.deepEqual(runtimePortFeatures['product-search'], ['dep:openbitfun-product-domains']);
+  assert.deepEqual(runtimePortFeatures['product-search'], ['dep:openbitfun-core-types']);
   assert.deepEqual(runtimePortFeatures['script-tool-runtime'], []);
   assert.deepEqual(runtimePortFeatures['ptc-runtime'], []);
   assert.deepEqual(runtimePortFeatures['web-search-port'], []);
@@ -703,6 +704,7 @@ test('Services Core feature-free dependencies stay behind exact text and async I
       'process-runtime',
       'session-search',
       'workspace-instructions',
+      'workspace-reader',
       'workspace-runtime',
       'workspace-text-runtime',
       'workspace-transfer',
@@ -815,9 +817,9 @@ const RUNTIME_PORT_FEATURE_PROFILES = {
   'agent-api': ['dep:openbitfun-core-types'],
   'git-port': [],
   'hook-function-runtime': [],
-  permission: ['dep:openbitfun-product-domains', 'dep:tokio-util'],
+  permission: ['dep:openbitfun-permission-contracts', 'dep:tokio-util'],
   'plugin-runtime': [],
-  'product-search': ['dep:openbitfun-product-domains'],
+  'product-search': ['dep:openbitfun-core-types'],
   'ptc-runtime': [],
   'remote-exec-port': ['dep:tokio', 'dep:tokio-util'],
   'remote-workspace-ports': ['dep:openbitfun-core-types'],
@@ -831,7 +833,7 @@ const RUNTIME_PORT_FEATURE_PROFILES = {
     'agent-api',
     'permission',
     'openbitfun-core-types/ts',
-    'openbitfun-product-domains?/ts',
+    'openbitfun-permission-contracts?/ts',
   ],
   'web-search-port': [],
   'workspace-ports': ['dep:anyhow', 'dep:tokio-util', 'dep:tokio', 'tokio/io-util'],
@@ -4314,6 +4316,7 @@ test('Services Core accepts only the reviewed feature-owned Tokio runtime graph'
         'tokio/time',
       ],
       'workspace-instructions': ['dep:tokio', 'tokio/fs', 'tokio/io-util', 'tokio/rt'],
+      'workspace-reader': ['dep:cap-std', 'dep:libc', 'tokio/fs', 'tokio/rt'],
       'workspace-text-runtime': ['dep:tokio', 'tokio/rt'],
       'workspace-runtime': [
         'process-runtime',
@@ -4361,6 +4364,7 @@ test('Services Core Tokio owners cannot be hidden behind an unreviewed alias', (
         'tokio/time',
       ],
       'workspace-instructions': ['dep:tokio', 'tokio/fs', 'tokio/io-util', 'tokio/rt'],
+      'workspace-reader': ['dep:cap-std', 'dep:libc', 'tokio/fs', 'tokio/rt'],
       'workspace-text-runtime': ['dep:tokio', 'tokio/rt'],
       'workspace-runtime': [
         'process-runtime',

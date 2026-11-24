@@ -1,0 +1,31 @@
+[package]
+name = "openbitfun-agent"
+version.workspace = true
+edition.workspace = true
+description = "In-process OpenBitFun agent assembly for native Rust applications"
+
+[dependencies]
+openbitfun-agent-runtime = { path = "../../execution/agent-runtime", features = ["agent-runtime"] }
+openbitfun-services-core = { path = "../../services/services-core", features = ["local-storage"] }
+serde_json.workspace = true
+
+anyhow = { workspace = true, optional = true }
+openbitfun-ai-adapters = { path = "../../adapters/ai-adapters", optional = true }
+openbitfun-agent-stream = { path = "../../execution/agent-stream", optional = true }
+openbitfun-runtime-ports = { path = "../../contracts/runtime-ports", features = ["permission"], optional = true }
+openbitfun-core-types = { path = "../../contracts/core-types", optional = true }
+tool-runtime = { path = "../../execution/tool-execution", optional = true }
+tokio = { workspace = true, features = ["fs", "macros", "sync"], optional = true }
+tokio-util = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+
+[features]
+local = ["dep:anyhow", "dep:openbitfun-ai-adapters", "dep:openbitfun-agent-stream",
+    "dep:openbitfun-core-types", "dep:openbitfun-runtime-ports", "dep:tool-runtime",
+    "dep:tokio", "dep:tokio-util", "dep:uuid", "permissions", "openbitfun-services-core/tls-provider",
+    "openbitfun-services-core/workspace-identity", "openbitfun-services-core/workspace-reader"]
+default = []
+permissions = ["dep:openbitfun-runtime-ports", "openbitfun-services-core/permission"]
+
+[lints]
+workspace = true

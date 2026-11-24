@@ -5859,7 +5859,7 @@ export const requiredContentRules = [
     ],
   },
   {
-    path: 'src/crates/assembly/core/src/agentic/core/message.rs',
+    path: 'src/crates/execution/agent-runtime/src/message.rs',
     reason:
       'core message model must preserve legacy compression contract import path while runtime-ports owns portable compaction facts',
     patterns: [

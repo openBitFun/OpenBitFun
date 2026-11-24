@@ -64,6 +64,7 @@ openbitfun-agent-stream = { path = "../../execution/agent-stream", optional = tr
 openbitfun-agent-content = { path = "../agent-content", optional = true }
 
 # Agent runtime owner contracts
+openbitfun-agent = { path = "../agent", optional = true }
 openbitfun-agent-runtime = { path = "../../execution/agent-runtime", optional = true }
 openbitfun-agent-workflows = { path = "../../execution/agent-workflows", optional = true }
 
@@ -209,6 +210,7 @@ test-support = []
 # owns the existing agent/session/tool lifecycle, not app presentation or
 # external ecosystem discovery.
 agent-runtime = [
+    "openbitfun-agent/permissions",
     "dep:openbitfun-product-domains",
     "openbitfun-services-core/coordination-store",
     "openbitfun-services-core/session-event-format",

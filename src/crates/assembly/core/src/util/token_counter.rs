@@ -7,21 +7,7 @@ pub struct TokenCounter;
 
 impl TokenCounter {
     pub fn estimate_tokens(text: &str) -> usize {
-        if text.is_empty() {
-            return 0;
-        }
-
-        let mut token_count: f32 = 0.;
-
-        for c in text.chars() {
-            if c.is_ascii() {
-                token_count += 0.3;
-            } else {
-                token_count += 0.6;
-            }
-        }
-
-        token_count as usize
+        openbitfun_core_types::ai::estimate_text_tokens(text)
     }
 
     pub fn estimate_message_tokens(message: &Message) -> usize {

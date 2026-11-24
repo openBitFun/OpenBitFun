@@ -19,7 +19,6 @@ use crate::agentic::agents::{
     render_direct_tool_listing_body, PrependedPromptReminders, PromptBuilder, PromptBuilderContext,
     RuntimeContextNeeds, ToolListingSections, UserContextPolicy, UserContextSection,
 };
-use crate::agentic::context_normalization::normalize_incomplete_tool_calls;
 use crate::agentic::coordination::scheduler::agent_dialog_turn_image_contexts;
 use crate::agentic::core::{
     render_system_reminder, InternalReminderKind, Message, MessageContent, MessageHelper,
@@ -67,11 +66,11 @@ use crate::service::instruction_context::{
     build_workspace_instruction_files_context_detailed,
     build_workspace_instruction_files_context_with_fs, InstructionContextBuild,
 };
+use crate::util::elapsed_ms_u64;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
 use crate::util::token_counter::TokenCounter;
 use crate::util::types::Message as AIMessage;
 use crate::util::types::ToolDefinition;
-use crate::util::{elapsed_ms_u64, truncate_at_char_boundary};
 use dashmap::DashMap;
 use log::{debug, error, info, trace, warn};
 use openbitfun_agent_runtime::permission::PERMISSION_MODE_CONTEXT_KEY;
@@ -88,7 +87,6 @@ use openbitfun_agent_tools::{
 use openbitfun_ai_adapters::ModelExchangeTraceConfig;
 use openbitfun_core_types::{ModelRequestContext, SessionModelBindingPolicy};
 use openbitfun_runtime_ports::{resolve_permission_mode, PermissionMode, PermissionModeLayers};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -137,9 +135,7 @@ fn deferred_tool_listing_reminder(
 
 #[cfg(test)]
 use openbitfun_agent_runtime::turn_execution::reached_fixed_model_round_limit;
-use openbitfun_agent_runtime::turn_execution::{
-    RoundOutput, ToolFailureRecovery, TurnBoundary, TurnExecution,
-};
+use openbitfun_agent_runtime::turn_execution::{RoundOutput, ToolFailureRecovery, TurnExecution};
 
 fn runtime_context_needs_for_manifest(manifest: &ResolvedToolManifest) -> RuntimeContextNeeds {
     RuntimeContextNeeds::from_tool_names(
@@ -195,7 +191,7 @@ impl Default for ExecutionEngineConfig {
     fn default() -> Self {
         Self {
             max_rounds: crate::service::config::types::DEFAULT_MAX_ROUNDS,
-            max_consecutive_same_tool: 3,
+            max_consecutive_same_tool: TurnExecution::DEFAULT_FAILURE_THRESHOLD,
         }
     }
 }
@@ -479,23 +475,7 @@ impl ContextHealthSnapshot {
             return None;
         }
 
-        Some(Self::tool_result_failed(result, *is_error))
-    }
-
-    fn tool_result_failed(result: &serde_json::Value, is_error: bool) -> bool {
-        is_error
-            || Self::bool_field(result, "timed_out") == Some(true)
-            || Self::bool_field(result, "interrupted") == Some(true)
-            || Self::bool_field(result, "success") == Some(false)
-            || Self::numeric_field(result, "exit_code").is_some_and(|code| code != 0)
-    }
-
-    fn bool_field(value: &serde_json::Value, key: &str) -> Option<bool> {
-        value.get(key).and_then(|field| field.as_bool())
-    }
-
-    fn numeric_field(value: &serde_json::Value, key: &str) -> Option<i64> {
-        value.get(key).and_then(|field| field.as_i64())
+        Some(TurnExecution::tool_result_failed(result, *is_error))
     }
 }
 
@@ -1030,58 +1010,6 @@ impl ExecutionEngine {
         } else {
             base.saturating_sub(old - new)
         }
-    }
-
-    fn tool_signature_args_summary(args_str: &str) -> String {
-        if args_str.len() <= 128 {
-            return args_str.to_string();
-        }
-
-        let args_hash = hex::encode(Sha256::digest(args_str.as_bytes()));
-        format!(
-            "{}..#{}:sha256={}",
-            truncate_at_char_boundary(args_str, 64),
-            args_str.len(),
-            args_hash
-        )
-    }
-
-    fn tool_call_signature(tool_calls: &[crate::agentic::core::ToolCall]) -> Option<String> {
-        if tool_calls.is_empty() {
-            return None;
-        }
-
-        let mut signatures: Vec<String> = tool_calls
-            .iter()
-            .map(|tool_call| {
-                let arguments = tool_call.arguments.to_string();
-                let arguments_summary = Self::tool_signature_args_summary(&arguments);
-                format!("{}:{}", tool_call.tool_name, arguments_summary)
-            })
-            .collect();
-        signatures.sort();
-        Some(signatures.join("|"))
-    }
-
-    fn failed_tool_round_signature(
-        tool_calls: &[crate::agentic::core::ToolCall],
-        tool_result_messages: &[Message],
-    ) -> Option<String> {
-        if tool_result_messages.is_empty()
-            || !tool_result_messages.iter().all(|message| {
-                let MessageContent::ToolResult {
-                    result, is_error, ..
-                } = &message.content
-                else {
-                    return false;
-                };
-                ContextHealthSnapshot::tool_result_failed(result, *is_error)
-            })
-        {
-            return None;
-        }
-
-        Self::tool_call_signature(tool_calls)
     }
 
     fn assistant_has_tool_calls(message: &Message) -> bool {
@@ -3187,9 +3115,8 @@ impl ExecutionEngine {
         // model output but before the tool result. Repair that boundary before
         // constructing any provider request and persist the canonical context so
         // every subsequent request sees a valid call/result pair.
-        if normalize_incomplete_tool_calls(
+        if openbitfun_agent_runtime::message::normalization::normalize_after_interruption(
             &mut initial_messages,
-            "Tool execution was still in progress when the application closed; the result is unknown. Verify any external side effects before continuing.",
         ) {
             self.session_manager
                 .replace_context_messages(&context.session_id, initial_messages.clone())
@@ -3865,145 +3792,150 @@ impl ExecutionEngine {
             }
         }
 
-        while let Some(round_index) = turn.next_round(|| {
-            if self
-                .round_executor
-                .is_dialog_turn_cancelled(&dialog_turn_id)
-            {
-                Err(OpenBitFunError::Cancelled("Dialog cancelled".to_string()))
-            } else {
-                Ok(())
-            }
-        })? {
-            if selected_pool.is_none() {
-                // Select once at the logical-round boundary. Everything below, including
-                // provider retries and context-overflow recovery, reuses this selection.
-                // Approved immutable sessions and subagents retain the admitted model.
-                let selected_model = if let Some(selected_model) = active_round_model.clone() {
-                    selected_model
+        openbitfun_agent_runtime::drive_turn_rounds!(
+            turn,
+            || {
+                if self
+                    .round_executor
+                    .is_dialog_turn_cancelled(&dialog_turn_id)
+                {
+                    Err(OpenBitFunError::Cancelled("Dialog cancelled".to_string()))
                 } else {
-                    let routing_started = std::time::Instant::now();
-                    let mut fallback_reason = routing_setup_failure.clone();
-                    let requested_route = if turn_router.is_some() {
-                        if self
-                            .round_executor
-                            .is_dialog_turn_cancelled(&dialog_turn_id)
-                        {
-                            return Err(OpenBitFunError::cancelled(
-                                "Dialog cancelled before routing",
-                            ));
-                        }
+                    Ok(())
+                }
+            },
+            |round_index| {
+                if selected_pool.is_none() {
+                    // Select once at the logical-round boundary. Everything below, including
+                    // provider retries and context-overflow recovery, reuses this selection.
+                    // Approved immutable sessions and subagents retain the admitted model.
+                    let selected_model = if let Some(selected_model) = active_round_model.clone() {
+                        selected_model
+                    } else {
+                        let routing_started = std::time::Instant::now();
+                        let mut fallback_reason = routing_setup_failure.clone();
+                        let requested_route = if turn_router.is_some() {
+                            if self
+                                .round_executor
+                                .is_dialog_turn_cancelled(&dialog_turn_id)
+                            {
+                                return Err(OpenBitFunError::cancelled(
+                                    "Dialog cancelled before routing",
+                                ));
+                            }
 
-                        let prepared_context = if let Some(router_context) = router_context.as_mut()
-                        {
-                            let preparation_started = std::time::Instant::now();
-                            let token_metrics = router_context.token_metrics();
-                            // The append-only generation transcript also retains feedback that
-                            // main context-overflow recovery may already have removed.
-                            let generated = self
-                                .generation_messages
-                                .get(&(context.session_id.clone(), context.dialog_turn_id.clone()));
-                            let generation_lookup_ms =
-                                preparation_started.elapsed().as_millis() as u64;
-                            let observe_started = std::time::Instant::now();
-                            if let Some(generated) = generated.as_ref() {
-                                router_context.observe(generated.as_slice());
-                            }
-                            drop(generated);
-                            let generation_observe_ms =
-                                observe_started.elapsed().as_millis() as u64;
-                            let mut prepared = router_context.prepare(&messages).await;
-                            prepared.preparation.generation_lookup_ms = generation_lookup_ms;
-                            prepared.preparation.generation_observe_ms = generation_observe_ms;
-                            prepared.preparation.tokens =
-                                router_context.token_metrics().since(token_metrics);
-                            prepared.preparation_ms =
-                                preparation_started.elapsed().as_millis() as u64;
-                            Some(prepared)
-                        } else {
-                            None
-                        };
-                        let request = RoundModelRouteRequest {
-                            root_session_id: context.session_id.clone(),
-                            parent_session_id: None,
-                            session_id: context.session_id.clone(),
-                            dialog_turn_id: context.dialog_turn_id.clone(),
-                            turn_index: context.turn_index,
-                            round_index,
-                            agent_type: agent_type.clone(),
-                            original_user_input: original_user_input.clone(),
-                            messages: if prepared_context.is_some() {
-                                Vec::new()
+                            let prepared_context = if let Some(router_context) =
+                                router_context.as_mut()
+                            {
+                                let preparation_started = std::time::Instant::now();
+                                let token_metrics = router_context.token_metrics();
+                                // The append-only generation transcript also retains feedback that
+                                // main context-overflow recovery may already have removed.
+                                let generated = self.generation_messages.get(&(
+                                    context.session_id.clone(),
+                                    context.dialog_turn_id.clone(),
+                                ));
+                                let generation_lookup_ms =
+                                    preparation_started.elapsed().as_millis() as u64;
+                                let observe_started = std::time::Instant::now();
+                                if let Some(generated) = generated.as_ref() {
+                                    router_context.observe(generated.as_slice());
+                                }
+                                drop(generated);
+                                let generation_observe_ms =
+                                    observe_started.elapsed().as_millis() as u64;
+                                let mut prepared = router_context.prepare(&messages).await;
+                                prepared.preparation.generation_lookup_ms = generation_lookup_ms;
+                                prepared.preparation.generation_observe_ms = generation_observe_ms;
+                                prepared.preparation.tokens =
+                                    router_context.token_metrics().since(token_metrics);
+                                prepared.preparation_ms =
+                                    preparation_started.elapsed().as_millis() as u64;
+                                Some(prepared)
                             } else {
-                                messages.clone()
-                            },
-                            prepared_context,
-                        };
-                        let cancel = self.round_executor.ensure_cancel_token(&dialog_turn_id);
-                        let decision = tokio::select! {
-                            biased;
-                            _ = cancel.cancelled() => return Err(OpenBitFunError::cancelled("Dialog cancelled during routing")),
-                            result = turn_router.as_ref().expect("turn router checked above").select_model(request) => result,
-                        };
-                        match decision {
-                            Ok(route) => route,
-                            Err(OpenBitFunError::Cancelled(reason)) => {
-                                return Err(OpenBitFunError::Cancelled(reason));
-                            }
-                            Err(error) => {
-                                fallback_reason = Some("router_request_failed".to_string());
-                                warn!(
+                                None
+                            };
+                            let request = RoundModelRouteRequest {
+                                root_session_id: context.session_id.clone(),
+                                parent_session_id: None,
+                                session_id: context.session_id.clone(),
+                                dialog_turn_id: context.dialog_turn_id.clone(),
+                                turn_index: context.turn_index,
+                                round_index,
+                                agent_type: agent_type.clone(),
+                                original_user_input: original_user_input.clone(),
+                                messages: if prepared_context.is_some() {
+                                    Vec::new()
+                                } else {
+                                    messages.clone()
+                                },
+                                prepared_context,
+                            };
+                            let cancel = self.round_executor.ensure_cancel_token(&dialog_turn_id);
+                            let decision = tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => return Err(OpenBitFunError::cancelled("Dialog cancelled during routing")),
+                                result = turn_router.as_ref().expect("turn router checked above").select_model(request) => result,
+                            };
+                            match decision {
+                                Ok(route) => route,
+                                Err(OpenBitFunError::Cancelled(reason)) => {
+                                    return Err(OpenBitFunError::Cancelled(reason));
+                                }
+                                Err(error) => {
+                                    fallback_reason = Some("router_request_failed".to_string());
+                                    warn!(
                                 "Round model routing failed; falling back to primary: session_id={}, turn_id={}, round_index={}, error={}",
                                 context.session_id, context.dialog_turn_id, round_index, error
                             );
-                                RoundModelRoute::Primary
+                                    RoundModelRoute::Primary
+                                }
                             }
-                        }
-                    } else {
-                        RoundModelRoute::Primary
-                    };
+                        } else {
+                            RoundModelRoute::Primary
+                        };
 
-                    let (mut route, mut client) = match requested_route {
-                        RoundModelRoute::Primary => (
-                            RoundModelRoute::Primary,
-                            baseline_client
-                                .as_mut()
-                                .expect("admitted primary client")
-                                .take_for_round(),
-                        ),
-                        RoundModelRoute::Economy => {
-                            let fast_model = match economy_client.as_mut() {
-                                Some(client) => Ok(client.take_for_round()),
-                                _ => Err(OpenBitFunError::Configuration(
-                                    "Economy model is unavailable".into(),
-                                )),
-                            };
-                            match fast_model {
-                                Ok(client) => (RoundModelRoute::Economy, client),
-                                Err(error) => {
-                                    fallback_reason = Some("economy_model_unavailable".into());
-                                    warn!(
+                        let (mut route, mut client) = match requested_route {
+                            RoundModelRoute::Primary => (
+                                RoundModelRoute::Primary,
+                                baseline_client
+                                    .as_mut()
+                                    .expect("admitted primary client")
+                                    .take_for_round(),
+                            ),
+                            RoundModelRoute::Economy => {
+                                let fast_model = match economy_client.as_mut() {
+                                    Some(client) => Ok(client.take_for_round()),
+                                    _ => Err(OpenBitFunError::Configuration(
+                                        "Economy model is unavailable".into(),
+                                    )),
+                                };
+                                match fast_model {
+                                    Ok(client) => (RoundModelRoute::Economy, client),
+                                    Err(error) => {
+                                        fallback_reason = Some("economy_model_unavailable".into());
+                                        warn!(
                                     "Economy round model is unavailable; falling back to primary: session_id={}, turn_id={}, round_index={}, error={}",
                                     context.session_id,
                                     context.dialog_turn_id,
                                     round_index,
                                     error
                                 );
-                                    (
-                                        RoundModelRoute::Primary,
-                                        baseline_client
-                                            .as_mut()
-                                            .expect("admitted primary client")
-                                            .take_for_round(),
-                                    )
+                                        (
+                                            RoundModelRoute::Primary,
+                                            baseline_client
+                                                .as_mut()
+                                                .expect("admitted primary client")
+                                                .take_for_round(),
+                                        )
+                                    }
                                 }
                             }
-                        }
-                    };
-                    let mut model_facts = if route == RoundModelRoute::Primary {
-                        baseline_primary_model_facts.clone()
-                    } else {
-                        Self::resolve_primary_model_context(
+                        };
+                        let mut model_facts = if route == RoundModelRoute::Primary {
+                            baseline_primary_model_facts.clone()
+                        } else {
+                            Self::resolve_primary_model_context(
                         &client.model_id,
                         session.config.model_binding_policy,
                         &client.ai_client.config.model,
@@ -4011,86 +3943,86 @@ impl ExecutionEngine {
                         "Config service unavailable, assuming routed model is text-only for image input gating",
                     )
                     .await
-                    };
-                    if route == RoundModelRoute::Economy {
-                        if let Some(reason) = Self::routing_capability_fallback(
-                            &messages,
-                            &baseline_primary_model_facts,
-                            &model_facts,
-                        ) {
-                            route = RoundModelRoute::Primary;
-                            client = baseline_client
-                                .as_mut()
-                                .expect("admitted primary client")
-                                .take_for_round();
-                            model_facts = baseline_primary_model_facts.clone();
-                            fallback_reason = Some(reason.into());
+                        };
+                        if route == RoundModelRoute::Economy {
+                            if let Some(reason) = Self::routing_capability_fallback(
+                                &messages,
+                                &baseline_primary_model_facts,
+                                &model_facts,
+                            ) {
+                                route = RoundModelRoute::Primary;
+                                client = baseline_client
+                                    .as_mut()
+                                    .expect("admitted primary client")
+                                    .take_for_round();
+                                model_facts = baseline_primary_model_facts.clone();
+                                fallback_reason = Some(reason.into());
+                            }
                         }
-                    }
-                    let selected_model = RoundExecutionModel {
-                        route,
-                        client,
-                        model_facts,
-                        routing: (turn_router.is_some() || routing_setup_failure.is_some()).then(
-                            || openbitfun_events::agentic::ModelRoutingDecision {
-                                route: route.model_selector().into(),
-                                latency_ms: routing_started.elapsed().as_millis() as u64,
-                                fallback_reason,
-                            },
-                        ),
+                        let selected_model = RoundExecutionModel {
+                            route,
+                            client,
+                            model_facts,
+                            routing: (turn_router.is_some() || routing_setup_failure.is_some())
+                                .then(|| openbitfun_events::agentic::ModelRoutingDecision {
+                                    route: route.model_selector().into(),
+                                    latency_ms: routing_started.elapsed().as_millis() as u64,
+                                    fallback_reason,
+                                }),
+                        };
+                        active_round_model = Some(selected_model.clone());
+                        selected_model
                     };
-                    active_round_model = Some(selected_model.clone());
-                    selected_model
-                };
 
-                if self
-                    .round_executor
-                    .is_dialog_turn_cancelled(&dialog_turn_id)
-                {
-                    return Err(OpenBitFunError::cancelled("Dialog cancelled after routing"));
-                }
+                    if self
+                        .round_executor
+                        .is_dialog_turn_cancelled(&dialog_turn_id)
+                    {
+                        return Err(OpenBitFunError::cancelled("Dialog cancelled after routing"));
+                    }
 
-                let route = selected_model.route;
-                model_id = selected_model.client.model_id;
-                ai_client = selected_model.client.ai_client;
-                account_client_source = selected_model.client.account_source;
-                channel_client_source = selected_model.client.channel_source;
-                primary_model_facts = selected_model.model_facts;
-                primary_supports_image_understanding = primary_model_facts.supports_image_inputs;
-                compression_trigger_budget = request_budget(&ai_client.config, None);
+                    let route = selected_model.route;
+                    model_id = selected_model.client.model_id;
+                    ai_client = selected_model.client.ai_client;
+                    account_client_source = selected_model.client.account_source;
+                    channel_client_source = selected_model.client.channel_source;
+                    primary_model_facts = selected_model.model_facts;
+                    primary_supports_image_understanding =
+                        primary_model_facts.supports_image_inputs;
+                    compression_trigger_budget = request_budget(&ai_client.config, None);
 
-                execution_context_vars.insert(
-                    "max_context_tokens".into(),
-                    compression_trigger_budget.context_window.to_string(),
-                );
-
-                let next_scaffold_model_key = (
-                    model_id.clone(),
-                    ai_client.config.model.clone(),
-                    primary_supports_image_understanding,
-                );
-                if next_scaffold_model_key != scaffold_model_key {
-                    // A speculative summary owns the previous model's context/budget.
-                    // Dropping it cancels pending IO before publishing another scaffold.
-                    compression_prefetch.take();
-                    turn_prompt_scaffold = self
-                        .resolve_turn_prompt_scaffold(TurnPromptScaffoldInput {
-                            context: &context,
-                            current_agent: current_agent.as_ref(),
-                            model_name: &ai_client.config.model,
-                            supports_image_understanding: primary_supports_image_understanding,
-                            tool_listing_sections: tool_listing_sections.clone(),
-                            runtime_context_needs,
-                            stage: "round_model_switch",
-                        })
-                        .await?;
-                    Self::apply_turn_prompt_scaffold_to_messages(
-                        &mut messages,
-                        &turn_prompt_scaffold,
+                    execution_context_vars.insert(
+                        "max_context_tokens".into(),
+                        compression_trigger_budget.context_window.to_string(),
                     );
-                    scaffold_model_key = next_scaffold_model_key;
-                }
-                info!(
+
+                    let next_scaffold_model_key = (
+                        model_id.clone(),
+                        ai_client.config.model.clone(),
+                        primary_supports_image_understanding,
+                    );
+                    if next_scaffold_model_key != scaffold_model_key {
+                        // A speculative summary owns the previous model's context/budget.
+                        // Dropping it cancels pending IO before publishing another scaffold.
+                        compression_prefetch.take();
+                        turn_prompt_scaffold = self
+                            .resolve_turn_prompt_scaffold(TurnPromptScaffoldInput {
+                                context: &context,
+                                current_agent: current_agent.as_ref(),
+                                model_name: &ai_client.config.model,
+                                supports_image_understanding: primary_supports_image_understanding,
+                                tool_listing_sections: tool_listing_sections.clone(),
+                                runtime_context_needs,
+                                stage: "round_model_switch",
+                            })
+                            .await?;
+                        Self::apply_turn_prompt_scaffold_to_messages(
+                            &mut messages,
+                            &turn_prompt_scaffold,
+                        );
+                        scaffold_model_key = next_scaffold_model_key;
+                    }
+                    info!(
                 "Round execution model selected: session_id={}, turn_id={}, round_index={}, route={:?}, model_config_id={}, effective_model_name={}, context_window={}",
                 context.session_id,
                 context.dialog_turn_id,
@@ -4100,166 +4032,168 @@ impl ExecutionEngine {
                 ai_client.config.model,
                 compression_trigger_budget.context_window
             );
-                if let Some(router) = turn_router.as_ref() {
-                    router.record_execution_model(RoundModelExecutionRecord {
-                        root_session_id: context.session_id.clone(),
-                        parent_session_id: None,
-                        session_id: context.session_id.clone(),
-                        dialog_turn_id: context.dialog_turn_id.clone(),
-                        round_index,
-                        route,
-                        model_config_id: model_id.clone(),
-                        effective_model_name: ai_client.config.model.clone(),
-                    });
+                    if let Some(router) = turn_router.as_ref() {
+                        router.record_execution_model(RoundModelExecutionRecord {
+                            root_session_id: context.session_id.clone(),
+                            parent_session_id: None,
+                            session_id: context.session_id.clone(),
+                            dialog_turn_id: context.dialog_turn_id.clone(),
+                            round_index,
+                            route,
+                            model_config_id: model_id.clone(),
+                            effective_model_name: ai_client.config.model.clone(),
+                        });
+                    }
                 }
-            }
-            let routing_decision = active_round_model
-                .as_ref()
-                .and_then(|model| model.routing.clone());
-            let pool_attempt = if let Some(pool_id) = selected_pool.as_deref() {
-                let image_requirement = Self::image_input_requirement(
-                    &messages,
-                    enable_tools && available_tools.iter().any(|name| name == "analyze_image"),
-                );
-                let (attempt, _next_client) = if let Some(prepared) = initial_pool_attempt.take() {
-                    prepared
-                } else {
-                    self.model_pools
-                        .prepare(
-                            self.round_executor.models.as_ref(),
-                            &context.session_id,
-                            session.config.model_pool_selection_revision,
-                            pool_id,
-                            &mut pool_excluded,
-                            enable_tools,
-                            image_requirement,
-                        )
-                        .await?
-                };
-                let next_budget = CompressionTriggerBudget::for_pool(attempt.context_budget);
-                if compression_trigger_budget != next_budget {
-                    compression_prefetch.take();
-                    compression_trigger_budget = next_budget;
-                    execution_context_vars.insert(
-                        "max_context_tokens".into(),
-                        next_budget.context_window.to_string(),
+                let routing_decision = active_round_model
+                    .as_ref()
+                    .and_then(|model| model.routing.clone());
+                let pool_attempt = if let Some(pool_id) = selected_pool.as_deref() {
+                    let image_requirement = Self::image_input_requirement(
+                        &messages,
+                        enable_tools && available_tools.iter().any(|name| name == "analyze_image"),
                     );
-                }
-                let binding = &attempt.reservation.binding;
-                if model_id != binding.model_id
-                    || model_fingerprint != binding.configuration_fingerprint
-                {
-                    compression_prefetch.take();
-                    model_id = binding.model_id.clone();
-                    model_fingerprint = binding.configuration_fingerprint.clone();
-                    let (next_prepared, next_channels) = tokio::select! {
-                        biased;
-                        _ = initialization_cancel.cancelled() => return Err(OpenBitFunError::Cancelled("Execution cancelled during pool model initialization".into())),
-                        result = ai_client_factory.prepare_native_routed_model_client(
+                    let (attempt, _next_client) =
+                        if let Some(prepared) = initial_pool_attempt.take() {
+                            prepared
+                        } else {
+                            self.model_pools
+                                .prepare(
+                                    self.round_executor.models.as_ref(),
+                                    &context.session_id,
+                                    session.config.model_pool_selection_revision,
+                                    pool_id,
+                                    &mut pool_excluded,
+                                    enable_tools,
+                                    image_requirement,
+                                )
+                                .await?
+                        };
+                    let next_budget = CompressionTriggerBudget::for_pool(attempt.context_budget);
+                    if compression_trigger_budget != next_budget {
+                        compression_prefetch.take();
+                        compression_trigger_budget = next_budget;
+                        execution_context_vars.insert(
+                            "max_context_tokens".into(),
+                            next_budget.context_window.to_string(),
+                        );
+                    }
+                    let binding = &attempt.reservation.binding;
+                    if model_id != binding.model_id
+                        || model_fingerprint != binding.configuration_fingerprint
+                    {
+                        compression_prefetch.take();
+                        model_id = binding.model_id.clone();
+                        model_fingerprint = binding.configuration_fingerprint.clone();
+                        let (next_prepared, next_channels) = tokio::select! {
+                            biased;
+                            _ = initialization_cancel.cancelled() => return Err(OpenBitFunError::Cancelled("Execution cancelled during pool model initialization".into())),
+                            result = ai_client_factory.prepare_native_routed_model_client(
+                                &model_id,
+                                &model_fingerprint,
+                                None,
+                                model_request_context.prompt_cache_route_key.as_deref(),
+                                current_agent.model_temperature_override(),
+                            ) => result.map_err(|error| OpenBitFunError::AIClient(format!("Failed to initialize model pool member: {error:#}")))?,
+                        };
+                        ai_client = next_prepared.client.clone();
+                        account_client_source = next_prepared.account_source.clone();
+                        channel_client_source = next_channels;
+                        prepared_model = Some(next_prepared);
+                        primary_model_facts = Self::resolve_primary_model_context(
                             &model_id,
-                            &model_fingerprint,
-                            None,
-                            model_request_context.prompt_cache_route_key.as_deref(),
-                            current_agent.model_temperature_override(),
-                        ) => result.map_err(|error| OpenBitFunError::AIClient(format!("Failed to initialize model pool member: {error:#}")))?,
-                    };
-                    ai_client = next_prepared.client.clone();
-                    account_client_source = next_prepared.account_source.clone();
-                    channel_client_source = next_channels;
-                    prepared_model = Some(next_prepared);
-                    primary_model_facts = Self::resolve_primary_model_context(
+                            SessionModelBindingPolicy::ApprovedImmutable,
+                            &ai_client.config.model,
+                            &ai_client.config.format,
+                            "Model pool configuration unavailable",
+                        )
+                        .await;
+                        primary_supports_image_understanding =
+                            primary_model_facts.supports_image_inputs;
+                        let description_context =
+                            tool_context_runtime::build_tool_description_context(
+                                &agent_type,
+                                context.workspace.as_ref(),
+                                context.workspace_services.as_ref(),
+                                Some(&context.session_id),
+                                context.terminal_port.as_ref(),
+                                context.remote_exec_port.as_ref(),
+                                Some(&primary_model_facts),
+                                &execution_context_vars,
+                                &context.runtime_tool_restrictions,
+                            );
+                        if enable_tools {
+                            let manifest = self
+                                .round_executor
+                                .tool_manifest(
+                                    &allowed_tools,
+                                    &tool_policy.exposure_overrides,
+                                    &description_context,
+                                )
+                                .await;
+                            tool_listing_sections =
+                                Self::build_tool_listing_sections(&manifest, &description_context)
+                                    .await;
+                            runtime_context_needs = runtime_context_needs_for_manifest(&manifest);
+                            available_tools = manifest.allowed_tool_names;
+                            deferred_tools = manifest.deferred_tool_names;
+                            tool_definitions = Some(manifest.tool_definitions);
+                        }
+                        turn_prompt_scaffold = self
+                            .resolve_turn_prompt_scaffold(TurnPromptScaffoldInput {
+                                context: &context,
+                                current_agent: current_agent.as_ref(),
+                                model_name: &ai_client.config.model,
+                                supports_image_understanding: primary_supports_image_understanding,
+                                tool_listing_sections: tool_listing_sections.clone(),
+                                runtime_context_needs,
+                                stage: "model_pool_switch",
+                            })
+                            .await?;
+                    }
+                    Some(attempt)
+                } else {
+                    None
+                };
+
+                let context_window = compression_trigger_budget.context_window;
+                // Check and compress before sending AI request
+                //
+                // NOTE: There used to be a "microcompact" pre-pass here that
+                // silently rewrote older tool-result contents into a placeholder.
+                // It has been removed: it mutated already-sent message prefixes —
+                // killing provider KV-cache hits on every round — and stripped the
+                // model of memory of what it had already done, which directly
+                // drove repetitive tool-call loops in long exploratory subagents
+                // (see deep-review subagent loop incident, 2026-05-12).
+                //
+                // The remaining context-pressure layers are:
+                //   - L1: AI-summary based full compression (preserves semantics).
+                //   - L2: Emergency truncation (only if tokens still exceed the
+                //         provider context window after L1).
+                let pressure_prepended_reminders = turn_prompt_scaffold
+                    .prepended_prompt_reminders
+                    .ordered_reminders();
+                let pressure_prepended_reminder_tokens =
+                    Self::prepended_reminder_tokens_for_pressure(&pressure_prepended_reminders);
+                let token_anchor_selection = self
+                    .session_manager
+                    .select_latest_matching_token_anchor_for_model(
+                        &context.session_id,
+                        &messages,
                         &model_id,
-                        SessionModelBindingPolicy::ApprovedImmutable,
-                        &ai_client.config.model,
-                        &ai_client.config.format,
-                        "Model pool configuration unavailable",
                     )
                     .await;
-                    primary_supports_image_understanding =
-                        primary_model_facts.supports_image_inputs;
-                    let description_context = tool_context_runtime::build_tool_description_context(
-                        &agent_type,
-                        context.workspace.as_ref(),
-                        context.workspace_services.as_ref(),
-                        Some(&context.session_id),
-                        context.terminal_port.as_ref(),
-                        context.remote_exec_port.as_ref(),
-                        Some(&primary_model_facts),
-                        &execution_context_vars,
-                        &context.runtime_tool_restrictions,
+                let (token_pressure, anchor_details) =
+                    Self::estimate_auto_compression_pressure_with_anchor(
+                        &messages,
+                        tool_definitions.as_deref(),
+                        compression_trigger_budget,
+                        token_anchor_selection.selected.as_ref(),
+                        pressure_prepended_reminder_tokens,
                     );
-                    if enable_tools {
-                        let manifest = self
-                            .round_executor
-                            .tool_manifest(
-                                &allowed_tools,
-                                &tool_policy.exposure_overrides,
-                                &description_context,
-                            )
-                            .await;
-                        tool_listing_sections =
-                            Self::build_tool_listing_sections(&manifest, &description_context)
-                                .await;
-                        runtime_context_needs = runtime_context_needs_for_manifest(&manifest);
-                        available_tools = manifest.allowed_tool_names;
-                        deferred_tools = manifest.deferred_tool_names;
-                        tool_definitions = Some(manifest.tool_definitions);
-                    }
-                    turn_prompt_scaffold = self
-                        .resolve_turn_prompt_scaffold(TurnPromptScaffoldInput {
-                            context: &context,
-                            current_agent: current_agent.as_ref(),
-                            model_name: &ai_client.config.model,
-                            supports_image_understanding: primary_supports_image_understanding,
-                            tool_listing_sections: tool_listing_sections.clone(),
-                            runtime_context_needs,
-                            stage: "model_pool_switch",
-                        })
-                        .await?;
-                }
-                Some(attempt)
-            } else {
-                None
-            };
-
-            let context_window = compression_trigger_budget.context_window;
-            // Check and compress before sending AI request
-            //
-            // NOTE: There used to be a "microcompact" pre-pass here that
-            // silently rewrote older tool-result contents into a placeholder.
-            // It has been removed: it mutated already-sent message prefixes —
-            // killing provider KV-cache hits on every round — and stripped the
-            // model of memory of what it had already done, which directly
-            // drove repetitive tool-call loops in long exploratory subagents
-            // (see deep-review subagent loop incident, 2026-05-12).
-            //
-            // The remaining context-pressure layers are:
-            //   - L1: AI-summary based full compression (preserves semantics).
-            //   - L2: Emergency truncation (only if tokens still exceed the
-            //         provider context window after L1).
-            let pressure_prepended_reminders = turn_prompt_scaffold
-                .prepended_prompt_reminders
-                .ordered_reminders();
-            let pressure_prepended_reminder_tokens =
-                Self::prepended_reminder_tokens_for_pressure(&pressure_prepended_reminders);
-            let token_anchor_selection = self
-                .session_manager
-                .select_latest_matching_token_anchor_for_model(
-                    &context.session_id,
-                    &messages,
-                    &model_id,
-                )
-                .await;
-            let (token_pressure, anchor_details) =
-                Self::estimate_auto_compression_pressure_with_anchor(
-                    &messages,
-                    tool_definitions.as_deref(),
-                    compression_trigger_budget,
-                    token_anchor_selection.selected.as_ref(),
-                    pressure_prepended_reminder_tokens,
-                );
-            if let Some(details) = anchor_details.as_ref() {
-                debug!(
+                if let Some(details) = anchor_details.as_ref() {
+                    debug!(
                     "Token pressure estimate: session_id={}, turn_id={}, round_index={}, source=provider_anchor, anchor_id={}, prefix_messages={}, input_tokens={}, adjusted_anchor_tokens={}, tail_tokens={}, system_tokens_at_anchor={}, current_system_tokens={}, system_delta={}, tool_tokens_at_anchor={}, current_tool_tokens={}, tool_delta={}, prepended_reminder_tokens_at_anchor={}, current_prepended_reminder_tokens={}, prepended_reminder_delta={}, total_tokens={}, system_tokens={}, tool_tokens={}, prepended_reminder_tokens={}, conversation_tokens={}, context_window={}, input_limit={}, output_reserve={}, safety_reserve={}, usage={:.3}",
                     context.session_id,
                     context.dialog_turn_id,
@@ -4289,8 +4223,8 @@ impl ExecutionEngine {
                     token_pressure.safety_reserve_tokens,
                     token_pressure.usage_ratio
                 );
-                if !token_anchor_selection.skipped.is_empty() {
-                    trace!(
+                    if !token_anchor_selection.skipped.is_empty() {
+                        trace!(
                         "Token anchor selection skipped newer anchors before match: session_id={}, turn_id={}, round_index={}, selected_anchor_id={}, skipped={:?}",
                         context.session_id,
                         context.dialog_turn_id,
@@ -4298,9 +4232,9 @@ impl ExecutionEngine {
                         details.anchor_id,
                         token_anchor_selection.skipped
                     );
-                }
-            } else {
-                debug!(
+                    }
+                } else {
+                    debug!(
                     "Token pressure estimate: session_id={}, turn_id={}, round_index={}, source=full_estimate, total_tokens={}, system_tokens={}, tool_tokens={}, prepended_reminder_tokens={}, conversation_tokens={}, context_window={}, input_limit={}, output_reserve={}, safety_reserve={}, usage={:.3}, fallback_reasons={:?}",
                     context.session_id,
                     context.dialog_turn_id,
@@ -4317,8 +4251,8 @@ impl ExecutionEngine {
                     token_pressure.usage_ratio,
                     token_anchor_selection.skipped
                 );
-            }
-            debug!(
+                }
+                debug!(
                 "Round {} token usage before send: total={} / {}, conversation={} / {}, usage={:.1}%, input_limit={}, output_reserve={}, safety_reserve={}",
                 round_index,
                 token_pressure.total_tokens,
@@ -4331,83 +4265,83 @@ impl ExecutionEngine {
                 token_pressure.safety_reserve_tokens
             );
 
-            if enable_context_compression {
-                token_pressure.check_fixed_input_fits()?;
-            }
-            let compression_eligible = enable_context_compression
-                && !no_gain_history
-                    .as_ref()
-                    .is_some_and(|history| history.matches(&messages, &model_id, token_pressure));
-            let should_compress =
-                compression_eligible && token_pressure.total_tokens >= token_pressure.input_limit;
-            let mut send_pressure_reusable = true;
+                if enable_context_compression {
+                    token_pressure.check_fixed_input_fits()?;
+                }
+                let compression_eligible = enable_context_compression
+                    && !no_gain_history.as_ref().is_some_and(|history| {
+                        history.matches(&messages, &model_id, token_pressure)
+                    });
+                let should_compress = compression_eligible
+                    && token_pressure.total_tokens >= token_pressure.input_limit;
+                let mut send_pressure_reusable = true;
 
-            if !should_compress {
-                if compression_eligible
-                    && prefetch_enabled
-                    && compression_prefetch.is_none()
-                    && openbitfun_agent_runtime::compression_prefetch::in_prefetch_window(
-                        token_pressure.total_tokens,
-                        token_pressure.input_limit,
-                    )
-                {
-                    let prefetch_id = format!("prefetch_{}", uuid::Uuid::new_v4());
-                    info!(
+                if !should_compress {
+                    if compression_eligible
+                        && prefetch_enabled
+                        && compression_prefetch.is_none()
+                        && openbitfun_agent_runtime::compression_prefetch::in_prefetch_window(
+                            token_pressure.total_tokens,
+                            token_pressure.input_limit,
+                        )
+                    {
+                        let prefetch_id = format!("prefetch_{}", uuid::Uuid::new_v4());
+                        info!(
                         "Compression prefetch admitted: session_id={}, turn_id={}, round_index={}, total_tokens={}, prefetch_limit={}, input_limit={}, context_window={}",
                         context.session_id, context.dialog_turn_id, round_index,
                         token_pressure.total_tokens,
                         token_pressure.input_limit.saturating_sub(openbitfun_agent_runtime::compression_prefetch::PREFETCH_LEAD_TOKENS),
                         token_pressure.input_limit, context_window
                     );
-                    let trace_dir = self
-                        .session_manager
-                        .persistent_model_exchange_trace_dir(&context.session_id)
+                        let trace_dir = self
+                            .session_manager
+                            .persistent_model_exchange_trace_dir(&context.session_id)
+                            .await;
+                        let trace_config = prepare_model_exchange_trace_for_workspace(
+                            &context.session_id,
+                            &context.dialog_turn_id,
+                            context.workspace.as_ref(),
+                            trace_dir.as_deref(),
+                            ModelExchangeTraceOperation {
+                                kind: "context_compression_prefetch",
+                                id: &prefetch_id,
+                                trigger: Some("prefetch"),
+                            },
+                            ai_client.as_ref(),
+                        )
                         .await;
-                    let trace_config = prepare_model_exchange_trace_for_workspace(
-                        &context.session_id,
-                        &context.dialog_turn_id,
-                        context.workspace.as_ref(),
-                        trace_dir.as_deref(),
-                        ModelExchangeTraceOperation {
-                            kind: "context_compression_prefetch",
-                            id: &prefetch_id,
-                            trigger: Some("prefetch"),
-                        },
-                        ai_client.as_ref(),
-                    )
-                    .await;
-                    let job = CompressionJob::new(
-                        self.context_compressor.clone(),
-                        &context.session_id,
-                        context_window,
-                        0,
-                        CompressionModelSummaryInput {
-                            ai_client: ai_client.clone(),
-                            model_request_context: &model_request_context,
-                            runtime_messages: &messages,
-                            dialog_turn_id: &context.dialog_turn_id,
-                            workspace: context.workspace.as_ref(),
-                            workspace_services: context.workspace_services.as_ref(),
-                            tool_definitions: &tool_definitions,
-                            prepended_prompt_reminders: &turn_prompt_scaffold
-                                .prepended_prompt_reminders,
-                            primary_supports_image_understanding,
-                            trace_config,
-                        },
-                    );
-                    compression_prefetch = Some(
-                        job.spawn_prefetch(
-                            &self
-                                .round_executor
-                                .ensure_cancel_token(&context.dialog_turn_id),
-                            self.session_manager.compression_contract_for_session(
-                                &context.session_id,
-                                DEFAULT_COMPRESSION_CONTRACT_LIMIT,
+                        let job = CompressionJob::new(
+                            self.context_compressor.clone(),
+                            &context.session_id,
+                            context_window,
+                            0,
+                            CompressionModelSummaryInput {
+                                ai_client: ai_client.clone(),
+                                model_request_context: &model_request_context,
+                                runtime_messages: &messages,
+                                dialog_turn_id: &context.dialog_turn_id,
+                                workspace: context.workspace.as_ref(),
+                                workspace_services: context.workspace_services.as_ref(),
+                                tool_definitions: &tool_definitions,
+                                prepended_prompt_reminders: &turn_prompt_scaffold
+                                    .prepended_prompt_reminders,
+                                primary_supports_image_understanding,
+                                trace_config,
+                            },
+                        );
+                        compression_prefetch = Some(
+                            job.spawn_prefetch(
+                                &self
+                                    .round_executor
+                                    .ensure_cancel_token(&context.dialog_turn_id),
+                                self.session_manager.compression_contract_for_session(
+                                    &context.session_id,
+                                    DEFAULT_COMPRESSION_CONTRACT_LIMIT,
+                                ),
                             ),
-                        ),
-                    );
-                }
-                debug!(
+                        );
+                    }
+                    debug!(
                     "No compression needed: session={}, total_tokens={}, input_limit={}, context_window={}, output_reserve={}, safety_reserve={}, usage={:.1}%",
                     context.session_id,
                     token_pressure.total_tokens,
@@ -4417,8 +4351,8 @@ impl ExecutionEngine {
                     token_pressure.safety_reserve_tokens,
                     token_pressure.usage_ratio * 100.0
                 );
-            } else {
-                info!(
+                } else {
+                    info!(
                     "Triggering context compression: session={}, total_tokens={}, input_limit={}, context_window={}, output_reserve={}, safety_reserve={}, usage={:.1}%",
                     context.session_id,
                     token_pressure.total_tokens,
@@ -4429,332 +4363,13 @@ impl ExecutionEngine {
                     token_pressure.usage_ratio * 100.0
                 );
 
-                match self
-                    .compress_messages(
-                        &context.session_id,
-                        &context.dialog_turn_id,
-                        "auto",
-                        messages.clone(),
-                        token_pressure,
-                        baseline_ai_client.clone(),
-                        &model_request_context,
-                        &tool_definitions,
-                        turn_prompt_scaffold.system_prompt_message.clone(),
-                        &turn_prompt_scaffold.prepended_prompt_reminders,
-                        baseline_supports_image_understanding,
-                        context.workspace.as_ref(),
-                        context.workspace_services.as_ref(),
-                        compression_prefetch.take(),
-                    )
-                    .await
-                {
-                    Ok(AutoCompressionOutcome::Applied(compressed_tokens, compressed_messages)) => {
-                        no_gain_history = None;
-                        info!(
-                            "Round {} compression completed: messages {} -> {}, tokens {} -> {}",
-                            round_index,
-                            messages.len(),
-                            compressed_messages.len(),
-                            token_pressure.total_tokens,
-                            compressed_tokens,
-                        );
-
-                        if self
-                            .round_executor
-                            .is_dialog_turn_cancelled(&dialog_turn_id)
-                        {
-                            return Err(OpenBitFunError::Cancelled("Dialog cancelled".to_string()));
-                        }
-                        messages = compressed_messages;
-                        turn_prompt_scaffold = self
-                            .resolve_turn_prompt_scaffold(TurnPromptScaffoldInput {
-                                context: &context,
-                                current_agent: current_agent.as_ref(),
-                                model_name: &ai_client.config.model,
-                                supports_image_understanding: primary_supports_image_understanding,
-                                tool_listing_sections: tool_listing_sections.clone(),
-                                runtime_context_needs,
-                                stage: "after_context_compression",
-                            })
-                            .await?;
-                        Self::apply_turn_prompt_scaffold_to_messages(
-                            &mut messages,
-                            &turn_prompt_scaffold,
-                        );
-                        full_compression_count += 1;
-                        send_pressure_reusable = false;
-                    }
-                    Ok(AutoCompressionOutcome::NoGain(latest)) => {
-                        no_gain_history =
-                            Some(NoGainHistory::new(&latest, &model_id, token_pressure));
-                        // Preserve any canonical suffix appended while the summary ran.
-                        send_pressure_reusable = latest.len() == messages.len();
-                        messages = latest;
-                    }
-                    Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
-                    Err(e) => return Err(e),
-                }
-            }
-
-            // L2: Emergency truncation — if tokens still exceed context_window
-            // after all compression layers, drop oldest API rounds until we fit.
-            let send_prepended_reminders = turn_prompt_scaffold
-                .prepended_prompt_reminders
-                .ordered_reminders();
-            let send_prepended_reminder_tokens =
-                Self::prepended_reminder_tokens_for_pressure(&send_prepended_reminders);
-            let mut send_pressure = if send_pressure_reusable
-                && token_pressure.prepended_reminder_tokens == send_prepended_reminder_tokens
-            {
-                token_pressure
-            } else {
-                Self::estimate_auto_compression_pressure(
-                    &messages,
-                    tool_definitions.as_deref(),
-                    compression_trigger_budget,
-                    send_prepended_reminder_tokens,
-                )
-            };
-            if send_pressure.total_tokens > context_window {
-                warn!(
-                    "Round {} tokens ({}) still exceed context_window ({}) after compression, performing emergency truncation",
-                    round_index, send_pressure.total_tokens, context_window
-                );
-                let before_truncate_tokens = send_pressure.total_tokens;
-                messages = Self::emergency_truncate_messages(
-                    messages,
-                    context_window,
-                    tool_definitions.as_deref(),
-                    send_prepended_reminder_tokens,
-                );
-                self.session_manager
-                    .prune_token_anchors_to_messages(&context.session_id, &messages)
-                    .await;
-                send_pressure = Self::estimate_auto_compression_pressure(
-                    &messages,
-                    tool_definitions.as_deref(),
-                    compression_trigger_budget,
-                    send_prepended_reminder_tokens,
-                );
-                info!(
-                    "Emergency truncation complete: tokens {} -> {}",
-                    before_truncate_tokens, send_pressure.total_tokens
-                );
-            }
-
-            ContextHealthSnapshot::from_runtime_observations(
-                send_pressure.usage_ratio,
-                full_compression_count,
-                compression_failure_count,
-                turn.tool_signatures(),
-                &messages,
-            )
-            .log(
-                &context.session_id,
-                &context.dialog_turn_id,
-                round_index,
-                "before_send",
-            );
-
-            // Create round context
-            let round_context_vars = self
-                .context_vars_for_round(
-                    &execution_context_vars,
-                    &context.session_id,
-                    &context.dialog_turn_id,
-                )
-                .await;
-            let loaded_deferred_tool_specs =
-                collect_product_loaded_deferred_tool_specs(&messages, &deferred_tools);
-
-            let model_exchange_trace_dir = self
-                .session_manager
-                .persistent_model_exchange_trace_dir(&context.session_id)
-                .await;
-            let mut round_context = RoundContext {
-                session_id: context.session_id.clone(),
-                subagent_parent_info: context.subagent_parent_info.clone(),
-                permission_delegation: context.permission_delegation.clone(),
-                dialog_turn_id: context.dialog_turn_id.clone(),
-                turn_index: context.turn_index,
-                round_number: round_index,
-                round_group_id: None,
-                workspace: context.workspace.clone(),
-                model_exchange_trace_dir,
-                available_tools: available_tools.clone(),
-                deferred_tools: deferred_tools.clone(),
-                loaded_deferred_tool_specs,
-                model_config_id: model_id.clone(),
-                effective_model_name: ai_client.config.model.clone(),
-                model_request_context: model_request_context.clone(),
-                account_client_source: account_client_source.clone(),
-                channel_client_source: channel_client_source.clone(),
-                prepared_model: prepared_model.take(),
-                primary_model_facts: primary_model_facts.clone(),
-                agent_type: agent_type.clone(),
-                context_vars: round_context_vars,
-                permission_constraints: tool_policy.permission_constraints.clone(),
-                permission_runtime_ceiling: context.permission_runtime_ceiling.clone(),
-                delegation_policy: context.delegation_policy,
-                runtime_tool_restrictions: context.runtime_tool_restrictions.clone(),
-                steering_interrupt: context.round_injection.as_ref().map(|source| {
-                    crate::agentic::round_preempt::DialogRoundInjectionInterrupt::new(
-                        context.session_id.clone(),
-                        context.dialog_turn_id.clone(),
-                        Arc::clone(source),
-                    )
-                }),
-                cancellation_token: CancellationToken::new(),
-                workspace_services: context.workspace_services.clone(),
-                terminal_port: context.terminal_port.clone(),
-                remote_exec_port: context.remote_exec_port.clone(),
-                recover_partial_on_cancel: context.recover_partial_on_cancel,
-            };
-            if let Some(selected) = active_round_model.as_mut() {
-                ai_client = selected.client.install(&mut round_context);
-            }
-
-            // Execute single model round
-            debug!(
-                "Starting model round: round_index={}, messages={}",
-                round_index,
-                messages.len()
-            );
-
-            let analysis_available =
-                enable_tools && available_tools.iter().any(|name| name == "analyze_image");
-            let send_image_requirement = if selected_pool.is_some() {
-                Self::image_input_requirement(&messages, analysis_available)
-            } else if !primary_supports_image_understanding
-                && messages.iter().any(|message| {
-                    message.metadata.turn_id.as_deref() == Some(context.dialog_turn_id.as_str())
-                        && matches!(&message.content, MessageContent::Multimodal { images, .. } if !images.is_empty())
-                })
-            {
-                if analysis_available {
-                    ImageInputRequirement::NativeOrAnalysisTool
-                } else {
-                    ImageInputRequirement::Native
-                }
-            } else {
-                ImageInputRequirement::None
-            };
-            if send_image_requirement != ImageInputRequirement::None {
-                let config_service = get_global_config_service().await?;
-                let ai_config = config_service.get_config(Some("ai")).await?;
-                if let Err(error) = send_image_requirement.validate(&ai_config, &model_id) {
-                    if selected_pool.is_some() {
-                        // A tool/config change since preparation is request incompatibility,
-                        // not provider failure. Exclude locally without poisoning health.
-                        pool_excluded.insert(model_id.clone());
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
-
-            let request_messages = super::model_pool::replay_safe_messages(
-                &messages,
-                &model_fingerprint,
-                selected_pool.is_some(),
-            );
-            let ai_messages = Self::build_ai_messages_for_send(
-                &request_messages,
-                &ai_client.config.format,
-                context.workspace.as_ref(),
-                context.workspace_services.as_ref(),
-                &context.dialog_turn_id,
-                primary_supports_image_understanding,
-                &send_prepended_reminders,
-            )
-            .await?;
-
-            let round_lifecycle =
-                active_round_lifecycle.get_or_insert_with(ModelRoundLifecycle::new);
-            round_lifecycle.routing = routing_decision;
-            let attempts_before_member = round_lifecycle.attempts_started();
-            let round_result = match self
-                .round_executor
-                .execute_round_with_lifecycle(
-                    ai_client.clone(),
-                    round_context,
-                    ai_messages,
-                    tool_definitions.clone(),
-                    Some(context_window),
-                    round_lifecycle,
-                    Some(self.session_manager.as_ref()),
-                    pool_attempt.as_ref(),
-                )
-                .await
-            {
-                Ok(result) => {
-                    pool_excluded.clear();
-                    result
-                }
-                Err(error)
-                    if pool_attempt.is_some()
-                        && RoundExecutor::allows_pool_failover(round_lifecycle, &error) =>
-                {
-                    let attempt = pool_attempt.as_ref().expect("pool attempt checked");
-                    let provider_error = match &error {
-                        OpenBitFunError::AIProvider(error) => error.clone(),
-                        _ => openbitfun_core_types::errors::AiProviderError::classified(
-                            error.to_string(),
-                            error.error_category(),
-                        ),
-                    };
-                    let delay = openbitfun_agent_stream::retry::delay_ms(
-                        round_lifecycle
-                            .attempts_started()
-                            .saturating_sub(attempts_before_member)
-                            .saturating_sub(1) as usize,
-                        &provider_error.message,
-                        Some(&provider_error),
-                    );
-                    // Member request budgets are independent. Exclusion below
-                    // bounds traversal to one visit per failed member, not ten
-                    // members per logical round.
-                    if attempt.fail(&provider_error, delay).await {
-                        self.round_executor
-                            .record_pool_failover(
-                                &context.session_id,
-                                &context.dialog_turn_id,
-                                round_lifecycle,
-                                &attempt.reservation.binding.model_id,
-                                &provider_error.category,
-                            )
-                            .await;
-                        pool_excluded.insert(attempt.reservation.binding.model_id.clone());
-                        continue;
-                    }
-                    return Err(error);
-                }
-                Err(err)
-                    if enable_context_compression
-                        && err.is_recoverable_context_overflow()
-                        && !no_gain_history.as_ref().is_some_and(|history| {
-                            history.matches(&messages, &model_id, send_pressure)
-                        })
-                        && main_context_overflow_recoveries
-                            < Self::MAX_MAIN_CONTEXT_OVERFLOW_RECOVERIES =>
-                {
-                    main_context_overflow_recoveries += 1;
-                    warn!(
-                        "Main model request exceeded provider context; starting recovery compression: session_id={}, turn_id={}, round_index={}, recovery={}/{}, error={}",
-                        context.session_id,
-                        context.dialog_turn_id,
-                        round_index,
-                        main_context_overflow_recoveries,
-                        Self::MAX_MAIN_CONTEXT_OVERFLOW_RECOVERIES,
-                        err
-                    );
                     match self
                         .compress_messages(
                             &context.session_id,
                             &context.dialog_turn_id,
-                            "context_overflow_recovery",
+                            "auto",
                             messages.clone(),
-                            send_pressure,
+                            token_pressure,
                             baseline_ai_client.clone(),
                             &model_request_context,
                             &tool_definitions,
@@ -4773,16 +4388,14 @@ impl ExecutionEngine {
                         )) => {
                             no_gain_history = None;
                             info!(
-                                "Context-overflow recovery compression completed: session_id={}, turn_id={}, round_index={}, recovery={}, messages {} -> {}, tokens {} -> {}",
-                                context.session_id,
-                                context.dialog_turn_id,
-                                round_index,
-                                main_context_overflow_recoveries,
-                                messages.len(),
-                                compressed_messages.len(),
-                                send_pressure.total_tokens,
-                                compressed_tokens
-                            );
+                            "Round {} compression completed: messages {} -> {}, tokens {} -> {}",
+                            round_index,
+                            messages.len(),
+                            compressed_messages.len(),
+                            token_pressure.total_tokens,
+                            compressed_tokens,
+                        );
+
                             if self
                                 .round_executor
                                 .is_dialog_turn_cancelled(&dialog_turn_id)
@@ -4801,240 +4414,563 @@ impl ExecutionEngine {
                                         primary_supports_image_understanding,
                                     tool_listing_sections: tool_listing_sections.clone(),
                                     runtime_context_needs,
-                                    stage: "after_context_overflow_recovery",
+                                    stage: "after_context_compression",
                                 })
                                 .await?;
                             Self::apply_turn_prompt_scaffold_to_messages(
                                 &mut messages,
                                 &turn_prompt_scaffold,
                             );
+                            full_compression_count += 1;
+                            send_pressure_reusable = false;
+                        }
+                        Ok(AutoCompressionOutcome::NoGain(latest)) => {
+                            no_gain_history =
+                                Some(NoGainHistory::new(&latest, &model_id, token_pressure));
+                            // Preserve any canonical suffix appended while the summary ran.
+                            send_pressure_reusable = latest.len() == messages.len();
+                            messages = latest;
+                        }
+                        Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                // L2: Emergency truncation — if tokens still exceed context_window
+                // after all compression layers, drop oldest API rounds until we fit.
+                let send_prepended_reminders = turn_prompt_scaffold
+                    .prepended_prompt_reminders
+                    .ordered_reminders();
+                let send_prepended_reminder_tokens =
+                    Self::prepended_reminder_tokens_for_pressure(&send_prepended_reminders);
+                let mut send_pressure = if send_pressure_reusable
+                    && token_pressure.prepended_reminder_tokens == send_prepended_reminder_tokens
+                {
+                    token_pressure
+                } else {
+                    Self::estimate_auto_compression_pressure(
+                        &messages,
+                        tool_definitions.as_deref(),
+                        compression_trigger_budget,
+                        send_prepended_reminder_tokens,
+                    )
+                };
+                if send_pressure.total_tokens > context_window {
+                    warn!(
+                    "Round {} tokens ({}) still exceed context_window ({}) after compression, performing emergency truncation",
+                    round_index, send_pressure.total_tokens, context_window
+                );
+                    let before_truncate_tokens = send_pressure.total_tokens;
+                    messages = Self::emergency_truncate_messages(
+                        messages,
+                        context_window,
+                        tool_definitions.as_deref(),
+                        send_prepended_reminder_tokens,
+                    );
+                    self.session_manager
+                        .prune_token_anchors_to_messages(&context.session_id, &messages)
+                        .await;
+                    send_pressure = Self::estimate_auto_compression_pressure(
+                        &messages,
+                        tool_definitions.as_deref(),
+                        compression_trigger_budget,
+                        send_prepended_reminder_tokens,
+                    );
+                    info!(
+                        "Emergency truncation complete: tokens {} -> {}",
+                        before_truncate_tokens, send_pressure.total_tokens
+                    );
+                }
+
+                ContextHealthSnapshot::from_runtime_observations(
+                    send_pressure.usage_ratio,
+                    full_compression_count,
+                    compression_failure_count,
+                    turn.tool_signatures(),
+                    &messages,
+                )
+                .log(
+                    &context.session_id,
+                    &context.dialog_turn_id,
+                    round_index,
+                    "before_send",
+                );
+
+                // Create round context
+                let round_context_vars = self
+                    .context_vars_for_round(
+                        &execution_context_vars,
+                        &context.session_id,
+                        &context.dialog_turn_id,
+                    )
+                    .await;
+                let loaded_deferred_tool_specs =
+                    collect_product_loaded_deferred_tool_specs(&messages, &deferred_tools);
+
+                let model_exchange_trace_dir = self
+                    .session_manager
+                    .persistent_model_exchange_trace_dir(&context.session_id)
+                    .await;
+                let mut round_context = RoundContext {
+                    session_id: context.session_id.clone(),
+                    subagent_parent_info: context.subagent_parent_info.clone(),
+                    permission_delegation: context.permission_delegation.clone(),
+                    dialog_turn_id: context.dialog_turn_id.clone(),
+                    turn_index: context.turn_index,
+                    round_number: round_index,
+                    round_group_id: None,
+                    workspace: context.workspace.clone(),
+                    model_exchange_trace_dir,
+                    available_tools: available_tools.clone(),
+                    deferred_tools: deferred_tools.clone(),
+                    loaded_deferred_tool_specs,
+                    model_config_id: model_id.clone(),
+                    effective_model_name: ai_client.config.model.clone(),
+                    model_request_context: model_request_context.clone(),
+                    account_client_source: account_client_source.clone(),
+                    channel_client_source: channel_client_source.clone(),
+                    prepared_model: prepared_model.take(),
+                    primary_model_facts: primary_model_facts.clone(),
+                    agent_type: agent_type.clone(),
+                    context_vars: round_context_vars,
+                    permission_constraints: tool_policy.permission_constraints.clone(),
+                    permission_runtime_ceiling: context.permission_runtime_ceiling.clone(),
+                    delegation_policy: context.delegation_policy,
+                    runtime_tool_restrictions: context.runtime_tool_restrictions.clone(),
+                    steering_interrupt: context.round_injection.as_ref().map(|source| {
+                        crate::agentic::round_preempt::DialogRoundInjectionInterrupt::new(
+                            context.session_id.clone(),
+                            context.dialog_turn_id.clone(),
+                            Arc::clone(source),
+                        )
+                    }),
+                    cancellation_token: CancellationToken::new(),
+                    workspace_services: context.workspace_services.clone(),
+                    terminal_port: context.terminal_port.clone(),
+                    remote_exec_port: context.remote_exec_port.clone(),
+                    recover_partial_on_cancel: context.recover_partial_on_cancel,
+                };
+                if let Some(selected) = active_round_model.as_mut() {
+                    ai_client = selected.client.install(&mut round_context);
+                }
+
+                // Execute single model round
+                debug!(
+                    "Starting model round: round_index={}, messages={}",
+                    round_index,
+                    messages.len()
+                );
+
+                let analysis_available =
+                    enable_tools && available_tools.iter().any(|name| name == "analyze_image");
+                let send_image_requirement = if selected_pool.is_some() {
+                Self::image_input_requirement(&messages, analysis_available)
+            } else if !primary_supports_image_understanding
+                && messages.iter().any(|message| {
+                    message.metadata.turn_id.as_deref() == Some(context.dialog_turn_id.as_str())
+                        && matches!(&message.content, MessageContent::Multimodal { images, .. } if !images.is_empty())
+                })
+            {
+                if analysis_available {
+                    ImageInputRequirement::NativeOrAnalysisTool
+                } else {
+                    ImageInputRequirement::Native
+                }
+            } else {
+                ImageInputRequirement::None
+            };
+                if send_image_requirement != ImageInputRequirement::None {
+                    let config_service = get_global_config_service().await?;
+                    let ai_config = config_service.get_config(Some("ai")).await?;
+                    if let Err(error) = send_image_requirement.validate(&ai_config, &model_id) {
+                        if selected_pool.is_some() {
+                            // A tool/config change since preparation is request incompatibility,
+                            // not provider failure. Exclude locally without poisoning health.
+                            pool_excluded.insert(model_id.clone());
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                }
+
+                let request_messages = super::model_pool::replay_safe_messages(
+                    &messages,
+                    &model_fingerprint,
+                    selected_pool.is_some(),
+                );
+                let ai_messages = Self::build_ai_messages_for_send(
+                    &request_messages,
+                    &ai_client.config.format,
+                    context.workspace.as_ref(),
+                    context.workspace_services.as_ref(),
+                    &context.dialog_turn_id,
+                    primary_supports_image_understanding,
+                    &send_prepended_reminders,
+                )
+                .await?;
+
+                let round_lifecycle =
+                    active_round_lifecycle.get_or_insert_with(ModelRoundLifecycle::new);
+                round_lifecycle.routing = routing_decision;
+                let attempts_before_member = round_lifecycle.attempts_started();
+                let round_result = match self
+                    .round_executor
+                    .execute_round_with_lifecycle(
+                        ai_client.clone(),
+                        round_context,
+                        ai_messages,
+                        tool_definitions.clone(),
+                        Some(context_window),
+                        round_lifecycle,
+                        Some(self.session_manager.as_ref()),
+                        pool_attempt.as_ref(),
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        pool_excluded.clear();
+                        result
+                    }
+                    Err(error)
+                        if pool_attempt.is_some()
+                            && RoundExecutor::allows_pool_failover(round_lifecycle, &error) =>
+                    {
+                        let attempt = pool_attempt.as_ref().expect("pool attempt checked");
+                        let provider_error = match &error {
+                            OpenBitFunError::AIProvider(error) => error.clone(),
+                            _ => openbitfun_core_types::errors::AiProviderError::classified(
+                                error.to_string(),
+                                error.error_category(),
+                            ),
+                        };
+                        let delay = openbitfun_agent_stream::retry::delay_ms(
+                            round_lifecycle
+                                .attempts_started()
+                                .saturating_sub(attempts_before_member)
+                                .saturating_sub(1) as usize,
+                            &provider_error.message,
+                            Some(&provider_error),
+                        );
+                        // Member request budgets are independent. Exclusion below
+                        // bounds traversal to one visit per failed member, not ten
+                        // members per logical round.
+                        if attempt.fail(&provider_error, delay).await {
                             self.round_executor
-                                .record_context_overflow_recovery(
+                                .record_pool_failover(
                                     &context.session_id,
                                     &context.dialog_turn_id,
                                     round_lifecycle,
-                                    err.to_string(),
+                                    &attempt.reservation.binding.model_id,
+                                    &provider_error.category,
                                 )
                                 .await;
-                            full_compression_count += 1;
+                            pool_excluded.insert(attempt.reservation.binding.model_id.clone());
                             continue;
                         }
-                        Ok(AutoCompressionOutcome::NoGain(_)) => {
-                            warn!(
+                        return Err(error);
+                    }
+                    Err(err)
+                        if enable_context_compression
+                            && err.is_recoverable_context_overflow()
+                            && !no_gain_history.as_ref().is_some_and(|history| {
+                                history.matches(&messages, &model_id, send_pressure)
+                            })
+                            && main_context_overflow_recoveries
+                                < Self::MAX_MAIN_CONTEXT_OVERFLOW_RECOVERIES =>
+                    {
+                        main_context_overflow_recoveries += 1;
+                        warn!(
+                        "Main model request exceeded provider context; starting recovery compression: session_id={}, turn_id={}, round_index={}, recovery={}/{}, error={}",
+                        context.session_id,
+                        context.dialog_turn_id,
+                        round_index,
+                        main_context_overflow_recoveries,
+                        Self::MAX_MAIN_CONTEXT_OVERFLOW_RECOVERIES,
+                        err
+                    );
+                        match self
+                            .compress_messages(
+                                &context.session_id,
+                                &context.dialog_turn_id,
+                                "context_overflow_recovery",
+                                messages.clone(),
+                                send_pressure,
+                                baseline_ai_client.clone(),
+                                &model_request_context,
+                                &tool_definitions,
+                                turn_prompt_scaffold.system_prompt_message.clone(),
+                                &turn_prompt_scaffold.prepended_prompt_reminders,
+                                baseline_supports_image_understanding,
+                                context.workspace.as_ref(),
+                                context.workspace_services.as_ref(),
+                                compression_prefetch.take(),
+                            )
+                            .await
+                        {
+                            Ok(AutoCompressionOutcome::Applied(
+                                compressed_tokens,
+                                compressed_messages,
+                            )) => {
+                                no_gain_history = None;
+                                info!(
+                                "Context-overflow recovery compression completed: session_id={}, turn_id={}, round_index={}, recovery={}, messages {} -> {}, tokens {} -> {}",
+                                context.session_id,
+                                context.dialog_turn_id,
+                                round_index,
+                                main_context_overflow_recoveries,
+                                messages.len(),
+                                compressed_messages.len(),
+                                send_pressure.total_tokens,
+                                compressed_tokens
+                            );
+                                if self
+                                    .round_executor
+                                    .is_dialog_turn_cancelled(&dialog_turn_id)
+                                {
+                                    return Err(OpenBitFunError::Cancelled(
+                                        "Dialog cancelled".to_string(),
+                                    ));
+                                }
+                                messages = compressed_messages;
+                                turn_prompt_scaffold = self
+                                    .resolve_turn_prompt_scaffold(TurnPromptScaffoldInput {
+                                        context: &context,
+                                        current_agent: current_agent.as_ref(),
+                                        model_name: &ai_client.config.model,
+                                        supports_image_understanding:
+                                            primary_supports_image_understanding,
+                                        tool_listing_sections: tool_listing_sections.clone(),
+                                        runtime_context_needs,
+                                        stage: "after_context_overflow_recovery",
+                                    })
+                                    .await?;
+                                Self::apply_turn_prompt_scaffold_to_messages(
+                                    &mut messages,
+                                    &turn_prompt_scaffold,
+                                );
+                                self.round_executor
+                                    .record_context_overflow_recovery(
+                                        &context.session_id,
+                                        &context.dialog_turn_id,
+                                        round_lifecycle,
+                                        err.to_string(),
+                                    )
+                                    .await;
+                                full_compression_count += 1;
+                                continue;
+                            }
+                            Ok(AutoCompressionOutcome::NoGain(_)) => {
+                                warn!(
                                 "Context-overflow recovery found no compressible context: session_id={}, turn_id={}, round_index={}",
                                 context.session_id, context.dialog_turn_id, round_index
                             );
-                            return Err(err);
-                        }
-                        Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
-                        Err(compression_error) => {
-                            error!(
+                                return Err(err);
+                            }
+                            Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
+                            Err(compression_error) => {
+                                error!(
                                 "Context-overflow recovery compression failed: session_id={}, turn_id={}, round_index={}, error={}",
                                 context.session_id,
                                 context.dialog_turn_id,
                                 round_index,
                                 compression_error
                             );
-                            return Err(compression_error);
+                                return Err(compression_error);
+                            }
                         }
                     }
-                }
-                Err(err) => {
-                    if let Some(attempt) = &pool_attempt {
-                        let provider_error = match &err {
-                            OpenBitFunError::AIProvider(error) => error.clone(),
-                            _ => openbitfun_core_types::errors::AiProviderError::classified(
-                                err.to_string(),
-                                err.error_category(),
-                            ),
-                        };
-                        attempt
-                            .fail(
-                                &provider_error,
-                                openbitfun_agent_stream::retry::delay_ms(
-                                    0,
-                                    &provider_error.message,
-                                    Some(&provider_error),
+                    Err(err) => {
+                        if let Some(attempt) = &pool_attempt {
+                            let provider_error = match &err {
+                                OpenBitFunError::AIProvider(error) => error.clone(),
+                                _ => openbitfun_core_types::errors::AiProviderError::classified(
+                                    err.to_string(),
+                                    err.error_category(),
                                 ),
-                            )
-                            .await;
+                            };
+                            attempt
+                                .fail(
+                                    &provider_error,
+                                    openbitfun_agent_stream::retry::delay_ms(
+                                        0,
+                                        &provider_error.message,
+                                        Some(&provider_error),
+                                    ),
+                                )
+                                .await;
+                        }
+                        return Err(err);
                     }
-                    return Err(err);
-                }
-            };
-            active_round_lifecycle = None;
-            active_round_model = None;
+                };
+                active_round_lifecycle = None;
+                active_round_model = None;
 
-            debug!(
-                "Model round completed: round_index={}, has_more_rounds={}, tool_calls={}",
-                round_index,
-                round_result.has_more_rounds,
-                round_result.tool_calls.len()
-            );
-            turn.round_completed();
-
-            // Save the last token usage statistics (update each time, keep the last one)
-            if let Some(ref usage) = round_result.usage {
-                last_usage = Some(usage.clone());
-                let round_id = round_result
-                    .assistant_message
-                    .metadata
-                    .round_id
-                    .clone()
-                    .unwrap_or_else(|| format!("round_{}", round_index));
-                let system_tokens_at_anchor = Self::system_tokens_for_pressure(&messages);
-                let tool_tokens_at_anchor = tool_definitions
-                    .as_deref()
-                    .map(TokenCounter::estimate_tool_definitions_tokens)
-                    .unwrap_or(0);
-                let anchor = TokenAnchor::from_request_prefix(
-                    TokenAnchorInput {
-                        session_id: context.session_id.clone(),
-                        turn_id: context.dialog_turn_id.clone(),
-                        round_id,
-                        model_id: ai_client.config.model.clone(),
-                        input_tokens: usage.prompt_token_count as usize,
-                        system_tokens_at_anchor,
-                        tool_tokens_at_anchor,
-                        prepended_reminder_tokens_at_anchor: send_prepended_reminder_tokens,
-                    },
-                    &messages,
+                debug!(
+                    "Model round completed: round_index={}, has_more_rounds={}, tool_calls={}",
+                    round_index,
+                    round_result.has_more_rounds,
+                    round_result.tool_calls.len()
                 );
-                self.session_manager.remember_token_anchor(anchor).await;
-            }
+                turn.round_completed();
 
-            let committed_round_messages =
-                openbitfun_agent_runtime::turn_execution::append_round_messages(
-                    &mut messages,
-                    &round_result.assistant_message,
-                    round_result.assistant_message_committed,
-                    &round_result.tool_result_messages,
-                    |message| {
+                // Save the last token usage statistics (update each time, keep the last one)
+                if let Some(ref usage) = round_result.usage {
+                    last_usage = Some(usage.clone());
+                    let round_id = round_result
+                        .assistant_message
+                        .metadata
+                        .round_id
+                        .clone()
+                        .unwrap_or_else(|| format!("round_{}", round_index));
+                    let system_tokens_at_anchor = Self::system_tokens_for_pressure(&messages);
+                    let tool_tokens_at_anchor = tool_definitions
+                        .as_deref()
+                        .map(TokenCounter::estimate_tool_definitions_tokens)
+                        .unwrap_or(0);
+                    let anchor = TokenAnchor::from_request_prefix(
+                        TokenAnchorInput {
+                            session_id: context.session_id.clone(),
+                            turn_id: context.dialog_turn_id.clone(),
+                            round_id,
+                            model_id: ai_client.config.model.clone(),
+                            input_tokens: usage.prompt_token_count as usize,
+                            system_tokens_at_anchor,
+                            tool_tokens_at_anchor,
+                            prepended_reminder_tokens_at_anchor: send_prepended_reminder_tokens,
+                        },
+                        &messages,
+                    );
+                    self.session_manager.remember_token_anchor(anchor).await;
+                }
+
+                let committed_round_messages =
+                    openbitfun_agent_runtime::turn_execution::append_round_messages(
+                        &mut messages,
+                        &round_result.assistant_message,
+                        round_result.assistant_message_committed,
+                        &round_result.tool_result_messages,
+                        |message| {
+                            self.remember_generation_message(
+                                &context.session_id,
+                                &context.dialog_turn_id,
+                                message,
+                            )
+                        },
+                    );
+                if let Err(e) = self
+                    .session_manager
+                    .add_messages(&context.session_id, committed_round_messages)
+                    .await
+                {
+                    warn!("Failed to update round messages in memory: {}", e);
+                }
+
+                #[cfg(feature = "agent-runtime")]
+                {
+                    let previous_message_count = messages.len();
+                    activate_conditional_instructions_after_round(
+                        self.session_manager.as_ref(),
+                        &context,
+                        &round_result,
+                        &mut messages,
+                    )
+                    .await;
+                    for message in &messages[previous_message_count..] {
                         self.remember_generation_message(
                             &context.session_id,
                             &context.dialog_turn_id,
                             message,
-                        )
-                    },
-                );
-            if let Err(e) = self
-                .session_manager
-                .add_messages(&context.session_id, committed_round_messages)
-                .await
-            {
-                warn!("Failed to update round messages in memory: {}", e);
-            }
+                        );
+                    }
+                }
 
-            #[cfg(feature = "agent-runtime")]
-            {
-                let previous_message_count = messages.len();
-                activate_conditional_instructions_after_round(
-                    self.session_manager.as_ref(),
-                    &context,
-                    &round_result,
-                    &mut messages,
-                )
-                .await;
-                for message in &messages[previous_message_count..] {
+                debug!(
+                    "Updated round messages in memory: round_index={}, assistant + {} tool results",
+                    round_index,
+                    round_result.tool_result_messages.len()
+                );
+
+                total_tools += round_result.tool_calls.len();
+
+                // Track partial recovery reason from the last round
+                if round_result.partial_recovery_reason.is_some() {
+                    last_partial_recovery_reason = round_result.partial_recovery_reason.clone();
+                }
+
+                turn.observe_tool_results(
+                    &round_result.tool_calls,
+                    &round_result.tool_result_messages,
+                );
+
+                let after_round_pressure = Self::estimate_auto_compression_pressure(
+                    &messages,
+                    tool_definitions.as_deref(),
+                    compression_trigger_budget,
+                    send_prepended_reminder_tokens,
+                );
+                let after_round_health = ContextHealthSnapshot::from_runtime_observations(
+                    after_round_pressure.usage_ratio,
+                    full_compression_count,
+                    compression_failure_count,
+                    turn.tool_signatures(),
+                    &messages,
+                );
+                after_round_health.log(
+                    &context.session_id,
+                    &context.dialog_turn_id,
+                    round_index,
+                    "after_round",
+                );
+                let failure_recovery =
+                    turn.tool_failure_recovery(self.config.max_consecutive_same_tool);
+                let reminder = match failure_recovery {
+                    ToolFailureRecovery::None => None,
+                    ToolFailureRecovery::Repeated(text) => {
+                        Some((InternalReminderKind::LoopRecovery, text))
+                    }
+                    ToolFailureRecovery::Periodic(text) => {
+                        Some((InternalReminderKind::PeriodicLoopRecovery, text))
+                    }
+                    ToolFailureRecovery::Exhausted => {
+                        turn.finish(Some("repeated_tool_failures"));
+                        break;
+                    }
+                };
+                if let Some((kind, text)) = reminder {
+                    let message = Message::internal_reminder(kind, text)
+                        .with_turn_id(context.dialog_turn_id.clone());
+                    messages.push(message.clone());
                     self.remember_generation_message(
                         &context.session_id,
                         &context.dialog_turn_id,
-                        message,
+                        &message,
                     );
+                    if let Err(error) = self
+                        .session_manager
+                        .add_message(&context.session_id, message)
+                        .await
+                    {
+                        warn!("Failed to persist tool recovery reminder: {}", error);
+                    }
                 }
-            }
 
-            debug!(
-                "Updated round messages in memory: round_index={}, assistant + {} tool results",
-                round_index,
-                round_result.tool_result_messages.len()
-            );
-
-            total_tools += round_result.tool_calls.len();
-
-            // Track partial recovery reason from the last round
-            if round_result.partial_recovery_reason.is_some() {
-                last_partial_recovery_reason = round_result.partial_recovery_reason.clone();
-            }
-
-            turn.observe_tools(
-                Self::tool_call_signature(&round_result.tool_calls),
-                Self::failed_tool_round_signature(
-                    &round_result.tool_calls,
-                    &round_result.tool_result_messages,
-                )
-                .is_some(),
-            );
-
-            let after_round_pressure = Self::estimate_auto_compression_pressure(
-                &messages,
-                tool_definitions.as_deref(),
-                compression_trigger_budget,
-                send_prepended_reminder_tokens,
-            );
-            let after_round_health = ContextHealthSnapshot::from_runtime_observations(
-                after_round_pressure.usage_ratio,
-                full_compression_count,
-                compression_failure_count,
-                turn.tool_signatures(),
-                &messages,
-            );
-            after_round_health.log(
-                &context.session_id,
-                &context.dialog_turn_id,
-                round_index,
-                "after_round",
-            );
-            let failure_recovery =
-                turn.tool_failure_recovery(self.config.max_consecutive_same_tool);
-            let reminder = match failure_recovery {
-                ToolFailureRecovery::None => None,
-                ToolFailureRecovery::Repeated(text) => {
-                    Some((InternalReminderKind::LoopRecovery, text))
-                }
-                ToolFailureRecovery::Periodic(text) => {
-                    Some((InternalReminderKind::PeriodicLoopRecovery, text))
-                }
-                ToolFailureRecovery::Exhausted => {
-                    turn.finish(Some("repeated_tool_failures"));
-                    break;
-                }
-            };
-            if let Some((kind, text)) = reminder {
-                let message = Message::internal_reminder(kind, text)
-                    .with_turn_id(context.dialog_turn_id.clone());
-                messages.push(message.clone());
-                self.remember_generation_message(
-                    &context.session_id,
-                    &context.dialog_turn_id,
-                    &message,
-                );
-                if let Err(error) = self
-                    .session_manager
-                    .add_message(&context.session_id, message)
-                    .await
-                {
-                    warn!("Failed to persist tool recovery reminder: {}", error);
-                }
-            }
-
-            // Human steering becomes the next persisted user turn. Runtime
-            // reminders still enter this turn through the injection channel.
-            let mut injection_applied = false;
-            if let Some(source) = context.round_injection.as_ref() {
-                let pending = source.take_pending(&context.session_id, &context.dialog_turn_id);
-                if !pending.is_empty() {
-                    info!(
+                // Human steering becomes the next persisted user turn. Runtime
+                // reminders still enter this turn through the injection channel.
+                let mut injection_applied = false;
+                if let Some(source) = context.round_injection.as_ref() {
+                    let pending = source.take_pending(&context.session_id, &context.dialog_turn_id);
+                    if !pending.is_empty() {
+                        info!(
                         "Injecting {} round message(s) at round boundary: session_id={}, dialog_turn_id={}, round_index={}",
                         pending.len(),
                         context.session_id,
                         context.dialog_turn_id,
                         round_index
                     );
-                    for injection in pending {
-                        let injection_id = injection.id.clone();
-                        let injection_kind = injection.kind;
-                        let wrapped = match injection.kind {
+                        for injection in pending {
+                            let injection_id = injection.id.clone();
+                            let injection_kind = injection.kind;
+                            let wrapped = match injection.kind {
                             RoundInjectionKind::UserSteering => format!(
                                 "<system_reminder>\nThe user sent a new message while this turn was running. You have just finished the previous atomic action; handle this new user message now as the current direction, while preserving the existing conversation and task context. Do not ignore it or wait for a separate future turn.\n\nNew user message:\n{}\n</system_reminder>",
                                 // A steering message carries whatever the
@@ -5057,119 +4993,128 @@ impl ExecutionEngine {
                                 injection.content.clone()
                             }
                         };
-                        let reminder_kind = match injection.kind {
-                            RoundInjectionKind::UserSteering => InternalReminderKind::UserSteering,
-                            RoundInjectionKind::BackgroundResult => {
-                                InternalReminderKind::BackgroundResult
-                            }
-                            RoundInjectionKind::ThreadGoalObjectiveUpdated => {
-                                InternalReminderKind::GoalObjectiveUpdated
-                            }
-                        };
-                        // Use the same durable input path as turn-boundary messages.
-                        // A malformed image must not silently become a text-only turn.
-                        let mut images = agent_dialog_turn_image_contexts(&injection.attachments)
-                            .map_err(|error| OpenBitFunError::validation(error.to_string()))?
-                            .unwrap_or_default();
-                        crate::agentic::image_analysis::attachments::prepare_inline_image_attachments(
+                            let reminder_kind = match injection.kind {
+                                RoundInjectionKind::UserSteering => {
+                                    InternalReminderKind::UserSteering
+                                }
+                                RoundInjectionKind::BackgroundResult => {
+                                    InternalReminderKind::BackgroundResult
+                                }
+                                RoundInjectionKind::ThreadGoalObjectiveUpdated => {
+                                    InternalReminderKind::GoalObjectiveUpdated
+                                }
+                            };
+                            // Use the same durable input path as turn-boundary messages.
+                            // A malformed image must not silently become a text-only turn.
+                            let mut images =
+                                agent_dialog_turn_image_contexts(&injection.attachments)
+                                    .map_err(|error| {
+                                        OpenBitFunError::validation(error.to_string())
+                                    })?
+                                    .unwrap_or_default();
+                            crate::agentic::image_analysis::attachments::prepare_inline_image_attachments(
                             &mut images, &attachment_context,
                         ).await?;
-                        let user_msg = if images.is_empty() {
-                            Message::internal_reminder(reminder_kind, wrapped)
-                        } else {
-                            Message::internal_reminder_multimodal(reminder_kind, wrapped, images)
-                        }
-                        .with_turn_id(context.dialog_turn_id.clone());
-                        messages.push(user_msg.clone());
-                        self.remember_generation_message(
-                            &context.session_id,
-                            &context.dialog_turn_id,
-                            &user_msg,
-                        );
-                        if let Err(e) = self
-                            .session_manager
-                            .add_message(&context.session_id, user_msg)
-                            .await
-                        {
-                            warn!("Failed to persist user steering message in memory: {}", e);
-                        }
+                            let user_msg = if images.is_empty() {
+                                Message::internal_reminder(reminder_kind, wrapped)
+                            } else {
+                                Message::internal_reminder_multimodal(
+                                    reminder_kind,
+                                    wrapped,
+                                    images,
+                                )
+                            }
+                            .with_turn_id(context.dialog_turn_id.clone());
+                            messages.push(user_msg.clone());
+                            self.remember_generation_message(
+                                &context.session_id,
+                                &context.dialog_turn_id,
+                                &user_msg,
+                            );
+                            if let Err(e) = self
+                                .session_manager
+                                .add_message(&context.session_id, user_msg)
+                                .await
+                            {
+                                warn!("Failed to persist user steering message in memory: {}", e);
+                            }
 
-                        self.emit_event(
-                            AgenticEvent::UserSteeringInjected {
-                                session_id: context.session_id.clone(),
-                                turn_id: context.dialog_turn_id.clone(),
-                                round_index,
-                                steering_id: injection.id,
-                                content: injection.content,
-                                display_content: injection.display_content,
-                            },
-                            EventPriority::Normal,
-                        )
-                        .await;
-                        source.acknowledge_consumed(
-                            &context.session_id,
-                            &context.dialog_turn_id,
-                            &injection_id,
-                            injection_kind,
-                        );
-                        injection_applied = true;
+                            self.emit_event(
+                                AgenticEvent::UserSteeringInjected {
+                                    session_id: context.session_id.clone(),
+                                    turn_id: context.dialog_turn_id.clone(),
+                                    round_index,
+                                    steering_id: injection.id,
+                                    content: injection.content,
+                                    display_content: injection.display_content,
+                                },
+                                EventPriority::Normal,
+                            )
+                            .await;
+                            source.acknowledge_consumed(
+                                &context.session_id,
+                                &context.dialog_turn_id,
+                                &injection_id,
+                                injection_kind,
+                            );
+                            injection_applied = true;
+                        }
+                    }
+                    if source
+                        .should_yield_to_user_turn(&context.session_id, &context.dialog_turn_id)
+                        && !self
+                            .round_executor
+                            .is_dialog_turn_cancelled(&dialog_turn_id)
+                    {
+                        // Persist runtime reminders before handing off, so background
+                        // results arriving at this boundary stay in session context.
+                        // Already-started tools and results keep their original turn.
+                        turn.finish(Some("user_steering"));
+                        break;
                     }
                 }
-                if source.should_yield_to_user_turn(&context.session_id, &context.dialog_turn_id)
-                    && !self
-                        .round_executor
-                        .is_dialog_turn_cancelled(&dialog_turn_id)
-                {
-                    // Persist runtime reminders before handing off, so background
-                    // results arriving at this boundary stay in session context.
-                    // Already-started tools and results keep their original turn.
-                    turn.finish(Some("user_steering"));
-                    break;
-                }
-            }
 
-            // P0-1: Decide whether to end the turn here.
-            //
-            // If the user just injected a steering message we always continue so the
-            // model can respond to it.
-            //
-            // Otherwise, if the round produced any tool_call, we already continue via
-            // `has_more_rounds = true`. The interesting case is `has_more_rounds == false`:
-            //
-            // - Model emitted user-visible text  -> final answer, end the turn, unless
-            //   the stream was partially recovered (timeout / interruption) in which
-            //   case inject a continuation reminder and keep going.
-            // - Model emitted thinking only      -> stalled mid-reasoning. Inject a
-            //   system_reminder asking it to either act (call a tool) or finish
-            //   (write the answer), and continue.
-            // - Model emitted nothing at all     -> partial recovery / truncation.
-            //   Retrying without new context will not help, so end the turn.
-            let quiet_model_end = if context
-                .context
-                .contains_key(super::background_delivery::BACKGROUND_DELIVERY_CONTEXT_KEY)
-                && !round_result.has_more_rounds
-                && !round_result.had_assistant_text
-                && !round_result.had_thinking_content
-                && round_result.partial_recovery_reason.is_none()
-            {
-                let delivery = self
-                    .session_manager
-                    .background_delivery_for_turn(&context.session_id, &context.dialog_turn_id)
-                    .await
-                    .ok()
-                    .flatten();
-                openbitfun_agent_runtime::scheduler::result_delivery::accepts_quiet_model_end(
-                    delivery.as_ref(),
-                    false,
-                    false,
-                    false,
-                    false,
-                )
-            } else {
-                false
-            };
-            let boundary = turn
-                .after_round(
+                // P0-1: Decide whether to end the turn here.
+                //
+                // If the user just injected a steering message we always continue so the
+                // model can respond to it.
+                //
+                // Otherwise, if the round produced any tool_call, we already continue via
+                // `has_more_rounds = true`. The interesting case is `has_more_rounds == false`:
+                //
+                // - Model emitted user-visible text  -> final answer, end the turn, unless
+                //   the stream was partially recovered (timeout / interruption) in which
+                //   case inject a continuation reminder and keep going.
+                // - Model emitted thinking only      -> stalled mid-reasoning. Inject a
+                //   system_reminder asking it to either act (call a tool) or finish
+                //   (write the answer), and continue.
+                // - Model emitted nothing at all     -> partial recovery / truncation.
+                //   Retrying without new context will not help, so end the turn.
+                let quiet_model_end = if context
+                    .context
+                    .contains_key(super::background_delivery::BACKGROUND_DELIVERY_CONTEXT_KEY)
+                    && !round_result.has_more_rounds
+                    && !round_result.had_assistant_text
+                    && !round_result.had_thinking_content
+                    && round_result.partial_recovery_reason.is_none()
+                {
+                    let delivery = self
+                        .session_manager
+                        .background_delivery_for_turn(&context.session_id, &context.dialog_turn_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    openbitfun_agent_runtime::scheduler::result_delivery::accepts_quiet_model_end(
+                        delivery.as_ref(),
+                        false,
+                        false,
+                        false,
+                        false,
+                    )
+                } else {
+                    false
+                };
+                turn.after_round(
                     RoundOutput {
                         injected: injection_applied,
                         tool_results: round_result.has_more_rounds,
@@ -5193,22 +5138,9 @@ impl ExecutionEngine {
                         )
                     },
                 )
-                .await;
-            let reminder = match boundary {
-                TurnBoundary::Continue => None,
-                TurnBoundary::Finish(reason) => {
-                    turn.finish(reason);
-                    break;
-                }
-                TurnBoundary::Interrupted(text) => {
-                    Some((InternalReminderKind::InterruptedContinue, text))
-                }
-                TurnBoundary::StopHook(text) => Some((InternalReminderKind::StopHookBlock, text)),
-                TurnBoundary::ThinkingOnly(text) => {
-                    Some((InternalReminderKind::ThinkingOnlyRescue, text.to_owned()))
-                }
-            };
-            if let Some((kind, text)) = reminder {
+                .await
+            },
+            |kind, text| {
                 let message = Message::internal_reminder(kind, text)
                     .with_turn_id(context.dialog_turn_id.clone());
                 messages.push(message.clone());
@@ -5224,37 +5156,38 @@ impl ExecutionEngine {
                 {
                     warn!("Failed to persist turn continuation reminder: {}", error);
                 }
-            }
-
-            // Check if cancellation was requested after each round. Tokens stay
-            // registered until final cleanup so early cancellation can be
-            // observed by the first round.
-            if self
-                .round_executor
-                .is_dialog_turn_cancelled(&dialog_turn_id)
+            },
             {
-                debug!(
-                    "Dialog turn cancelled, stopping execution: dialog_turn_id={}",
-                    dialog_turn_id
-                );
-
-                if context.emit_lifecycle_events
-                    && execution_engine_owns_cancel_lifecycle(&context.context)
+                // Check if cancellation was requested after each round. Tokens stay
+                // registered until final cleanup so early cancellation can be
+                // observed by the first round.
+                if self
+                    .round_executor
+                    .is_dialog_turn_cancelled(&dialog_turn_id)
                 {
-                    self.emit_event(
-                        AgenticEvent::DialogTurnCancelled {
-                            session_id: context.session_id.clone(),
-                            turn_id: context.dialog_turn_id.clone(),
-                        },
-                        EventPriority::High,
-                    )
-                    .await;
-                }
+                    debug!(
+                        "Dialog turn cancelled, stopping execution: dialog_turn_id={}",
+                        dialog_turn_id
+                    );
 
-                // Note: Token will be cleaned up when outer function exits
-                return Err(OpenBitFunError::cancelled("Dialog cancelled"));
+                    if context.emit_lifecycle_events
+                        && execution_engine_owns_cancel_lifecycle(&context.context)
+                    {
+                        self.emit_event(
+                            AgenticEvent::DialogTurnCancelled {
+                                session_id: context.session_id.clone(),
+                                turn_id: context.dialog_turn_id.clone(),
+                            },
+                            EventPriority::High,
+                        )
+                        .await;
+                    }
+
+                    // Note: Token will be cleaned up when outer function exits
+                    return Err(OpenBitFunError::cancelled("Dialog cancelled"));
+                }
             }
-        }
+        );
         let (mut completed_rounds, finalization_reason) = turn.into_result();
 
         // P1-6: Track the actual termination reason for downstream reporting.
@@ -5621,7 +5554,7 @@ mod tests {
         manual_compaction_terminal_error, reached_fixed_model_round_limit,
         resolve_round_permission_mode, runtime_context_needs_for_manifest,
         skill_agent_listing_reminders, ContextHealthSnapshot, ExecutionEngine,
-        ExecutionEngineConfig, RoundResult, TurnPromptScaffold,
+        ExecutionEngineConfig, RoundResult, TurnExecution, TurnPromptScaffold,
     };
     use crate::agentic::agents::{
         PrependedPromptReminders, PromptBuilderContext, ToolListingSections, UserContextPolicy,
@@ -7552,7 +7485,7 @@ mod tests {
         let args = format!("{}{}", "a".repeat(62), "案".repeat(30));
         let args_hash = hex::encode(Sha256::digest(args.as_bytes()));
 
-        let summary = ExecutionEngine::tool_signature_args_summary(&args);
+        let summary = TurnExecution::tool_signature_args_summary(&args);
 
         assert_eq!(
             summary,
@@ -7564,7 +7497,7 @@ mod tests {
     fn tool_signature_args_summary_keeps_short_arguments() {
         let args = r#"{"content":"short"}"#;
 
-        let summary = ExecutionEngine::tool_signature_args_summary(args);
+        let summary = TurnExecution::tool_signature_args_summary(args);
 
         assert_eq!(summary, args);
     }
@@ -7700,8 +7633,8 @@ mod tests {
         let first = format!("{}{}", "x".repeat(64), "a".repeat(80));
         let second = format!("{}{}", "x".repeat(64), "b".repeat(80));
 
-        let first_summary = ExecutionEngine::tool_signature_args_summary(&first);
-        let second_summary = ExecutionEngine::tool_signature_args_summary(&second);
+        let first_summary = TurnExecution::tool_signature_args_summary(&first);
+        let second_summary = TurnExecution::tool_signature_args_summary(&second);
 
         assert_eq!(first.len(), second.len());
         assert_ne!(first, second);
@@ -7732,7 +7665,7 @@ mod tests {
         })];
 
         assert!(
-            ExecutionEngine::failed_tool_round_signature(&tool_calls, &results).is_none(),
+            TurnExecution::failed_tool_round_signature(&tool_calls, &results).is_none(),
             "successful polling must not be treated as a failed loop"
         );
     }
@@ -7761,7 +7694,7 @@ mod tests {
         })];
 
         assert_eq!(
-            ExecutionEngine::failed_tool_round_signature(&tool_calls, &results).as_deref(),
+            TurnExecution::failed_tool_round_signature(&tool_calls, &results).as_deref(),
             Some(r#"Read:{"path":"missing.txt"}"#)
         );
     }

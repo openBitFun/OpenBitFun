@@ -1,0 +1,17 @@
+[package]
+name = "openbitfun-permission-contracts"
+version.workspace = true
+edition.workspace = true
+description = "Tool permission contracts and pure policy evaluation shared by OpenBitFun hosts"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[features]
+default = []
+ts = ["dep:ts-rs"]
+
+[lints]
+workspace = true

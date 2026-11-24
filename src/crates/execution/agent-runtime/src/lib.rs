@@ -34,6 +34,8 @@ pub mod events;
 #[cfg(feature = "agent-runtime")]
 pub mod evidence_ledger;
 #[cfg(feature = "agent-runtime")]
+pub mod message;
+#[cfg(feature = "agent-runtime")]
 pub mod model_pool;
 #[cfg(feature = "agent-runtime")]
 pub mod model_round;

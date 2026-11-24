@@ -2,8 +2,30 @@
 //! logical round. Only a committed round advances the index and turn budget.
 pub mod context;
 
+use crate::message::{Message, MessageContent, ToolCall};
+use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::ops::ControlFlow;
+
+/// Drive a production turn in the caller's future. Product callbacks can borrow
+/// session state across awaits and retry a logical round without releasing it.
+/// The driver owns termination and the ordering of reminder persistence and the
+/// post-round cancellation check.
+#[macro_export]
+macro_rules! drive_turn_rounds {
+    ($turn:expr, $check:expr, |$index:ident| $round:block,
+     |$kind:ident, $text:ident| $remember:block, $after:block) => {
+        while let Some($index) = $turn.next_round($check)? {
+            let boundary = $round;
+            match $turn.apply_boundary(boundary) {
+                ::std::ops::ControlFlow::Break(()) => break,
+                ::std::ops::ControlFlow::Continue(Some(($kind, $text))) => $remember,
+                ::std::ops::ControlFlow::Continue(None) => {}
+            }
+            $after
+        }
+    };
+}
 
 pub fn reached_fixed_model_round_limit(max_rounds: usize, completed_rounds: usize) -> bool {
     max_rounds > 0 && completed_rounds >= max_rounds
@@ -61,6 +83,28 @@ impl TurnExecution {
         self.status = ControlFlow::Break(reason);
     }
 
+    pub fn apply_boundary(
+        &mut self,
+        boundary: TurnBoundary,
+    ) -> ControlFlow<(), Option<(crate::message::InternalReminderKind, String)>> {
+        use crate::message::InternalReminderKind;
+        let reminder = match boundary {
+            TurnBoundary::Finish(reason) => {
+                self.finish(reason);
+                return ControlFlow::Break(());
+            }
+            TurnBoundary::Continue => None,
+            TurnBoundary::Interrupted(text) => {
+                Some((InternalReminderKind::InterruptedContinue, text))
+            }
+            TurnBoundary::StopHook(text) => Some((InternalReminderKind::StopHookBlock, text)),
+            TurnBoundary::ThinkingOnly(text) => {
+                Some((InternalReminderKind::ThinkingOnlyRescue, text.to_owned()))
+            }
+        };
+        ControlFlow::Continue(reminder)
+    }
+
     pub fn into_result(self) -> (usize, Option<&'static str>) {
         (self.completed, self.status.break_value().flatten())
     }
@@ -96,6 +140,83 @@ pub enum ToolFailureRecovery {
 }
 
 impl TurnExecution {
+    pub const DEFAULT_FAILURE_THRESHOLD: usize = 3;
+
+    pub fn observe_tool_results(&mut self, calls: &[ToolCall], results: &[Message]) {
+        self.observe_tools(
+            Self::tool_call_signature(calls),
+            Self::failed_tool_round_signature(calls, results).is_some(),
+        );
+    }
+
+    pub fn tool_signature_args_summary(args_str: &str) -> String {
+        if args_str.len() <= 128 {
+            return args_str.to_string();
+        }
+
+        let args_hash = hex::encode(Sha256::digest(args_str.as_bytes()));
+        format!(
+            "{}..#{}:sha256={}",
+            &args_str[..args_str.floor_char_boundary(64)],
+            args_str.len(),
+            args_hash
+        )
+    }
+
+    fn tool_call_signature(tool_calls: &[ToolCall]) -> Option<String> {
+        if tool_calls.is_empty() {
+            return None;
+        }
+
+        let mut signatures: Vec<String> = tool_calls
+            .iter()
+            .map(|tool_call| {
+                let arguments = tool_call.arguments.to_string();
+                let arguments_summary = Self::tool_signature_args_summary(&arguments);
+                format!("{}:{}", tool_call.tool_name, arguments_summary)
+            })
+            .collect();
+        signatures.sort();
+        Some(signatures.join("|"))
+    }
+
+    pub fn failed_tool_round_signature(
+        tool_calls: &[ToolCall],
+        tool_result_messages: &[Message],
+    ) -> Option<String> {
+        if tool_result_messages.is_empty()
+            || !tool_result_messages.iter().all(|message| {
+                let MessageContent::ToolResult {
+                    result, is_error, ..
+                } = &message.content
+                else {
+                    return false;
+                };
+                Self::tool_result_failed(result, *is_error)
+            })
+        {
+            return None;
+        }
+
+        Self::tool_call_signature(tool_calls)
+    }
+
+    pub fn tool_result_failed(result: &serde_json::Value, is_error: bool) -> bool {
+        is_error
+            || Self::bool_field(result, "timed_out") == Some(true)
+            || Self::bool_field(result, "interrupted") == Some(true)
+            || Self::bool_field(result, "success") == Some(false)
+            || Self::numeric_field(result, "exit_code").is_some_and(|code| code != 0)
+    }
+
+    fn bool_field(value: &serde_json::Value, key: &str) -> Option<bool> {
+        value.get(key).and_then(|field| field.as_bool())
+    }
+
+    fn numeric_field(value: &serde_json::Value, key: &str) -> Option<i64> {
+        value.get(key).and_then(|field| field.as_i64())
+    }
+
     pub fn tool_signatures(&self) -> &[String] {
         &self.signatures
     }

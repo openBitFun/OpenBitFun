@@ -138,6 +138,12 @@ impl<T: Send + Sync> DialogExecution<T> {
 
     /// Called under the session lock after the prior execution has retired.
     pub fn admit_recovery(&self, session_id: &str, turn: ActiveDialogTurn) -> RecoveryAdmission {
+        self.admit_turn(session_id, turn)
+    }
+
+    /// Publish under the session admission lock. Until dispatch hands ownership
+    /// to the settlement path, dropping the guard retires exactly this turn.
+    pub fn admit_turn(&self, session_id: &str, turn: ActiveDialogTurn) -> RecoveryAdmission {
         let turn_id = turn.turn_id().to_owned();
         self.active_turns.insert(session_id, turn);
         RecoveryAdmission {

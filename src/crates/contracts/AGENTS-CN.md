@@ -11,6 +11,7 @@
 | `core-types` | 共享 DTO、错误、session/surface 数据和小型 value type | [AGENTS.md](core-types/AGENTS.md) |
 | `config-contracts` | 持久化配置记录、默认值、校验和纯模型转换 | [AGENTS.md](config-contracts/AGENTS.md) |
 | `events` | 事件 payload 和 emitter 契约 | [AGENTS.md](events/AGENTS.md) |
+| `permission-contracts` | 共享的权限数据契约和纯策略求值 | [Cargo.toml](permission-contracts/Cargo.toml) |
 | `product-domains` | 产品领域 DTO、规则、策略和窄 port | [AGENTS.md](product-domains/AGENTS.md) |
 | `runtime-ports` | runtime owner crate 使用的 trait 和 port | [AGENTS.md](runtime-ports/AGENTS.md) |
 

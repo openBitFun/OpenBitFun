@@ -12,7 +12,7 @@ mod runtime_services;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use openbitfun_agent_runtime::permission::PermissionRequestManager;
 use openbitfun_agent_runtime::sdk::{
@@ -35,15 +35,15 @@ use openbitfun_product_domains::product_search::{
 #[cfg(feature = "product-search")]
 use openbitfun_runtime_ports::ProductSearchPort;
 use openbitfun_runtime_ports::{
-    AgentContextReloadPort, AgentContextReloadRequest, ClockPort,
-    LocalWorkspaceSnapshotFileDiffStats, LocalWorkspaceSnapshotFileRequest,
-    LocalWorkspaceSnapshotPort, LocalWorkspaceSnapshotSessionRequest, LocalWorkspaceSnapshotStats,
+    AgentContextReloadPort, AgentContextReloadRequest, LocalWorkspaceSnapshotFileDiffStats,
+    LocalWorkspaceSnapshotFileRequest, LocalWorkspaceSnapshotPort,
+    LocalWorkspaceSnapshotSessionRequest, LocalWorkspaceSnapshotStats,
     LocalWorkspaceSnapshotTurnRequest, PortError, PortErrorKind, PortResult,
-    RuntimeServiceCapability, RuntimeServicePort, SessionStoragePathRequest, SessionStorePort,
-    SessionTranscriptRequest, SessionTurnWindowRequest, SessionViewRestoreTiming,
+    SessionStoragePathRequest, SessionStorePort, SessionTranscriptRequest,
+    SessionTurnWindowRequest, SessionViewRestoreTiming,
 };
 use openbitfun_runtime_services::RuntimeServices;
-use openbitfun_services_core::permission_store::ProjectPermissionSqliteStore;
+
 use openbitfun_services_core::session::{
     build_session_lineage_snapshot, normalized_session_relationship, SessionBranchBoundary,
     SessionRelationshipKind,
@@ -306,24 +306,6 @@ pub fn ensure_product_dialog_scheduler(
     agentic_system.scheduler.clone()
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct SystemPermissionClock;
-
-impl RuntimeServicePort for SystemPermissionClock {
-    fn capability(&self) -> RuntimeServiceCapability {
-        RuntimeServiceCapability::Clock
-    }
-}
-
-impl ClockPort for SystemPermissionClock {
-    fn now_unix_millis(&self) -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-            .unwrap_or_default()
-    }
-}
-
 static PERMISSION_REQUEST_MANAGER: OnceLock<Arc<PermissionRequestManager>> = OnceLock::new();
 
 /// Returns the process-shared permission request owner used by product
@@ -336,15 +318,8 @@ pub fn core_permission_request_manager() -> Result<Arc<PermissionRequestManager>
 
     let path_manager = crate::infrastructure::PathManager::new()
         .map_err(|error| format!("Failed to initialize permission path manager: {error}"))?;
-    let store = Arc::new(ProjectPermissionSqliteStore::new(
+    let manager = openbitfun_agent::permissions::request_manager(
         path_manager.user_data_dir().join("permissions"),
-    ));
-    let audit_store: Arc<dyn openbitfun_runtime_ports::PermissionAuditStorePort> = store.clone();
-    let reply_store: Arc<dyn openbitfun_runtime_ports::PermissionReplyStorePort> = store.clone();
-    let grant_store: Arc<dyn openbitfun_runtime_ports::PermissionGrantStorePort> = store;
-    let manager = Arc::new(
-        PermissionRequestManager::new(audit_store, reply_store, Arc::new(SystemPermissionClock))
-            .with_grant_store(grant_store),
     );
     let _ = PERMISSION_REQUEST_MANAGER.set(manager);
     PERMISSION_REQUEST_MANAGER

@@ -9,9 +9,9 @@ use crate::agentic::agents::get_agent_registry;
 use crate::agentic::context_normalization::normalize_incomplete_tool_calls;
 use crate::agentic::core::{
     new_turn_id, CompressionContract, CompressionState, InternalReminderKind, Message,
-    MessageContent, MessageRole, MessageSemanticKind, ProcessingPhase, Session,
-    SessionAgentRouteOwner, SessionConfig, SessionKind, SessionModelBindingPolicy, SessionState,
-    SessionSummary, ToolPresentationMode, TurnStats,
+    MessageSemanticKind, ProcessingPhase, Session, SessionAgentRouteOwner, SessionConfig,
+    SessionKind, SessionModelBindingPolicy, SessionState, SessionSummary, ToolPresentationMode,
+    TurnStats,
 };
 use crate::agentic::image_analysis::ImageContextData;
 use crate::agentic::keyed_lock::{KeyedAsyncLock, KeyedAsyncLockGuard};
@@ -47,8 +47,8 @@ use crate::service::config::{
 use crate::service::session::{
     DialogTurnData, DialogTurnKind, DialogTurnRecoveryData, DialogTurnRecoveryStatus,
     ModelRoundData, SessionContextUsage, SessionMemoryMode, SessionMetadata,
-    SessionPromptSuggestion, SessionRelationship, SessionStatus, TextItemData, ThinkingItemData,
-    ToolCallData, ToolItemData, ToolResultData, TranscriptLineRange, TurnStatus, UserMessageData,
+    SessionPromptSuggestion, SessionRelationship, SessionStatus, TextItemData, TranscriptLineRange,
+    TurnStatus, UserMessageData,
 };
 use crate::service::snapshot::{
     ensure_snapshot_manager_for_workspace, get_or_create_snapshot_manager,
@@ -1539,98 +1539,7 @@ impl SessionManager {
     }
 
     fn build_messages_from_turns(turns: &[DialogTurnData]) -> Vec<Message> {
-        let mut messages = Vec::new();
-
-        for turn in turns {
-            if !turn.kind.is_model_visible() {
-                continue;
-            }
-
-            let user_message = if let Some(metadata) = &turn.user_message.metadata {
-                let images = metadata
-                    .get("images")
-                    .and_then(|value| value.as_array())
-                    .map(|values| {
-                        values
-                            .iter()
-                            .map(|value| ImageContextData {
-                                id: value
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                image_path: value
-                                    .get("image_path")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string),
-                                data_url: value
-                                    .get("data_url")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string),
-                                mime_type: value
-                                    .get("mime_type")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("image/png")
-                                    .to_string(),
-                                metadata: Some(value.clone()),
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-
-                if images.is_empty() {
-                    Message::user(turn.user_message.content.clone())
-                } else {
-                    Message::user_multimodal(turn.user_message.content.clone(), images)
-                }
-            } else {
-                Message::user(turn.user_message.content.clone())
-            };
-            messages.push(
-                user_message
-                    .with_turn_id(turn.turn_id.clone())
-                    .with_semantic_kind(MessageSemanticKind::ActualUserInput),
-            );
-
-            let assistant_text = turn
-                .model_rounds
-                .iter()
-                .flat_map(|round| round.text_items.iter())
-                .map(|item| item.content.clone())
-                .filter(|value| !value.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-
-            let assistant_thinking = turn
-                .model_rounds
-                .iter()
-                .flat_map(|round| round.thinking_items.iter())
-                .map(|item| item.content.clone())
-                .filter(|value| !value.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-
-            let has_text = !assistant_text.trim().is_empty();
-            let has_thinking = !assistant_thinking.trim().is_empty();
-
-            if has_text || has_thinking {
-                let reasoning_content = if has_thinking {
-                    Some(assistant_thinking)
-                } else {
-                    None
-                };
-                messages.push(
-                    Message::assistant_with_reasoning(
-                        reasoning_content,
-                        assistant_text,
-                        Vec::new(),
-                    )
-                    .with_turn_id(turn.turn_id.clone()),
-                );
-            }
-        }
-
-        messages
+        openbitfun_agent::records::build_messages_from_turns(turns)
     }
 
     async fn rebuild_messages_from_turns(
@@ -6435,55 +6344,46 @@ impl SessionManager {
                     .await?
             }
         };
-        let mut messages = match latest_context_snapshot {
-            Some((turn_index, msgs)) => {
+        let snapshot = match latest_context_snapshot {
+            Some((turn_index, messages)) => {
                 latest_turn_index = Some(turn_index);
-                self.sanitize_listing_diff_context_snapshot_if_needed(
-                    session_storage_path,
-                    session_id,
-                    turn_index,
-                    msgs,
-                    listing_baseline_rebuild_turn_index,
-                    "restore_pre_listing_baseline_rebuild_snapshot",
-                )
-                .await
+                let messages = self
+                    .sanitize_listing_diff_context_snapshot_if_needed(
+                        session_storage_path,
+                        session_id,
+                        turn_index,
+                        messages,
+                        listing_baseline_rebuild_turn_index,
+                        "restore_pre_listing_baseline_rebuild_snapshot",
+                    )
+                    .await;
+                Some((turn_index, messages))
             }
-            None => Self::build_messages_from_turns(&persisted_turns),
+            None => None,
         };
+        let mut messages = openbitfun_agent::records::restore_history(&persisted_turns, snapshot);
         debug!(
             "Session restore phase completed: session_id={}, phase=load_context_snapshot, snapshot_turn_index={:?}, message_count={}, duration_ms={}",
-            session_id,
-            latest_turn_index,
-            messages.len(),
-            elapsed_ms_u64(context_snapshot_started_at)
+            session_id, latest_turn_index, messages.len(), elapsed_ms_u64(context_snapshot_started_at)
         );
-
-        if let Some(snapshot_turn_index) = latest_turn_index {
-            let delta_turns = persisted_turns
-                .iter()
-                .filter(|turn| turn.turn_index > snapshot_turn_index)
-                .cloned()
-                .collect::<Vec<_>>();
-            if !delta_turns.is_empty() {
-                warn!(
-                    "Context snapshot is behind persisted turns, rebuilding delta: session_id={}, snapshot_turn_index={}, persisted_turn_count={}",
-                    session_id,
-                    snapshot_turn_index,
-                    persisted_turns.len()
-                );
-                messages.extend(Self::build_messages_from_turns(&delta_turns));
-            }
-        };
+        if latest_turn_index
+            .is_some_and(|index| persisted_turns.iter().any(|turn| turn.turn_index > index))
+        {
+            warn!(
+                "Context snapshot is behind persisted turns, rebuilt delta: session_id={}, snapshot_turn_index={:?}, persisted_turn_count={}",
+                session_id, latest_turn_index, persisted_turns.len()
+            );
+        }
 
         // A process can exit after the assistant tool-call message is persisted
         // and before the tool result is appended. Providers reject that history
         // shape, so close the final active round during ordinary restore. The
         // repaired snapshot becomes the durable recovery boundary for the next
         // process as well; no interrupted tool is re-executed here.
-        let repaired_incomplete_tool_calls = normalize_incomplete_tool_calls(
-            &mut messages,
-            "Tool execution was still in progress when the application closed; the result is unknown. Verify any external side effects before continuing.",
-        );
+        let repaired_incomplete_tool_calls =
+            openbitfun_agent_runtime::message::normalization::normalize_after_interruption(
+                &mut messages,
+            );
         if repaired_incomplete_tool_calls {
             let repaired_snapshot_turn_index = latest_turn_index
                 .into_iter()
@@ -8023,236 +7923,7 @@ impl SessionManager {
         turn_id: &str,
         timestamp: u64,
     ) -> Vec<ModelRoundData> {
-        let mut rounds: Vec<ModelRoundData> = Vec::new();
-
-        for msg in messages {
-            match msg.role {
-                MessageRole::Assistant => {
-                    let round_index = rounds.len();
-                    let round_id = msg
-                        .metadata
-                        .round_id
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|round_id| !round_id.is_empty())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("{}-round-{}", turn_id, round_index));
-
-                    let mut text_items = Vec::new();
-                    let mut thinking_items = Vec::new();
-                    let mut tool_items = Vec::new();
-                    let mut order_index = 0usize;
-
-                    match &msg.content {
-                        MessageContent::Text(text) => {
-                            if !text.trim().is_empty() {
-                                text_items.push(Self::make_text_item(
-                                    &format!("{}-text-{}", round_id, order_index),
-                                    text,
-                                    timestamp,
-                                    order_index,
-                                ));
-                            }
-                        }
-                        MessageContent::Mixed {
-                            reasoning_content,
-                            text,
-                            tool_calls,
-                        } => {
-                            // Thinking / reasoning content
-                            if let Some(reasoning) = reasoning_content {
-                                if !reasoning.trim().is_empty() {
-                                    thinking_items.push(ThinkingItemData {
-                                        id: format!("{}-think-{}", round_id, order_index),
-                                        content: reasoning.clone(),
-                                        reasoning_kind: msg.metadata.reasoning_content_kind,
-                                        is_streaming: false,
-                                        is_collapsed: true,
-                                        timestamp,
-                                        order_index: Some(order_index),
-                                        status: Some("completed".to_string()),
-                                        is_subagent_item: None,
-                                        parent_task_tool_id: None,
-                                        subagent_session_id: None,
-                                        attempt_id: None,
-                                        attempt_index: None,
-                                    });
-                                    order_index += 1;
-                                }
-                            }
-                            // Text content
-                            if !text.trim().is_empty() {
-                                text_items.push(Self::make_text_item(
-                                    &format!("{}-text-{}", round_id, order_index),
-                                    text,
-                                    timestamp,
-                                    order_index,
-                                ));
-                                order_index += 1;
-                            }
-                            // Tool calls
-                            for tc in tool_calls {
-                                tool_items.push(ToolItemData {
-                                    id: tc.tool_id.clone(),
-                                    tool_name: tc.tool_name.clone(),
-                                    tool_call: ToolCallData {
-                                        input: tc.arguments.clone(),
-                                        id: tc.tool_id.clone(),
-                                    },
-                                    tool_result: None,
-                                    ai_intent: None,
-                                    start_time: timestamp,
-                                    end_time: None,
-                                    duration_ms: None,
-                                    queue_wait_ms: None,
-                                    preflight_ms: None,
-                                    confirmation_wait_ms: None,
-                                    execution_ms: None,
-                                    order_index: Some(order_index),
-                                    is_subagent_item: None,
-                                    parent_task_tool_id: None,
-                                    subagent_session_id: None,
-                                    subagent_dialog_turn_id: None,
-                                    attempt_id: None,
-                                    attempt_index: None,
-                                    subagent_model_id: None,
-                                    subagent_model_display_name: None,
-                                    status: Some("completed".to_string()),
-                                    interruption_reason: None,
-                                });
-                                order_index += 1;
-                            }
-                        }
-                        MessageContent::Multimodal { text, .. } if !text.trim().is_empty() => {
-                            text_items.push(Self::make_text_item(
-                                &format!("{}-text-{}", round_id, order_index),
-                                text,
-                                timestamp,
-                                order_index,
-                            ));
-                        }
-                        _ => {}
-                    }
-
-                    // Only add the round if it has any content
-                    if !text_items.is_empty()
-                        || !tool_items.is_empty()
-                        || !thinking_items.is_empty()
-                    {
-                        // Messages written before the Runtime recorded round
-                        // timing leave these unknown rather than claiming 0 ms.
-                        let timing = msg
-                            .metadata
-                            .model_execution
-                            .as_ref()
-                            .and_then(|facts| facts.timing)
-                            .unwrap_or_default();
-                        rounds.push(ModelRoundData {
-                            id: round_id,
-                            turn_id: turn_id.to_string(),
-                            round_index,
-                            round_group_id: None,
-                            timestamp,
-                            text_items,
-                            tool_items,
-                            thinking_items,
-                            start_time: timestamp,
-                            end_time: Some(timestamp),
-                            duration_ms: timing.duration_ms,
-                            provider_id: None,
-                            model_config_id: msg
-                                .metadata
-                                .model_execution
-                                .as_ref()
-                                .map(|facts| facts.model_config_id.clone()),
-                            effective_model_name: msg
-                                .metadata
-                                .model_execution
-                                .as_ref()
-                                .map(|facts| facts.effective_model_name.clone()),
-                            routing: msg
-                                .metadata
-                                .model_execution
-                                .as_ref()
-                                .and_then(|facts| facts.routing.clone()),
-                            first_chunk_ms: timing.first_chunk_ms,
-                            first_visible_output_ms: timing.first_visible_output_ms,
-                            stream_duration_ms: timing.stream_duration_ms,
-                            ttft_ms: timing.ttft_ms,
-                            attempt_count: timing.attempt_count,
-                            attempt_diagnostics: vec![],
-                            failure_category: None,
-                            token_details: None,
-                            status: "completed".to_string(),
-                        });
-                    }
-                }
-                MessageRole::Tool => {
-                    // Attach tool result to the matching tool item in the last round
-                    if let MessageContent::ToolResult {
-                        tool_id,
-                        result,
-                        result_for_assistant,
-                        image_attachments,
-                        is_error,
-                        ..
-                    } = &msg.content
-                    {
-                        if let Some(last_round) = rounds.last_mut() {
-                            for tool_item in &mut last_round.tool_items {
-                                if tool_item.id == *tool_id {
-                                    let assistant_text = result_for_assistant
-                                        .clone()
-                                        .or_else(|| serde_json::to_string(result).ok());
-                                    tool_item.tool_result = Some(ToolResultData {
-                                        result: result.clone(),
-                                        success: !is_error,
-                                        result_for_assistant: assistant_text,
-                                        image_attachments: image_attachments.clone(),
-                                        error: if *is_error {
-                                            result
-                                                .get("error")
-                                                .and_then(serde_json::Value::as_str)
-                                                .map(str::to_owned)
-                                                .or_else(|| serde_json::to_string(result).ok())
-                                        } else {
-                                            None
-                                        },
-                                        duration_ms: None,
-                                    });
-                                    tool_item.status = Some(
-                                        if *is_error { "error" } else { "completed" }.to_string(),
-                                    );
-                                    tool_item.end_time = Some(timestamp);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        rounds
-    }
-
-    /// Helper to create a `TextItemData` with common defaults.
-    fn make_text_item(id: &str, content: &str, timestamp: u64, order_index: usize) -> TextItemData {
-        TextItemData {
-            id: id.to_string(),
-            content: content.to_string(),
-            is_streaming: false,
-            timestamp,
-            is_markdown: true,
-            order_index: Some(order_index),
-            is_subagent_item: None,
-            parent_task_tool_id: None,
-            subagent_session_id: None,
-            status: Some("completed".to_string()),
-            attempt_id: None,
-            attempt_index: None,
-        }
+        openbitfun_agent::records::build_model_rounds_from_messages(messages, turn_id, timestamp)
     }
 
     /// Read the canonical turn from its durable or temporary owner.
@@ -9103,7 +8774,7 @@ impl SessionManager {
                 round_index: first_round_index,
                 round_group_id: None,
                 timestamp: completion_timestamp,
-                text_items: vec![Self::make_text_item(
+                text_items: vec![openbitfun_agent::records::make_text_item(
                     &format!("{turn_id}-round-{first_round_index}-text-0"),
                     &final_response,
                     completion_timestamp,

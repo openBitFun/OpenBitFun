@@ -1,8 +1,6 @@
 use crate::{PortError, PortResult, RuntimeServicePort};
 use async_trait::async_trait;
-use openbitfun_product_domains::tool_permissions::{
-    PermissionAuditRecord, PermissionGrant, PermissionGrantKey,
-};
+use openbitfun_permission_contracts::{PermissionAuditRecord, PermissionGrant, PermissionGrantKey};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 

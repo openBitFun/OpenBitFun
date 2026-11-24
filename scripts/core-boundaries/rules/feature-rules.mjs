@@ -52,7 +52,7 @@ export const optionalDependencyFeatureOwnerRules = [
       { depName: 'base64', ownerFeatures: ['pet-packages', 'credential-vault', 'filesystem', 'workspace-icons'] },
       {
         depName: 'openbitfun-core-types',
-        ownerFeatures: ['dispatch-wire', 'filesystem', 'local-storage', 'product-identity', 'workspace-persistence'],
+        ownerFeatures: ['dispatch-wire', 'filesystem', 'local-storage', 'product-identity', 'session-search', 'workspace-persistence'],
       },
       { depName: 'openbitfun-events', ownerFeatures: ['local-storage', 'session-event-format'] },
       { depName: 'openbitfun-runtime-ports', ownerFeatures: ['permission', 'workspace-runtime', 'workspace-persistence', 'workspace-transfer'] },
@@ -63,7 +63,8 @@ export const optionalDependencyFeatureOwnerRules = [
       { depName: 'git2', ownerFeatures: ['session-git'] },
       { depName: 'globset', ownerFeatures: ['workspace-instructions'] },
       { depName: 'ignore', ownerFeatures: ['filesystem'] },
-      { depName: 'libc', ownerFeatures: ['credential-vault', 'local-storage', 'process-runtime'] },
+      { depName: 'cap-std', ownerFeatures: ['workspace-reader'] },
+      { depName: 'libc', ownerFeatures: ['credential-vault', 'local-storage', 'process-runtime', 'workspace-reader'] },
       { depName: 'rand', ownerFeatures: ['credential-vault'] },
       {
         depName: 'regex',
@@ -109,6 +110,7 @@ export const optionalDependencyFeatureOwnerRules = [
           'process-runtime',
           'session-search',
           'workspace-instructions',
+          'workspace-reader',
           'workspace-runtime',
           'workspace-text-runtime',
           'workspace-transfer',
@@ -123,8 +125,8 @@ export const optionalDependencyFeatureOwnerRules = [
       'runtime-ports optional capabilities must stay behind their exact contract slice',
     dependencies: [
       { depName: 'anyhow', ownerFeatures: ['workspace-ports'] },
-      { depName: 'openbitfun-core-types', ownerFeatures: ['agent-api', 'remote-workspace-ports', 'ts'] },
-      { depName: 'openbitfun-product-domains', ownerFeatures: ['permission', 'product-search', 'ts'] },
+      { depName: 'openbitfun-core-types', ownerFeatures: ['agent-api', 'product-search', 'remote-workspace-ports', 'ts'] },
+      { depName: 'openbitfun-permission-contracts', ownerFeatures: ['permission', 'ts'] },
       { depName: 'tokio', ownerFeatures: ['remote-exec-port', 'terminal-port', 'workspace-ports'] },
       // Exec stdin ports carry an in-process cooperative output-wait token.
       { depName: 'tokio-util', ownerFeatures: ['permission', 'remote-exec-port', 'terminal-port', 'ts', 'workspace-ports'] },
@@ -405,9 +407,9 @@ export const capabilityContractDependencyRules = [
       'agent-api': ['dep:openbitfun-core-types'],
       'git-port': [],
       'hook-function-runtime': [],
-      permission: ['dep:openbitfun-product-domains', 'dep:tokio-util'],
+      permission: ['dep:openbitfun-permission-contracts', 'dep:tokio-util'],
       'plugin-runtime': [],
-      'product-search': ['dep:openbitfun-product-domains'],
+      'product-search': ['dep:openbitfun-core-types'],
       'ptc-runtime': [],
       'remote-exec-port': ['dep:tokio', 'dep:tokio-util'],
       'remote-workspace-ports': ['dep:openbitfun-core-types'],
@@ -422,11 +424,12 @@ export const capabilityContractDependencyRules = [
         'agent-api',
         'permission',
         'openbitfun-core-types/ts',
-        'openbitfun-product-domains?/ts',
+        'openbitfun-permission-contracts?/ts',
       ],
       'workspace-ports': ['dep:anyhow', 'dep:tokio-util', 'dep:tokio', 'tokio/io-util'],
     },
     consumers: new Map([
+      ['openbitfun-agent', capabilityConsumer([capabilityEdge(['permission'], { optional: true })], [], ['permissions', 'local'])],
       ['openbitfun-agent-runtime', capabilityConsumer([
         capabilityEdge([
           'agent-api',
@@ -679,6 +682,7 @@ export const capabilityContractDependencyRules = [
       ],
     },
     consumers: new Map([
+      ['openbitfun-agent', capabilityConsumer([capabilityEdge(['agent-runtime'])])],
       ['openbitfun-legacy-migration-adapters', capabilityConsumer([capabilityEdge(['definition-contracts'])])],
       ['openbitfun-acp', capabilityConsumer(
         [capabilityEdge([], { optional: true })],
@@ -901,6 +905,7 @@ export const coreClosedFeatureProfileRules = [
       'dep:openbitfun-agent-content',
       'dep:openbitfun-agent-stream',
       'dep:openbitfun-agent-tools',
+      'openbitfun-agent/permissions',
       'openbitfun-agent-tools/computer-use-contract',
       'openbitfun-runtime-ports/agent-api',
       'openbitfun-runtime-ports/git-port',
@@ -1523,7 +1528,7 @@ export const coreClosedFeatureProfileRules = [
     manifestPath: 'src/crates/services/services-core/Cargo.toml',
     featureName: 'session-search',
     requiredFeatureRefs: [
-      'dep:openbitfun-product-domains',
+      'dep:openbitfun-core-types',
       'dep:rusqlite',
       'dep:tokio',
       'tokio/rt',

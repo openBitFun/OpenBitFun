@@ -13,6 +13,7 @@ pub mod magpie;
 pub mod model;
 pub mod model_pool;
 pub mod product_identity;
+pub mod product_search;
 pub mod responses;
 pub mod session;
 pub mod session_usage;

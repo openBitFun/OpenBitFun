@@ -2385,23 +2385,25 @@ impl DialogScheduler {
             format!("Scheduled dialog turn is missing turn_id: session_id={session_id}")
         })?;
 
-        self.execution.active_turns.insert(
-            session_id,
-            ActiveDialogTurn::new(
-                resolved.clone(),
-                queued_turn.workspace_path.clone(),
-                queued_turn.remote_connection_id.clone(),
-                queued_turn.remote_ssh_host.clone(),
-                queued_turn.agent_type.clone(),
-                queued_turn
-                    .original_user_input
-                    .clone()
-                    .unwrap_or_else(|| queued_turn.user_input.clone()),
-                queued_turn.user_message_metadata.clone(),
-                queued_turn.policy,
-                queued_turn.reply_route.clone(),
-            ),
-        );
+        self.execution
+            .admit_turn(
+                session_id,
+                ActiveDialogTurn::new(
+                    resolved.clone(),
+                    queued_turn.workspace_path.clone(),
+                    queued_turn.remote_connection_id.clone(),
+                    queued_turn.remote_ssh_host.clone(),
+                    queued_turn.agent_type.clone(),
+                    queued_turn
+                        .original_user_input
+                        .clone()
+                        .unwrap_or_else(|| queued_turn.user_input.clone()),
+                    queued_turn.user_message_metadata.clone(),
+                    queued_turn.policy,
+                    queued_turn.reply_route.clone(),
+                ),
+            )
+            .disarm();
 
         Ok(resolved)
     }

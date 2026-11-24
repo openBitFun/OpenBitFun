@@ -5,6 +5,7 @@ export const crateLayoutRules = [
   { crateName: 'config-contracts', layer: 'contracts', path: 'src/crates/contracts/config-contracts' },
   { crateName: 'core-types', layer: 'contracts', path: 'src/crates/contracts/core-types' },
   { crateName: 'events', layer: 'contracts', path: 'src/crates/contracts/events' },
+  { crateName: 'permission-contracts', layer: 'contracts', path: 'src/crates/contracts/permission-contracts' },
   { crateName: 'product-domains', layer: 'contracts', path: 'src/crates/contracts/product-domains' },
   { crateName: 'runtime-ports', layer: 'contracts', path: 'src/crates/contracts/runtime-ports' },
 
@@ -18,6 +19,7 @@ export const crateLayoutRules = [
   { crateName: 'tool-runtime', layer: 'execution', path: 'src/crates/execution/tool-execution' },
   { crateName: 'office-documents', layer: 'execution', path: 'src/crates/execution/office-documents' },
 
+  { crateName: 'agent', layer: 'assembly', path: 'src/crates/assembly/agent' },
   { crateName: 'agent-content', layer: 'assembly', path: 'src/crates/assembly/agent-content' },
   { crateName: 'product-capabilities', layer: 'assembly', path: 'src/crates/assembly/product-capabilities' },
   { crateName: 'external-sources', layer: 'assembly', path: 'src/crates/assembly/external-sources' },
