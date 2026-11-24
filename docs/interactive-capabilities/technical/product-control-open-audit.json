@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "9d4b46d0f519bc79d9d097e7c62b1a5fe5f39148d78221974a13c3df24f89373",
-  "count": 221,
+  "catalogDigest": "0819b4d1d5c0c8eb7c3435284f56a677cc8d6ec3bd13c6875204e25763b3b508",
+  "count": 222,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
-    "unstructuredInteraction": 185,
+    "unstructuredInteraction": 186,
     "visualSelection": 26
   },
   "entries": [
@@ -3807,6 +3807,23 @@
       },
       "evidence": [
         "command:get_token_usage_statistics"
+      ]
+    },
+    {
+      "capabilityId": "setting.data.storage",
+      "itemId": "clean",
+      "titleZh": "预览并清理会话文件快照",
+      "titleEn": "Preview and clean up session file snapshots",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“预览并清理会话文件快照”会永久移除所选会话的文件回退记录，请在存储空间页面核对并确认。",
+      "reasonEn": "“Preview and clean up session file snapshots” opens Storage so you can review the affected sessions before permanently removing their file rollback history.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "data.storage"
+      },
+      "evidence": [
+        "command:inspect_snapshot_storage",
+        "command:clean_snapshot_storage"
       ]
     },
     {

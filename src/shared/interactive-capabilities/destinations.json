@@ -11,6 +11,7 @@
     "application.pet",
     "data.archived",
     "data.diagnostics",
+    "data.storage",
     "data.usage",
     "development.editor",
     "development.terminal",

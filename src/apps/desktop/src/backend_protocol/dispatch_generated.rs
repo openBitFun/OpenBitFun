@@ -92,6 +92,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("check_path_exists", NativeCommandSupport::Native),
     ("choose_external_mcp_conflict_command", NativeCommandSupport::Native),
     ("choose_external_subagent_conflict_command", NativeCommandSupport::Native),
+    ("clean_snapshot_storage", NativeCommandSupport::Native),
     ("cleanup_invalid_workspaces", NativeCommandSupport::Native),
     ("clear_decision_model_credential", NativeCommandSupport::Native),
     ("clear_mcp_remote_auth", NativeCommandSupport::Native),
@@ -369,6 +370,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("initialize_mcp_servers_non_destructive", NativeCommandSupport::Native),
     ("initialize_tray_after_startup", NativeCommandSupport::Adapter),
     ("initialize_workspace_startup_state", NativeCommandSupport::Native),
+    ("inspect_snapshot_storage", NativeCommandSupport::Native),
     ("install_acp_client_cli", NativeCommandSupport::Native),
     ("install_pending_update", NativeCommandSupport::Adapter),
     ("install_update", NativeCommandSupport::Adapter),
@@ -829,6 +831,7 @@ pub(super) fn dispatch<'a>(
         "check_path_exists" => command_check_path_exists(host, args),
         "choose_external_mcp_conflict_command" => command_choose_external_mcp_conflict_command(host, args),
         "choose_external_subagent_conflict_command" => command_choose_external_subagent_conflict_command(host, args),
+        "clean_snapshot_storage" => command_clean_snapshot_storage(host, args),
         "cleanup_invalid_workspaces" => command_cleanup_invalid_workspaces(host, args),
         "clear_decision_model_credential" => command_clear_decision_model_credential(host, args),
         "clear_mcp_remote_auth" => command_clear_mcp_remote_auth(host, args),
@@ -1106,6 +1109,7 @@ pub(super) fn dispatch<'a>(
         "initialize_mcp_servers_non_destructive" => command_initialize_mcp_servers_non_destructive(host, args),
         "initialize_tray_after_startup" => super::native_commands::initialize_tray_after_startup(host, args),
         "initialize_workspace_startup_state" => command_initialize_workspace_startup_state(host, args),
+        "inspect_snapshot_storage" => command_inspect_snapshot_storage(host, args),
         "install_acp_client_cli" => command_install_acp_client_cli(host, args),
         "install_pending_update" => super::native_commands::install_pending_update(host, args),
         "install_update" => super::native_commands::install_update(host, args),
@@ -2084,6 +2088,17 @@ fn command_choose_external_subagent_conflict_command(host: &Arc<NativeHost>, arg
     Box::pin(async move {
         let result = crate::choose_external_subagent_conflict_command(
             arg(&args, "request", "choose_external_subagent_conflict_command")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_clean_snapshot_storage(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::clean_snapshot_storage(
+            host.command_state("clean_snapshot_storage")?,
+            arg(&args, "request", "clean_snapshot_storage")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
@@ -4989,6 +5004,16 @@ fn command_initialize_workspace_startup_state(host: &Arc<NativeHost>, args: Valu
             host.command_state("initialize_workspace_startup_state")?,
             HostHandle::new(Arc::clone(host)),
             host.command_state("initialize_workspace_startup_state")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_inspect_snapshot_storage(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::inspect_snapshot_storage(
+            arg(&args, "request", "inspect_snapshot_storage")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })

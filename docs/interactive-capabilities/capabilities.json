@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "9d4b46d0f519bc79d9d097e7c62b1a5fe5f39148d78221974a13c3df24f89373",
+  "digest": "0819b4d1d5c0c8eb7c3435284f56a677cc8d6ec3bd13c6875204e25763b3b508",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -176,13 +176,13 @@
   ],
   "counts": {
     "features": 23,
-    "settings": 23,
-    "userFacing": 46,
-    "documentedItems": 351,
+    "settings": 24,
+    "userFacing": 47,
+    "documentedItems": 352,
     "controlCoverage": {
       "direct": 63,
       "delegated": 67,
-      "interactive": 221,
+      "interactive": 222,
       "unsupported": 0
     }
   },
@@ -20610,6 +20610,97 @@
       }
     },
     {
+      "id": "setting.data.storage:query",
+      "capabilityId": "setting.data.storage",
+      "itemIds": [
+        "clean"
+      ],
+      "kind": "query",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "static"
+      },
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "data.storage"
+      }
+    },
+    {
+      "id": "setting.data.storage:open:clean",
+      "capabilityId": "setting.data.storage",
+      "itemIds": [
+        "clean"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "data.storage"
+      }
+    },
+    {
       "id": "setting.data.archived:query",
       "capabilityId": "setting.data.archived",
       "itemIds": [
@@ -36062,6 +36153,88 @@
         "Take me to model call statistics"
       ],
       "docsUrl": "https://playbook.openbitfun.com/capabilities/setting.data.usage/"
+    },
+    {
+      "id": "setting.data.storage",
+      "kind": "setting",
+      "categoryId": "data",
+      "directoryGroupId": "settings-data",
+      "order": 53,
+      "entryPathZh": "设置 → 数据与维护 → 存储空间",
+      "entryPathEn": "Settings → Data & Maintenance → Storage",
+      "titleZh": "存储空间",
+      "titleEn": "Storage",
+      "summaryZh": "按工作区查看本机文件快照占用，手动清理符合条件的会话。",
+      "summaryEn": "Inspect local file snapshot usage by workspace and clean up eligible session histories.",
+      "keywordsZh": [
+        "存储空间",
+        "快照清理"
+      ],
+      "keywordsEn": [
+        "storage",
+        "snapshot cleanup"
+      ],
+      "highlightsZh": [
+        "查看每个工作区的快照占用及共享文件大小。"
+      ],
+      "highlightsEn": [
+        "See snapshot usage and shared file sizes for each workspace."
+      ],
+      "items": [
+        {
+          "id": "clean",
+          "titleZh": "预览并清理会话文件快照",
+          "titleEn": "Preview and clean up session file snapshots",
+          "descriptionZh": "选择工作区和未活跃时长，核对会话及预计释放空间后确认清理。",
+          "descriptionEn": "Choose workspaces and an inactivity period, review the affected sessions and estimated space, then confirm cleanup.",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“预览并清理会话文件快照”会永久移除所选会话的文件回退记录，请在存储空间页面核对并确认。",
+            "reasonEn": "“Preview and clean up session file snapshots” opens Storage so you can review the affected sessions before permanently removing their file rollback history."
+          }
+        }
+      ],
+      "stepsZh": [
+        "打开存储空间，选择工作区和清理范围。",
+        "核对预览并确认删除文件快照。"
+      ],
+      "stepsEn": [
+        "Open Storage and select the workspaces and inactivity period.",
+        "Review the preview and confirm deletion of file snapshots."
+      ],
+      "agentExamplesZh": [
+        "打开快照存储设置"
+      ],
+      "agentExamplesEn": [
+        "Open snapshot storage settings"
+      ],
+      "relatedIds": [
+        "setting.data.archived"
+      ],
+      "destination": {
+        "kind": "settings",
+        "pageId": "data.storage"
+      },
+      "operations": [],
+      "options": [],
+      "searchTerms": [
+        "setting.data.storage",
+        "存储空间",
+        "Storage",
+        "数据与诊断",
+        "Data & diagnostics",
+        "快照清理",
+        "storage",
+        "snapshot cleanup",
+        "查看每个工作区的快照占用及共享文件大小。",
+        "See snapshot usage and shared file sizes for each workspace.",
+        "预览并清理会话文件快照",
+        "Preview and clean up session file snapshots",
+        "打开快照存储设置",
+        "Open snapshot storage settings"
+      ],
+      "docsUrl": "https://playbook.openbitfun.com/capabilities/setting.data.storage/"
     },
     {
       "id": "setting.data.archived",

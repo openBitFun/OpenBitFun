@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:c7fde8c4d658cb51",
+  "digest": "fnv1a64:254a331c124a4510",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -1048,6 +1048,18 @@
       }
     },
     {
+      "id": "clean_snapshot_storage",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
       "id": "cleanup_invalid_workspaces",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
@@ -1859,6 +1871,19 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host keeps no desktop cards"
+      }
+    },
+    {
+      "id": "desktop_external_control",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
+      "peer": {
+        "kind": "retired",
+        "reason": "local HTTP task control was retired with the Tauri desktop shell"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "local HTTP task control was retired with the Tauri desktop shell"
       }
     },
     {
@@ -4722,6 +4747,18 @@
       },
       "cliPeer": {
         "kind": "handled"
+      }
+    },
+    {
+      "id": "inspect_snapshot_storage",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {

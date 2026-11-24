@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "9d4b46d0f519bc79d9d097e7c62b1a5fe5f39148d78221974a13c3df24f89373",
-  "commandCount": 725,
+  "catalogDigest": "0819b4d1d5c0c8eb7c3435284f56a677cc8d6ec3bd13c6875204e25763b3b508",
+  "commandCount": 727,
   "coverage": {
-    "commandCount": 725,
-    "documentedCommandCount": 623,
+    "commandCount": 727,
+    "documentedCommandCount": 625,
     "implementationCommandCount": 102,
     "implementationDigest": "4954073be0636de6ca1ef4d75ade342a2450cbc396030322c116e2973299eb4e"
   },
@@ -751,7 +751,7 @@
       "visibility": "documented",
       "rustPath": "api::btw_api::btw_ask_stream",
       "sourceFile": "src/apps/desktop/src/api/btw_api.rs",
-      "signature": "fn btw_ask_stream( state: State<'_, AppState>, coordinator: State<'_, Arc<ConversationCoordinator>>, request: BtwAskStreamRequest, ) -> Result<BtwAskStreamResponse, String>",
+      "signature": "fn btw_ask_stream( state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, coordinator: State<'_, Arc<ConversationCoordinator>>, request: BtwAskStreamRequest, ) -> Result<BtwAskStreamResponse, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
@@ -1055,6 +1055,22 @@
       "sourceFile": "src/apps/desktop/src/api/external_sources_api.rs",
       "signature": "fn choose_external_subagent_conflict_command( request: ChooseExternalSubagentConflictRequest, ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse>",
       "remoteWorkspacePolicy": "RemoteUnsupported"
+    },
+    {
+      "id": "clean_snapshot_storage",
+      "moduleId": "snapshot_service",
+      "capabilityId": "setting.data.storage",
+      "capabilityIds": [
+        "setting.data.storage"
+      ],
+      "documentedItemIds": [
+        "setting.data.storage:clean"
+      ],
+      "visibility": "documented",
+      "rustPath": "clean_snapshot_storage",
+      "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
+      "signature": "fn clean_snapshot_storage( runtime: State<'_, DesktopRuntimeContext>, request: CleanSnapshotStorageRequest, ) -> Result<CleanupResult, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "cleanup_invalid_workspaces",
@@ -5428,6 +5444,22 @@
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn initialize_workspace_startup_state( state: State<'_, AppState>, app: HostHandle, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<WorkspaceStartupStateSnapshotDto, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
+      "id": "inspect_snapshot_storage",
+      "moduleId": "snapshot_service",
+      "capabilityId": "setting.data.storage",
+      "capabilityIds": [
+        "setting.data.storage"
+      ],
+      "documentedItemIds": [
+        "setting.data.storage:clean"
+      ],
+      "visibility": "documented",
+      "rustPath": "inspect_snapshot_storage",
+      "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
+      "signature": "fn inspect_snapshot_storage( request: InspectSnapshotStorageRequest, ) -> Result<StorageOverview, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "install_acp_client_cli",
