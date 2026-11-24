@@ -64,6 +64,8 @@ const codeCopied = signal(false);
 const typedEmail = signal("");
 const typedCode = signal("");
 let pendingOnSuccess: (() => void | Promise<void>) | null = null;
+/** A sign-in was left running when the dialog closed; its completion still deserves the toast. */
+let resumedSignInPending = false;
 let autoPollTimer: ReturnType<typeof setInterval> | null = null;
 let copiedResetTimer: ReturnType<typeof setTimeout> | null = null;
 /** How long "Copied" stays on the copy button. */
@@ -161,19 +163,23 @@ export function openAccountAuthModal(options?: OpenAccountAuthModalOptions): voi
   }
 }
 
-/** Closes the account dialog, cancelling a sign-in in progress. */
+/**
+ * Closes the account dialog. A sign-in in progress is kept, not cancelled: the
+ * code may still be on its way, or the browser sign-in still open, and opening
+ * the dialog again goes back to that step. "Use another email" and Cancel end
+ * a sign-in on purpose.
+ */
 export function closeAccountAuthModal(): void {
   pendingOnSuccess = null;
-  stopAutoPoll();
+  resumedSignInPending = Boolean(emailChallenge()) || Boolean(githubAuthFlow());
   clearCopiedTimer();
   codeCopied.set(false);
-  typedCode.set("");
-  if (githubAuthFlow()) {
-    cancelGitHubSignIn();
-  } else {
-    cancelEmailSignIn();
-  }
   accountAuthModalOpen.set(false);
+}
+
+/** Whether a sign-in is under way that a stray click must not throw away. */
+function signInInProgress(): boolean {
+  return Boolean(emailChallenge()) || Boolean(githubAuthFlow()) || typedEmail().trim() !== "";
 }
 
 /** The sign-in step the host's state is at (signed in is not a sign-in step). */
@@ -193,14 +199,20 @@ function HostSignIn(props: { header: boolean; step: () => SignInStep; extra?: Pa
       error={authError()}
       emailCode
       email={typedEmail()}
-      onEmailChange={value => typedEmail.set(value)}
+      onEmailChange={value => {
+        typedEmail.set(value);
+        if (authError()) authError.set("");
+      }}
       onContinue={() => void requestEmailCode(typedEmail())}
       onGitHub={() => void startGitHubSignIn()}
       onLocalOnly={props.extra?.onLocalOnly}
       codeEmail={emailChallenge()?.email ?? typedEmail()}
       codeLength={emailChallenge()?.codeLength}
       code={typedCode()}
-      onCodeChange={value => typedCode.set(value)}
+      onCodeChange={value => {
+        typedCode.set(value);
+        if (authError()) authError.set("");
+      }}
       onSignIn={() => {
         void verifyEmailCode(typedCode()).then(done => {
           if (done) typedCode.set("");
@@ -252,13 +264,15 @@ function SignedInAccount() {
 
 export function AccountAuthModal() {
   const unsubAuth = onAccountAuthChanged(signedIn => {
-    if (signedIn && (accountAuthModalOpen() || pendingOnSuccess !== null)) {
+    if (signedIn && (accountAuthModalOpen() || pendingOnSuccess !== null || resumedSignInPending)) {
+      resumedSignInPending = false;
       handleAuthSuccess();
     }
   });
   // The first-run screen runs the same sign-in without the dialog, so only an explicit open shows it.
   const modalVisible = (): boolean => accountAuthModalOpen();
-  startAutoPoll(modalVisible);
+  // A browser sign-in keeps being checked after the dialog is closed: it can finish there meanwhile.
+  startAutoPoll(() => true);
 
   cleanup(() => {
     stopAutoPoll();
@@ -275,6 +289,8 @@ export function AccountAuthModal() {
       title={signedInView() ? tr("signin.accountTitle") : signInStepTitle({ step: hostStep() })}
       subtitle={signedInView() ? undefined : signInStepBody({ step: hostStep(), codeEmail: emailChallenge()?.email })}
       accessibilityLabel="account-auth-modal"
+      keepOpenOnBackdrop={!signedInView() && signInInProgress()}
+      keepsInputOnClose={true}
       onClose={closeAccountAuthModal}
       footer={
         <If when={signedInView()}>

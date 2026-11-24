@@ -1019,6 +1019,10 @@ function SshConnectionModal() {
       closeOnBackdropPress={!sshConnecting()}
       closeOnEscape={!sshConnecting()}
       onClose={closeSshConnectionModal}
+      onSubmit={() => {
+        if (!showNewForm() || sshConnecting() || sshTesting()) return;
+        void (sshEditOnly() ? saveSshConnectionForm() : submitSshConnectionForm());
+      }}
       footer={
         showNewForm() ? (
           <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: space.sm }}>
@@ -1079,6 +1083,7 @@ function SshConnectionModal() {
         <Scroll horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
           <UnderlineTabs
             size="sm"
+            scrollable={compactLayout()}
             options={targetTabs()}
             value={sshTargetType()}
             onChange={t => setSshTargetType(t)}

@@ -270,8 +270,8 @@ async function signIn(app: App) {
   await app.waitFor("label:controller-email");
   await app.type("controller-email-input", "me@example.com");
   await app.press("label:controller-continue");
+  // A complete code signs in by itself.
   await app.type("controller-code-input", "12345678");
-  await app.press("label:controller-verify");
 }
 
 test("sign in with the email code; the device opens by itself and runs in place over the end-to-end channel", async () => {
@@ -285,13 +285,12 @@ test("sign in with the email code; the device opens by itself and runs in place 
   await app.waitFor("text:Enter the code we sent to me@example.com.");
   expect(host.requests[0]).toMatchObject({ method: "POST", body: { email: "Me@Example.com", locale: "en-US" } });
 
-  // A wrong code keeps the step and says so.
+  // A wrong code keeps the step and says so (a complete code is sent without a press).
   await app.type("controller-code-input", "00000000");
-  await app.press("label:controller-verify");
   await app.waitFor("text:That code didn't work. Check it or send a new one.");
   await app.clear("controller-code-input");
+  // As the mail groups it: the space is dropped and the complete code signs in.
   await app.type("controller-code-input", "1234 5678");
-  await app.press("label:controller-verify");
 
   // No device picker: the only usable device opens, and its UI is this page's.
   await until(app, "label:controller-studio");

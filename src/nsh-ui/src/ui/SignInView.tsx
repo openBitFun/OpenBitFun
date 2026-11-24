@@ -319,8 +319,21 @@ function useResendCountdown(resendAt: () => number | null | undefined): () => nu
   };
 }
 
+/**
+ * What a typed or pasted code becomes: the mail shows it grouped ("1234 5678",
+ * "1234-5678") and a paste may carry the line around it, so only letters and
+ * digits stay, at most as many as the code has.
+ */
+export function normalizeSignInCode(raw: string, length: number): string {
+  return raw.replace(/[^0-9A-Za-z]/g, "").slice(0, Math.max(1, length));
+}
+
 function CodeField(outer: { p: SignInViewProps; onSubmit: () => void }) {
   const props = outer.p;
+  const length = (): number => props.codeLength ?? DEFAULT_CODE_LENGTH;
+  // The last complete code sent on its own, so a full code signs in once without a press,
+  // and a wrong one is not sent again until it is changed.
+  let lastAutoSubmitted = "";
   return (
     <View
       style={{
@@ -347,7 +360,15 @@ function CodeField(outer: { p: SignInViewProps; onSubmit: () => void }) {
         autoCorrect={false}
         autoComplete="one-time-code"
         accessibilityLabel={`${props.idPrefix}-code-input`}
-        onChange={event => props.onCodeChange?.(event.value)}
+        onChange={event => {
+          const code = normalizeSignInCode(event.value, length());
+          props.onCodeChange?.(code);
+          if (code.length === length() && code !== lastAutoSubmitted && !props.busy) {
+            lastAutoSubmitted = code;
+            // After this change is applied, so the submit reads the full code.
+            queueMicrotask(() => outer.onSubmit());
+          }
+        }}
         onSubmit={() => outer.onSubmit()}
         style={{
           flex: 1,

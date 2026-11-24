@@ -692,6 +692,10 @@ function McpPromptDialog(): JSX.Element {
       size="md"
       accessibilityLabel="mcp-prompt-dialog"
       onClose={() => closeMcpPromptForm()}
+      onSubmit={() => {
+        const current = entry();
+        if (current && !missing() && !mcpPromptBusy()) void usePrompt(current, mcpPromptValues());
+      }}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => closeMcpPromptForm()} />

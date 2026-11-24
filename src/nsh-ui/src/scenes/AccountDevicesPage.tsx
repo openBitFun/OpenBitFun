@@ -269,6 +269,11 @@ function ChannelsSection() {
         size="sm"
         accessibilityLabel="connector-modal-telegram"
         onClose={closeChannelModal}
+        onSubmit={() => {
+          if (connectorBusy()) return;
+          connectorBannerOwner.set("telegram");
+          void saveAndConnectTelegram();
+        }}
         footer={
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
@@ -319,6 +324,11 @@ function ChannelsSection() {
         size="md"
         accessibilityLabel="connector-modal-feishu"
         onClose={closeChannelModal}
+        onSubmit={() => {
+          if (connectorBusy()) return;
+          connectorBannerOwner.set("feishu");
+          void saveAndConnectFeishu();
+        }}
         footer={
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
@@ -376,6 +386,8 @@ function ChannelsSection() {
         subtitle={tr("devices.wechatSubtitle")}
         size="md"
         accessibilityLabel="connector-modal-weixin"
+        // The QR is scanned on a phone: the click that brings the window back must not end it.
+        keepOpenOnBackdrop={Boolean(weixinQr()) && weixinQr()!.status !== "confirmed"}
         onClose={closeChannelModal}
         footer={
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>

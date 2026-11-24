@@ -87,14 +87,21 @@ function SignInStep() {
       error={controllerFailure() ? failureText(controllerFailure()!) : ""}
       emailCode
       email={email()}
-      onEmailChange={value => email.set(value)}
+      onEmailChange={value => {
+        email.set(value);
+        // A new attempt: the previous refusal no longer describes what is typed.
+        if (controllerFailure()) controllerFailure.set(null);
+      }}
       onContinue={() => {
         if (email().trim()) void requestControllerCode(email());
       }}
       codeEmail={controllerChallenge()?.email ?? email()}
       codeLength={controllerChallenge()?.codeLength ?? undefined}
       code={code()}
-      onCodeChange={value => code.set(value)}
+      onCodeChange={value => {
+        code.set(value);
+        if (controllerFailure()) controllerFailure.set(null);
+      }}
       onSignIn={() => {
         if (code().trim()) void verifyControllerCode(code());
       }}

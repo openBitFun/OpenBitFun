@@ -1446,7 +1446,7 @@ function RowText(props: { label: string; description?: string; tabular?: boolean
         gap: space.hair,
       }}
     >
-      <Text style={textStyle("body")}>
+      <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
         {props.label}
       </Text>
       <If when={props.description ?? ""}>
@@ -1454,6 +1454,7 @@ function RowText(props: { label: string; description?: string; tabular?: boolean
           <Text
             style={{
               ...textStyle("caption", { tabular: props.tabular }),
+              lineHeight: textLineHeight(12, 1.45),
               maxWidth: 460,
             }}
           >
@@ -1529,37 +1530,86 @@ function repeatsPageTitle(title: string): boolean {
   return title === tr(settingsPageEntry(selectedSettingsPage()).labelKey);
 }
 
-/** The 13/600 secondary section header with an optional trailing control. */
-function SectionHeader(props: { title: string; extra?: JSX.Element }) {
+/**
+ * A section's header: its 16/600 title, the line that explains it right under
+ * the title (read before the controls, not after them), and the section's own
+ * actions on the right. With no title (the page title already says it) the
+ * explanation and the actions share the line.
+ */
+function SectionHeader(props: { title: string; description?: string; extra?: JSX.Element }) {
   return (
     <View
       style={{
         flexDirection: "row",
-        alignItems: "center",
-        gap: space.sm,
+        // On a narrow window the actions move under the explanation instead of squeezing it.
+        flexWrap: "wrap",
+        alignItems: props.description ? "flex-end" : "center",
+        columnGap: space.md,
+        rowGap: space.sm,
         minHeight: space.xl,
-        marginBottom: space.sm,
-        paddingHorizontal: space.xs,
+        marginBottom: space.md,
       }}
     >
-      <Text
-        role="header"
-        style={{
-          ...textStyle("sectionTitle", { color: palette().textSecondary }),
-          flex: 1,
-          minWidth: 0,
-        }}
-      >
-        {props.title}
-      </Text>
+      <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 240, minWidth: 0, gap: space.xs }}>
+        <If when={props.title}>
+          <Text role="header" style={textStyle("sectionTitle")}>
+            {props.title}
+          </Text>
+        </If>
+        <If when={props.description ?? ""}>
+          {description => (
+            <Text
+              style={{
+                ...textStyle("caption"),
+                lineHeight: textLineHeight(12, 1.5),
+                maxWidth: 600,
+              }}
+            >
+              {description()}
+            </Text>
+          )}
+        </If>
+      </View>
       <If when={Boolean(props.extra)}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>{props.extra}</View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, marginLeft: "auto" }}>{props.extra}</View>
       </If>
     </View>
   );
 }
 
-/** The 12 muted line under a group that explains it (an Apple-style footer). */
+/** An empty list inside a section: a quiet glyph tile over one line, with room around it. */
+function SettingsEmptyState(props: { icon: IconName; message: string }) {
+  return (
+    <View
+      style={{
+        alignItems: "center",
+        justifyContent: "center",
+        gap: space.sm,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.xl,
+      }}
+    >
+      <View
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: radii.md,
+          borderCurve: "continuous",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: palette().buttonSecondaryBg,
+        }}
+      >
+        <Icon name={props.icon} size={16} color={palette().textMuted} />
+      </View>
+      <Text style={{ ...textStyle("label", { color: palette().textSecondary }), textAlign: "center", maxWidth: 420 }}>
+        {props.message}
+      </Text>
+    </View>
+  );
+}
+
+/** A 12 muted line inside a page (an empty search, a filter with no rows). */
 function SectionFootnote(props: { text: string }) {
   return (
     <Text
@@ -1659,12 +1709,15 @@ function SettingsGroup(props: {
 }) {
   return (
     <View ref={el => registerSectionAnchor(props.id, el)} style={{ minWidth: 0 }}>
-      <If when={!props.hideTitle || Boolean(props.extra)}>
-        <SectionHeader title={props.hideTitle ? "" : props.title} extra={props.extra} />
+      <If when={!props.hideTitle || Boolean(props.extra) || Boolean(props.description)}>
+        <SectionHeader
+          title={props.hideTitle ? "" : props.title}
+          description={props.description}
+          extra={props.extra}
+        />
       </If>
       <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
       <View style={insetGroupStyle()}>{props.children}</View>
-      <If when={props.description ?? ""}>{description => <SectionFootnote text={description()} />}</If>
     </View>
   );
 }
@@ -1690,14 +1743,17 @@ function SettingsSection(props: {
   const inset = (): number => (props.flush ? 0 : (props.bodyPadding ?? 16));
   return (
     <View style={{ minWidth: 0 }}>
-      <If when={!repeatsPageTitle(props.title) || Boolean(props.extra)}>
-        <SectionHeader title={repeatsPageTitle(props.title) ? "" : props.title} extra={props.extra} />
+      <If when={!repeatsPageTitle(props.title) || Boolean(props.extra) || Boolean(props.subtitle)}>
+        <SectionHeader
+          title={repeatsPageTitle(props.title) ? "" : props.title}
+          description={props.subtitle}
+          extra={props.extra}
+        />
       </If>
       <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
       <View style={insetGroupStyle(inset())}>
         <SettingsInsetContext.Provider value={inset()}>{props.children}</SettingsInsetContext.Provider>
       </View>
-      <If when={props.subtitle ?? ""}>{subtitle => <SectionFootnote text={subtitle()} />}</If>
     </View>
   );
 }
@@ -1842,7 +1898,7 @@ function ChoiceControl(props: { spec: FieldSpec }) {
           options={options()}
           accessibilityLabel={spec.id}
           disabled={fieldSaving(spec)}
-          minWidth={settingsCompact() ? 160 : 200}
+          minWidth={NUMBER_STEPPER_WIDTH}
           maxWidth={settingsCompact() ? undefined : 280}
           align="end"
           onChange={value => void writeField(spec, value)}
@@ -1900,7 +1956,7 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
         searchable={options().length > 8}
         accessibilityLabel={spec.id}
         disabled={fieldSaving(spec)}
-        minWidth={settingsCompact() ? 160 : 220}
+        minWidth={settingsCompact() ? NUMBER_STEPPER_WIDTH : 220}
         maxWidth={settingsCompact() ? undefined : 300}
         align="end"
         onChange={value => void writeField(spec, value || null)}
@@ -1913,7 +1969,8 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
  * Every number row's stepper has this width, so the boxes of all number rows
  * share one right-aligned column and their values line up.
  */
-const NUMBER_STEPPER_WIDTH = 168;
+/** Same width as a settings select, so steppers and selects share one right rail. */
+const NUMBER_STEPPER_WIDTH = 200;
 
 /**
  * The one number control of the settings pages: `−` value unit `+` in a box of
@@ -2040,12 +2097,11 @@ function SettingsNumberStepper(props: {
   );
 }
 
-/** A quiet text button left of a number box (Reset, No limit). */
-function StepperAccessory(props: { label: string; tooltip?: string; accessibilityLabel: string; onPress: () => void }) {
+/** A quiet icon button left of a number box (reset to the default, remove the limit); the tooltip names it. */
+function StepperAccessory(props: { icon: IconName; tooltip: string; accessibilityLabel: string; onPress: () => void }) {
   return (
-    <Button
-      label={props.label}
-      variant="ghost"
+    <IconButton
+      icon={props.icon}
       size="sm"
       tooltip={props.tooltip}
       accessibilityLabel={props.accessibilityLabel}
@@ -2112,7 +2168,7 @@ function NumberControl(props: { spec: FieldSpec }) {
           </If>
           <If when={!fieldDirty(spec) && spec.clearable === true && value() !== null}>
             <StepperAccessory
-              label={tr("settings.placeholder.noLimit")}
+              icon="close"
               tooltip={tr("settings.field.clearLimit")}
               accessibilityLabel={`${spec.id}-clear`}
               onPress={() => void writeField(spec, null)}
@@ -2120,7 +2176,7 @@ function NumberControl(props: { spec: FieldSpec }) {
           </If>
           <If when={!fieldDirty(spec) && resettable()}>
             <StepperAccessory
-              label={tr("common.reset")}
+              icon="undo"
               tooltip={tr("settings.field.resetToDefault", { value: String(backendDefault() ?? "") })}
               accessibilityLabel={`${spec.id}-reset`}
               onPress={() => void writeField(spec, backendDefault())}
@@ -2167,10 +2223,7 @@ function TextControl(props: { spec: FieldSpec }) {
 }
 
 function fieldDescription(spec: FieldSpec): string {
-  const hint = fieldHint(spec) ?? "";
-  const isDefault = fieldMissing(spec) && defaultForField(spec) !== undefined;
-  if (isDefault) return hint ? `${hint} · ${tr("common.default")}` : tr("settings.field.defaultSetting");
-  return hint;
+  return fieldHint(spec) ?? "";
 }
 
 /** Fields the desktop sets through product control, which also applies them on the host. */
@@ -2497,12 +2550,7 @@ function PermissionsSection() {
           title={tr("settings.permissions.title")}
           flush={true}
           subtitle={
-            permissionMode() === null
-              ? tr("settings.permissions.reading")
-              : tr("settings.permissions.subtitleActive", {
-                  mode: modeLabel(permissionMode()!),
-                  hint: modeHint(permissionMode()!),
-                })
+            permissionMode() === null ? tr("settings.permissions.reading") : tr("settings.permissions.modeIntro")
           }
           notice={permissionsNotice()}
           onDismissNotice={() => permissionsNotice.set("")}
@@ -2823,19 +2871,22 @@ function ApprovalSection() {
     void saveApproval({ timeoutSeconds: Math.max(1, current + direction) });
   };
   return (
-    <SettingsSection
-      title={tr("settings.permissions.autoTitle")}
-      flush={true}
-      notice={approvalNotice()}
-      onDismissNotice={() => approvalNotice.set("")}
+    // Until Auto is chosen there is nothing to set here: the title and the line
+    // that says so, without an empty card under them.
+    <If
+      when={permissionMode() === "auto"}
+      else={
+        <View style={{ minWidth: 0 }}>
+          <SectionHeader title={tr("settings.permissions.autoTitle")} description={tr("settings.permissions.autoHint")} />
+          <SectionNoticeBanner notice={approvalNotice()} onDismiss={() => approvalNotice.set("")} />
+        </View>
+      }
     >
-      <If
-        when={permissionMode() === "auto"}
-        else={
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: 12, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
-            <Text style={textStyle("caption")}>{tr("settings.permissions.autoHint")}</Text>
-          </View>
-        }
+      <SettingsSection
+        title={tr("settings.permissions.autoTitle")}
+        flush={true}
+        notice={approvalNotice()}
+        onDismissNotice={() => approvalNotice.set("")}
       >
         <SettingsConfigRow label={tr("settings.polish.assessedBy")}>
           <SegmentedTabs
@@ -3004,8 +3055,8 @@ function ApprovalSection() {
             onChange={val => void saveApproval({ onError: val === "reject" ? "reject" : "ask" })}
           />
         </SettingsConfigRow>
-      </If>
-    </SettingsSection>
+      </SettingsSection>
+    </If>
   );
 }
 
@@ -3216,7 +3267,7 @@ function WebSearchSection() {
           >
             <RowSeparator edge="top" />
             <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 180, minWidth: 0, gap: space.hair }}>
-              <Text style={textStyle("body")}>
+              <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
                 {tr("settings.models.apiKey")}
               </Text>
               <If when={credentialLine()}>
@@ -3342,7 +3393,6 @@ function QuickActionsSection() {
               <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
                 <ToggleSwitch
                   value={action().enabled}
-                  label={action().enabled ? tr("settings.quickActions.shown") : tr("settings.quickActions.hidden")}
                   accessibilityLabel={`quick-action-toggle-${action().id}`}
                   onChange={() => void toggleQuickAction(action().id)}
                 />
@@ -3769,19 +3819,7 @@ function McpSection() {
           )}
         </Each>
         <If when={mcpServerRows().length === 0 && mcpAvailable() === true && !mcpLoading()}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.md,
-              paddingHorizontal: SETTINGS_ROW_INSET,
-              paddingVertical: space.md,
-              minHeight: SETTINGS_ROW_MIN,
-            }}
-          >
-            <Icon name="plug" size={16} color={palette().textMuted} />
-            <Text style={textStyle("caption")}>{tr("settings.mcp.noServers")}</Text>
-          </View>
+          <SettingsEmptyState icon="plug" message={tr("settings.mcp.noServers")} />
         </If>
         <If when={mcpBusy()}>
           {busy => (
@@ -3846,6 +3884,8 @@ function McpSection() {
         subtitle={tr("settings.mcp.oauthStatus", { status: mcpOAuthStatusLabel(mcpOAuthSession()) })}
         size="md"
         accessibilityLabel="mcp-auth-modal"
+        // Authorization finishes in the browser: the click that returns to this window must not end it.
+        keepOpenOnBackdrop={Boolean(mcpOAuthSession()) && !["authorized", "failed", "cancelled"].includes(mcpOAuthSession()!.status)}
         onClose={() => closeMcpAuth()}
         footer={
           <Button
@@ -4447,21 +4487,7 @@ function AcpSection() {
           </If>
 
           <If when={acpClients().length === 0}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: space.md,
-                paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: space.md,
-                minHeight: SETTINGS_ROW_MIN,
-              }}
-            >
-              <Icon name="bot" size={16} color={palette().textMuted} />
-              <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
-                {tr("settings.acp.empty")}
-              </Text>
-            </View>
+            <SettingsEmptyState icon="bot" message={tr("settings.acp.empty")} />
           </If>
           <Each of={acpClients()} key={client => client.id}>
             {(client, index) => (
@@ -5368,10 +5394,9 @@ function TaskModelsSection() {
     }
     return rows;
   };
-  const descriptionOf = (task: string, fallback: string): string => {
-    const hint = TASK_MODEL_HINT_KEYS[task] ? tr(TASK_MODEL_HINT_KEYS[task]) : fallback;
-    return taskModelsAbsent() ? `${hint} · ${tr("common.default")}` : hint;
-  };
+  // The section's notice already says the host stores none yet; rows keep their own line.
+  const descriptionOf = (task: string, fallback: string): string =>
+    TASK_MODEL_HINT_KEYS[task] ? tr(TASK_MODEL_HINT_KEYS[task]) : fallback;
   return (
     <If when={taskModelsSupported() !== false}>
       <SettingsGroup
@@ -5400,7 +5425,7 @@ function TaskModelsSection() {
                   options={optionsFor(row().id)}
                   searchable={optionsFor(row().id).length > 8}
                   accessibilityLabel={`task-model-${row().id}`}
-                  minWidth={settingsCompact() ? 160 : 220}
+                  minWidth={settingsCompact() ? NUMBER_STEPPER_WIDTH : 220}
                   maxWidth={settingsCompact() ? undefined : 300}
                   align="end"
                   onChange={value =>
@@ -5502,7 +5527,7 @@ function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number];
           </View>
           <Text
             style={{
-              ...textStyle("mono", { color: palette().textMuted, tabular: true }),
+              ...textStyle("caption", { color: palette().textMuted, tabular: true }),
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
@@ -6555,7 +6580,7 @@ function ModelSection() {
                     <If when={Boolean(group().host) && group().host !== group().label}>
                       <Text
                         style={{
-                          ...textStyle("mono", { color: palette().textMuted }),
+                          ...textStyle("caption", { color: palette().textMuted }),
                           flexShrink: 2,
                           minWidth: 0,
                           numberOfLines: 1,
@@ -7095,6 +7120,7 @@ function ModelSection() {
           size="sm"
           accessibilityLabel="model-limits-modal"
           onClose={() => closeModelLimits()}
+          onSubmit={() => void saveModelLimits()}
           footer={
             <If when={modelLimitsDraft() !== null}>
               <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
@@ -7395,11 +7421,7 @@ function AppearanceSwatchGallery() {
 function AppearanceSection() {
   const followSystem = () => appearanceMode() === "system" && appearanceId() === null;
   return (
-    <SettingsSection
-      flush={true}
-      title={tr("settings.appearance.title")}
-      subtitle={tr("settings.appearance.subtitle")}
-    >
+    <SettingsSection flush={true} title={tr("settings.appearance.title")}>
       <View>
         <SettingsConfigRow
           label={tr("settings.appearance.followSystem")}
@@ -7445,14 +7467,9 @@ function ContentWidthRow() {
       <RowSeparator edge="top" />
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: space.md }}>
         <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Text style={textStyle("body")}>
-              {tr("settings.appearance.contentWidth")}
-            </Text>
-            <Text style={textStyle("micro")}>
-              {tr("settings.appearance.narrowest", { px: MIN_CONTENT_WIDTH })}
-            </Text>
-          </View>
+          <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
+            {tr("settings.appearance.contentWidth")}
+          </Text>
           <Text style={textStyle("caption", { tabular: true })}>
             {tr("settings.appearance.contentWidthDesc", { px: contentWidth() })}
           </Text>
@@ -7467,7 +7484,8 @@ function ContentWidthRow() {
           leading={
             <If when={isCustomWidth()}>
               <StepperAccessory
-                label={tr("common.reset")}
+                icon="undo"
+                tooltip={tr("common.reset")}
                 accessibilityLabel="content-width-reset"
                 onPress={() => resetContentWidth()}
               />
@@ -7509,7 +7527,7 @@ function FontSizeRows() {
         }}
       >
         <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
-          <Text style={textStyle("body")}>
+          <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
             {tr("settings.appearance.textSize")}
           </Text>
           <Text style={textStyle("caption", { tabular: true })}>
@@ -7527,7 +7545,8 @@ function FontSizeRows() {
           leading={
             <If when={fontLevel() !== "default"}>
               <StepperAccessory
-                label={tr("common.reset")}
+                icon="undo"
+                tooltip={tr("common.reset")}
                 accessibilityLabel="font-size-reset"
                 onPress={() => void resetFontPreference()}
               />
@@ -7609,7 +7628,7 @@ function PoolsSection() {
             >
               <Icon name="layers" size={16} color={palette().textMuted} />
               <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
-                <Text style={textStyle("body")}>
+                <Text style={{ ...textStyle("body"), fontWeight: "500" }}>
                   {tr("settings.pools.emptyLegacy")}
                 </Text>
                 <Text style={textStyle("caption")}>
@@ -8070,7 +8089,7 @@ function DefaultShellRow() {
         options={options()}
         accessibilityLabel="terminal-default-shell"
         disabled={saving() || terminalShells().length === 0}
-        minWidth={settingsCompact() ? 160 : 220}
+        minWidth={settingsCompact() ? NUMBER_STEPPER_WIDTH : 220}
         maxWidth={settingsCompact() ? undefined : 300}
         align="end"
         onChange={value => void choose(value)}
@@ -9964,11 +9983,14 @@ function ModelsPage() {
     return options;
   };
 
+  // Below this width the four tabs no longer fit with their labels: scroll them instead of truncating.
+  const scrollTabs = (): boolean =>
+    settingsCompact() || (settingsSceneWidth() > 0 && settingsSceneWidth() < 1040);
   const tabBar = () => (
     <SegmentedTabs
       size="md"
       value={activeTab()}
-      scrollable={settingsCompact()}
+      scrollable={scrollTabs()}
       options={tabOptions()}
       onChange={tab => modelsPageTab.set(tab)}
     />
@@ -9976,7 +9998,7 @@ function ModelsPage() {
 
   return (
     <View style={{ gap: layout.sectionGap }}>
-      <If when={settingsCompact()} else={tabBar()}>
+      <If when={scrollTabs()} else={tabBar()}>
         <Scroll horizontal={true} scrollbar={false}>
           {tabBar()}
         </Scroll>
@@ -10544,7 +10566,7 @@ function SettingsNavRow(props: {
       <Text
         style={{
           ...textStyle("label", { color: props.active ? palette().text : palette().textSecondary }),
-          fontWeight: props.active ? "600" : "500",
+          fontWeight: props.active ? "500" : "400",
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -10564,7 +10586,7 @@ function SettingsNavRow(props: {
   );
 }
 
-/** A scope's header in the left list: 13/600 `textSecondary`. */
+/** A scope's header in the left list: 12/500 muted, a label above its pages rather than a page of its own. */
 function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
   return (
     <View
@@ -10580,8 +10602,8 @@ function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
       <Text
         role="header"
         style={{
-          ...textStyle("label", { color: palette().textSecondary }),
-          fontWeight: "600",
+          ...textStyle("caption", { color: palette().textMuted }),
+          fontWeight: "500",
           flexShrink: 0,
           numberOfLines: 1,
         }}

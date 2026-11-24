@@ -16,6 +16,7 @@ import {
   reduceMotion,
   safeArea,
   signal,
+  untracked,
   type Align,
   type Bounds,
   type JSX,
@@ -56,9 +57,15 @@ import {
   pressTransition,
   tactileActiveStyle,
 } from "./motion";
+import { ModalFormContext, type ModalFormBinding } from "./modalForm";
 import { focusRingStyle } from "./primitives";
 
 export type ModalSize = "sm" | "md" | "lg" | "xl";
+
+/** How long a first Escape over typed input waits for the second one. */
+const ESCAPE_CONFIRM_MS = 2500;
+/** Within this, a second Escape is the same key press heard by two listeners. */
+const ESCAPE_SAME_PRESS_MS = 150;
 
 // ---------------------------------------------------------------------------
 // Menu-like surfaces and rows: one system for selects, menus, the command
@@ -191,10 +198,16 @@ let unbindEscapeKey: (() => void) | null = null;
 function syncEscapeBinding(): void {
   if (escapeStack.length > 0 && !unbindEscapeKey) {
     try {
-      unbindEscapeKey = keymap.bind("escape", () => {
-        const top = escapeStack[escapeStack.length - 1];
-        if (top) top();
-      });
+      // "always": a field with the focus (a dialog focuses its first one) must not
+      // keep Escape from the dialog or menu around it; no field uses the key itself.
+      unbindEscapeKey = keymap.bind(
+        "escape",
+        () => {
+          const top = escapeStack[escapeStack.length - 1];
+          if (top) top();
+        },
+        { when: "always" },
+      );
     } catch {
       unbindEscapeKey = null;
     }
@@ -370,17 +383,30 @@ export interface ModalDialogProps {
   footer?: JSX.Element;
   closeOnBackdropPress?: boolean;
   closeOnEscape?: boolean;
+  /**
+   * Keep the dialog on a click beside it even before anything is typed: a flow
+   * that is waiting on something outside the app (a code in the mail, a browser
+   * sign-in) would otherwise be lost to a stray click.
+   */
+  keepOpenOnBackdrop?: boolean;
+  /** The dialog's primary action: Return in a single-line field without its own submit runs it. */
+  onSubmit?: () => void;
+  /**
+   * What is typed here survives closing (kept in a store and shown again on the
+   * next opening), so Escape closes at once even after an edit.
+   */
+  keepsInputOnClose?: boolean;
   accessibilityLabel?: string;
   onClose: () => void;
   children?: JSX.Element;
 }
 
-function ModalCard(props: ModalDialogProps) {
+function ModalCard(props: ModalDialogProps & { onEscapeKey: () => void; escapeArmed: () => boolean }) {
   // Centered modal on desktop; bottom sheet with grab handle on phone (<720).
   const isSheet = compactLayout();
   const motion = isSheet ? drawerEnterMotion("bottom") : modalEnterMotion();
   if (props.closeOnEscape !== false) {
-    cleanup(registerEscapeDismiss(() => props.onClose()));
+    cleanup(registerEscapeDismiss(() => props.onEscapeKey()));
   }
   return (
     <View
@@ -432,6 +458,22 @@ function ModalCard(props: ModalDialogProps) {
         )}
       </If>
       <ModalBody hasFooter={Boolean(props.footer)}>{props.children}</ModalBody>
+      <If when={props.escapeArmed()}>
+        <Text
+          accessibilityLabel="modal-escape-again"
+          style={{
+            alignSelf: "center",
+            paddingHorizontal: space.lg,
+            paddingTop: space.sm,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.4),
+            textAlign: "center",
+          }}
+        >
+          {tr("common.escapeAgainToDiscard")}
+        </Text>
+      </If>
       <If when={Boolean(props.footer)}>
         <ModalFooter>{props.footer}</ModalFooter>
       </If>
@@ -440,27 +482,87 @@ function ModalCard(props: ModalDialogProps) {
 }
 
 export function ModalDialog(props: ModalDialogProps) {
+  // Once someone typed into the dialog, a click on the backdrop no longer closes it,
+  // and Escape asks to be pressed a second time before it throws the input away.
+  const edited = signal(false);
+  /** A first Escape over typed input happened: the hint shows. */
+  const escapeArmed = signal(false);
+  /** The second Escape may close: set a moment after the first, so one key press heard twice never closes. */
+  const escapeConfirmable = signal(false);
+  let escapeArmTimer: ReturnType<typeof setTimeout> | null = null;
+  let escapeReadyTimer: ReturnType<typeof setTimeout> | null = null;
+  let autoFocusClaimed = false;
+  const disarmEscape = () => {
+    if (escapeArmTimer !== null) clearTimeout(escapeArmTimer);
+    if (escapeReadyTimer !== null) clearTimeout(escapeReadyTimer);
+    escapeArmTimer = null;
+    escapeReadyTimer = null;
+    if (escapeArmed()) escapeArmed.set(false);
+    if (escapeConfirmable()) escapeConfirmable.set(false);
+  };
+  const armEscape = () => {
+    disarmEscape();
+    escapeArmed.set(true);
+    escapeReadyTimer = setTimeout(() => {
+      escapeReadyTimer = null;
+      escapeConfirmable.set(true);
+    }, ESCAPE_SAME_PRESS_MS);
+    escapeArmTimer = setTimeout(() => {
+      escapeArmTimer = null;
+      disarmEscape();
+    }, ESCAPE_CONFIRM_MS);
+  };
+  /** Input that closing would lose. */
+  const guarded = (): boolean => edited() && !props.keepsInputOnClose;
+  const escapeKey = (): void => {
+    if (props.closeOnEscape === false) return;
+    if (guarded() && !escapeConfirmable()) {
+      if (!escapeArmed()) armEscape();
+      return;
+    }
+    props.onClose();
+  };
+  /** A click beside the card: closes only a dialog with nothing typed and nothing under way. */
+  const backdropPress = (): void => {
+    if ((props.closeOnBackdropPress ?? true) && !edited() && !props.keepOpenOnBackdrop) props.onClose();
+  };
+  cleanup(disarmEscape);
+  effect(() => {
+    if (!props.open) {
+      edited.set(false);
+      autoFocusClaimed = false;
+      disarmEscape();
+    }
+  });
+  const form: ModalFormBinding = {
+    markEdited: () => {
+      if (!edited()) edited.set(true);
+    },
+    claimAutoFocus: () => {
+      // On a phone the keyboard would cover the sheet the moment it opens.
+      if (autoFocusClaimed || compactLayout()) return false;
+      autoFocusClaimed = true;
+      return true;
+    },
+    submit: () => props.onSubmit?.(),
+    hasSubmit: () => Boolean(props.onSubmit),
+  };
   return (
     <If when={props.open}>
       <Dialog
         open={props.open}
         animation="none"
         accessibilityLabel={props.accessibilityLabel ?? props.title ?? "Dialog"}
-        closeOnBackdropPress={props.closeOnBackdropPress ?? true}
-        closeOnEscape={props.closeOnEscape ?? true}
+        // The backdrop is drawn below as a view of its own, so a click on it is told
+        // apart from Escape: the dialog's own cancel then only hears Escape, back and swipe.
+        closeOnBackdropPress={false}
+        // Escape, back and swipe arrive as cancel attempts and are decided here, in one
+        // place: the dialog never closes itself, so `open` and what shows cannot drift.
+        closeOnEscape={false}
         onOpenChange={event => {
           if (!event.open) props.onClose();
         }}
-        onCancel={props.closeOnEscape === false ? undefined : props.onClose}
-        backdropStyle={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: palette().scrimBg,
-          backdropFilter: "blur(14px)",
-        }}
+        onCancel={escapeKey}
         style={{
           position: "absolute",
           left: 0,
@@ -473,7 +575,23 @@ export function ModalDialog(props: ModalDialogProps) {
           pointerEvents: "box-none",
         }}
       >
-        <ModalCard {...props} />
+        <View
+          testID={`${props.accessibilityLabel ?? "dialog"}-backdrop`}
+          focusable={false}
+          onPress={backdropPress}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: palette().scrimBg,
+            backdropFilter: "blur(14px)",
+          }}
+        />
+        <ModalFormContext.Provider value={form}>
+          <ModalCard {...props} onEscapeKey={escapeKey} escapeArmed={escapeArmed} />
+        </ModalFormContext.Provider>
       </Dialog>
     </If>
   );
@@ -946,6 +1064,69 @@ function SelectPopoverSurface<T extends string>(props: {
 }) {
   cleanup(registerEscapeDismiss(() => props.onClose()));
   const motion = popoverEnterMotion(props.placement, props.align, MOTION_DURATION.popover);
+
+  // Keyboard: Up / Down move a highlight (it starts on the current value and
+  // follows the pointer), Return in the filter picks it.
+  const rowRefs = new Map<string, ViewRef>();
+  const enabledIndex = (from: number, step: 1 | -1): number => {
+    const list = props.options;
+    for (let i = 0; i < list.length; i += 1) {
+      const index = (from + step * i + list.length * 2) % list.length;
+      if (!list[index]?.disabled) return index;
+    }
+    return -1;
+  };
+  const initialIndex = (): number => {
+    const current = props.options.findIndex(opt => opt.value === props.value && !opt.disabled);
+    return current >= 0 ? current : enabledIndex(0, 1);
+  };
+  const highlighted = signal(initialIndex());
+  let lastQuery = props.query;
+  effect(() => {
+    const query = props.query;
+    props.options.length;
+    untracked(() => {
+      // A new filter starts at its first match; the list it opened with keeps the current value.
+      if (query !== lastQuery) {
+        lastQuery = query;
+        highlighted.set(enabledIndex(0, 1));
+      } else if (highlighted() >= props.options.length) {
+        highlighted.set(initialIndex());
+      }
+    });
+  });
+  const moveHighlight = (step: 1 | -1) => {
+    if (props.options.length === 0) return;
+    const next = enabledIndex(highlighted() < 0 ? (step === 1 ? 0 : props.options.length - 1) : highlighted() + step, step);
+    if (next < 0) return;
+    highlighted.set(next);
+    const option = props.options[next];
+    const node = option ? rowRefs.get(option.value) : undefined;
+    try {
+      node?.reveal({ vertical: "nearest", animated: false });
+    } catch {
+      // The row may be gone if the options changed under the key press.
+    }
+  };
+  const pickHighlighted = () => {
+    const option = props.options[highlighted()] ?? props.options.find(opt => !opt.disabled);
+    if (option && !option.disabled) props.onSelect(option.value);
+  };
+  try {
+    // "always": the filter field has the focus while the list is open.
+    cleanup(keymap.bind({ down: () => moveHighlight(1), up: () => moveHighlight(-1) }, { when: "always" }));
+  } catch {
+    // A platform without these keys keeps the pointer and the filter.
+  }
+  if (!props.searchable) {
+    // With a filter, its own Return picks (once); without one, Return picks here,
+    // ahead of the trigger or the dialog field that still has the focus.
+    try {
+      cleanup(keymap.bind("enter", () => pickHighlighted(), { forFocus: true, when: "always" }));
+    } catch {
+      // As above.
+    }
+  }
   const listMaxHeight = () =>
     Math.max(96, props.maxHeight - (props.searchable ? 56 : 12));
 
@@ -1004,10 +1185,7 @@ function SelectPopoverSurface<T extends string>(props: {
               fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(12),
             }}
             onChange={e => props.onQueryChange(e.value)}
-            onSubmit={() => {
-              const first = props.options.find(opt => !opt.disabled);
-              if (first) props.onSelect(first.value);
-            }}
+            onSubmit={() => pickHighlighted()}
             onKeyPress={e => {
               if (e.key === "Escape") props.onClose();
             }}
@@ -1020,7 +1198,7 @@ function SelectPopoverSurface<T extends string>(props: {
       >
         <View style={{ gap: space.hair }}>
           <Each of={props.options} key={opt => opt.value}>
-            {opt => (
+            {(opt, index) => (
               <View style={{ gap: space.hair }}>
                 <If when={Boolean(opt().separator)}>
                   <View
@@ -1033,6 +1211,13 @@ function SelectPopoverSurface<T extends string>(props: {
                   />
                 </If>
                 <View
+                  ref={el => {
+                    if (el) rowRefs.set(opt().value, el);
+                    else rowRefs.delete(opt().value);
+                  }}
+                  onMouseEnter={() => {
+                    if (!opt().disabled) highlighted.set(index());
+                  }}
                   role="option"
                   disabled={opt().disabled}
                   accessibilityLabel={opt().accessibilityLabel ?? opt().label}
@@ -1052,6 +1237,7 @@ function SelectPopoverSurface<T extends string>(props: {
                     paddingVertical: 7,
                     borderRadius: SELECT_INNER_RADIUS,
                     borderCurve: "continuous",
+                    backgroundColor: highlighted() === index() ? listRowHoverBg() : "transparent",
                     cursor: opt().disabled ? "not-allowed" : "pointer",
                     userSelect: "none",
                     ...pressTransition(MOTION_DURATION.fast),

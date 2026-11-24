@@ -2600,7 +2600,6 @@ test("content width is a stepper over the preference both frontends keep", async
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
   await app.waitFor("1100px · the transcript column, shared with the desktop surface");
-  await app.waitFor("Narrowest 600px");
 
   await app.press("content-width-increase");
   await app.waitFor("1110px · the transcript column, shared with the desktop surface");
@@ -2755,7 +2754,7 @@ test("a host that stores no task models shows the defaults and can create the se
   await app.press("Settings");
   await app.press("nav-settings-page-session-memory");
   await app.waitFor("The host stores no value yet; these are its defaults.");
-  await app.waitFor("Names a session from its first message · Default");
+  await app.waitFor("Names a session from its first message");
   await app.press("task-model-git_commit");
   await app.press("task-model-inherit-git_commit");
   // The first write creates the section the host never had.
@@ -2775,11 +2774,11 @@ test("a field the host stores nothing for shows its default and stays writable",
   await app.press("Settings");
   await app.press("nav-settings-page-general");
   await app.waitFor("Keep the computer awake");
-  await app.waitFor("Keep your computer awake during active runs · Default");
+  await app.waitFor("Keep your computer awake during active runs");
   await app.press("prevent-sleep");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
   await app.press("nav-settings-page-session-memory");
-  await app.waitFor("Extract useful facts and preferences from conversations · Default");
+  await app.waitFor("Extract useful facts and preferences from conversations");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
 });
 test("settings carries the input and workspace groups as leaf writes", async () => {

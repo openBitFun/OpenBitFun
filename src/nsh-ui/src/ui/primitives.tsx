@@ -44,6 +44,7 @@ import {
   type SurfacePlane,
   touchSlop,
 } from "../theme";
+import { ModalFormContext } from "./modalForm";
 import { BotCharacter, Icon, type IconName } from "./icons";
 import {
   MOTION_DURATION,
@@ -2681,6 +2682,14 @@ export interface TextFieldProps {
  * placeholder colors, optional leading icon, trailing slot, and clear action.
  */
 export function TextField(props: TextFieldProps) {
+  // Inside a dialog: report edits, take the first focus, and let Return run the dialog's action.
+  const modalForm = ModalFormContext();
+  const editable = !props.readonly && !props.disabled;
+  const autoFocus = props.autoFocus
+    ? (modalForm?.claimAutoFocus(), true)
+    : editable && modalForm
+      ? modalForm.claimAutoFocus()
+      : false;
   const fieldHeight = () => {
     const base = controlHeight[props.size ?? "md"];
     return compactLayout() ? Math.max(base, 36) : base;
@@ -2794,16 +2803,21 @@ export function TextField(props: TextFieldProps) {
           multiline={props.multiline}
           masked={props.masked}
           readonly={Boolean(props.readonly || props.disabled)}
-          autoFocus={props.autoFocus}
+          autoFocus={autoFocus}
           keyboardType={props.content === "email" ? "email-address" : props.content ? "number-pad" : undefined}
           autoCapitalize={props.content ? "none" : undefined}
           autoCorrect={props.content ? false : undefined}
           autoComplete={props.content}
           accessibilityLabel={props.accessibilityLabel ?? props.label ?? props.placeholder}
           onChange={e => {
-            if (!props.disabled) props.onChange(e.value);
+            if (props.disabled) return;
+            modalForm?.markEdited();
+            props.onChange(e.value);
           }}
-          onSubmit={e => props.onSubmit?.(e.text)}
+          onSubmit={e => {
+            if (props.onSubmit) props.onSubmit(e.text);
+            else if (!props.multiline && modalForm?.hasSubmit()) modalForm.submit();
+          }}
           onKeyPress={props.onKeyPress}
           style={{
             flex: 1,

@@ -79,8 +79,8 @@ test("first run: email, then the code, in the app, then the device is ready", as
   expect(app.openedUrls()).toEqual([]);
   expect(calls).not.toContain("account_github_start");
 
+  // The code as the mail groups it; complete, it signs in without a press.
   await app.type("account-auth-code-input", "1234 5678");
-  await app.press("label:account-auth-verify");
   await app.waitFor("label:account-auth-ready");
   expect(requests.find(entry => entry.action === "account_email_verify")?.request).toEqual({
     challengeId: "ch-1",
@@ -131,7 +131,6 @@ test("the account dialog signs in with the code and names the account by its ema
   await app.type("account-auth-email-input", "me@example.com");
   await app.press("label:account-auth-continue");
   await app.type("account-auth-code-input", "12345678");
-  await app.press("label:account-auth-verify");
   // Signed in: the dialog closes with a toast; reopened, it names the account.
   await app.waitFor("text:Signed in as me@example.com");
   await app.press("Open account");
