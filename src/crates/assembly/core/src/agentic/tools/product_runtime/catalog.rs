@@ -3,7 +3,7 @@
 use crate::agentic::agents::{get_agent_registry, AgentToolPolicyOverrides};
 use crate::agentic::tools::framework::{Tool, ToolExposure, ToolResult};
 use crate::agentic::tools::implementations::agent_collaboration::with_collaboration_model_policy;
-use crate::agentic::tools::registry::{get_global_tool_registry, ToolRef};
+use crate::agentic::tools::registry::{get_global_tool_registry, ToolRef, ToolRegistry};
 use crate::agentic::tools::tool_context_runtime::ToolUseContext;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
 use crate::util::types::ToolDefinition;
@@ -326,7 +326,7 @@ pub(crate) async fn resolve_product_visible_tools(
             exposure_overrides,
             context,
         );
-    let tool_snapshot = contextual_tool_snapshot(context).await;
+    let tool_snapshot = contextual_tool_snapshot(&get_global_tool_registry(), context).await;
     append_selected_plugin_tool_names(&mut allowed_tools, &tool_snapshot, context).await;
     resolve_contextual_visible_tools(
         &tool_snapshot,
@@ -339,6 +339,7 @@ pub(crate) async fn resolve_product_visible_tools(
 }
 
 pub(crate) async fn resolve_product_tool_manifest(
+    registry: &tokio::sync::RwLock<ToolRegistry>,
     allowed_tools: &[String],
     exposure_overrides: &AgentToolPolicyOverrides,
     context: &ToolUseContext,
@@ -350,7 +351,7 @@ pub(crate) async fn resolve_product_tool_manifest(
                 exposure_overrides,
                 context,
             );
-        let tool_snapshot = contextual_tool_snapshot(context).await;
+        let tool_snapshot = contextual_tool_snapshot(registry, context).await;
         append_selected_plugin_tool_names(&mut allowed_tools, &tool_snapshot, context).await;
         let mut manifest = resolve_contextual_tool_manifest(
             &tool_snapshot,
@@ -522,7 +523,10 @@ async fn append_selected_plugin_tool_names(
     let _ = (allowed_tools, tool_snapshot, context);
 }
 
-async fn contextual_tool_snapshot(context: &ToolUseContext) -> Vec<ToolRef> {
+async fn contextual_tool_snapshot(
+    registry: &tokio::sync::RwLock<ToolRegistry>,
+    context: &ToolUseContext,
+) -> Vec<ToolRef> {
     #[cfg(feature = "external-sources")]
     {
         if !context.is_remote() {
@@ -531,7 +535,6 @@ async fn contextual_tool_snapshot(context: &ToolUseContext) -> Vec<ToolRef> {
             )
             .await;
         }
-        let registry = get_global_tool_registry();
         let tools = registry.read().await.get_all_tools();
         return tools
             .into_iter()
@@ -543,7 +546,7 @@ async fn contextual_tool_snapshot(context: &ToolUseContext) -> Vec<ToolRef> {
     #[cfg(not(feature = "external-sources"))]
     {
         let _ = context;
-        get_global_tool_registry().read().await.get_all_tools()
+        registry.read().await.get_all_tools()
     }
 }
 
@@ -562,9 +565,25 @@ pub(crate) async fn resolve_product_resolved_tool_manifest(
     exposure_overrides: &AgentToolPolicyOverrides,
     context: &ToolUseContext,
 ) -> ResolvedToolManifest {
+    resolved_manifest_from_registry(
+        get_global_tool_registry().as_ref(),
+        allowed_tools,
+        exposure_overrides,
+        context,
+    )
+    .await
+}
+
+pub(crate) async fn resolved_manifest_from_registry(
+    registry: &tokio::sync::RwLock<ToolRegistry>,
+    allowed_tools: &[String],
+    exposure_overrides: &AgentToolPolicyOverrides,
+    context: &ToolUseContext,
+) -> ResolvedToolManifest {
     with_collaboration_model_policy(async {
         let contextual_manifest =
-            resolve_product_tool_manifest(allowed_tools, exposure_overrides, context).await;
+            resolve_product_tool_manifest(registry, allowed_tools, exposure_overrides, context)
+                .await;
         #[cfg(feature = "ptc-runtime")]
         let ptc_tool_calling_guide = if context_is_ptc_mode(context) {
             let include_deferred_tool_apis =
@@ -598,8 +617,7 @@ pub(crate) async fn resolve_product_resolved_tool_manifest(
         };
 
         let mut manifest: ResolvedToolManifest = contextual_manifest.into();
-        let provider = ProductToolCatalogProvider;
-        manifest.catalog_generation = provider.catalog_generation().await;
+        manifest.catalog_generation = registry.read().await.current_snapshot_generation();
         #[cfg(feature = "ptc-runtime")]
         {
             manifest.ptc_tool_calling_guide = ptc_tool_calling_guide;
@@ -788,6 +806,31 @@ mod tests {
         context
     }
 
+    #[tokio::test]
+    async fn turn_manifest_reads_the_executing_registry() {
+        let mut registry = crate::agentic::tools::registry::ToolRegistry::new();
+        let name = "InjectedCatalogTool";
+        registry.register_tool(Arc::new(SelectedCatalogTool {
+            name,
+            provider: None,
+        }));
+        let registry = tokio::sync::RwLock::new(registry);
+        let allowed = vec![name.to_string()];
+        let policy = AgentToolPolicyOverrides::default();
+        let context = tool_context(None);
+        let before =
+            super::resolved_manifest_from_registry(&registry, &allowed, &policy, &context).await;
+        assert!(before.tool_definitions.iter().any(|tool| tool.name == name));
+        registry.write().await.unregister_tool(name).unwrap();
+        let after =
+            super::resolved_manifest_from_registry(&registry, &allowed, &policy, &context).await;
+        assert!(!after.tool_definitions.iter().any(|tool| tool.name == name));
+        assert_eq!(
+            after.catalog_generation,
+            registry.read().await.current_snapshot_generation()
+        );
+    }
+
     fn context_without_agent_type() -> ToolUseContext {
         tool_context(None)
     }
@@ -803,6 +846,7 @@ mod tests {
         let allowed_tools = vec!["Read".to_string(), "SessionHistory".to_string()];
 
         let manifest = resolve_product_tool_manifest(
+            super::get_global_tool_registry().as_ref(),
             &allowed_tools,
             &AgentToolPolicyOverrides::default(),
             &context,
@@ -958,6 +1002,7 @@ mod tests {
     #[tokio::test]
     async fn missing_presentation_mode_keeps_native_manifest() {
         let manifest = resolve_product_tool_manifest(
+            super::get_global_tool_registry().as_ref(),
             &["Read".to_string()],
             &AgentToolPolicyOverrides::default(),
             &tool_context(Some("Standard")),
@@ -1166,6 +1211,7 @@ mod tests {
             .extend(["Read".to_string(), "SessionHistory".to_string()]);
 
         let manifest = resolve_product_tool_manifest(
+            super::get_global_tool_registry().as_ref(),
             &allowed_tools,
             &AgentToolPolicyOverrides::default(),
             &context,

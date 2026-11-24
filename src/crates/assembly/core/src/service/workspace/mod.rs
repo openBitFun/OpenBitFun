@@ -63,7 +63,7 @@ pub use service::{
     get_global_workspace_service, set_global_workspace_service, BatchImportResult,
     BatchRemoveResult, WorkspaceActivityMode, WorkspaceCreateOptions, WorkspaceExport,
     WorkspaceHealthStatus, WorkspaceIdentityChangedEvent, WorkspaceImportResult,
-    WorkspaceInfoUpdates, WorkspaceQuickSummary, WorkspaceService,
+    WorkspaceInfoUpdates, WorkspaceQuickSummary, WorkspaceService, WorkspaceServiceSource,
 };
 #[cfg(feature = "git")]
 pub use worktree_topology::{global_worktree_topology_service, WorktreeTopologyService};

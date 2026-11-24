@@ -24,13 +24,16 @@ async fn remote_session_metadata_never_falls_back_to_a_local_workspace_binding()
         "example.test",
     )
     .await;
-    let binding = ConversationCoordinator::build_workspace_binding(&SessionConfig {
-        tool_presentation_mode: Default::default(),
-        workspace_path: Some(registered_root.clone()),
-        remote_connection_id: Some("ssh-user@example.test:22".to_string()),
-        remote_ssh_host: Some("example.test".to_string()),
-        ..SessionConfig::default()
-    })
+    let binding = crate::agentic::workspace::WorkspaceBinding::from_session(
+        &crate::service::workspace::WorkspaceServiceSource::Registered,
+        &SessionConfig {
+            tool_presentation_mode: Default::default(),
+            workspace_path: Some(registered_root.clone()),
+            remote_connection_id: Some("ssh-user@example.test:22".to_string()),
+            remote_ssh_host: Some("example.test".to_string()),
+            ..SessionConfig::default()
+        },
+    )
     .await
     .expect("remote metadata must remain a remote binding");
 
@@ -60,9 +63,12 @@ async fn remote_session_metadata_never_falls_back_to_a_local_workspace_binding()
         },
     ] {
         assert!(
-            ConversationCoordinator::build_workspace_binding(&incomplete)
-                .await
-                .is_none(),
+            crate::agentic::workspace::WorkspaceBinding::from_session(
+                &crate::service::workspace::WorkspaceServiceSource::Registered,
+                &incomplete
+            )
+            .await
+            .is_none(),
             "incomplete remote metadata must fail closed instead of becoming local"
         );
     }
@@ -76,13 +82,16 @@ async fn remote_workspace_services_unavailable_is_an_error() {
         "example.test",
     )
     .await;
-    let binding = ConversationCoordinator::build_workspace_binding(&SessionConfig {
-        tool_presentation_mode: Default::default(),
-        workspace_path: Some("/srv/remote-project".to_string()),
-        remote_connection_id: Some("ssh-user@example.test:22".to_string()),
-        remote_ssh_host: Some("example.test".to_string()),
-        ..SessionConfig::default()
-    })
+    let binding = crate::agentic::workspace::WorkspaceBinding::from_session(
+        &crate::service::workspace::WorkspaceServiceSource::Registered,
+        &SessionConfig {
+            tool_presentation_mode: Default::default(),
+            workspace_path: Some("/srv/remote-project".to_string()),
+            remote_connection_id: Some("ssh-user@example.test:22".to_string()),
+            remote_ssh_host: Some("example.test".to_string()),
+            ..SessionConfig::default()
+        },
+    )
     .await
     .expect("remote metadata must remain a remote binding");
 

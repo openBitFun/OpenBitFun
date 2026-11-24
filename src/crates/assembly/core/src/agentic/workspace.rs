@@ -59,10 +59,17 @@ impl WorkspaceBinding {
     pub async fn resolve(workspace_id: &str) -> crate::OpenBitFunResult<Self> {
         let service = crate::service::workspace::get_global_workspace_service()
             .ok_or_else(|| crate::OpenBitFunError::service("Workspace service is unavailable"))?;
+        Self::resolve_with_service(workspace_id, &service).await
+    }
+
+    pub(crate) async fn resolve_with_service(
+        workspace_id: &str,
+        service: &crate::service::workspace::WorkspaceService,
+    ) -> crate::OpenBitFunResult<Self> {
         let record = service.require_workspace(workspace_id).await?;
         let mut config = SessionConfig::default();
         apply_workspace_record(&mut config, &record)?;
-        normalize_session_workspace(&mut config).await?;
+        normalize_session_workspace_with(&mut config, Some(service)).await?;
         if config.is_remote_workspace() {
             let connection_id = config
                 .remote_connection_id
@@ -92,6 +99,46 @@ impl WorkspaceBinding {
             binding.session_identity.workspace_kind = record.workspace_kind;
             Ok(binding)
         }
+    }
+
+    pub(crate) async fn from_session(
+        registration: &crate::service::workspace::WorkspaceServiceSource,
+        config: &SessionConfig,
+    ) -> Option<WorkspaceBinding> {
+        let mut config = config.clone();
+        if let Err(error) =
+            normalize_session_workspace_with(&mut config, registration.current().as_deref()).await
+        {
+            log::warn!("Workspace identity resolution failed: {}", error);
+            return None;
+        }
+        let path = PathBuf::from(config.workspace_path.as_ref()?);
+        if config.is_remote_workspace() {
+            let connection_id = config.remote_connection_id.clone()?;
+            let host = config.remote_ssh_host.clone()?;
+            let identity = openbitfun_services_core::workspace_identity::WorkspaceSessionIdentity {
+                workspace_kind: openbitfun_core_types::WorkspaceKind::Remote,
+                hostname: host.clone(),
+                logical_workspace_path: crate::service::remote_ssh::normalize_remote_workspace_path(
+                    &path.to_string_lossy(),
+                ),
+                remote_connection_id: Some(connection_id.clone()),
+            };
+            return Some(WorkspaceBinding::new_remote(
+                config.workspace_id,
+                path,
+                connection_id,
+                host,
+                identity,
+            ));
+        }
+        let mut binding = WorkspaceBinding::new(config.workspace_id, path);
+        binding.project_workspace_id = config.project_workspace_id;
+        binding.session_identity.workspace_kind = config.workspace_kind.unwrap_or_default();
+        if let Some(project) = config.project_workspace_path {
+            binding = binding.with_project_root_path(PathBuf::from(project));
+        }
+        Some(binding.with_execution_target(config.execution_target))
     }
 
     pub fn new(workspace_id: Option<String>, root_path: PathBuf) -> Self {
@@ -291,18 +338,29 @@ mod tests {
 pub(crate) async fn normalize_session_workspace(
     config: &mut SessionConfig,
 ) -> crate::OpenBitFunResult<()> {
-    use crate::service::workspace::{get_global_workspace_service, WorkspaceKind};
+    normalize_session_workspace_with(
+        config,
+        crate::service::workspace::get_global_workspace_service().as_deref(),
+    )
+    .await
+}
+
+pub(crate) async fn normalize_session_workspace_with(
+    config: &mut SessionConfig,
+    service: Option<&crate::service::workspace::WorkspaceService>,
+) -> crate::OpenBitFunResult<()> {
+    use crate::service::workspace::WorkspaceKind;
     if config.workspace_id.is_none()
         && config.workspace_path.is_none()
         && config.project_workspace_path.is_none()
     {
         return Ok(());
     }
-    let service = get_global_workspace_service()
+    let service = service
         .ok_or_else(|| crate::OpenBitFunError::service("Workspace service is unavailable"))?;
     if config.workspace_id.is_none() || config.project_workspace_id.is_none() {
         crate::service::workspace::legacy_compat::upgrade_session_workspace_reference(
-            config, &service,
+            config, service,
         )
         .await?;
     }
@@ -333,7 +391,7 @@ pub(crate) async fn normalize_session_workspace(
     apply_workspace_record(config, &record)?;
     config.project_workspace_path = Some(project.root_path.to_string_lossy().into_owned());
     if !config.is_remote_workspace() {
-        let manager = crate::infrastructure::get_path_manager_arc();
+        let manager = service.path_manager();
         for path in [
             config.workspace_path.as_deref(),
             config.project_workspace_path.as_deref(),

@@ -91,6 +91,8 @@ impl SdkHostRuntime {
             .register_local_workspace_record(workspace_root)
             .await?;
         set_global_workspace_service(service.clone());
+        let registry =
+            openbitfun_core::service::workspace::WorkspaceServiceSource::Provided(service.clone());
         let workspaces = Arc::new(LocalSdkWorkspaces {
             service,
             default: SdkWorkspace {
@@ -104,9 +106,11 @@ impl SdkHostRuntime {
         let parts = ProductAssembler::new()
             .assemble(ProductAssemblyInput::new(DELIVERY_PROFILE, services))
             .context("Failed to assemble SDK Host product runtime")?;
-        let agentic_system = system::init_agentic_system_for_profile_with_runtime_ownership(
+        let agentic_system = system::init_agentic_system_with_workspaces(
             parts.plan().profile(),
             Arc::new(runtime_ownership),
+            None,
+            registry,
         )
         .await
         .context("Failed to initialize agentic system")?;

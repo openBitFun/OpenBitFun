@@ -91,6 +91,21 @@ pub async fn init_agentic_system_with_computer_use_host(
     runtime_ownership: Arc<CoreRuntimeOwnership>,
     computer_use_host: Option<tools::computer_use_host::ComputerUseHostRef>,
 ) -> Result<AgenticSystem> {
+    init_agentic_system_with_workspaces(
+        delivery_profile,
+        runtime_ownership,
+        computer_use_host,
+        crate::service::workspace::WorkspaceServiceSource::Registered,
+    )
+    .await
+}
+
+pub async fn init_agentic_system_with_workspaces(
+    delivery_profile: DeliveryProfile,
+    runtime_ownership: Arc<CoreRuntimeOwnership>,
+    computer_use_host: Option<tools::computer_use_host::ComputerUseHostRef>,
+    workspaces: crate::service::workspace::WorkspaceServiceSource,
+) -> Result<AgenticSystem> {
     tools::computer_use_capability::set_computer_use_host_available(computer_use_host.is_some());
     info!("Initializing agentic system for profile {delivery_profile}");
 
@@ -107,12 +122,13 @@ pub async fn init_agentic_system_with_computer_use_host(
     set_global_token_usage_service(token_usage_service.clone());
 
     let context_store = Arc::new(session::SessionContextStore::new());
-    let context_compressor = Arc::new(session::ContextCompressor::new());
 
-    let session_manager = Arc::new(session::SessionManager::new(
+    let session_manager = Arc::new(session::SessionManager::with_storage(
         context_store,
-        persistence_manager,
+        persistence_manager.clone(),
         session_manager_config_for_profile(delivery_profile),
+        session::CoreSessionStorePort::new(path_manager, workspaces),
+        persistence_manager,
     ));
 
     event_router.subscribe_internal(
@@ -135,31 +151,16 @@ pub async fn init_agentic_system_with_computer_use_host(
             .with_permission_request_manager(permission_request_manager),
     );
 
-    let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
-    let round_executor = Arc::new(execution::RoundExecutor::new(
-        stream_processor,
-        event_queue.clone(),
-        tool_pipeline.clone(),
-    ));
-
-    let execution_config = execution::execution_engine_config_from_global_config().await;
-    let execution_engine = execution::ExecutionEngine::new(
-        round_executor,
-        event_queue.clone(),
-        session_manager.clone(),
-        context_compressor,
-        execution_config,
-    );
-    let execution_engine = Arc::new(execution_engine);
-
-    let coordinator = Arc::new(coordination::ConversationCoordinator::new(
+    let coordinator = assemble_agent_execution(
         session_manager,
-        execution_engine,
         tool_pipeline,
         event_queue.clone(),
         event_router.clone(),
         runtime_ownership,
-    ));
+        Arc::new(execution::model_requests::ProductModelRequests),
+        token_usage_service.clone(),
+    )
+    .await;
 
     coordination::ConversationCoordinator::set_global(coordinator.clone());
 
@@ -188,6 +189,45 @@ pub async fn init_agentic_system_with_computer_use_host(
         event_queue,
         token_usage_service,
     })
+}
+
+/// Connects the turn engine to the host's session, tool, model and event owners.
+pub async fn assemble_agent_execution(
+    session_manager: Arc<session::SessionManager>,
+    tool_pipeline: Arc<tools::pipeline::ToolPipeline>,
+    event_queue: Arc<events::EventQueue>,
+    event_router: Arc<events::EventRouter>,
+    runtime_ownership: Arc<CoreRuntimeOwnership>,
+    models: Arc<dyn execution::model_requests::ModelRequests>,
+    token_usage_service: Arc<TokenUsageService>,
+) -> Arc<coordination::ConversationCoordinator> {
+    let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
+    let round_executor = Arc::new(execution::RoundExecutor::with_providers(
+        stream_processor,
+        event_queue.clone(),
+        tool_pipeline.clone(),
+        models,
+        Some(token_usage_service),
+    ));
+
+    let execution_config = execution::execution_engine_config_from_global_config().await;
+    let execution_engine = execution::ExecutionEngine::new(
+        round_executor,
+        event_queue.clone(),
+        session_manager.clone(),
+        Arc::new(session::ContextCompressor::new()),
+        execution_config,
+    );
+    let execution_engine = Arc::new(execution_engine);
+
+    Arc::new(coordination::ConversationCoordinator::new(
+        session_manager,
+        execution_engine,
+        tool_pipeline,
+        event_queue,
+        event_router,
+        runtime_ownership,
+    ))
 }
 
 #[cfg(test)]

@@ -382,6 +382,14 @@ pub trait SecurityDecisionPort: Send + Sync {
 
 ## 3. 内核、工具与工作流
 
+桌面、CLI 和 SDK Host 通过 `assemble_agent_execution` 把已选好的会话管理器、工具管线、
+模型请求提供方、事件队列及路由器交给同一执行链。工作区目录可在启动时传入，也可在宿主完成注册后供执行器读取。
+`CoreSessionStorePort` 定位会话存储，`SessionRecords` 读写会话和对话轮记录，产品装配使用同一个
+`PersistenceManager` 完成这些读写与原有的索引、快照维护。会话管理器继续持有写锁并决定提交顺序。
+`ModelRequests::send_once` 只发送一次模型请求；重试、取消和工具审批仍由原执行器处理。
+构造入口和两轮文件读取回归分别见 [共享装配](../../src/crates/assembly/core/src/agentic/system.rs)
+和 [真实 SDK Host 用例](../../sdk/typescript/test/real-host-smoke.mjs)。
+
 ### 3.1 Agent Runtime / Agent Runtime API
 
 目标归属 crate：`openbitfun-agent-runtime`。

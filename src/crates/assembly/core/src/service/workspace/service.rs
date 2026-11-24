@@ -2680,6 +2680,32 @@ pub struct WorkspaceQuickSummary {
 
 // ── Global workspace service singleton ──────────────────────────────
 
+/// Selects the existing workspace owner. Desktop and some CLI entrypoints
+/// finish registration after constructing the session manager.
+#[derive(Clone)]
+pub enum WorkspaceServiceSource {
+    Registered,
+    Provided(Arc<WorkspaceService>),
+}
+
+impl WorkspaceServiceSource {
+    pub(crate) fn current(&self) -> Option<Arc<WorkspaceService>> {
+        match self {
+            Self::Registered => get_global_workspace_service(),
+            Self::Provided(service) => Some(service.clone()),
+        }
+    }
+}
+
+impl std::fmt::Debug for WorkspaceServiceSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Registered => "Registered",
+            Self::Provided(_) => "Provided",
+        })
+    }
+}
+
 static GLOBAL_WORKSPACE_SERVICE: std::sync::OnceLock<Arc<WorkspaceService>> =
     std::sync::OnceLock::new();
 

@@ -17,6 +17,7 @@ use crate::agentic::image_analysis::ImageContextData;
 use crate::agentic::keyed_lock::{KeyedAsyncLock, KeyedAsyncLockGuard};
 use crate::agentic::memories::db::{MemoryDatabase, MEMORY_PHASE2_GLOBAL_JOB_KEY};
 use crate::agentic::persistence::session_branch::TransientSessionBranchSource;
+use crate::agentic::persistence::SessionRecords;
 use crate::agentic::persistence::{MaterializedSessionReferenceTranscript, PersistenceManager};
 use crate::agentic::session::revert::SessionRevertPhase;
 use crate::agentic::session::session_store_port::CoreSessionStorePort;
@@ -32,7 +33,6 @@ use crate::agentic::session::{
 };
 use crate::agentic::skill_agent_snapshot::TurnSkillAgentSnapshot;
 use crate::agentic::workspace::WorkspaceBinding;
-use crate::agentic::ConversationCoordinator;
 use crate::infrastructure::ai::get_global_ai_client_factory;
 use crate::infrastructure::ai::reasoning_catalog::{
     load_models_dev_reasoning_catalog_without_refresh, normalize_reasoning_preset_for_model,
@@ -53,7 +53,7 @@ use crate::service::session::{
 use crate::service::snapshot::{
     ensure_snapshot_manager_for_workspace, get_or_create_snapshot_manager,
 };
-use crate::service::workspace::{get_global_workspace_service, WorkspaceInfo};
+use crate::service::workspace::WorkspaceInfo;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
 use crate::util::sanitize_plain_model_output;
 use crate::util::timing::elapsed_ms_u64;
@@ -378,6 +378,8 @@ enum SessionResourceCleanupPolicy {
 
 /// Session manager
 pub struct SessionManager {
+    pub(crate) storage: CoreSessionStorePort,
+    records: Arc<dyn SessionRecords>,
     /// Active sessions in memory
     sessions: Arc<DashMap<String, Session>>,
 
@@ -1146,11 +1148,11 @@ impl SessionManager {
         self.transient_session_ids.contains_key(session_id)
     }
 
-    async fn effective_storage_path_for_config_with_persistence(
-        persistence_manager: &PersistenceManager,
+    async fn effective_storage_path(
+        storage: &CoreSessionStorePort,
         config: &SessionConfig,
     ) -> Option<PathBuf> {
-        CoreSessionStorePort::with_path_manager(persistence_manager.path_manager().clone())
+        storage
             .resolve_storage_for_reference(
                 config.workspace_id.as_deref(),
                 config
@@ -1167,11 +1169,7 @@ impl SessionManager {
     }
 
     async fn effective_storage_path_for_config(&self, config: &SessionConfig) -> Option<PathBuf> {
-        Self::effective_storage_path_for_config_with_persistence(
-            self.persistence_manager.as_ref(),
-            config,
-        )
-        .await
+        Self::effective_storage_path(&self.storage, config).await
     }
 
     pub(crate) async fn resolve_storage_path_for_workspace_path(
@@ -1218,13 +1216,12 @@ impl SessionManager {
     ) -> OpenBitFunResult<PathBuf> {
         let storage_path_started_at = Instant::now();
         let requested_workspace_path = request.workspace_path.clone();
-        let session_storage_path = CoreSessionStorePort::with_path_manager(
-            self.persistence_manager.path_manager().clone(),
-        )
-        .resolve_session_storage_path(request)
-        .await
-        .map(|resolution| resolution.effective_storage_path)
-        .map_err(|error| OpenBitFunError::Session(error.to_string()))?;
+        let session_storage_path = self
+            .storage
+            .resolve_session_storage_path(request)
+            .await
+            .map(|resolution| resolution.effective_storage_path)
+            .map_err(|error| OpenBitFunError::Session(error.to_string()))?;
         debug!(
             "Session storage path resolved from workspace request: workspace_path={}, session_storage_path={}, duration_ms={}",
             requested_workspace_path.display(),
@@ -1280,7 +1277,8 @@ impl SessionManager {
             .get_session(session_id)
             .ok_or_else(|| OpenBitFunError::NotFound(format!("Session not found: {session_id}")))?
             .config;
-        let resolution = CoreSessionStorePort::with_path_manager(self.path_manager())
+        let resolution = self
+            .storage
             .resolve_storage_for_reference(
                 config.workspace_id.as_deref(),
                 config
@@ -1437,18 +1435,17 @@ impl SessionManager {
                     source_session_id
                 ))
             })?;
-        let reference_storage_path = CoreSessionStorePort::with_path_manager(
-            self.persistence_manager.path_manager().clone(),
-        )
-        .resolve_storage_for_reference(
-            workspace_id,
-            workspace_path,
-            reference.remote_connection_id.clone(),
-            reference.remote_ssh_host.clone(),
-        )
-        .await
-        .map(|resolution| resolution.effective_storage_path)
-        .map_err(|error| OpenBitFunError::Session(error.to_string()))?;
+        let reference_storage_path = self
+            .storage
+            .resolve_storage_for_reference(
+                workspace_id,
+                workspace_path,
+                reference.remote_connection_id.clone(),
+                reference.remote_ssh_host.clone(),
+            )
+            .await
+            .map(|resolution| resolution.effective_storage_path)
+            .map_err(|error| OpenBitFunError::Session(error.to_string()))?;
 
         if source_session_id == reference.session_id
             && source_storage_path == reference_storage_path
@@ -1517,7 +1514,7 @@ impl SessionManager {
             .get_session(session_id)
             .map(|session| session.config.clone())
         {
-            if let Some(binding) = ConversationCoordinator::build_workspace_binding(&config).await {
+            if let Some(binding) = self.build_workspace_binding(&config).await {
                 return Some(binding);
             }
         }
@@ -1538,8 +1535,9 @@ impl SessionManager {
         }
 
         for workspace in self.tracked_workspace_candidates().await? {
-            let Some(session_storage_path) =
-                Self::session_storage_path_for_workspace_info(&workspace).await
+            let Some(session_storage_path) = self
+                .session_storage_path_for_workspace_info(&workspace)
+                .await
             else {
                 continue;
             };
@@ -1598,7 +1596,7 @@ impl SessionManager {
             .session_config_from_persisted_metadata(&metadata, workspace_hint)
             .await?;
 
-        ConversationCoordinator::build_workspace_binding(&config).await
+        self.build_workspace_binding(&config).await
     }
 
     async fn session_config_from_persisted_metadata(
@@ -1621,21 +1619,29 @@ impl SessionManager {
             remote_ssh_host: metadata.workspace_hostname.clone(),
             ..SessionConfig::default()
         };
-        crate::agentic::workspace::normalize_session_workspace(&mut config)
-            .await
-            .ok()?;
+        self.storage.normalize_workspace(&mut config).await.ok()?;
         Some(config)
     }
 
+    pub(crate) async fn build_workspace_binding(
+        &self,
+        config: &SessionConfig,
+    ) -> Option<WorkspaceBinding> {
+        WorkspaceBinding::from_session(&self.storage.workspaces, config).await
+    }
+
     async fn tracked_workspace_candidates(&self) -> Option<Vec<WorkspaceInfo>> {
-        let workspace_service = get_global_workspace_service()?;
+        let workspace_service = self.storage.workspaces.current()?;
         let mut workspaces = workspace_service.list_workspace_infos().await;
         workspaces.sort_by_key(|workspace| std::cmp::Reverse(workspace.last_accessed));
         Some(workspaces)
     }
 
-    async fn session_storage_path_for_workspace_info(workspace: &WorkspaceInfo) -> Option<PathBuf> {
-        CoreSessionStorePort::default()
+    async fn session_storage_path_for_workspace_info(
+        &self,
+        workspace: &WorkspaceInfo,
+    ) -> Option<PathBuf> {
+        self.storage
             .resolve_workspace_storage(&workspace.id)
             .await
             .ok()
@@ -2087,12 +2093,32 @@ impl SessionManager {
         persistence_manager: Arc<PersistenceManager>,
         config: SessionManagerConfig,
     ) -> Self {
+        let storage =
+            CoreSessionStorePort::with_path_manager(persistence_manager.path_manager().clone());
+        Self::with_storage(
+            context_store,
+            persistence_manager.clone(),
+            config,
+            storage,
+            persistence_manager,
+        )
+    }
+
+    pub fn with_storage(
+        context_store: Arc<SessionContextStore>,
+        persistence_manager: Arc<PersistenceManager>,
+        config: SessionManagerConfig,
+        storage: CoreSessionStorePort,
+        records: Arc<dyn SessionRecords>,
+    ) -> Self {
         let enable_persistence = config.enable_persistence;
         let memory_database = Arc::new(MemoryDatabase::new(
             persistence_manager.path_manager().clone(),
         ));
 
         let manager = Self {
+            storage,
+            records,
             sessions: Arc::new(DashMap::new()),
             active_turn_permission_modes: Arc::new(DashMap::new()),
             transient_session_ids: Arc::new(DashMap::new()),
@@ -2497,12 +2523,12 @@ impl SessionManager {
                     ))
                 })?;
             if let Err(error) = self
-                .persistence_manager
+                .records
                 .save_session(&workspace_path, &updated_session)
                 .await
             {
                 if let Err(rollback_error) = self
-                    .persistence_manager
+                    .records
                     .save_session(&workspace_path, &original_session)
                     .await
                 {
@@ -2602,6 +2628,8 @@ impl SessionManager {
     }
 
     fn spawn_model_reconciliation_listener(&self) {
+        let storage = self.storage.clone();
+        let records = self.records.clone();
         let sessions = self.sessions.clone();
         let active_turn_permission_modes = self.active_turn_permission_modes.clone();
         let transient_session_ids = self.transient_session_ids.clone();
@@ -2640,6 +2668,8 @@ impl SessionManager {
             // We can't move `self` into a 'static task, so we recreate the
             // surface area we need from the cloned shared fields above.
             let manager = Self {
+                storage,
+                records,
                 sessions,
                 active_turn_permission_modes,
                 transient_session_ids,
@@ -2853,7 +2883,7 @@ impl SessionManager {
                 }
             }
         }
-        crate::agentic::workspace::normalize_session_workspace(&mut config).await?;
+        self.storage.normalize_workspace(&mut config).await?;
         let _workspace_path = Self::session_workspace_from_config(&config).ok_or_else(|| {
             OpenBitFunError::Validation("Session workspace_path is required".to_string())
         })?;
@@ -4260,12 +4290,12 @@ impl SessionManager {
         if self.should_persist_session_id(session_id) {
             if let Some(workspace_path) = self.effective_session_storage_path(session_id).await {
                 if let Err(error) = self
-                    .persistence_manager
+                    .records
                     .save_session(&workspace_path, &updated_session)
                     .await
                 {
                     if let Err(rollback_error) = self
-                        .persistence_manager
+                        .records
                         .save_session(&workspace_path, &original_session)
                         .await
                     {
@@ -4322,9 +4352,7 @@ impl SessionManager {
             let effective_path = self.effective_session_storage_path(session_id).await;
             let session_snapshot = self.sessions.get(session_id).map(|s| s.clone());
             if let (Some(workspace_path), Some(session)) = (effective_path, session_snapshot) {
-                self.persistence_manager
-                    .save_session(&workspace_path, &session)
-                    .await?;
+                self.records.save_session(&workspace_path, &session).await?;
             }
         }
 
@@ -4366,9 +4394,7 @@ impl SessionManager {
             let effective_path = self.effective_session_storage_path(session_id).await;
             let session_snapshot = self.sessions.get(session_id).map(|s| s.clone());
             if let (Some(workspace_path), Some(session)) = (effective_path, session_snapshot) {
-                self.persistence_manager
-                    .save_session(&workspace_path, &session)
-                    .await?;
+                self.records.save_session(&workspace_path, &session).await?;
             }
         }
 
@@ -4406,9 +4432,7 @@ impl SessionManager {
             let effective_path = self.effective_session_storage_path(session_id).await;
             let session_snapshot = self.sessions.get(session_id).map(|s| s.clone());
             if let (Some(workspace_path), Some(session)) = (effective_path, session_snapshot) {
-                self.persistence_manager
-                    .save_session(&workspace_path, &session)
-                    .await?;
+                self.records.save_session(&workspace_path, &session).await?;
             }
         }
 
@@ -4904,14 +4928,14 @@ impl SessionManager {
             let effective_path = self.effective_session_storage_path(session_id).await;
             if let Some(workspace_path) = effective_path {
                 if let Err(error) = self
-                    .persistence_manager
+                    .records
                     .save_session(&workspace_path, &updated_session)
                     .await
                 {
                     // A selection that is not durable must not stay applied in
                     // memory, so restore the previous value before failing.
                     if let Err(rollback_error) = self
-                        .persistence_manager
+                        .records
                         .save_session(&workspace_path, &original_session)
                         .await
                     {
@@ -5097,9 +5121,7 @@ impl SessionManager {
             let effective_path = self.effective_session_storage_path(session_id).await;
             let session_snapshot = self.sessions.get(session_id).map(|s| s.clone());
             if let (Some(workspace_path), Some(session)) = (effective_path, session_snapshot) {
-                self.persistence_manager
-                    .save_session(&workspace_path, &session)
-                    .await?;
+                self.records.save_session(&workspace_path, &session).await?;
             }
         }
 
@@ -5460,9 +5482,7 @@ impl SessionManager {
                         "Session storage path is unavailable: {session_id}"
                     ))
                 })?;
-            self.persistence_manager
-                .save_session(&storage_path, &session)
-                .await?;
+            self.records.save_session(&storage_path, &session).await?;
         }
 
         if self.sessions.remove(session_id).is_none() {
@@ -6335,7 +6355,7 @@ impl SessionManager {
         // 1. Load session and turns from storage in one pass
         let session_started_at = Instant::now();
         let (mut session, mut persisted_turns) = self
-            .persistence_manager
+            .records
             .load_session_with_turns(session_storage_path, session_id)
             .await?;
         let staged_revert = self
@@ -6731,12 +6751,12 @@ impl SessionManager {
         // A failed write keeps the session unloaded; restore-time recovery handles any
         // partial metadata/state update left by the existing multi-file persistence format.
         if let Some(turn) = interrupted_recovery_restored_turn.as_ref() {
-            self.persistence_manager
+            self.records
                 .save_dialog_turn(session_storage_path, turn)
                 .await?;
         }
         if should_persist_restored_session && self.should_persist_session_id(session_id) {
-            self.persistence_manager
+            self.records
                 .save_session(session_storage_path, &session)
                 .await?;
         }
@@ -6959,7 +6979,7 @@ impl SessionManager {
                 .then(|| session.clone())
         });
         if let Some(session) = session_snapshot {
-            self.persistence_manager
+            self.records
                 .save_session(session_storage_path, &session)
                 .await?;
         }
@@ -7123,9 +7143,7 @@ impl SessionManager {
         self.clear_turn_settlement_results(session_id);
 
         if let Some(session) = session_snapshot {
-            self.persistence_manager
-                .save_session(workspace_path, &session)
-                .await?;
+            self.records.save_session(workspace_path, &session).await?;
         }
 
         // 4) Delete persisted turns and snapshots from target_turn (inclusive) onwards.
@@ -7406,9 +7424,7 @@ impl SessionManager {
             .ok_or_else(|| {
                 OpenBitFunError::NotFound(format!("Session not found: {}", session_id))
             })?;
-        self.persistence_manager
-            .save_session(workspace_path, &session)
-            .await
+        self.records.save_session(workspace_path, &session).await
     }
 
     async fn update_session_metadata_at_workspace(
@@ -7718,11 +7734,9 @@ impl SessionManager {
             let session_snapshot = self.sessions.get(session_id).map(|s| s.clone());
             // Ref guard released -- DashMap shard lock is free.
             if let Some(session) = session_snapshot {
-                self.persistence_manager
-                    .save_session(&workspace_path, &session)
-                    .await?;
+                self.records.save_session(&workspace_path, &session).await?;
             }
-            self.persistence_manager
+            self.records
                 .save_dialog_turn(&workspace_path, &turn_data)
                 .await?;
         } else {
@@ -8048,17 +8062,13 @@ impl SessionManager {
         let persist = self.config.enable_persistence && self.should_persist_session(&session);
         // A failed write leaves the in-memory ledger untouched and can be retried.
         if persist {
-            self.persistence_manager
-                .save_dialog_turn(&storage, &turn)
-                .await?;
+            self.records.save_dialog_turn(&storage, &turn).await?;
         }
         session.dialog_turn_ids.push(exchange_id.to_string());
         session.updated_at = SystemTime::now();
         session.last_activity_at = session.updated_at;
         if persist {
-            self.persistence_manager
-                .save_session(&storage, &session)
-                .await?;
+            self.records.save_session(&storage, &session).await?;
         }
         self.sessions.insert(session_id.to_string(), session);
         self.context_store.add_message(session_id, user);
@@ -8142,7 +8152,7 @@ impl SessionManager {
         turn.status = TurnStatus::Completed;
 
         if self.config.enable_persistence && self.should_persist_session(&session) {
-            self.persistence_manager
+            self.records
                 .save_dialog_turn(&workspace_path, &turn)
                 .await?;
         } else {
@@ -8179,9 +8189,7 @@ impl SessionManager {
         };
 
         if let Some(session) = session_snapshot {
-            self.persistence_manager
-                .save_session(&workspace_path, &session)
-                .await?;
+            self.records.save_session(&workspace_path, &session).await?;
         }
 
         self.persist_context_snapshot_for_turn_best_effort(
@@ -8445,7 +8453,7 @@ impl SessionManager {
         turn_index: usize,
     ) -> OpenBitFunResult<Option<DialogTurnData>> {
         if self.should_persist_session_id(session_id) {
-            self.persistence_manager
+            self.records
                 .load_dialog_turn(workspace_path, session_id, turn_index)
                 .await
         } else {
@@ -8478,9 +8486,7 @@ impl SessionManager {
         turn: &DialogTurnData,
     ) -> OpenBitFunResult<()> {
         if self.should_persist_session_id(&turn.session_id) {
-            self.persistence_manager
-                .save_dialog_turn(workspace_path, turn)
-                .await
+            self.records.save_dialog_turn(workspace_path, turn).await
         } else {
             let mut history = self
                 .transient_turns
@@ -9244,7 +9250,7 @@ impl SessionManager {
                 OpenBitFunError::NotFound(format!("Dialog turn not found: {turn_id}"))
             })?;
         let mut turn = self
-            .persistence_manager
+            .records
             .load_dialog_turn(&workspace_path, session_id, turn_index)
             .await?
             .ok_or_else(|| {
@@ -9336,7 +9342,7 @@ impl SessionManager {
                 &context_messages,
             )
             .await?;
-        self.persistence_manager
+        self.records
             .save_dialog_turn(&workspace_path, &turn)
             .await?;
         Ok(())
@@ -9567,7 +9573,7 @@ impl SessionManager {
             })?;
         let workspace_path = self.require_session_storage_path(session_id).await?;
         let mut turn = self
-            .persistence_manager
+            .records
             .load_dialog_turn(&workspace_path, session_id, turn_index)
             .await?
             .ok_or_else(|| {
@@ -9598,7 +9604,7 @@ impl SessionManager {
         {
             if turn.recovery_epoch != Some(recovery.execution_generation) {
                 turn.recovery_epoch = Some(recovery.execution_generation);
-                self.persistence_manager
+                self.records
                     .save_dialog_turn(&workspace_path, &turn)
                     .await?;
             }
@@ -9643,7 +9649,7 @@ impl SessionManager {
         turn.duration_ms = Some(now.saturating_sub(turn.start_time));
         turn.recovery = Some(recovery.clone());
         turn.recovery_epoch = Some(recovery.execution_generation);
-        self.persistence_manager
+        self.records
             .save_dialog_turn(&workspace_path, &turn)
             .await?;
         Ok(recovery)
@@ -9673,7 +9679,7 @@ impl SessionManager {
             })?;
         let workspace_path = self.require_session_storage_path(session_id).await?;
         let mut turn = self
-            .persistence_manager
+            .records
             .load_dialog_turn(&workspace_path, session_id, turn_index)
             .await?
             .ok_or_else(|| {
@@ -9978,13 +9984,9 @@ impl SessionManager {
         self.persistence_manager
             .save_turn_context_snapshot(&workspace_path, session_id, turn_index, &messages)
             .await?;
-        if let Err(error) = self
-            .persistence_manager
-            .save_dialog_turn(&workspace_path, &turn)
-            .await
-        {
+        if let Err(error) = self.records.save_dialog_turn(&workspace_path, &turn).await {
             if let Err(rollback_error) = self
-                .persistence_manager
+                .records
                 .save_dialog_turn(&workspace_path, &original_turn)
                 .await
             {
@@ -9995,16 +9997,13 @@ impl SessionManager {
             return Err(error);
         }
         if let Err(error) = self
-            .persistence_manager
+            .records
             .save_session(&workspace_path, &updated_session)
             .await
         {
-            let session_rollback = self
-                .persistence_manager
-                .save_session(&workspace_path, &session)
-                .await;
+            let session_rollback = self.records.save_session(&workspace_path, &session).await;
             let turn_rollback = self
-                .persistence_manager
+                .records
                 .save_dialog_turn(&workspace_path, &original_turn)
                 .await;
             if session_rollback.is_err() || turn_rollback.is_err() {
@@ -10055,7 +10054,7 @@ impl SessionManager {
         };
         let workspace_path = self.require_session_storage_path(session_id).await?;
         let Some(turn) = self
-            .persistence_manager
+            .records
             .load_dialog_turn(&workspace_path, session_id, turn_index)
             .await?
         else {
@@ -10089,7 +10088,7 @@ impl SessionManager {
         };
         let workspace_path = self.require_session_storage_path(session_id).await?;
         let Some(mut turn) = self
-            .persistence_manager
+            .records
             .load_dialog_turn(&workspace_path, session_id, turn_index)
             .await?
         else {
@@ -10106,7 +10105,7 @@ impl SessionManager {
         turn.recovery = None;
         turn.finish_reason = Some("cancelled".to_string());
         let turn_id = turn.turn_id.clone();
-        self.persistence_manager
+        self.records
             .save_dialog_turn(&workspace_path, &turn)
             .await?;
         Ok(Some(turn_id))
@@ -10582,9 +10581,7 @@ impl SessionManager {
 
         if let Some(session) = session_snapshot {
             if let Some(ref workspace_path) = effective_path {
-                self.persistence_manager
-                    .save_session(workspace_path, &session)
-                    .await?;
+                self.records.save_session(workspace_path, &session).await?;
             }
         }
 
@@ -10802,7 +10799,8 @@ impl SessionManager {
     fn spawn_auto_save_task(&self) {
         let sessions = self.sessions.clone();
         let transient_session_ids = self.transient_session_ids.clone();
-        let persistence = self.persistence_manager.clone();
+        let records = self.records.clone();
+        let storage = self.storage.clone();
         let session_mutation_locks = self.session_mutation_locks.clone();
         let interval = self.config.auto_save_interval;
         let session_storage_path_index = self.session_storage_path_index.clone();
@@ -10825,18 +10823,14 @@ impl SessionManager {
                     ) {
                         Some(path) => Some(path),
                         None => {
-                            Self::effective_storage_path_for_config_with_persistence(
-                                persistence.as_ref(),
-                                &snapshot.session.config,
-                            )
-                            .await
+                            Self::effective_storage_path(&storage, &snapshot.session.config).await
                         }
                     };
                     if let Some(workspace_path) = storage_path {
                         if !Self::auto_save_snapshot_is_current(&sessions, &snapshot) {
                             continue;
                         }
-                        if let Err(e) = persistence
+                        if let Err(e) = records
                             .save_session(&workspace_path, &snapshot.session)
                             .await
                         {
@@ -10860,7 +10854,8 @@ impl SessionManager {
         let transient_session_ids = self.transient_session_ids.clone();
         let active_session_permits = self.active_session_permits.clone();
         let timeout = self.config.session_idle_timeout;
-        let persistence = self.persistence_manager.clone();
+        let records = self.records.clone();
+        let storage = self.storage.clone();
         let session_storage_path_index = self.session_storage_path_index.clone();
         let enable_persistence = self.config.enable_persistence;
         let session_mutation_locks = self.session_mutation_locks.clone();
@@ -10919,13 +10914,7 @@ impl SessionManager {
                             &session.session_id,
                         ) {
                             Some(path) => Some(path),
-                            None => {
-                                Self::effective_storage_path_for_config_with_persistence(
-                                    persistence.as_ref(),
-                                    &session.config,
-                                )
-                                .await
-                            }
+                            None => Self::effective_storage_path(&storage, &session.config).await,
                         };
                         if let Some(workspace_path) = storage_path {
                             if Self::cleanup_snapshot_for_candidate(
@@ -10937,7 +10926,7 @@ impl SessionManager {
                             .is_some()
                             {
                                 if let Err(error) =
-                                    persistence.save_session(&workspace_path, &session).await
+                                    records.save_session(&workspace_path, &session).await
                                 {
                                     error!(
                                         "Failed to save Session before idle eviction: session_id={}, error={}",

@@ -3,6 +3,8 @@
 //! Responsible for persistent storage and loading of data
 
 pub mod manager;
+mod session_records;
+pub use session_records::SessionRecords;
 pub mod session_branch;
 
 pub use manager::{

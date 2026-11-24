@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use openbitfun_core::product_assembly::DeliveryProfile;
 use openbitfun_core::product_runtime::CoreRuntimeServicesProvider;
 use openbitfun_core::runtime_ownership::CoreRuntimeOwnership;
+use openbitfun_core::service::workspace::WorkspaceServiceSource;
 use std::sync::Arc;
 
 pub(crate) use openbitfun_core::agentic::system::AgenticSystem;
@@ -19,10 +20,11 @@ pub(crate) async fn init_agentic_system(
         openbitfun_core::agentic::tools::computer_use_host::ComputerUseHostRef,
     >,
 ) -> Result<AgenticSystem> {
-    let system = openbitfun_core::agentic::system::init_agentic_system_with_computer_use_host(
+    let system = openbitfun_core::agentic::system::init_agentic_system_with_workspaces(
         profile,
         runtime_ownership,
         computer_use_host,
+        WorkspaceServiceSource::Registered,
     )
     .await
     .context("Failed to initialize agentic system")?;

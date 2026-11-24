@@ -8,18 +8,44 @@ use openbitfun_runtime_ports::{
 
 use crate::agentic::core::SessionConfig;
 use crate::infrastructure::{get_path_manager_arc, PathManager};
+use crate::service::workspace::WorkspaceServiceSource;
 use crate::service::WorkspaceRuntimeService;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CoreSessionStorePort {
     path_manager: Option<Arc<PathManager>>,
+    pub(crate) workspaces: WorkspaceServiceSource,
+}
+
+impl Default for CoreSessionStorePort {
+    fn default() -> Self {
+        Self {
+            path_manager: None,
+            workspaces: WorkspaceServiceSource::Registered,
+        }
+    }
 }
 
 impl CoreSessionStorePort {
-    pub(crate) fn with_path_manager(path_manager: Arc<PathManager>) -> Self {
+    pub fn new(path_manager: Arc<PathManager>, workspaces: WorkspaceServiceSource) -> Self {
         Self {
             path_manager: Some(path_manager),
+            workspaces,
         }
+    }
+
+    pub(crate) async fn normalize_workspace(
+        &self,
+        config: &mut SessionConfig,
+    ) -> crate::OpenBitFunResult<()> {
+        crate::agentic::workspace::normalize_session_workspace_with(
+            config,
+            self.workspaces.current().as_deref(),
+        )
+        .await
+    }
+    pub(crate) fn with_path_manager(path_manager: Arc<PathManager>) -> Self {
+        Self::new(path_manager, WorkspaceServiceSource::Registered)
     }
 
     #[cfg(test)]
@@ -216,8 +242,8 @@ impl SessionStorePort for CoreSessionStorePort {
         &self,
         workspace_id: &str,
     ) -> PortResult<SessionStoragePathResolution> {
-        use crate::service::workspace::{get_global_workspace_service, WorkspaceKind};
-        let service = get_global_workspace_service().ok_or_else(|| {
+        use crate::service::workspace::WorkspaceKind;
+        let service = self.workspaces.current().ok_or_else(|| {
             PortError::new(
                 PortErrorKind::InvalidRequest,
                 "Workspace service is unavailable",
@@ -328,7 +354,7 @@ impl SessionStorePort for CoreSessionStorePort {
         // Convert pre-ID input exactly once at this compatibility boundary.
         // Storage then follows the same catalog record as current ID requests;
         // do not re-infer local/SSH identity from filesystem existence.
-        crate::agentic::workspace::normalize_session_workspace(&mut config)
+        self.normalize_workspace(&mut config)
             .await
             .map_err(|error| {
                 PortError::new(
@@ -356,6 +382,44 @@ impl SessionStorePort for CoreSessionStorePort {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn injected_catalog_owns_id_and_legacy_path_resolution() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("project");
+        std::fs::create_dir(&workspace).unwrap();
+        let service = Arc::new(
+            crate::service::workspace::WorkspaceService::new_isolated_for_tests(
+                root.path().join("user"),
+            )
+            .await,
+        );
+        let record = service
+            .register_local_workspace_record(workspace.clone())
+            .await
+            .unwrap();
+        let store = CoreSessionStorePort::new(
+            service.path_manager().clone(),
+            WorkspaceServiceSource::Provided(service.clone()),
+        );
+        let by_id = store.resolve_workspace_storage(&record.id).await.unwrap();
+        let legacy = store
+            .resolve_session_storage_path(SessionStoragePathRequest {
+                workspace_path: workspace,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(legacy.effective_storage_path, by_id.effective_storage_path);
+        assert!(by_id
+            .effective_storage_path
+            .starts_with(service.path_manager().projects_root()));
+        assert!(store
+            .resolve_workspace_storage("unknown-workspace")
+            .await
+            .is_err());
+    }
 
     fn test_port() -> (CoreSessionStorePort, PathBuf) {
         let test_root =

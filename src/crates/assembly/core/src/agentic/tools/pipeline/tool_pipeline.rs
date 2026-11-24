@@ -959,6 +959,10 @@ impl ToolPipeline {
         self
     }
 
+    pub(crate) fn tool_registry(&self) -> Arc<TokioRwLock<ToolRegistry>> {
+        self.tool_registry.clone()
+    }
+
     pub fn computer_use_host(&self) -> Option<ComputerUseHostRef> {
         self.computer_use_host.clone()
     }

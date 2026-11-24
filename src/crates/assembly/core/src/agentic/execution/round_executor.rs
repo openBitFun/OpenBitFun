@@ -3,6 +3,7 @@
 //! Executes a single model round: calls AI, processes streaming responses, executes tools
 
 use super::model_exchange_trace::prepare_model_exchange_trace;
+use super::model_requests::{ModelRequests, ProductModelRequests};
 use super::stream_processor::{StreamProcessOptions, StreamProcessor, StreamResult};
 use super::types::{coordinator_owns_cancel_lifecycle, FinishReason, RoundContext, RoundResult};
 use crate::agentic::core::{Message, ToolCall};
@@ -53,6 +54,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Round executor
 pub struct RoundExecutor {
+    pub(super) models: Arc<dyn ModelRequests>,
     stream_processor: Arc<StreamProcessor>,
     tool_pipeline: Option<Arc<ToolPipeline>>,
     event_queue: Arc<EventQueue>,
@@ -700,13 +702,50 @@ impl RoundExecutor {
         event_queue: Arc<EventQueue>,
         tool_pipeline: Arc<ToolPipeline>,
     ) -> Self {
+        Self::with_providers(
+            stream_processor,
+            event_queue,
+            tool_pipeline,
+            Arc::new(ProductModelRequests),
+            crate::service::token_usage::get_global_token_usage_service(),
+        )
+    }
+
+    pub(crate) fn with_providers(
+        stream_processor: Arc<StreamProcessor>,
+        event_queue: Arc<EventQueue>,
+        tool_pipeline: Arc<ToolPipeline>,
+        models: Arc<dyn ModelRequests>,
+        usage_service: Option<Arc<crate::service::token_usage::TokenUsageService>>,
+    ) -> Self {
         Self {
+            models,
             stream_processor,
             tool_pipeline: Some(tool_pipeline),
             event_queue,
             cancellation_tokens: DialogTurnCancellationTokenStore::new(),
-            usage_service: crate::service::token_usage::get_global_token_usage_service(),
+            usage_service,
         }
+    }
+
+    pub(super) async fn tool_manifest(
+        &self,
+        allowed_tools: &[String],
+        overrides: &crate::agentic::agents::AgentToolPolicyOverrides,
+        context: &crate::agentic::tools::framework::ToolUseContext,
+    ) -> crate::agentic::tools::manifest_resolver::ResolvedToolManifest {
+        let registry = self
+            .tool_pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.tool_registry())
+            .unwrap_or_else(crate::agentic::tools::registry::get_global_tool_registry);
+        crate::agentic::tools::product_runtime::resolved_manifest_from_registry(
+            &registry,
+            allowed_tools,
+            overrides,
+            context,
+        )
+        .await
     }
 
     pub fn computer_use_host(&self) -> Option<ComputerUseHostRef> {
@@ -1121,10 +1160,11 @@ impl RoundExecutor {
             let request_trace_config = trace_config
                 .clone()
                 .map(|config| config.with_round_attempt(attempt_id.clone(), attempt_number));
-            let send_future = ai_client.send_message_stream_once_with_request_context(
+            let send_future = self.models.send_once(
+                &ai_client,
                 ai_messages.clone(),
                 tool_definitions.clone(),
-                Some(context.model_request_context.clone()),
+                context.model_request_context.clone(),
                 request_trace_config,
             );
             let send_result = tokio::select! {
@@ -2293,8 +2333,7 @@ impl RoundExecutor {
                             {
                                 Some(ai_client.clone())
                             } else {
-                                match crate::infrastructure::ai::AIClientFactory::get_global().await
-                                {
+                                match self.models.client_factory().await {
                                     Ok(factory) => {
                                         match factory
                                             .get_client_resolved(
@@ -2924,6 +2963,7 @@ pub(super) mod tests {
     pub(in crate::agentic::execution) fn test_round_executor() -> RoundExecutor {
         let event_queue = Arc::new(EventQueue::new(EventQueueConfig::default()));
         RoundExecutor {
+            models: Arc::new(super::ProductModelRequests),
             stream_processor: Arc::new(StreamProcessor::new(event_queue.clone())),
             tool_pipeline: None,
             event_queue,

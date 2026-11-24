@@ -148,12 +148,13 @@ impl ExecutionEngine {
         );
         let manifest = if session.config.enable_tools {
             Some(
-                resolve_tool_manifest(
-                    &policy.allowed_tools,
-                    &policy.exposure_overrides,
-                    &tool_context,
-                )
-                .await,
+                self.round_executor
+                    .tool_manifest(
+                        &policy.allowed_tools,
+                        &policy.exposure_overrides,
+                        &tool_context,
+                    )
+                    .await,
             )
         } else {
             None

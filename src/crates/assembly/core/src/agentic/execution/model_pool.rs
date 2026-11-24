@@ -426,6 +426,7 @@ impl ModelPoolRuntime {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn prepare(
         &self,
+        models: &dyn super::model_requests::ModelRequests,
         session_id: &str,
         selection_revision: u64,
         pool_id: &str,
@@ -433,7 +434,8 @@ impl ModelPoolRuntime {
         require_tools: bool,
         image_requirement: ImageInputRequirement,
     ) -> OpenBitFunResult<(PoolAttempt, Arc<crate::infrastructure::ai::AIClient>)> {
-        let factory = crate::infrastructure::ai::get_global_ai_client_factory()
+        let factory = models
+            .client_factory()
             .await
             .map_err(|error| OpenBitFunError::AIClient(error.to_string()))?;
         // Each failed preparation is excluded, so traverse all configured

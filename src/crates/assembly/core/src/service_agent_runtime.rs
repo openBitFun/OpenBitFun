@@ -2185,11 +2185,12 @@ impl CoreServiceAgentRuntime {
                 remote_ssh_host: current.remote_ssh_host,
                 ..Default::default()
             };
-            ConversationCoordinator::build_workspace_binding(&config)
-                .await
-                .ok_or_else(|| {
-                    "Cannot resolve the selected workspace for file access".to_string()
-                })?
+            crate::agentic::workspace::WorkspaceBinding::from_session(
+                &crate::service::workspace::WorkspaceServiceSource::Registered,
+                &config,
+            )
+            .await
+            .ok_or_else(|| "Cannot resolve the selected workspace for file access".to_string())?
         };
         let connection_id = binding.connection_id().map(str::to_string);
         let target = Self::file_target_for_binding(path, session_id, binding).await?;
@@ -2258,9 +2259,12 @@ impl CoreServiceAgentRuntime {
                 workspace_id: Some(workspace_id.to_string()),
                 ..Default::default()
             };
-            let binding = ConversationCoordinator::build_workspace_binding(&config)
-                .await
-                .ok_or_else(|| format!("File workspace {} cannot be resolved", workspace_id))?;
+            let binding = crate::agentic::workspace::WorkspaceBinding::from_session(
+                &crate::service::workspace::WorkspaceServiceSource::Registered,
+                &config,
+            )
+            .await
+            .ok_or_else(|| format!("File workspace {} cannot be resolved", workspace_id))?;
             if let Some(expected) = remote_connection_id {
                 if binding.connection_id() != Some(expected) {
                     return Err(
@@ -2329,9 +2333,12 @@ impl CoreServiceAgentRuntime {
             remote_connection_id: remote_connection_id.map(str::to_string),
             ..Default::default()
         };
-        let binding = ConversationCoordinator::build_workspace_binding(&config)
-            .await
-            .ok_or("Explicit file workspace cannot be resolved")?;
+        let binding = crate::agentic::workspace::WorkspaceBinding::from_session(
+            &crate::service::workspace::WorkspaceServiceSource::Registered,
+            &config,
+        )
+        .await
+        .ok_or("Explicit file workspace cannot be resolved")?;
         if binding.connection_id() != remote_connection_id {
             return Err(
                 "Explicit file workspace provider does not match its connection identity".into(),
