@@ -444,27 +444,27 @@ test("split pane focus switches on clicking anywhere in either pane, and bottom-
   await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
-  // Open split view: Pane 1 starts focused with its top highlight bar active.
+  // Open split view: Pane 1 starts focused with its active indicator dot.
   await app.press("thread-actions-trigger");
   await app.press("session-split-open");
   await app.waitFor("id:secondary-session-pane");
-  await app.waitFor("id:secondary-pane-active-bar");
-  expect(app.shows("id:primary-pane-active-bar")).toBe(false);
+  await app.waitFor("id:secondary-pane-active-indicator");
+  expect(app.shows("id:primary-pane-active-indicator")).toBe(false);
 
-  // Clicking Pane 0's header switches the top highlight bar immediately.
+  // Clicking Pane 0's header switches the active indicator immediately.
   await app.press("primary-pane-focus");
-  await app.waitFor("id:primary-pane-active-bar");
-  expect(app.shows("id:secondary-pane-active-bar")).toBe(false);
+  await app.waitFor("id:primary-pane-active-indicator");
+  expect(app.shows("id:secondary-pane-active-indicator")).toBe(false);
 
-  // Clicking Pane 1's transcript content switches the top highlight bar back to Pane 1.
+  // Clicking Pane 1's transcript content switches the active indicator back to Pane 1.
   await app.press("Port the terminal.");
-  await app.waitFor("id:secondary-pane-active-bar");
-  expect(app.shows("id:primary-pane-active-bar")).toBe(false);
+  await app.waitFor("id:secondary-pane-active-indicator");
+  expect(app.shows("id:primary-pane-active-indicator")).toBe(false);
 
-  // Clicking Pane 0's transcript content switches the top highlight bar back to Pane 0.
+  // Clicking Pane 0's transcript content switches the active indicator back to Pane 0.
   await app.press("Port the session list.");
-  await app.waitFor("id:primary-pane-active-bar");
-  expect(app.shows("id:secondary-pane-active-bar")).toBe(false);
+  await app.waitFor("id:primary-pane-active-indicator");
+  expect(app.shows("id:secondary-pane-active-indicator")).toBe(false);
 
   // Close split pane, open Files in right AuxPane -> narrow stacked mode (< 600px), then dock to bottom -> wide side-by-side.
   await app.press("session-pane-close-1");
@@ -495,11 +495,15 @@ test("centered split divider swap button exchanges left and right sessions and z
   await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
-  // Open split pane: divider swap button sits centered between both sessions.
+  // Open split pane: divider swap button stays hidden until the pointer moves near the divider.
   await app.press("thread-actions-trigger");
   await app.press("session-split-open");
   await app.waitFor("id:secondary-session-pane");
   await app.waitFor("Port the terminal.");
+  expect(app.shows("split-divider-swap")).toBe(false);
+
+  // Hovering near the divider reveals the centered swap button.
+  await app.hover("id:split-divider-proximity-left");
   await app.waitFor("split-divider-swap");
 
   // Pressing the divider swap button exchanges Primary and Secondary sessions cleanly.
@@ -510,5 +514,4 @@ test("centered split divider swap button exchanges left and right sessions and z
   });
   await app.waitFor("Port the terminal.");
   await app.waitFor("Port the session list.");
-  expect(app.shows("split-divider-swap")).toBe(true);
 });

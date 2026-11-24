@@ -261,3 +261,70 @@ test("without the fleet layer, local fallback shows remote workspace SSH host an
   expect(app.shows("id:sidebar-workspace-host-ws-local")).toBe(false);
   expect(app.texts().some(text => text.includes("localhost"))).toBe(false);
 });
+
+test("each workspace shows 3 sessions by default and reveals 5 more per Show more press", async () => {
+  const manySessions = Array.from({ length: 10 }, (_, idx) =>
+    fleetSessionRow("dev-a", "ws-many", `s-${idx + 1}`, `Thread ${idx + 1}`),
+  );
+  const nav = {
+    revision: 4,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "mac-work",
+        [
+          {
+            workspaceId: "ws-many",
+            name: "OpenBitFun",
+            rootPath: "/Users/me/OpenBitFun",
+            kind: "local",
+            isHostCurrent: true,
+            sessions: manySessions,
+          },
+        ],
+        { isClientDevice: true },
+      ),
+    ],
+  };
+  const { app } = await openFleet(nav);
+  await app.waitFor("id:sidebar-session-s-1");
+
+  // Default preview: 3 sessions.
+  expect(app.shows("id:sidebar-session-s-3")).toBe(true);
+  expect(app.shows("id:sidebar-session-s-4")).toBe(false);
+  expect(app.shows("label:sidebar-show-more-ws-many >> text:Show more")).toBe(true);
+
+  // First "Show more": +5 => 8 sessions.
+  await app.press("label:sidebar-show-more-ws-many");
+  await app.waitFor("id:sidebar-session-s-8");
+  expect(app.shows("id:sidebar-session-s-4")).toBe(true);
+  expect(app.shows("id:sidebar-session-s-8")).toBe(true);
+  expect(app.shows("id:sidebar-session-s-9")).toBe(false);
+  expect(app.shows("label:sidebar-show-more-ws-many >> text:Show more")).toBe(true);
+
+  // Second "Show more": +5 => all 10 sessions, switching to "Show less".
+  await app.press("label:sidebar-show-more-ws-many");
+  await app.waitFor("id:sidebar-session-s-10");
+  expect(app.shows("id:sidebar-session-s-9")).toBe(true);
+  expect(app.shows("id:sidebar-session-s-10")).toBe(true);
+  expect(app.shows("label:sidebar-show-more-ws-many >> text:Show less")).toBe(true);
+
+  // "Show less" collapses back to 3.
+  await app.press("label:sidebar-show-more-ws-many");
+  await app.waitUntil(() => !app.shows("id:sidebar-session-s-4"));
+  expect(app.shows("id:sidebar-session-s-3")).toBe(true);
+  expect(app.shows("label:sidebar-show-more-ws-many >> text:Show more")).toBe(true);
+
+  // Expand to 8, then fold & unfold the workspace: always resets to default 3 sessions.
+  await app.press("label:sidebar-show-more-ws-many");
+  await app.waitFor("id:sidebar-session-s-8");
+  await app.press("label:sidebar-workspace-toggle-ws-many");
+  await app.waitUntil(() => !app.shows("id:sidebar-session-s-1"));
+  await app.press("label:sidebar-workspace-toggle-ws-many");
+  await app.waitFor("id:sidebar-session-s-3");
+  expect(app.shows("id:sidebar-session-s-4")).toBe(false);
+  expect(app.shows("label:sidebar-show-more-ws-many >> text:Show more")).toBe(true);
+});

@@ -1195,7 +1195,7 @@ function SessionHeaderBar(props: {
   statusLabelPrefix?: string;
   showTools?: () => boolean;
   focusAccessibilityLabel?: string | (() => string | undefined);
-  focusBarTestID?: string;
+  focusIndicatorTestID?: string;
   onFocus?: () => void;
   actions?: JSX.Element;
   subline?: JSX.Element;
@@ -1215,28 +1215,23 @@ function SessionHeaderBar(props: {
         paddingHorizontal: sessionsPadX(),
         justifyContent: "center",
         gap: space.hair,
-        backgroundColor: palette().canvas,
+        backgroundColor: props.dimmed?.() ? palette().canvasSubtle : palette().canvas,
         borderBottomWidth: 1,
         borderColor: props.bordered?.() ? palette().borderSubtle : "transparent",
         flexShrink: 0,
         ...paintTransition(MOTION_DURATION.fast),
       }}
     >
-      <If when={Boolean(props.focused?.())}>
-        <View
-          testID={props.focusBarTestID}
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 2,
-            backgroundColor: palette().accent,
-            pointerEvents: "none",
-          }}
-        />
-      </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.md,
+          minHeight: layout.topBarHeight - space.lg,
+          opacity: props.dimmed?.() ? 0.76 : 1,
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+      >
         <View
           role={focusActive() ? "button" : undefined}
           accessibilityLabel={focusLabel()}
@@ -1251,6 +1246,19 @@ function SessionHeaderBar(props: {
             ...(focusActive() ? { cursor: "pointer", userSelect: "none" } : {}),
           }}
         >
+          <If when={Boolean(props.focused?.())}>
+            <View
+              testID={props.focusIndicatorTestID}
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: radii.pill,
+                backgroundColor: palette().accent,
+                flexShrink: 0,
+                pointerEvents: "none",
+              }}
+            />
+          </If>
           <If when={Boolean(props.leadingIcon)}>
             <Icon
               name={props.leadingIcon!}
@@ -1262,7 +1270,7 @@ function SessionHeaderBar(props: {
             testID={props.titleTestID}
             style={{
               ...textStyle("sectionTitle", {
-                color: props.dimmed?.() ? palette().textSecondary : palette().text,
+                color: props.dimmed?.() ? palette().textMuted : palette().text,
               }),
               minWidth: 0,
               flexShrink: props.subtitle ? 0 : 1,
@@ -1378,7 +1386,7 @@ function ConversationHeader() {
             bordered={() => anyRightSplitOpen() || transcriptScrolled()}
             tall={() => Boolean(sessionOrigin())}
             focusAccessibilityLabel={() => (splitPaneOpen() ? "primary-pane-focus" : undefined)}
-            focusBarTestID="primary-pane-active-bar"
+            focusIndicatorTestID="primary-pane-active-indicator"
             onFocus={() => {
               if (splitPaneOpen()) focusPane(0);
             }}
@@ -5683,6 +5691,7 @@ function ComposerAttachmentStrip(props: {
  */
 function ComposerCardShell(props: {
   dragActive?: () => boolean;
+  inactive?: () => boolean;
   cardRef?: (el: ViewRef | null) => void;
   onLayoutWidth?: (width: number) => void;
   onFileDragEnter?: () => void;
@@ -5693,6 +5702,7 @@ function ComposerCardShell(props: {
   children?: JSX.Element;
 }) {
   const dragging = () => Boolean(props.dragActive?.());
+  const inactive = () => Boolean(props.inactive?.()) && !dragging();
   return (
     <View
       onLayout={
@@ -5729,9 +5739,10 @@ function ComposerCardShell(props: {
             borderRadius: radii.xl,
             borderCurve: "continuous",
             borderWidth: 1,
-            borderColor: dragging() ? palette().accent : palette().border,
-            backgroundColor: dragging() ? palette().accentSoft : palette().inputBg,
-            boxShadow: palette().shadowComposer,
+            borderColor: dragging() ? palette().accent : inactive() ? palette().borderSubtle : palette().border,
+            backgroundColor: dragging() ? palette().accentSoft : inactive() ? palette().canvas : palette().inputBg,
+            boxShadow: inactive() ? undefined : palette().shadowComposer,
+            opacity: inactive() ? 0.78 : 1,
             overflow: "hidden",
             ...paintTransition(MOTION_DURATION.fast),
           }}
@@ -5934,6 +5945,7 @@ function ComposerDock() {
     <View>
       <ComposerCardShell
         dragActive={composerFileDragActive}
+        inactive={() => splitPaneOpen() && !compactLayout() && focusedPane() !== 0}
         cardRef={el => composerCardAnchor.set(el)}
         onLayoutWidth={w => {
           if (Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
@@ -8672,7 +8684,7 @@ function SecondaryHeader() {
       focused={() => focusedPane() === 1}
       bordered={() => true}
       focusAccessibilityLabel="secondary-pane-focus"
-      focusBarTestID="secondary-pane-active-bar"
+      focusIndicatorTestID="secondary-pane-active-indicator"
       onFocus={() => focusPane(1)}
       breadcrumb={
         <SessionBreadcrumb
@@ -9388,6 +9400,7 @@ function SecondaryComposerDock() {
     <View>
       <ComposerCardShell
         dragActive={dragActive}
+        inactive={() => focusedPane() !== 1}
         onLayoutWidth={w => {
           if (Math.abs(w - paneWidth()) > 1) paneWidth.set(w);
         }}
@@ -9558,7 +9571,8 @@ function SecondarySessionPane() {
         minWidth: 260,
         minHeight: 0,
         flexDirection: "column",
-        backgroundColor: palette().canvas,
+        backgroundColor: focusedPane() !== 1 ? palette().canvasSubtle : palette().canvas,
+        ...paintTransition(MOTION_DURATION.fast),
       }}
     >
       <SecondaryHeader />
@@ -9990,6 +10004,39 @@ export function SessionsScene() {
   const showSecondarySplit = () => splitPaneOpen() && !compactLayout();
   const showBtwSplit = () => !showSecondarySplit() && sideQuestionOpen() && !compactLayout();
   const showSplit = () => showSecondarySplit() || showBtwSplit();
+  const dividerNear = signal(false);
+  let dividerLeaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const enterDividerNear = () => {
+    if (dividerLeaveTimer) {
+      clearTimeout(dividerLeaveTimer);
+      dividerLeaveTimer = null;
+    }
+    dividerNear.set(true);
+  };
+  const leaveDividerNear = () => {
+    if (dividerLeaveTimer) clearTimeout(dividerLeaveTimer);
+    dividerLeaveTimer = setTimeout(() => {
+      dividerLeaveTimer = null;
+      dividerNear.set(false);
+    }, 120);
+  };
+  cleanup(() => {
+    if (dividerLeaveTimer) {
+      clearTimeout(dividerLeaveTimer);
+      dividerLeaveTimer = null;
+    }
+  });
+  effect(() => {
+    if (splitDragging() || !showSecondarySplit()) {
+      if (dividerLeaveTimer) {
+        clearTimeout(dividerLeaveTimer);
+        dividerLeaveTimer = null;
+      }
+      dividerNear.set(false);
+    }
+  });
+  const canSwapSplit = () =>
+    showSecondarySplit() && Boolean(activeSessionId()) && Boolean(secondarySessionId()) && !splitDragging();
   let splitDragStartRatio: number | null = null;
   let splitDragAccumPx = 0;
 
@@ -10032,7 +10079,8 @@ export function SessionsScene() {
           minWidth: showSplit() ? 260 : 0,
           minHeight: 0,
           flexDirection: "column",
-          backgroundColor: palette().canvas,
+          backgroundColor: showSecondarySplit() && focusedPane() !== 0 ? palette().canvasSubtle : palette().canvas,
+          ...paintTransition(MOTION_DURATION.fast),
         }}
       >
         <ConversationHeader />
@@ -10051,6 +10099,8 @@ export function SessionsScene() {
 
       <If when={showSplit()}>
         <View
+          onMouseEnter={enterDividerNear}
+          onMouseLeave={leaveDividerNear}
           style={{
             position: "relative",
             width: 9,
@@ -10060,10 +10110,40 @@ export function SessionsScene() {
             zIndex: 4,
           }}
         >
+          <If when={canSwapSplit()}>
+            <View
+              testID="split-divider-proximity-left"
+              onMouseEnter={enterDividerNear}
+              onMouseLeave={leaveDividerNear}
+              onPress={() => focusPane(0)}
+              style={{
+                position: "absolute",
+                left: -18,
+                width: 18,
+                height: 120,
+                backgroundColor: "transparent",
+                zIndex: 1,
+              }}
+            />
+            <View
+              testID="split-divider-proximity-right"
+              onMouseEnter={enterDividerNear}
+              onMouseLeave={leaveDividerNear}
+              onPress={() => focusPane(1)}
+              style={{
+                position: "absolute",
+                right: -18,
+                width: 18,
+                height: 120,
+                backgroundColor: "transparent",
+                zIndex: 1,
+              }}
+            />
+          </If>
           <SplitHandle
             surface="canvas"
             accessibilityLabel="session-split-handle"
-            style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0 }}
+            style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 2 }}
             onDragStateChange={dragging => {
               if (dragging) {
                 splitDragStartRatio = sessionSplitRatio();
@@ -10081,17 +10161,20 @@ export function SessionsScene() {
             }}
             onReset={() => setSessionSplitRatio(SESSION_SPLIT_DEFAULT_RATIO)}
           />
-          <If when={showSecondarySplit() && Boolean(activeSessionId()) && Boolean(secondarySessionId()) && !splitDragging()}>
+          <If when={canSwapSplit() && dividerNear()}>
             <View
               role="button"
               tooltip={tr("sessions.splitSwap")}
               accessibilityLabel="split-divider-swap"
+              onMouseEnter={enterDividerNear}
+              onMouseLeave={leaveDividerNear}
               onPress={() => swapSplitPanes()}
               style={{
                 position: "absolute",
                 left: -8,
                 width: 24,
                 height: 24,
+                zIndex: 3,
                 borderRadius: radii.pill,
                 borderCurve: "continuous",
                 borderWidth: 1,

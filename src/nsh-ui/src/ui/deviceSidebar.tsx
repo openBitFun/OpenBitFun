@@ -51,15 +51,17 @@ import { workspaceMenuItems } from "./workspaceActions";
 type TreeWorkspace = DeviceTreeNode["workspaces"][number];
 type TreeSession = TreeWorkspace["sessions"][number];
 
-/** Sessions a workspace shows before "Show more". */
-const SESSION_PREVIEW = 5;
+/** Sessions a workspace shows initially before "Show more". */
+const SESSION_PREVIEW = 3;
+/** Additional sessions revealed on each "Show more" press. */
+const SESSION_MORE_STEP = 5;
 /** One indent step: a 16 glyph plus its 8 gap, so a child's glyph sits under its parent's name. */
 const INDENT = space.xxl;
 
 /** Devices the user folded or unfolded here; unset follows the device's state. */
 const deviceFold = signal<Record<string, boolean>>({});
-/** Workspaces showing every session the backend listed, not only the newest five. */
-const workspaceShowAll = signal<Record<string, boolean>>({});
+/** Number of sessions currently revealed per workspace (unset defaults to `SESSION_PREVIEW`). */
+const workspaceVisibleCount = signal<Record<string, number>>({});
 /** Workspaces whose own catalogue was read once (without the fleet layer). */
 const localCatalogueRead = new Set<string>();
 
@@ -71,9 +73,32 @@ function workspaceExpanded(deviceId: string, workspaceId: string): boolean {
   return collapsedWorkspaces()[workspaceKey(deviceId, workspaceId)] !== true;
 }
 
+function resetWorkspaceVisibleCount(key: string): void {
+  if (!(key in workspaceVisibleCount())) return;
+  workspaceVisibleCount.update(all => {
+    const next = { ...all };
+    delete next[key];
+    return next;
+  });
+}
+
+function resetDeviceVisibleCounts(deviceId: string): void {
+  const prefix = `${deviceId}/`;
+  const current = workspaceVisibleCount();
+  if (!Object.keys(current).some(key => key.startsWith(prefix))) return;
+  workspaceVisibleCount.update(all => {
+    const next: Record<string, number> = {};
+    for (const [key, count] of Object.entries(all)) {
+      if (!key.startsWith(prefix)) next[key] = count;
+    }
+    return next;
+  });
+}
+
 function toggleWorkspace(deviceId: string, workspaceId: string): void {
   const key = workspaceKey(deviceId, workspaceId);
   const folded = collapsedWorkspaces()[key] === true;
+  resetWorkspaceVisibleCount(key);
   collapsedWorkspaces.update(current => {
     const next = { ...current };
     if (folded) delete next[key];
@@ -295,8 +320,10 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
   const menuOpen = signal(false);
   const key = () => workspaceKey(props.node.deviceId, props.workspace.workspaceId);
   const open = () => workspaceExpanded(props.node.deviceId, props.workspace.workspaceId);
-  const showAll = () => workspaceShowAll()[key()] === true;
-  const rows = () => (showAll() ? props.workspace.sessions : props.workspace.sessions.slice(0, SESSION_PREVIEW));
+  const visibleLimit = () => workspaceVisibleCount()[key()] ?? SESSION_PREVIEW;
+  const rows = () => props.workspace.sessions.slice(0, visibleLimit());
+  const hasMoreLoaded = () => props.workspace.sessions.length > visibleLimit();
+  const canShowLess = () => !hasMoreLoaded() && visibleLimit() > SESSION_PREVIEW && props.workspace.sessions.length > SESSION_PREVIEW;
   const unlisted = () => Math.max(0, props.workspace.total - props.workspace.sessions.length);
   const current = () =>
     activeWorkspaceId() === props.workspace.workspaceId && (!fleetActive() || deviceContext() === props.node.deviceId);
@@ -404,15 +431,29 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
               />
             )}
           </Each>
-          <If when={props.workspace.sessions.length > SESSION_PREVIEW}>
+          <If when={hasMoreLoaded() || canShowLess()}>
             <QuietRow
               indent={childIndent()}
-              label={showAll() ? tr("common.showLess") : tr("history.showMore")}
+              label={hasMoreLoaded() ? tr("history.showMore") : tr("common.showLess")}
               accessibilityLabel={`sidebar-show-more-${props.workspace.workspaceId}`}
-              onPress={() => workspaceShowAll.update(all => ({ ...all, [key()]: !showAll() }))}
+              onPress={() => {
+                const k = key();
+                if (hasMoreLoaded()) {
+                  workspaceVisibleCount.update(all => ({
+                    ...all,
+                    [k]: (all[k] ?? SESSION_PREVIEW) + SESSION_MORE_STEP,
+                  }));
+                } else {
+                  workspaceVisibleCount.update(all => {
+                    const next = { ...all };
+                    delete next[k];
+                    return next;
+                  });
+                }
+              }}
             />
           </If>
-          <If when={unlisted() > 0 && (showAll() || props.workspace.sessions.length <= SESSION_PREVIEW)}>
+          <If when={unlisted() > 0 && !hasMoreLoaded()}>
             <QuietRow
               indent={childIndent()}
               label={tr("allSessions.more", { count: unlisted() })}
@@ -476,7 +517,11 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
         accessibilityLabel={`sidebar-device-toggle-${id()}`}
         expanded={open()}
         onHover={value => hovered.set(value)}
-        onPress={() => deviceFold.update(all => ({ ...all, [props.node.deviceId]: !open() }))}
+        onPress={() => {
+          const next = !open();
+          if (!next) resetDeviceVisibleCounts(props.node.deviceId);
+          deviceFold.update(all => ({ ...all, [props.node.deviceId]: next }));
+        }}
         leading={
           <If
             when={hovered()}
