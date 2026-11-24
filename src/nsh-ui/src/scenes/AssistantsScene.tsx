@@ -122,8 +122,9 @@ import {
   pressTransition,
   tactileActiveStyle,
 } from "../ui/motion";
-import { DropdownMenu, ModalDialog, type DropdownMenuItem } from "../ui/overlays";
+import { DropdownMenu, ModalDialog, listRowHoverBg, menuSurfaceStyle, type DropdownMenuItem } from "../ui/overlays";
 import {
+  Badge,
   Button,
   IconButton,
   InlineBanner,
@@ -254,12 +255,12 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
       }}
       style={{
         position: "relative",
-        minHeight: assistantsEmbedded() ? layout.touchTarget + space.md : STUDIO_TOUCH_MIN + space.sm,
+        minHeight: assistantsEmbedded() ? 64 : STUDIO_TOUCH_MIN + space.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: space.md,
-        paddingHorizontal: space.md,
-        paddingVertical: space.sm,
+        gap: assistantsEmbedded() ? space.lg : space.md,
+        paddingHorizontal: assistantsEmbedded() ? space.lg : space.md,
+        paddingVertical: assistantsEmbedded() ? space.md : space.sm,
         borderRadius: listDetailFlow() ? 0 : radii.md,
         borderCurve: "continuous",
         backgroundColor: isSelected() && !listDetailFlow() ? palette().panelHover : "transparent",
@@ -276,7 +277,7 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
           style={{
             position: "absolute",
             top: 0,
-            left: 56,
+            left: assistantsEmbedded() ? 68 : 56,
             right: 0,
             height: 1,
             backgroundColor: palette().borderSubtle,
@@ -288,11 +289,11 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
         avatar={props.item.identity.avatar}
         emoji={props.item.identity.emoji}
         name={props.item.name}
-        size={32}
+        size={assistantsEmbedded() ? 36 : 32}
         active={isSelected()}
         accessibilityLabel={`assistant-avatar-${props.item.id}`}
       />
-      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
         <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.sm }}>
           <Text
             style={{
@@ -300,7 +301,7 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
               minWidth: 0,
               color: palette().text,
               fontSize: textSize(14),
-              fontWeight: isSelected() ? "600" : "500",
+              fontWeight: isSelected() || assistantsEmbedded() ? "600" : "500",
               lineHeight: textLineHeight(14, 1.3),
               numberOfLines: 1,
               textOverflow: "ellipsis",
@@ -309,15 +310,12 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
             {props.item.name}
           </Text>
           <If when={isPrimary()}>
-            <Text
+            <Badge
+              label={tr("common.primary")}
+              size="xs"
+              tone="accent"
               accessibilityLabel={`assistant-primary-dot-${props.item.id}`}
-              style={{
-                ...textStyle("caption"),
-                flexShrink: 0,
-              }}
-            >
-              {tr("common.primary")}
-            </Text>
+            />
           </If>
         </View>
         <Text
@@ -576,27 +574,44 @@ function AssistantLibraryList() {
       <LibraryToolbar
         accessibilityLabel="assistants-toolbar"
         leading={
-          <IconButton
-            icon="refresh"
-            size="md"
-            tooltip={tr("assistants.refreshTooltip")}
-            disabled={assistantsLoading()}
-            accessibilityLabel="assistants-refresh"
-            style={phone() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-            onPress={() => void loadAssistants()}
-          />
+          <If when={assistants().length > 0}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+              <Text
+                style={{
+                  color: palette().textSecondary,
+                  fontSize: textSize(13),
+                  fontWeight: "600",
+                  lineHeight: textLineHeight(13, 1.3),
+                }}
+              >
+                {tr("assistants.title")}
+              </Text>
+              <Badge label={formatCount(assistants().length)} size="xs" tone="neutral" />
+            </View>
+          </If>
         }
         primary={
-          <Button
-            label={tr("assistants.newAssistant")}
-            variant="primary"
-            size="md"
-            leadingIcon="plus"
-            disabled={assistantsBusy()}
-            accessibilityLabel="assistants-new"
-            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-            onPress={openNewAssistantModal}
-          />
+          <>
+            <IconButton
+              icon="refresh"
+              size="sm"
+              tooltip={tr("assistants.refreshTooltip")}
+              disabled={assistantsLoading()}
+              accessibilityLabel="assistants-refresh"
+              style={phone() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+              onPress={() => void loadAssistants()}
+            />
+            <Button
+              label={tr("assistants.newAssistant")}
+              variant="primary"
+              size="sm"
+              leadingIcon="plus"
+              disabled={assistantsBusy()}
+              accessibilityLabel="assistants-new"
+              style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+              onPress={openNewAssistantModal}
+            />
+          </>
         }
       />
       <View style={libraryBodyStyle()}>
@@ -669,7 +684,9 @@ function avatarOptionStyle(selected: boolean) {
     justifyContent: "center" as const,
     borderRadius: radii.md,
     borderCurve: "continuous" as const,
-    backgroundColor: selected ? palette().accentSoft : "transparent",
+    borderWidth: 1,
+    borderColor: selected ? palette().borderStrong : "transparent",
+    backgroundColor: selected ? listRowHoverBg() : "transparent",
     cursor: "pointer" as const,
     userSelect: "none" as const,
     ...pressTransition(MOTION_DURATION.fast),
@@ -680,9 +697,9 @@ function AvatarPickerLabel(props: { label: string }) {
   return (
     <Text
       style={{
-        color: palette().textSecondary,
+        color: palette().textMuted,
         fontSize: textSize(12),
-        fontWeight: "600",
+        fontWeight: "500",
         lineHeight: textLineHeight(12, 1.3),
       }}
     >
@@ -758,16 +775,11 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
             accessibilityLabel="assistant-avatar-picker"
             style={[
               {
+                ...menuSurfaceStyle(),
                 width: compactLayout() ? 280 : 296,
                 maxWidth: "100%",
                 gap: space.md,
                 padding: space.lg,
-                borderRadius: radii.lg,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().popoverBg,
-                boxShadow: palette().shadowOverlay,
               },
               popoverMotion.style,
             ]}
@@ -805,7 +817,7 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                       hitSlop={touchSlop(36)}
                       onPress={() => void chooseAvatarPreset(preset())}
                       style={avatarOptionStyle(props.assistant.identity.avatar === preset())}
-                      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                      hoverStyle={compactLayout() ? undefined : { backgroundColor: listRowHoverBg() }}
                       activeStyle={tactileActiveStyle(0.95)}
                       focusVisibleStyle={focusRingStyle()}
                     >
@@ -831,7 +843,7 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                       style={avatarOptionStyle(
                         !props.assistant.identity.avatar && props.assistant.identity.emoji === emoji(),
                       )}
-                      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                      hoverStyle={compactLayout() ? undefined : { backgroundColor: listRowHoverBg() }}
                       activeStyle={tactileActiveStyle(0.95)}
                       focusVisibleStyle={focusRingStyle()}
                     >
@@ -1785,7 +1797,7 @@ function NewAssistantModal() {
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <Button
             label={tr("common.cancel")}
-            variant="secondary"
+            variant="ghost"
             size="md"
             disabled={assistantsBusy()}
             onPress={closeNewAssistantModal}

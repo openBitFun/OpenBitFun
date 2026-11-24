@@ -85,9 +85,27 @@ import {
   activeWorkspaceRoot,
   composerText,
 } from "../state";
-import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
+import {
+  compactLayout,
+  controlHeight,
+  fontMono,
+  layout,
+  palette,
+  radii,
+  space,
+  textLineHeight,
+  textSize,
+  textStyle,
+} from "../theme";
 import { BrandSpinner, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
-import { DropdownMenu, ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
+import {
+  DropdownMenu,
+  ListRowContent,
+  ModalDialog,
+  listRowHoverBg,
+  pushToast,
+  type DropdownMenuItem,
+} from "./overlays";
 import { Button, IconButton, TextField, focusRingStyle } from "./primitives";
 import { Icon } from "./icons";
 
@@ -614,9 +632,13 @@ export function McpPromptRows(): JSX.Element {
       <View style={{ gap: space.hair }}>
         <Text
           style={{
-            ...textStyle("caption", { color: palette().textMuted }),
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            fontWeight: "500",
+            lineHeight: textLineHeight(12, 1.3),
             paddingHorizontal: space.sm,
-            paddingTop: space.xs,
+            paddingTop: space.sm,
+            paddingBottom: space.xs,
           }}
         >
           {tr("mcpPrompts.title")}
@@ -630,35 +652,26 @@ export function McpPromptRows(): JSX.Element {
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: space.sm,
-                minHeight: compactLayout() ? layout.touchTarget : space.x3l,
+                minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
                 paddingHorizontal: space.sm,
-                paddingVertical: space.chip,
+                paddingVertical: 7,
                 borderRadius: radii.md,
                 borderCurve: "continuous",
                 cursor: "pointer",
                 userSelect: "none",
                 ...pressTransition(MOTION_DURATION.fast),
               }}
-              hoverStyle={{ backgroundColor: palette().panelHover }}
-              activeStyle={tactileActiveStyle(0.985)}
+              hoverStyle={{ backgroundColor: listRowHoverBg() }}
+              activeStyle={tactileActiveStyle(0.985, { backgroundColor: palette().buttonSecondaryHover })}
               focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
             >
-              <Icon name="plug" size={14} color={palette().textMuted} />
-              <Text style={{ ...textStyle("mono", { color: palette().text }), fontFamily: fontMono }}>
-                {entry().title ?? entry().name}
-              </Text>
-              <Text
-                style={{
-                  ...textStyle("caption", { color: palette().textMuted }),
-                  flex: 1,
-                  minWidth: 0,
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {entry().description ?? entry().serverName}
-              </Text>
+              <ListRowContent
+                icon="plug"
+                iconColor={palette().textSecondary}
+                title={entry().title ?? entry().name}
+                titleWeight="500"
+                subtitle={entry().description ?? entry().serverName}
+              />
             </View>
           )}
         </Each>

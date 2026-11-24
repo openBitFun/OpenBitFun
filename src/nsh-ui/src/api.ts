@@ -12,6 +12,7 @@ export interface WorkspaceRecord {
   rootPath: string;
   workspaceKind?: string;
   connectionId?: string;
+  connectionName?: string;
   sshHost?: string;
   lastAccessed?: number;
 }

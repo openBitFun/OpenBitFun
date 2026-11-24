@@ -315,8 +315,8 @@ function btnFg(variant: ButtonVariant, surface: ControlSurface = "canvas"): stri
   return surface === "chrome" ? palette().chromeText : palette().text;
 }
 
-function btnShadow(_variant: ButtonVariant): string | undefined {
-  // React's design system draws every button flat: no bevel, no contact shadow.
+function btnShadow(variant: ButtonVariant): string | undefined {
+  if (variant === "primary" || variant === "accent") return palette().innerHighlight;
   return undefined;
 }
 
@@ -352,6 +352,10 @@ function btnRadius(size: ButtonSize, pill?: boolean): number {
 }
 
 export function Button(props: ButtonProps) {
+  const isMutedPrimaryDisabled = () =>
+    Boolean(props.disabled && !props.loading) &&
+    ((props.variant ?? "secondary") === "primary" || (props.variant ?? "secondary") === "accent");
+
   return (
     <View
       role="button"
@@ -384,9 +388,13 @@ export function Button(props: ButtonProps) {
           borderRadius: btnRadius(props.size ?? "md", props.pill),
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: btnBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
-          backgroundColor: btnBg(props.variant ?? "secondary", props.surface ?? "canvas"),
-          boxShadow: btnShadow(props.variant ?? "secondary"),
+          borderColor: isMutedPrimaryDisabled()
+            ? palette().borderSubtle
+            : btnBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
+          backgroundColor: isMutedPrimaryDisabled()
+            ? palette().buttonSecondaryBg
+            : btnBg(props.variant ?? "secondary", props.surface ?? "canvas"),
+          boxShadow: isMutedPrimaryDisabled() ? undefined : btnShadow(props.variant ?? "secondary"),
           cursor: props.disabled || props.loading ? "not-allowed" : "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
@@ -402,7 +410,7 @@ export function Button(props: ButtonProps) {
       })}
       focusVisibleStyle={focusRingStyle(props.surface ?? SurfaceContext())}
       disabledStyle={{
-        opacity: 0.4,
+        opacity: isMutedPrimaryDisabled() ? 0.72 : 0.4,
       }}
     >
       <If when={Boolean(props.loading)}>
@@ -416,7 +424,11 @@ export function Button(props: ButtonProps) {
           <Icon
             name={iconName() as IconName}
             size={btnIconPx(props.size ?? "md")}
-            color={btnFg(props.variant ?? "secondary", props.surface ?? "canvas")}
+            color={
+              isMutedPrimaryDisabled()
+                ? palette().textMuted
+                : btnFg(props.variant ?? "secondary", props.surface ?? "canvas")
+            }
           />
         )}
       </If>
@@ -424,13 +436,17 @@ export function Button(props: ButtonProps) {
         style={{
           flexShrink: 1,
           minWidth: 0,
-          color: btnFg(props.variant ?? "secondary", props.surface ?? "canvas"),
+          color: isMutedPrimaryDisabled()
+            ? palette().textMuted
+            : btnFg(props.variant ?? "secondary", props.surface ?? "canvas"),
           fontSize: textSize(btnFontPx(props.size ?? "md")),
           fontWeight:
             (props.variant ?? "secondary") === "primary" ||
             (props.variant ?? "secondary") === "accent"
-              ? "500"
-              : "400",
+              ? "600"
+              : (props.variant ?? "secondary") === "secondary"
+                ? "500"
+                : "400",
           lineHeight: textLineHeight(btnFontPx(props.size ?? "md"), 1.2),
           textAlign: "center",
           numberOfLines: 1,
@@ -444,7 +460,11 @@ export function Button(props: ButtonProps) {
           <Icon
             name={iconName() as IconName}
             size={btnIconPx(props.size ?? "md")}
-            color={btnFg(props.variant ?? "secondary", props.surface ?? "canvas")}
+            color={
+              isMutedPrimaryDisabled()
+                ? palette().textMuted
+                : btnFg(props.variant ?? "secondary", props.surface ?? "canvas")
+            }
           />
         )}
       </If>
@@ -934,6 +954,7 @@ export interface BadgeProps {
   pill?: boolean;
   /** Force a hairline border even on neutral metadata tags (default: borderless for neutral). */
   bordered?: boolean;
+  accessibilityLabel?: string;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -1001,6 +1022,7 @@ export function Badge(props: BadgeProps) {
   };
   return (
     <View
+      accessibilityLabel={props.accessibilityLabel}
       style={[
         {
           flexShrink: 0,
@@ -1388,10 +1410,13 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
           maxWidth: props.scrollable ? undefined : "100%",
           gap: 2,
           padding: SEGMENT_PADDING,
-          borderRadius: radii.pill,
+          borderRadius: SEGMENT_OUTER_RADIUS,
           borderCurve: "continuous",
-          borderWidth: 0,
-          backgroundColor: palette().segmentedTrackBg,
+          borderWidth: 1,
+          borderColor: palette().borderSubtle,
+          backgroundColor: isLightAppearance()
+            ? palette().segmentedTrackBg
+            : palette().canvasSubtle,
         },
         props.style,
       ]}
@@ -1412,16 +1437,28 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
               flexShrink: props.scrollable ? 0 : 1,
               minWidth: props.scrollable ? undefined : 0,
               gap: space.xs,
-              paddingHorizontal: (props.size ?? "md") === "sm" ? space.sm : space.md,
+              paddingHorizontal: (props.size ?? "md") === "sm" ? 10 : 14,
               paddingVertical: 0,
-              borderRadius: radii.pill,
+              borderRadius: SEGMENT_INNER_RADIUS,
               borderCurve: "continuous",
-              borderWidth: 0,
+              borderWidth: option().value === props.value ? 1 : 0,
+              borderColor:
+                option().value === props.value
+                  ? isLightAppearance()
+                    ? palette().borderSubtle
+                    : palette().border
+                  : "transparent",
               backgroundColor:
-                option().value === props.value ? palette().segmentedThumbBg : "transparent",
+                option().value === props.value
+                  ? isLightAppearance()
+                    ? palette().panelRaised
+                    : palette().panelHover
+                  : "transparent",
               boxShadow:
-                option().value === props.value && isLightAppearance()
-                  ? elevationShadow(1)
+                option().value === props.value
+                  ? isLightAppearance()
+                    ? elevationShadow(1)
+                    : palette().innerHighlight
                   : undefined,
               cursor: "pointer",
               userSelect: "none",
@@ -1430,7 +1467,9 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
             hoverStyle={{
               backgroundColor:
                 option().value === props.value
-                  ? palette().segmentedThumbBg
+                  ? isLightAppearance()
+                    ? palette().panelRaised
+                    : palette().panelHover
                   : palette().surfaceSubtle,
             }}
             activeStyle={tactileActiveStyle(0.98)}
@@ -1452,9 +1491,9 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                 flexShrink: props.scrollable ? 0 : 1,
                 minWidth: props.scrollable ? undefined : 0,
                 color:
-                  option().value === props.value ? palette().text : palette().textSecondary,
+                  option().value === props.value ? palette().text : palette().textMuted,
                 fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
-                fontWeight: option().value === props.value ? "500" : "400",
+                fontWeight: option().value === props.value ? "600" : "400",
                 lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.24),
                 numberOfLines: 1,
                 textOverflow: props.scrollable ? undefined : "ellipsis",
@@ -1490,6 +1529,147 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
           </View>
         )}
       </Each>
+    </View>
+  );
+}
+
+export interface UnderlineTabsProps<T extends string> {
+  options: ReadonlyArray<SegmentedTabOption<T>>;
+  value: T;
+  size?: "sm" | "md";
+  scrollable?: boolean;
+  /** Optional trailing content rendered cleanly on the right of the tab baseline. */
+  extra?: JSX.Element;
+  style?: StyleProp<ViewStyle>;
+  onChange: (value: T) => void;
+}
+
+/**
+ * Clean editorial underline tab strip resting on a single hairline divider
+ * (Linear / Raycast / Claude style): zero boxed pill chrome, crisp 2px active bar.
+ */
+export function UnderlineTabs<T extends string>(props: UnderlineTabsProps<T>) {
+  const isSm = () => (props.size ?? "md") === "sm";
+  return (
+    <View
+      role="tablist"
+      style={[
+        {
+          width: props.scrollable ? undefined : "100%",
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: space.md,
+          borderBottomWidth: 1,
+          borderColor: palette().borderSubtle,
+        },
+        props.style,
+      ]}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          flexShrink: props.scrollable ? 0 : 1,
+          minWidth: 0,
+          gap: isSm() ? space.lg : space.xl,
+        }}
+      >
+        <Each of={props.options} key={option => option.value}>
+          {option => {
+            const active = () => option().value === props.value;
+            return (
+              <View
+                role="tab"
+                hitSlop={touchSlop(controlHeight.sm)}
+                accessibilityLabel={option().accessibilityLabel}
+                accessibilityState={{ selected: active() }}
+                onPress={() => props.onChange(option().value)}
+                style={{
+                  position: "relative",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  flexShrink: props.scrollable ? 0 : 1,
+                  minWidth: 0,
+                  gap: space.xs,
+                  paddingTop: space.xs,
+                  paddingBottom: isSm() ? 9 : 10,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ opacity: 0.92 }}
+                activeStyle={tactileActiveStyle(0.98)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <If when={option().icon ?? ""}>
+                  {iconName => (
+                    <Icon
+                      name={iconName() as IconName}
+                      size={isSm() ? 13 : 14}
+                      color={active() ? palette().text : palette().textMuted}
+                    />
+                  )}
+                </If>
+                <Text
+                  style={{
+                    flexShrink: props.scrollable ? 0 : 1,
+                    minWidth: 0,
+                    color: active() ? palette().text : palette().textMuted,
+                    fontSize: textSize(isSm() ? 13 : 14),
+                    fontWeight: active() ? "600" : "500",
+                    lineHeight: textLineHeight(isSm() ? 13 : 14, 1.3),
+                    numberOfLines: 1,
+                    textOverflow: props.scrollable ? undefined : "ellipsis",
+                  }}
+                >
+                  {option().label}
+                </Text>
+                <If
+                  when={
+                    option().badge !== undefined && option().badge !== null
+                      ? String(option().badge)
+                      : ""
+                  }
+                >
+                  {badgeText => (
+                    <Text
+                      style={{
+                        flexShrink: 0,
+                        color: active() ? palette().textSecondary : palette().textMuted,
+                        fontSize: textSize(11),
+                        fontWeight: "600",
+                        fontVariant: ["tabular-nums"],
+                        lineHeight: textLineHeight(11, 1.24),
+                      }}
+                    >
+                      {badgeText()}
+                    </Text>
+                  )}
+                </If>
+                <If when={active()}>
+                  <View
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      bottom: -1,
+                      height: 2,
+                      borderRadius: radii.pill,
+                      backgroundColor: palette().text,
+                      pointerEvents: "none",
+                    }}
+                  />
+                </If>
+              </View>
+            );
+          }}
+        </Each>
+      </View>
+      <If when={Boolean(props.extra)}>
+        <View style={{ flexShrink: 0, paddingBottom: space.xs }}>{props.extra}</View>
+      </If>
     </View>
   );
 }
@@ -2474,6 +2654,8 @@ export interface TextFieldProps {
   error?: string;
   placeholder?: string;
   size?: InputSize;
+  /** `"soft"` uses a calm borderless filled surface (ideal inside modals). */
+  variant?: "default" | "soft";
   leadingIcon?: IconName;
   trailing?: JSX.Element;
   clearable?: boolean;
@@ -2504,20 +2686,22 @@ export function TextField(props: TextFieldProps) {
     return compactLayout() ? Math.max(base, 36) : base;
   };
   const inputFontSize = () => {
-    const base = textSize(props.monospace ? 12 : (props.size ?? "md") === "sm" ? 12 : 13);
+    const size = props.size ?? "md";
+    const base = textSize(props.monospace ? 12 : size === "sm" ? 12 : size === "lg" ? 14 : 13);
     return compactLayout() ? Math.max(16, base) : base;
   };
+  const isSoft = () => props.variant === "soft";
   return (
-    <View style={[{ gap: space.xs, minWidth: 0 }, props.style]}>
+    <View style={[{ gap: space.sm, minWidth: 0 }, props.style]}>
       <If when={props.label ?? ""}>
         {labelText => (
           <Text
             style={{
               color:
                 props.surface === "chrome" ? palette().chromeText : palette().textSecondary,
-              fontSize: textSize(12),
+              fontSize: textSize((props.size ?? "md") === "lg" ? 13 : 12),
               fontWeight: "500",
-              lineHeight: textLineHeight(12, 1.35),
+              lineHeight: textLineHeight((props.size ?? "md") === "lg" ? 13 : 12, 1.35),
             }}
           >
             {labelText()}
@@ -2535,16 +2719,28 @@ export function TextField(props: TextFieldProps) {
           gap: space.sm,
           paddingHorizontal: (props.size ?? "md") === "sm" ? space.sm : space.md,
           paddingVertical: props.multiline ? space.sm : 0,
-          borderRadius: (props.size ?? "md") === "lg" ? radii.md : radii.sm,
+          borderRadius: (props.size ?? "md") === "sm" ? radii.sm : radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: props.error
             ? palette().danger
             : props.surface === "chrome"
               ? palette().chromeBorder
-              : palette().border,
+              : isSoft()
+                ? isLightAppearance()
+                  ? palette().borderSubtle
+                  : "transparent"
+                : isLightAppearance()
+                  ? palette().border
+                  : palette().borderSubtle,
           backgroundColor:
-            props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
+            props.surface === "chrome"
+              ? palette().chromeInputBg
+              : isSoft()
+                ? isLightAppearance()
+                  ? palette().canvasSubtle
+                  : palette().surfaceSubtle
+                : palette().inputBg,
           opacity: props.disabled ? 0.55 : 1,
           ...paintTransition(MOTION_DURATION.fast),
         }}
@@ -2556,7 +2752,9 @@ export function TextField(props: TextFieldProps) {
                   ? palette().danger
                   : props.surface === "chrome"
                     ? palette().chromeBorder
-                    : palette().borderStrong,
+                    : isSoft()
+                      ? palette().borderSubtle
+                      : palette().border,
               }
         }
         focusWithinStyle={
@@ -2567,8 +2765,10 @@ export function TextField(props: TextFieldProps) {
                   ? palette().danger
                   : props.surface === "chrome"
                     ? palette().chromeAccent
-                    : palette().fieldFocusBorder,
-                boxShadow: props.error ? `0 0 0 3px ${palette().dangerSoft}` : undefined,
+                    : palette().borderFocus,
+                boxShadow: props.error
+                  ? `0 0 0 3px ${palette().dangerSoft}`
+                  : `0 0 0 2px ${palette().accentSoft}`,
               }
         }
       >
@@ -2731,11 +2931,15 @@ export function SearchInput(props: SearchInputProps) {
           gap: space.sm,
           paddingHorizontal: space.md,
           paddingVertical: 0,
-          borderRadius: props.pill ? radii.pill : radii.sm,
+          borderRadius: props.pill ? radii.pill : (props.size ?? "md") === "sm" ? radii.sm : radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor:
-            props.surface === "chrome" ? palette().chromeBorder : palette().border,
+            props.surface === "chrome"
+              ? palette().chromeBorder
+              : isLightAppearance()
+                ? palette().border
+                : palette().borderSubtle,
           backgroundColor:
             props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
           ...paintTransition(MOTION_DURATION.fast),
@@ -2744,11 +2948,12 @@ export function SearchInput(props: SearchInputProps) {
       ]}
       hoverStyle={{
         borderColor:
-          props.surface === "chrome" ? palette().chromeBorder : palette().borderStrong,
+          props.surface === "chrome" ? palette().chromeBorder : palette().border,
       }}
       focusWithinStyle={{
         borderColor:
-          props.surface === "chrome" ? palette().chromeAccent : palette().fieldFocusBorder,
+          props.surface === "chrome" ? palette().chromeAccent : palette().borderFocus,
+        boxShadow: `0 0 0 2px ${palette().accentSoft}`,
       }}
     >
       <Icon

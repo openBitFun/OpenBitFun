@@ -405,7 +405,7 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
               <Text
                 testID={`sidebar-workspace-host-${props.workspace.workspaceId}`}
                 style={{
-                  ...textStyle("caption", { color: palette().chromeTextMuted }),
+                  ...textStyle("label", { color: palette().chromeTextMuted }),
                   flex: 1,
                   minWidth: 0,
                   numberOfLines: 1,
@@ -585,7 +585,7 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
             {props.node.name}
           </Text>
           <If when={props.node.isClient}>
-            <Text style={{ ...textStyle("caption", { color: palette().chromeTextMuted }), flexShrink: 0, numberOfLines: 1 }}>
+            <Text style={{ ...textStyle("label", { color: palette().chromeTextMuted }), flexShrink: 0, numberOfLines: 1 }}>
               {tr("device.thisDevice")}
             </Text>
           </If>

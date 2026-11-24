@@ -452,11 +452,14 @@ function InstalledSkillRow(props: { skill: SkillRecord; first: boolean }) {
         activeStyle={tactileActiveStyle(0.99)}
         focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
       >
-        <Icon
-          name={semanticSkillIcon(`${props.skill.name} ${props.skill.description ?? ""}`, "bulb")}
-          size={16}
-          color={palette().textMuted}
-        />
+        {/* The glyph sits on the name line; description and notes hang under the name. */}
+        <View style={{ alignSelf: "flex-start", height: textLineHeight(14, 1.35), flexShrink: 0, justifyContent: "center" }}>
+          <Icon
+            name={semanticSkillIcon(`${props.skill.name} ${props.skill.description ?? ""}`, "bulb")}
+            size={16}
+            color={palette().textMuted}
+          />
+        </View>
         <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
           <View style={{ flexDirection: "row", alignItems: "baseline", gap: space.sm, minWidth: 0 }}>
             <Text
@@ -820,12 +823,14 @@ function MarketSkillRow(props: { item: SkillMarketRecord; first: boolean }) {
       <If when={!props.first}>
         <RowSeparator inset={compactLayout() ? space.lg : layout.touchTarget} />
       </If>
-      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.md }}>
-        <Icon
-          name={semanticSkillIcon(`${props.item.name} ${props.item.description ?? ""}`, "package")}
-          size={16}
-          color={palette().textMuted}
-        />
+      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: space.md }}>
+        <View style={{ height: textLineHeight(14, 1.35), flexShrink: 0, justifyContent: "center" }}>
+          <Icon
+            name={semanticSkillIcon(`${props.item.name} ${props.item.description ?? ""}`, "package")}
+            size={16}
+            color={palette().textMuted}
+          />
+        </View>
         <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
             <Text

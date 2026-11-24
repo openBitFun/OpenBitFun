@@ -18,7 +18,7 @@ import { deviceException, deviceGlyphIcon } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import { MOTION_DURATION, SmoothSwap, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
-import { InlineBanner, SegmentedTabs, focusRingStyle } from "../ui/primitives";
+import { InlineBanner, UnderlineTabs, focusRingStyle } from "../ui/primitives";
 import { studioCompact, trackStudioWidth } from "../ui/studio";
 import { AgentsScene } from "./AgentsScene";
 import { AssistantsScene, assistantDetailShown } from "./AssistantsScene";
@@ -106,11 +106,13 @@ export function LibraryScopeChip() {
           height: compactLayout() ? layout.touchTarget : controlHeight.sm,
           minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
           maxWidth: "100%",
-          paddingHorizontal: compactLayout() ? space.md : space.sm,
+          paddingHorizontal: space.md,
           borderRadius: radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: palette().border,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().panelRaised,
+          boxShadow: palette().innerHighlight,
           flexDirection: "row",
           alignItems: "center",
           gap: space.chip,
@@ -118,7 +120,11 @@ export function LibraryScopeChip() {
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={menuEnabled() && !compactLayout() ? { backgroundColor: palette().panelHover } : undefined}
+        hoverStyle={
+          menuEnabled() && !compactLayout()
+            ? { backgroundColor: palette().panelHover, borderColor: palette().border }
+            : undefined
+        }
         activeStyle={menuEnabled() ? tactileActiveStyle(0.97) : undefined}
         focusVisibleStyle={menuEnabled() ? focusRingStyle() : undefined}
       >
@@ -145,8 +151,8 @@ export function LibraryScopeChip() {
 
 function LibraryTabs(props: { scrollable?: boolean } = {}) {
   return (
-    <SegmentedTabs
-      size="sm"
+    <UnderlineTabs
+      size="md"
       scrollable={props.scrollable}
       options={LIBRARY_TABS.map(tab => ({
         value: tab,
@@ -173,7 +179,7 @@ function LibraryHeader() {
       style={{
         ...libraryColumnStyle(),
         paddingTop: studioCompact() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
-        gap: space.lg,
+        gap: space.md,
         flexShrink: 0,
       }}
     >
@@ -189,11 +195,7 @@ function LibraryHeader() {
       <View style={{ gap: space.sm, minWidth: 0 }}>
         <If
           when={studioCompact()}
-          else={
-            <View style={{ flexDirection: "row" }}>
-              <LibraryTabs />
-            </View>
-          }
+          else={<LibraryTabs />}
         >
           <Scroll
             horizontal

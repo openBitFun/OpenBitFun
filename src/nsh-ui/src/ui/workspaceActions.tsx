@@ -24,8 +24,10 @@ import {
   openPortForwardModal,
   openRemoteFileBrowser,
   openSshConnectionModal,
+  remoteWorkspaceAliasOf,
 } from "../sshRemoteStore";
 import {
+  activeWorkspaceId,
   closeWorkspace,
   deviceContext,
   loadWorkspaces,
@@ -60,6 +62,8 @@ export interface WorkspaceActionTarget {
   rootPath: string;
   kind?: string;
   sshHost?: string;
+  connectionId?: string;
+  connectionName?: string;
 }
 
 const renameTarget = signal<WorkspaceActionTarget | null>(null);
@@ -148,14 +152,21 @@ async function rename(target: WorkspaceActionTarget, name: string): Promise<bool
 async function close(target: WorkspaceActionTarget): Promise<void> {
   try {
     const record = loadedRecord(target);
-    if (record?.connectionId) {
+    const isRemote = isRemoteKind(target.kind, record);
+    if (record && (record.connectionId || isRemote)) {
       await closeWorkspaceRecord(target.workspaceId);
     } else if (record) {
       await closeWorkspace(target.workspaceId);
+      if (fleetActive()) await refreshFleetNavigator();
     } else {
       await invokeCommand<unknown>("close_workspace", { workspaceId: target.workspaceId }, routeOptions(target));
+      if (fleetActive()) {
+        await refreshFleetNavigator();
+      }
+      if (activeWorkspaceId() === target.workspaceId) {
+        await loadWorkspaces();
+      }
     }
-    if (fleetActive()) void refreshFleetNavigator();
   } catch (error) {
     pushToast(errorText(error), "error");
   }
@@ -261,9 +272,16 @@ export function workspaceMenuItems(
       onSelect: () => void reveal(target),
     },
   ];
-  const connectionId = record?.connectionId;
+  const connectionId = record?.connectionId ?? target.connectionId;
   if (connectionId) {
     const host = (record?.sshHost ?? target.sshHost ?? "").trim() || undefined;
+    const alias =
+      remoteWorkspaceAliasOf({
+        kind: target.kind ?? record?.workspaceKind,
+        connectionId,
+        connectionName: record?.connectionName ?? target.connectionName,
+        sshHost: host,
+      }) ?? target.name;
     const connected = connectionStatuses()[connectionId] === "connected";
     items.push(
       {
@@ -273,14 +291,14 @@ export function workspaceMenuItems(
         separator: true,
         accessibilityLabel: `workspace-menu-remote-browse-${key}`,
         onSelect: () =>
-          void openRemoteFileBrowser(connectionId, target.rootPath, { connectionName: target.name, sshHost: host }),
+          void openRemoteFileBrowser(connectionId, target.rootPath, { connectionName: alias, sshHost: host }),
       },
       {
         id: `workspace-port-forward-${key}`,
         label: tr("nav.portForwardingEllipsis"),
         icon: "network",
         accessibilityLabel: `workspace-menu-port-forward-${key}`,
-        onSelect: () => void openPortForwardModal(connectionId, host ?? target.name),
+        onSelect: () => void openPortForwardModal(connectionId, alias),
       },
       {
         id: `workspace-ssh-${key}`,

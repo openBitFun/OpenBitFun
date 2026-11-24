@@ -454,13 +454,13 @@ function OptionChip(props: { label: string; selected: boolean; disabled?: boolea
         borderRadius: radii.md,
         borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: props.selected ? palette().accentBorder : palette().border,
-        backgroundColor: props.selected ? palette().accentSoft : "transparent",
+        borderColor: props.selected ? palette().borderStrong : palette().border,
+        backgroundColor: props.selected ? palette().buttonSecondaryBg : "transparent",
         cursor: props.disabled ? "not-allowed" : "pointer",
         userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: props.selected ? palette().accentSoft : palette().panelHover }}
+      hoverStyle={{ backgroundColor: palette().buttonSecondaryBg }}
       activeStyle={tactileActiveStyle(0.98)}
       focusVisibleStyle={focusRingStyle()}
       disabledStyle={{ opacity: 0.4 }}

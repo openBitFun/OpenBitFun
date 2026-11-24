@@ -868,7 +868,17 @@ function WorkingNowRow(props: { card: JobCardData; divided: boolean }) {
       activeStyle={tactileActiveStyle(0.985)}
       focusVisibleStyle={focusRingStyle()}
     >
-      <StateMark state={mark()} seen={Boolean(card().seen)} device={card().deviceName} />
+      {/* On the phone the mark sits on the title line, not between title and device line. */}
+      <View
+        style={{
+          flexShrink: 0,
+          justifyContent: "center",
+          alignSelf: phone() ? "flex-start" : "center",
+          height: phone() ? (textStyle("body").lineHeight as number) : undefined,
+        }}
+      >
+        <StateMark state={mark()} seen={Boolean(card().seen)} device={card().deviceName} />
+      </View>
       <If
         when={phone()}
         else={

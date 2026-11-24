@@ -292,8 +292,16 @@ function BotCard(props: { item: AgentCatalogItem }) {
       }}
     >
       <View style={{ gap: space.sm, minWidth: 0 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minWidth: 0 }}>
-          <View style={{ flexShrink: 0, opacity: isDisabledSubagent() ? 0.55 : 1 }}>
+        {/* Glyph and the trailing state sit on the name line; the metadata hangs under the name. */}
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.md, minWidth: 0 }}>
+          <View
+            style={{
+              flexShrink: 0,
+              height: textLineHeight(14, 1.3),
+              justifyContent: "center",
+              opacity: isDisabledSubagent() ? 0.55 : 1,
+            }}
+          >
             <Icon
               name={props.item.kind === "subagent" ? "sparkles" : "bot"}
               size={16}
@@ -336,7 +344,7 @@ function BotCard(props: { item: AgentCatalogItem }) {
                 flexShrink: 0,
                 color: palette().textMuted,
                 fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
+                lineHeight: textLineHeight(14, 1.3),
               }}
             >
               {tr("common.disabled")}

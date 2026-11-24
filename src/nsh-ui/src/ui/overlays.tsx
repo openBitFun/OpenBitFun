@@ -60,6 +60,129 @@ import { focusRingStyle } from "./primitives";
 
 export type ModalSize = "sm" | "md" | "lg" | "xl";
 
+// ---------------------------------------------------------------------------
+// Menu-like surfaces and rows: one system for selects, menus, the command
+// palette and picker lists.
+//
+// Hierarchy comes from layout, not colour: the leading glyph and any trailing
+// mark sit on the title line (never centred between title and subtitle), the
+// subtitle hangs under the title text in a smaller, quieter style, and the
+// current value is a check plus weight rather than a tinted fill.
+// ---------------------------------------------------------------------------
+
+/** Line height of a list row's title; glyphs and trailing marks centre on it. */
+export function listRowTitleLineHeight(): number {
+  return textLineHeight(13, 1.4);
+}
+
+/** Hover / keyboard-active fill that stays visible on any surface, popovers included. */
+export function listRowHoverBg(): string {
+  return palette().buttonSecondaryBg;
+}
+
+/** The floating surface of menus, selects and pickers. */
+export function menuSurfaceStyle(): ViewStyle {
+  return {
+    borderRadius: radii.lg,
+    borderCurve: "continuous",
+    borderWidth: 1,
+    borderColor: palette().border,
+    backgroundColor: palette().popoverBg,
+    boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+  };
+}
+
+export interface ListRowContentProps {
+  icon?: IconName;
+  iconColor?: string;
+  /** A custom glyph in place of `icon` (avatar, device glyph, state mark). */
+  leading?: JSX.Element;
+  title: string;
+  titleColor?: string;
+  titleWeight?: "400" | "500" | "600";
+  titleOverflow?: "ellipsis" | "ellipsis-middle";
+  subtitle?: string;
+  subtitleOverflow?: "ellipsis" | "ellipsis-middle";
+  subtitleLines?: number;
+  /** Marks on the title line: a check, a shortcut, a ↵ hint. */
+  trailing?: JSX.Element;
+}
+
+export function ListRowContent(props: ListRowContentProps) {
+  const lineHeight = () => listRowTitleLineHeight();
+  return (
+    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+      <If when={Boolean(props.leading) || Boolean(props.icon)}>
+        <View
+          style={{
+            height: lineHeight(),
+            minWidth: 16,
+            flexShrink: 0,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <If
+            when={Boolean(props.leading)}
+            else={
+              <Icon
+                name={(props.icon ?? "dot") as IconName}
+                size={14}
+                color={props.iconColor ?? palette().textMuted}
+              />
+            }
+          >
+            {props.leading}
+          </If>
+        </View>
+      </If>
+      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+        <Text
+          style={{
+            color: props.titleColor ?? palette().text,
+            fontSize: textSize(13),
+            fontWeight: props.titleWeight ?? "400",
+            lineHeight: lineHeight(),
+            numberOfLines: 1,
+            textOverflow: props.titleOverflow ?? "ellipsis",
+          }}
+        >
+          {props.title}
+        </Text>
+        <If when={props.subtitle ?? ""}>
+          {sub => (
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.4),
+                fontVariant: ["tabular-nums"],
+                numberOfLines: props.subtitleLines ?? 1,
+                textOverflow: props.subtitleOverflow ?? "ellipsis",
+              }}
+            >
+              {sub()}
+            </Text>
+          )}
+        </If>
+      </View>
+      <If when={Boolean(props.trailing)}>
+        <View
+          style={{
+            height: lineHeight(),
+            flexShrink: 0,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+          }}
+        >
+          {props.trailing}
+        </View>
+      </If>
+    </View>
+  );
+}
+
 // LIFO Escape stack so Escape always dismisses only the topmost open modal,
 // menu, drawer, or sheet — even when no `<Input>` inside it holds focus.
 const escapeStack: Array<() => void> = [];
@@ -98,15 +221,16 @@ export function registerEscapeDismiss(onDismiss: () => void): () => void {
 }
 
 function modalMaxWidth(size: ModalSize): number {
-  if (size === "sm") return 420;
-  if (size === "lg") return 700;
-  if (size === "xl") return 860;
-  return 540;
+  if (size === "sm") return 400;
+  if (size === "lg") return 540;
+  if (size === "xl") return 760;
+  return 440;
 }
 
 export interface ModalHeaderProps {
   title: string;
   subtitle?: string;
+  leading?: JSX.Element;
   right?: JSX.Element;
   onClose?: () => void;
 }
@@ -119,22 +243,25 @@ export function ModalHeader(props: ModalHeaderProps) {
         flexDirection: "row",
         alignItems: hasSubtitle() ? "flex-start" : "center",
         flexShrink: 0,
-        gap: space.md,
-        paddingHorizontal: compactLayout() ? space.lg : space.xl,
-        paddingTop: compactLayout() ? space.md : space.lg,
-        paddingBottom: compactLayout() ? space.md : space.lg,
-        borderBottomWidth: 1,
-        borderColor: palette().borderSubtle,
+        gap: space.sm,
+        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
+        paddingTop: compactLayout() ? space.lg : space.xl,
+        paddingBottom: space.xs,
       }}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
+      <If when={Boolean(props.leading)}>
+        <View style={{ flexShrink: 0, marginLeft: -space.xs, marginTop: hasSubtitle() ? -2 : 0 }}>
+          {props.leading}
+        </View>
+      </If>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(16),
+            fontSize: textSize(17),
             fontWeight: "600",
-            letterSpacing: textTracking(16),
-            lineHeight: textLineHeight(16, 22 / 16),
+            letterSpacing: textTracking(17),
+            lineHeight: textLineHeight(17, 24 / 17),
           }}
         >
           {props.title}
@@ -143,9 +270,9 @@ export function ModalHeader(props: ModalHeaderProps) {
           {subtitleText => (
             <Text
               style={{
-                color: palette().textElevatedMuted,
-                fontSize: textSize(13),
-                lineHeight: textLineHeight(13, 1.45),
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.42),
               }}
             >
               {subtitleText()}
@@ -168,7 +295,7 @@ export function ModalHeader(props: ModalHeaderProps) {
             marginTop: hasSubtitle() ? -2 : 0,
             marginRight: -space.xs,
             flexShrink: 0,
-            borderRadius: radii.sm,
+            borderRadius: radii.pill,
             borderCurve: "continuous",
             alignItems: "center",
             justifyContent: "center",
@@ -177,10 +304,10 @@ export function ModalHeader(props: ModalHeaderProps) {
             ...pressTransition(MOTION_DURATION.fast),
           }}
           hoverStyle={{ backgroundColor: palette().buttonSecondaryHover }}
-          activeStyle={tactileActiveStyle(0.96, { backgroundColor: palette().buttonSecondaryPressed })}
+          activeStyle={tactileActiveStyle(0.95, { backgroundColor: palette().buttonSecondaryPressed })}
           focusVisibleStyle={focusRingStyle()}
         >
-          <Icon name="close" size={14} color={palette().textElevatedMuted} />
+          <Icon name="close" size={15} color={palette().textMuted} />
         </View>
       </If>
     </View>
@@ -190,6 +317,7 @@ export function ModalHeader(props: ModalHeaderProps) {
 export interface ModalBodyProps {
   children?: JSX.Element;
   style?: StyleProp<ViewStyle>;
+  hasFooter?: boolean;
 }
 
 export function ModalBody(props: ModalBodyProps) {
@@ -197,9 +325,9 @@ export function ModalBody(props: ModalBodyProps) {
     <Scroll
       style={[{ flexShrink: 1, minHeight: 0 }, props.style]}
       contentStyle={{
-        paddingHorizontal: compactLayout() ? space.lg : space.xl,
-        paddingTop: space.lg,
-        paddingBottom: space.lg,
+        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
+        paddingTop: space.md,
+        paddingBottom: props.hasFooter === false ? (compactLayout() ? space.lg : space.xl) : space.sm,
         gap: space.lg,
       }}
     >
@@ -222,12 +350,10 @@ export function ModalFooter(props: ModalFooterProps) {
         alignItems: "center",
         justifyContent: "flex-end",
         gap: space.sm,
-        paddingHorizontal: compactLayout() ? space.lg : space.xl,
-        paddingTop: space.md,
-        paddingBottom: compactLayout() ? space.md + safeArea().bottom : space.md,
-        borderTopWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().surfaceSubtle,
+        paddingHorizontal: compactLayout() ? space.lg : space.xxl,
+        paddingTop: space.lg,
+        paddingBottom: compactLayout() ? space.md + safeArea().bottom : space.xl,
+        backgroundColor: "transparent",
       }}
     >
       {props.children}
@@ -239,6 +365,7 @@ export interface ModalDialogProps {
   open: boolean;
   title?: string;
   subtitle?: string;
+  leading?: JSX.Element;
   size?: ModalSize;
   footer?: JSX.Element;
   closeOnBackdropPress?: boolean;
@@ -271,8 +398,8 @@ function ModalCard(props: ModalDialogProps) {
           borderCurve: "continuous",
           borderWidth: 1,
           borderBottomWidth: compactLayout() ? 0 : 1,
-          borderColor: palette().border,
-          backgroundColor: palette().surfaceElevated,
+          borderColor: palette().borderSubtle,
+          backgroundColor: isLightAppearance() ? palette().surfaceElevated : palette().canvas,
           boxShadow: `${elevationShadow(3)}, ${palette().innerHighlight}`,
           overflow: "hidden",
           flexDirection: "column",
@@ -299,11 +426,12 @@ function ModalCard(props: ModalDialogProps) {
           <ModalHeader
             title={titleText()}
             subtitle={props.subtitle}
+            leading={props.leading}
             onClose={props.onClose}
           />
         )}
       </If>
-      <ModalBody>{props.children}</ModalBody>
+      <ModalBody hasFooter={Boolean(props.footer)}>{props.children}</ModalBody>
       <If when={Boolean(props.footer)}>
         <ModalFooter>{props.footer}</ModalFooter>
       </If>
@@ -411,17 +539,11 @@ function MenuSurface(props: {
       role="menu"
       style={[
         {
+          ...menuSurfaceStyle(),
           minWidth: props.minWidth,
           maxWidth: 340,
           maxHeight: props.maxHeight,
           padding: MENU_PADDING,
-          borderRadius: MENU_OUTER_RADIUS,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().border,
-          backgroundColor: palette().glassOverlayBg,
-          backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 2,
         },
@@ -461,11 +583,10 @@ function MenuSurface(props: {
                   >
                     <Text
                       style={{
-                        color: palette().textElevatedMuted,
-                        fontSize: textSize(11),
-                        fontWeight: "600",
-                        letterSpacing: 0.2,
-                        lineHeight: textLineHeight(11, 1.3),
+                        color: palette().textMuted,
+                        fontSize: textSize(12),
+                        fontWeight: "500",
+                        lineHeight: textLineHeight(12, 1.3),
                         numberOfLines: 1,
                         textOverflow: "ellipsis",
                       }}
@@ -496,17 +617,14 @@ function MenuSurface(props: {
                           item().onSelect?.();
                         }}
                         style={{
-                          minHeight: compactLayout() ? layout.touchTarget : 30,
+                          minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
                           flexDirection: "row",
                           alignItems: "center",
-                          gap: space.sm,
                           paddingHorizontal: space.sm,
-                          paddingVertical: space.chip,
+                          paddingVertical: 7,
                           borderRadius: MENU_ITEM_RADIUS,
                           borderCurve: "continuous",
-                          backgroundColor: item().active
-                            ? palette().surfaceSubtle
-                            : "transparent",
+                          backgroundColor: "transparent",
                           cursor: item().disabled ? "not-allowed" : "pointer",
                           userSelect: "none",
                           ...pressTransition(MOTION_DURATION.fast),
@@ -516,98 +634,64 @@ function MenuSurface(props: {
                             ? "transparent"
                             : item().danger
                               ? palette().dangerSoft
-                              : palette().panelHover,
+                              : listRowHoverBg(),
                         }}
                         activeStyle={tactileActiveStyle(0.985, {
                           backgroundColor: item().danger
                             ? palette().dangerHoverBg
-                            : palette().panelHover,
+                            : palette().buttonSecondaryHover,
                         })}
                         focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                         disabledStyle={{ opacity: 0.45 }}
                       >
-                        <If when={item().icon ?? ""}>
-                          {iconName => (
-                            <Icon
-                              name={iconName() as IconName}
-                              size={14}
-                              color={
-                                item().danger
-                                  ? palette().danger
-                                  : item().active
-                                    ? palette().text
-                                    : palette().textSecondary
-                              }
-                            />
-                          )}
-                        </If>
-                        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                          <Text
-                            style={{
-                              color: item().danger ? palette().danger : palette().text,
-                              fontSize: textSize(13),
-                              fontWeight: item().active ? "500" : "400",
-                              lineHeight: textLineHeight(13, 1.24),
-                              numberOfLines: 1,
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {item().label}
-                          </Text>
-                          <If when={item().hint ?? ""}>
-                            {hintText => (
-                              <Text
-                                style={{
-                                  color: palette().textElevatedMuted,
-                                  fontSize: textSize(12),
-                                  lineHeight: textLineHeight(12, 1.35),
-                                  numberOfLines: 2,
-                                  textOverflow: "ellipsis",
-                                }}
-                              >
-                                {hintText()}
-                              </Text>
-                            )}
-                          </If>
-                        </View>
-                        <If when={item().trailingHint ?? ""}>
-                          {trailingText => (
-                            <Text
-                              style={{
-                                flexShrink: 0,
-                                maxWidth: 120,
-                                color: palette().textElevatedMuted,
-                                fontSize: textSize(11),
-                                fontWeight: "500",
-                                lineHeight: textLineHeight(11, 1.24),
-                                numberOfLines: 1,
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {trailingText()}
-                            </Text>
-                          )}
-                        </If>
-                        <If when={item().shortcut ?? ""}>
-                          {shortcutText => (
-                            <Text
-                              style={{
-                                flexShrink: 0,
-                                color: palette().textElevatedMuted,
-                                fontFamily: fontMono,
-                                fontSize: textSize(11),
-                                fontWeight: "500",
-                                fontVariant: ["tabular-nums"],
-                                lineHeight: textLineHeight(11, 1.24),
-                              }}
-                            >
-                              {shortcutText()}
-                            </Text>
-                          )}
-                        </If>
-                        <If when={Boolean(item().active)}>
-                          <Icon name="check" size={13} color={palette().accent} />
-                        </If>
+                        <ListRowContent
+                          icon={item().icon}
+                          iconColor={item().danger ? palette().danger : palette().textSecondary}
+                          title={item().label}
+                          titleColor={item().danger ? palette().danger : palette().text}
+                          titleWeight={item().active ? "500" : "400"}
+                          subtitle={item().hint}
+                          subtitleLines={2}
+                          trailing={
+                            item().trailingHint || item().shortcut || item().active ? (
+                              <>
+                                <If when={item().trailingHint ?? ""}>
+                                  {trailingText => (
+                                    <Text
+                                      style={{
+                                        maxWidth: 120,
+                                        color: palette().textMuted,
+                                        fontSize: textSize(12),
+                                        lineHeight: textLineHeight(12, 1.3),
+                                        numberOfLines: 1,
+                                        textOverflow: "ellipsis",
+                                      }}
+                                    >
+                                      {trailingText()}
+                                    </Text>
+                                  )}
+                                </If>
+                                <If when={item().shortcut ?? ""}>
+                                  {shortcutText => (
+                                    <Text
+                                      style={{
+                                        color: palette().textMuted,
+                                        fontSize: textSize(12),
+                                        fontVariant: ["tabular-nums"],
+                                        lineHeight: textLineHeight(12, 1.3),
+                                      }}
+                                    >
+                                      {shortcutText()}
+                                    </Text>
+                                  )}
+                                </If>
+                                <If when={Boolean(item().active)}>
+                                  <Icon name="check" size={13} color={palette().accent} />
+                                </If>
+                              </>
+                            ) : undefined
+                          }
+                        />
                       </View>
                     }
                   >
@@ -812,11 +896,13 @@ export interface SelectDropdownOption<T extends string = string> {
   description?: string;
   icon?: IconName;
   disabled?: boolean;
+  /** Draws a hairline above this option, e.g. to set an action ("New…") apart from values. */
+  separator?: boolean;
   accessibilityLabel?: string;
 }
 
 export type SelectDropdownVariant = "default" | "ghost";
-export type SelectDropdownSize = "sm" | "md";
+export type SelectDropdownSize = "sm" | "md" | "lg";
 
 export interface SelectDropdownProps<T extends string = string> {
   options: ReadonlyArray<SelectDropdownOption<T>>;
@@ -867,17 +953,11 @@ function SelectPopoverSurface<T extends string>(props: {
     <View
       style={[
         {
+          ...menuSurfaceStyle(),
           minWidth: props.minWidth,
-          maxWidth: 340,
+          maxWidth: Math.max(340, props.minWidth),
           maxHeight: props.maxHeight,
           padding: SELECT_PADDING,
-          borderRadius: SELECT_OUTER_RADIUS,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().border,
-          backgroundColor: palette().glassOverlayBg,
-          backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: `${elevationShadow(2)}, ${palette().innerHighlight}`,
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 6,
         },
@@ -941,92 +1021,63 @@ function SelectPopoverSurface<T extends string>(props: {
         <View style={{ gap: space.hair }}>
           <Each of={props.options} key={opt => opt.value}>
             {opt => (
-              <View
-                role="option"
-                disabled={opt().disabled}
-                accessibilityLabel={opt().accessibilityLabel ?? opt().label}
-                accessibilityState={{
-                  selected: opt().value === props.value,
-                  disabled: Boolean(opt().disabled),
-                }}
-                onPress={() => {
-                  if (opt().disabled) return;
-                  props.onSelect(opt().value);
-                }}
-                style={{
-                  minHeight: compactLayout() ? layout.touchTarget : 30,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: space.sm,
-                  paddingHorizontal: space.sm,
-                  paddingVertical: space.chip,
-                  borderRadius: SELECT_INNER_RADIUS,
-                  borderCurve: "continuous",
-                  backgroundColor:
-                    opt().value === props.value ? palette().accentSoft : "transparent",
-                  cursor: opt().disabled ? "not-allowed" : "pointer",
-                  userSelect: "none",
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{
-                  backgroundColor: opt().disabled
-                    ? "transparent"
-                    : opt().value === props.value
-                      ? palette().accentSoft
-                      : palette().panelHover,
-                }}
-                activeStyle={tactileActiveStyle(0.985, {
-                  backgroundColor:
-                    opt().value === props.value ? palette().accentSoft : palette().panelHover,
-                })}
-                focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
-                disabledStyle={{ opacity: 0.45 }}
-              >
-                <If when={opt().icon ?? ""}>
-                  {iconName => (
-                    <Icon
-                      name={iconName() as IconName}
-                      size={14}
-                      color={
-                        opt().value === props.value
-                          ? palette().accent
-                          : palette().textSecondary
-                      }
-                    />
-                  )}
-                </If>
-                <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                  <Text
+              <View style={{ gap: space.hair }}>
+                <If when={Boolean(opt().separator)}>
+                  <View
                     style={{
-                      color: palette().text,
-                      fontSize: textSize(13),
-                      fontWeight: opt().value === props.value ? "500" : "400",
-                      lineHeight: textLineHeight(13, 1.24),
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
+                      height: 1,
+                      marginVertical: space.xs,
+                      marginHorizontal: space.chip,
+                      backgroundColor: palette().borderSubtle,
                     }}
-                  >
-                    {opt().label}
-                  </Text>
-                  <If when={opt().description ?? ""}>
-                    {desc => (
-                      <Text
-                        style={{
-                          color: palette().textElevatedMuted,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.35),
-                          numberOfLines: 2,
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {desc()}
-                      </Text>
-                    )}
-                  </If>
-                </View>
-                <If when={opt().value === props.value}>
-                  <Icon name="check" size={13} color={palette().accent} />
+                  />
                 </If>
+                <View
+                  role="option"
+                  disabled={opt().disabled}
+                  accessibilityLabel={opt().accessibilityLabel ?? opt().label}
+                  accessibilityState={{
+                    selected: opt().value === props.value,
+                    disabled: Boolean(opt().disabled),
+                  }}
+                  onPress={() => {
+                    if (opt().disabled) return;
+                    props.onSelect(opt().value);
+                  }}
+                  style={{
+                    minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingHorizontal: space.sm,
+                    paddingVertical: 7,
+                    borderRadius: SELECT_INNER_RADIUS,
+                    borderCurve: "continuous",
+                    cursor: opt().disabled ? "not-allowed" : "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{
+                    backgroundColor: opt().disabled ? "transparent" : listRowHoverBg(),
+                  }}
+                  activeStyle={tactileActiveStyle(0.985, {
+                    backgroundColor: palette().buttonSecondaryHover,
+                  })}
+                  focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
+                  disabledStyle={{ opacity: 0.45 }}
+                >
+                  <ListRowContent
+                    icon={opt().icon}
+                    iconColor={palette().textSecondary}
+                    title={opt().label}
+                    titleWeight={opt().value === props.value ? "500" : "400"}
+                    subtitle={opt().description}
+                    trailing={
+                      opt().value === props.value ? (
+                        <Icon name="check" size={13} color={palette().accent} />
+                      ) : undefined
+                    }
+                  />
+                </View>
               </View>
             )}
           </Each>
@@ -1056,6 +1107,8 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
   const anchorRef = signal<ViewRef | null>(null);
   const effectivePlacement = signal<Placement | null>(null);
   const availableHeight = signal<number | null>(null);
+  // A full-width field opens a menu exactly as wide as itself.
+  const triggerWidth = signal(0);
 
   const selectedLabel = () => {
     const match = props.options.find(opt => opt.value === props.value);
@@ -1108,8 +1161,12 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
       <View
         ref={el => anchorRef.set(el)}
         role="combobox"
+        onLayout={event => {
+          const w = Math.floor(event.bounds.size.width);
+          if (w > 0 && Math.abs(w - triggerWidth()) > 1) triggerWidth.set(w);
+        }}
         disabled={props.disabled}
-        hitSlop={touchSlop((props.size ?? "md") === "sm" ? controlHeight.sm : controlHeight.md)}
+        hitSlop={touchSlop(controlHeight[props.size ?? "md"])}
         accessibilityLabel={props.accessibilityLabel}
         accessibilityState={{
           expanded: open(),
@@ -1122,11 +1179,11 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
         }}
         style={{
           boxSizing: "border-box",
-          height: (props.size ?? "md") === "sm" ? controlHeight.sm : controlHeight.md,
+          height: controlHeight[props.size ?? "md"],
           maxWidth: "100%",
           paddingHorizontal: (props.variant ?? "default") === "ghost" ? space.sm : space.md,
           paddingVertical: 0,
-          borderRadius: radii.sm,
+          borderRadius: (props.size ?? "md") === "sm" ? radii.sm : radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor:
@@ -1135,21 +1192,23 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
                 ? palette().border
                 : "transparent"
               : open()
-                ? palette().fieldFocusBorder
+                ? palette().borderFocus
                 : isLightAppearance()
                   ? palette().border
-                  : palette().borderSubtle,
+                  : "transparent",
           backgroundColor:
             (props.variant ?? "default") === "ghost"
               ? open()
                 ? palette().surfaceSubtle
                 : "transparent"
-              : palette().buttonSecondaryBg,
+              : isLightAppearance()
+                ? palette().canvasSubtle
+                : palette().surfaceSubtle,
           boxShadow:
             (props.variant ?? "default") === "ghost"
               ? undefined
               : open()
-                ? `0 0 0 3px ${palette().accentSoft}`
+                ? `0 0 0 2px ${palette().accentSoft}`
                 : undefined,
           flexDirection: "row",
           alignItems: "center",
@@ -1230,7 +1289,11 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
             searchable={props.searchable}
             searchPlaceholder={props.searchPlaceholder}
             emptyLabel={props.emptyLabel}
-            minWidth={Math.max(200, props.minWidth ?? 180)}
+            minWidth={
+              props.fullWidth && triggerWidth() > 0
+                ? Math.max(200, triggerWidth())
+                : Math.max(200, props.minWidth ?? 180)
+            }
             maxHeight={resolvedMaxHeight()}
             query={query()}
             onQueryChange={q => query.set(q)}

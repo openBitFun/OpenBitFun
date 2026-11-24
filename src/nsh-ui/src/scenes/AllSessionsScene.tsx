@@ -72,7 +72,7 @@ import {
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import { sessionMenuItems, type SessionActionTarget } from "../ui/sessionActions";
 import { workspaceMenuItems, type WorkspaceActionTarget } from "../ui/workspaceActions";
-import { savedConnections } from "../sshRemoteStore";
+import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
 import { superAgentUi } from "../productGates"; // wave23-E
 
 /** One Recent row, whatever source it came from. */
@@ -108,35 +108,21 @@ const recentError = signal("");
 const localWorkspaceRows = signal<Record<string, SessionSummary[]>>({});
 
 const NON_RUNTIME_HOST_KINDS = new Set(["cloud", "mobile", "phone", "browser", "web"]);
-const LOCAL_HOST_NAMES = new Set(["localhost", "127.0.0.1", "::1"]);
 
 /**
- * Displayable remote SSH host for a workspace. Filters out assistant workspaces
- * and local placeholders (`localhost`, `127.0.0.1`, `::1`), and falls back to
- * `savedConnections()` via `connectionId` / `remoteConnectionId` when `sshHost`
- * is absent.
+ * Displayable remote SSH alias (or host fallback) for a workspace. Prefers the
+ * connection alias (`saved.name` -> `connectionName`) over the raw `sshHost` IP
+ * and filters out assistant workspaces and local placeholders.
  */
 export function remoteWorkspaceHost(workspace: {
   kind?: string;
+  workspaceKind?: string;
   sshHost?: string;
   connectionId?: string;
   remoteConnectionId?: string;
+  connectionName?: string;
 }): string | undefined {
-  const kind = (workspace.kind ?? "").toLowerCase();
-  if (kind.includes("assistant")) return undefined;
-  const host = (workspace.sshHost ?? "").trim();
-  if (host && !LOCAL_HOST_NAMES.has(host.toLowerCase())) {
-    return host;
-  }
-  const connId = (workspace.connectionId ?? workspace.remoteConnectionId ?? "").trim();
-  if (connId) {
-    const saved = savedConnections().find(conn => conn.id === connId);
-    const savedHost = (saved?.host ?? saved?.name ?? "").trim();
-    if (savedHost && !LOCAL_HOST_NAMES.has(savedHost.toLowerCase())) {
-      return savedHost;
-    }
-  }
-  return undefined;
+  return remoteWorkspaceAliasOf(workspace);
 }
 
 /** Runtime devices (includes local desktop with `isClientDevice: true`; excludes cloud & mobile/browser clients). */
@@ -502,7 +488,9 @@ function RecentSessionRow(props: { row: RecentRow }) {
             ...pressTransition(MOTION_DURATION.fast),
           }}
         >
-          <StateMark state={props.row.mark} />
+          <View style={{ alignSelf: "flex-start", height: titleLineHeight(), flexShrink: 0, justifyContent: "center" }}>
+            <StateMark state={props.row.mark} />
+          </View>
           <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
             <Text style={{ ...textStyle("label"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.row.title}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
@@ -522,6 +510,11 @@ function RecentSessionRow(props: { row: RecentRow }) {
       </If>
     </View>
   );
+}
+
+/** Line height of a list row's title (`label`); a glyph beside a two-line row centres on it. */
+function titleLineHeight(): number {
+  return textStyle("label").lineHeight as number;
 }
 
 function RecentList() {
@@ -600,6 +593,8 @@ export interface DeviceTreeNode {
     rootPath: string;
     kind?: string;
     sshHost?: string;
+    connectionId?: string;
+    connectionName?: string;
     sessions: Array<{ sessionId: string; title: string; mark: MarkState; ageMs?: number }>;
     total: number;
   }>;
@@ -633,11 +628,9 @@ export function deviceTree(): DeviceTreeNode[] {
             name: workspaceLabel(workspace),
             rootPath: workspace.rootPath,
             kind: workspace.kind,
-            sshHost: remoteWorkspaceHost({
-              kind: workspace.kind,
-              sshHost: workspace.sshHost,
-              connectionId: workspace.connectionId,
-            }),
+            sshHost: workspace.sshHost,
+            connectionId: workspace.connectionId,
+            connectionName: workspace.connectionName,
             total: workspace.sessionTotal,
             sessions: workspace.sessions.map(row => ({
               sessionId: row.sessionId,
@@ -670,12 +663,9 @@ export function deviceTree(): DeviceTreeNode[] {
           name: workspaceLabel(workspace),
           rootPath: workspace.rootPath,
           kind: workspace.workspaceKind,
-          sshHost: remoteWorkspaceHost({
-            kind: workspace.workspaceKind,
-            sshHost: workspace.sshHost,
-            connectionId: workspace.connectionId,
-            remoteConnectionId: (workspace as { remoteConnectionId?: string }).remoteConnectionId,
-          }),
+          sshHost: workspace.sshHost,
+          connectionId: workspace.connectionId ?? (workspace as { remoteConnectionId?: string }).remoteConnectionId,
+          connectionName: workspace.connectionName,
           total: rows.length,
           sessions: rows.map(row => ({
             sessionId: row.sessionId,
@@ -805,6 +795,8 @@ export function workspaceTarget(node: DeviceTreeNode, workspace: DeviceTreeNode[
     rootPath: workspace.rootPath,
     kind: workspace.kind,
     sshHost: workspace.sshHost,
+    connectionId: workspace.connectionId,
+    connectionName: workspace.connectionName,
   };
 }
 
@@ -965,7 +957,17 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
             ...pressTransition(MOTION_DURATION.fast),
           }}
         >
-          <Icon name={workspaceIconName()} size={14} color={palette().textMuted} />
+          {/* The glyph sits on the name line; on the phone the preview hangs under the name. */}
+          <View
+            style={{
+              alignSelf: phone() ? "flex-start" : "center",
+              height: phone() ? titleLineHeight() : undefined,
+              flexShrink: 0,
+              justifyContent: "center",
+            }}
+          >
+            <Icon name={workspaceIconName()} size={14} color={palette().textMuted} />
+          </View>
           <If
             when={phone()}
             else={
@@ -977,7 +979,13 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
                   {remoteHost => (
                     <Text
                       testID={`workspace-host-${props.workspace.workspaceId}`}
-                      style={{ ...textStyle("caption"), flexShrink: 0, maxWidth: "25%", numberOfLines: 1, textOverflow: "ellipsis" }}
+                      style={{
+                        ...textStyle("label", { color: palette().textMuted }),
+                        flexShrink: 0,
+                        maxWidth: "25%",
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
                     >
                       {`· ${remoteHost()}`}
                     </Text>
@@ -998,7 +1006,13 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
                   {remoteHost => (
                     <Text
                       testID={`workspace-host-${props.workspace.workspaceId}`}
-                      style={{ ...textStyle("caption"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}
+                      style={{
+                        ...textStyle("label", { color: palette().textMuted }),
+                        flex: 1,
+                        minWidth: 0,
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
                     >
                       {`· ${remoteHost()}`}
                     </Text>

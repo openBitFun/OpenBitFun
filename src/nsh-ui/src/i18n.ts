@@ -545,12 +545,42 @@ function localizeFleetRefusal(locale: AppLocale, text: string): string | null {
   return trForLocale(locale, "error.fleetDeviceOffline");
 }
 
+function localizeSshHandshakeDisconnect(locale: AppLocale, text: string): string | null {
+  if (!/SSH handshake failed:\s*(?:HandlerError\("Disconnect"\)|Disconnect)/i.test(text)) {
+    return null;
+  }
+  const targetMatch = /^\s*target\s+([^\s]+)\s+SSH handshake failed/i.exec(text);
+  if (targetMatch?.[1]) {
+    return trForLocale(locale, "ssh.handshakeDisconnectedWithTarget", {
+      target: targetMatch[1],
+    });
+  }
+  return trForLocale(locale, "ssh.handshakeDisconnected");
+}
+
+function localizeDockerDaemonError(locale: AppLocale, text: string): string | null {
+  if (
+    /failed to connect to the docker API|Cannot connect to the Docker daemon|docker\.sock.*no such file or directory|Is the docker daemon running/i.test(
+      text,
+    )
+  ) {
+    return trForLocale(locale, "ssh.dockerUnavailable");
+  }
+  return null;
+}
+
 function localizeHostErrorForLocale(locale: AppLocale, raw: unknown): string {
   const text = extractRawErrorMessage(raw);
   if (!text) return "";
 
   const fleetRefusal = localizeFleetRefusal(locale, text);
   if (fleetRefusal !== null) return fleetRefusal;
+
+  const sshDisconnect = localizeSshHandshakeDisconnect(locale, text);
+  if (sshDisconnect !== null) return sshDisconnect;
+
+  const dockerUnavailable = localizeDockerDaemonError(locale, text);
+  if (dockerUnavailable !== null) return dockerUnavailable;
 
   const storeTranslated = localizeStoreMessage(locale, text);
   if (storeTranslated !== null) {

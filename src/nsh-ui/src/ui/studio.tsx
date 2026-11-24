@@ -264,6 +264,7 @@ export function InsetGroup(props: {
           borderWidth: 1,
           borderColor: palette().borderSubtle,
           backgroundColor: palette().panelRaised,
+          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
           overflow: "hidden",
           minWidth: 0,
         },
@@ -300,6 +301,10 @@ export interface InsetRowProps {
   chevron?: boolean;
   accessibilityLabel?: string;
   onPress?: () => void;
+}
+
+function insetRowLabelLineHeight(): number {
+  return textLineHeight(14, 1.35);
 }
 
 /** One row of an inset grouped list: min height 44, 0x16 padding, inset hairline. */
@@ -345,55 +350,62 @@ export function InsetRow(props: InsetRowProps) {
           }}
         />
       </If>
-      <If when={Boolean(props.leading)} else={
-        <If when={props.icon ?? ""}>
-          {name => (
-            <Icon
-              name={name() as IconName}
-              size={16}
-              color={palette().textMuted}
-            />
-          )}
+      {/* The glyph sits on the label line; the detail hangs under the label. */}
+      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: space.md }}>
+        <If when={Boolean(props.leading)} else={
+          <If when={props.icon ?? ""}>
+            {name => (
+              <View style={{ height: insetRowLabelLineHeight(), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+                <Icon
+                  name={name() as IconName}
+                  size={16}
+                  color={palette().textMuted}
+                />
+              </View>
+            )}
+          </If>
+        }>
+          <View style={{ minHeight: insetRowLabelLineHeight(), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+            {props.leading}
+          </View>
         </If>
-      }>
-        <View style={{ flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{props.leading}</View>
-      </If>
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text
-          style={{
-            color:
-              props.tone === "danger"
-                ? palette().danger
-                : props.tone === "muted"
-                  ? palette().textSecondary
-                  : palette().text,
-            fontSize: textSize(14),
-            fontWeight: "400",
-            lineHeight: textLineHeight(14, 1.35),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.label}
-        </Text>
-        <If when={props.detail ?? ""}>
-          {detail => (
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {detail()}
-            </Text>
-          )}
-        </If>
-        <If when={Boolean(props.below)}>
-          <View style={{ paddingTop: 4, minWidth: 0 }}>{props.below}</View>
-        </If>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text
+            style={{
+              color:
+                props.tone === "danger"
+                  ? palette().danger
+                  : props.tone === "muted"
+                    ? palette().textSecondary
+                    : palette().text,
+              fontSize: textSize(14),
+              fontWeight: "400",
+              lineHeight: insetRowLabelLineHeight(),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.label}
+          </Text>
+          <If when={props.detail ?? ""}>
+            {detail => (
+              <Text
+                style={{
+                  color: palette().textMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.4),
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {detail()}
+              </Text>
+            )}
+          </If>
+          <If when={Boolean(props.below)}>
+            <View style={{ paddingTop: 4, minWidth: 0 }}>{props.below}</View>
+          </If>
+        </View>
       </View>
       <If when={Boolean(props.trailing)}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>

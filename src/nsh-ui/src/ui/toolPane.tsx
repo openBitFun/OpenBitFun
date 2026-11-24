@@ -6,6 +6,7 @@
 import { Scroll, Text, View } from "nsh";
 import { fleetDeviceById } from "../fleetStore";
 import { tr } from "../i18n";
+import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
 import { activeScene, activeWorkspace, activeWorkspaceKey, navigateScene, openDevicePage } from "../state";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
 import { DeviceBadge, deviceException } from "./fleet";
@@ -40,9 +41,12 @@ function currentToolLabel(): string {
   }
 }
 
-/** Workspace title (or the current tool name while the workspace is still loading). */
+/** Workspace title (with remote connection alias when remote, or current tool name while loading). */
 function headerTitle(): string {
-  return activeWorkspace()?.name || currentToolLabel();
+  const ws = activeWorkspace();
+  if (!ws?.name) return currentToolLabel();
+  const alias = remoteWorkspaceAliasOf(ws);
+  return alias ? `${ws.name} · ${alias}` : ws.name;
 }
 
 export function ToolPaneHeader() {

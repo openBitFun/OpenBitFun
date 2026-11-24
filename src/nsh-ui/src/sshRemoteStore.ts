@@ -12,13 +12,15 @@
 
 import { computed, signal } from "nsh";
 import { getRecentWorkspaces, type WorkspaceRecord } from "./api";
-import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { fleetActive, invokeCommand, invokeRawCommand, listenEvent, pickLocalDirectory } from "./bridge";
+import { refreshFleetNavigator } from "./fleetStore";
 import { isCommandUnavailable } from "./hostCommands";
 import { currentDeviceScopeKey } from "./shared/deviceScope";
 import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import {
   activeScene,
   activeWorkspace,
+  closeWorkspace,
   loadWorkspaces,
   onWorkspaceChanged,
   openPathWorkspace,
@@ -273,7 +275,11 @@ export interface OpenSshConnectionOptions {
   confirmLabel?: string;
   sshConfigEntry?: SSHConfigEntry;
   containerHost?: SavedConnection;
+  /** Open on the new-connection form even when saved connections exist. */
+  startWithForm?: boolean;
   onConnected?: (config: SSHConnectionConfig, connectionId: string) => void;
+  /** Called when the modal closes without connecting. */
+  onDismiss?: () => void;
 }
 
 export interface OpenRemoteFileBrowserOptions {
@@ -585,6 +591,12 @@ export const sshShowPassword = signal<boolean>(false);
 export const sshShowPassphrase = signal<boolean>(false);
 export const sshForm = signal<SshFormState>(createEmptySshForm());
 export const sshConnecting = signal<boolean>(false);
+/** The connection ID currently being connected (enables crisp per-row loading feedback). */
+export const sshConnectingId = signal<string | null>(null);
+/** `~/.ssh/config` Host alias currently matched by the form (if any). */
+export const sshMatchedConfigHost = signal<string>("");
+/** Whether the user has manually typed a custom alias in the form. */
+export const sshAliasCustomized = signal<boolean>(false);
 export const sshTesting = signal<boolean>(false);
 export const sshError = signal<string>("");
 export const sshNotice = signal<string>("");
@@ -620,6 +632,8 @@ export const browserLoading = signal<boolean>(false);
 export const browserBusy = signal<boolean>(false);
 export const browserError = signal<string>("");
 export const browserSelectDirectoriesOnly = signal<boolean>(true);
+/** True while the browser picks a folder for a caller (New workspace) instead of opening one. */
+export const browserPickerMode = signal<boolean>(false);
 export const browserNewDirOpen = signal<boolean>(false);
 export const browserNewDirName = signal<string>("");
 export const browserRenamingEntry = signal<RemoteFileEntry | null>(null);
@@ -685,6 +699,48 @@ export const filteredSavedConnections = computed<SavedConnection[]>(() => {
   });
 });
 
+const LOCAL_HOST_PLACEHOLDERS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/**
+ * Display label for a remote workspace's host target: prefers the SSH
+ * connection's alias (`saved.name` → `workspace.connectionName`) and falls back
+ * to `sshHost` / `saved.host` only when no alias is recorded. Filters out
+ * assistant workspaces and local placeholders (`localhost`, `127.0.0.1`, `::1`).
+ */
+export function remoteWorkspaceAliasOf(
+  workspace:
+    | {
+        kind?: string;
+        workspaceKind?: string;
+        connectionId?: string;
+        remoteConnectionId?: string;
+        connectionName?: string;
+        sshHost?: string;
+      }
+    | null
+    | undefined,
+): string | undefined {
+  if (!workspace) return undefined;
+  const kind = (workspace.kind ?? workspace.workspaceKind ?? "").toLowerCase();
+  if (kind.includes("assistant")) return undefined;
+
+  const connId = (workspace.connectionId ?? workspace.remoteConnectionId ?? "").trim();
+  const saved = connId ? savedConnections().find(conn => conn.id === connId) : undefined;
+  const candidates = [
+    saved?.name,
+    workspace.connectionName,
+    workspace.sshHost,
+    saved?.host,
+  ];
+  for (const raw of candidates) {
+    const value = (raw ?? "").trim();
+    if (value && !LOCAL_HOST_PLACEHOLDERS.has(value.toLowerCase())) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 export const filteredSshConfigHosts = computed<SSHConfigEntry[]>(() => {
   const query = sshConfigSearch().trim().toLowerCase();
   const saved = savedConnections();
@@ -723,6 +779,15 @@ let directoryRequestTicket = 0;
 let savedLoadTicket = 0;
 let containerLoadTicket = 0;
 let sshConnectedCallback: ((config: SSHConnectionConfig, connectionId: string) => void) | null = null;
+// Called when a flow waiting on the SSH modal or the credential prompt is abandoned, so the
+// caller (New workspace) never stays busy after the user closes the dialog it opened.
+let sshDismissCallback: (() => void) | null = null;
+let authPromptDismissCallback: (() => void) | null = null;
+
+function settleConnectFlow(): void {
+  sshDismissCallback = null;
+  authPromptDismissCallback = null;
+}
 let browserSelectCallback: ((path: string) => void) | null = null;
 let pendingConnectBrowseOverride: boolean | null = null;
 
@@ -744,12 +809,43 @@ export function setSshFormField<K extends keyof SshFormState>(field: K, value: S
   sshForm.update(prev => ({ ...prev, [field]: value }));
   connectionTestReport.set(null);
   sshError.set("");
+  if (field === "name" && typeof value === "string") {
+    sshAliasCustomized.set(Boolean(value.trim()));
+  }
   if (field === "host" || field === "dockerPath") {
     dockerContainers.set([]);
   }
   if (field === "host" && typeof value === "string") {
+    const trimmed = value.trim();
+    if (sshMatchedConfigHost() && sshMatchedConfigHost() !== trimmed) {
+      sshMatchedConfigHost.set("");
+      if (!sshAliasCustomized()) {
+        sshForm.update(prev => ({ ...prev, name: "" }));
+      }
+    }
     scheduleSshConfigLookup(value);
   }
+}
+
+export function beginNewSshConnection(): void {
+  clearConfigLookupTimer();
+  sshEditingProfile.set(null);
+  sshMatchedConfigHost.set("");
+  sshAliasCustomized.set(false);
+  sshConfigSearch.set("");
+  sshForm.set(createEmptySshForm());
+  sshShowAdvanced.set(false);
+  connectionTestReport.set(null);
+  sshError.set("");
+  sshNotice.set("");
+  sshConnectionView.set("new");
+}
+
+export function returnToSavedSshConnections(): void {
+  clearConfigLookupTimer();
+  sshEditingProfile.set(null);
+  sshError.set("");
+  sshConnectionView.set("saved");
 }
 
 export function setSshTargetType(target: WorkspaceConnectionTarget): void {
@@ -790,11 +886,13 @@ async function lookupAndApplySshConfig(host: string): Promise<void> {
     const result = await invokeRawCommand<SSHConfigLookupResult>("ssh_get_config", { host });
     if (!result?.found || !result.config) return;
     const cfg = result.config;
+    sshMatchedConfigHost.set(cfg.host);
     if (cfg.proxyJump || cfg.certificateFile) {
       sshShowAdvanced.set(true);
     }
     sshForm.update(prev => ({
       ...prev,
+      name: sshAliasCustomized() ? prev.name : cfg.host,
       port: cfg.port ? String(cfg.port) : prev.port,
       username: cfg.user || prev.username,
       keyPath: cfg.identityFile || prev.keyPath,
@@ -810,6 +908,8 @@ async function lookupAndApplySshConfig(host: string): Promise<void> {
 export function fillFormFromSshConfig(entry: SSHConfigEntry): void {
   const keyPath = entry.identityFile?.trim() || "~/.ssh/id_rsa";
   const hasKey = Boolean(entry.identityFile?.trim());
+  sshMatchedConfigHost.set(entry.host);
+  sshAliasCustomized.set(false);
   sshForm.update(prev => ({
     ...prev,
     name: entry.host,
@@ -842,6 +942,8 @@ export function populateFormFromSavedConnection(conn: SavedConnection): void {
   sshTargetType.set(target);
   sshEditingProfile.set(conn);
   sshSelectedConnectionId.set(conn.id);
+  sshMatchedConfigHost.set("");
+  sshAliasCustomized.set(Boolean(conn.name?.trim()));
   if (target === "remoteDocker") {
     sshContainerHost.set({ ...conn, container: undefined });
   } else {
@@ -1257,12 +1359,16 @@ export async function buildSshConnectionConfig(
 
   const hostInput = isLocalDocker ? "local-docker" : form.host.trim();
   let connectHost = hostInput;
+  let matchedConfigAlias = "";
   let resolvedProxyJump = form.proxyJump.trim();
   if (!isLocalDocker) {
     try {
       const lookup = await invokeRawCommand<SSHConfigLookupResult>("ssh_get_config", {
         host: hostInput,
       });
+      if (lookup?.found && lookup.config?.host?.trim()) {
+        matchedConfigAlias = lookup.config.host.trim();
+      }
       if (lookup?.found && lookup.config?.hostname?.trim()) {
         connectHost = lookup.config.hostname.trim();
       }
@@ -1297,9 +1403,13 @@ export async function buildSshConnectionConfig(
     );
   }
 
+  const defaultAlias = isLocalDocker
+    ? containerName
+    : matchedConfigAlias || connectHost;
+
   return {
     id,
-    name: form.name.trim() || (isLocalDocker ? containerName : `${username}@${hostInput}`),
+    name: form.name.trim() || defaultAlias,
     host: connectHost,
     port,
     username,
@@ -1354,6 +1464,7 @@ export async function connectWithConfig(
   options: { browseAfterConnect?: boolean } = {},
 ): Promise<SSHConnectionResult | null> {
   sshConnecting.set(true);
+  sshConnectingId.set(config.id);
   sshError.set("");
   sshNotice.set("");
   connectionStatuses.update(prev => ({ ...prev, [config.id]: "connecting" }));
@@ -1381,6 +1492,7 @@ export async function connectWithConfig(
     }
 
     void loadSavedConnections();
+    if (fleetActive()) void refreshFleetNavigator();
     const shouldBrowse =
       options.browseAfterConnect ??
       pendingConnectBrowseOverride ??
@@ -1389,6 +1501,7 @@ export async function connectWithConfig(
     if (sshConnectedCallback) {
       const cb = sshConnectedCallback;
       sshConnectedCallback = null;
+      settleConnectFlow();
       sshConnectionModalOpen.set(false);
       cb(config, resolvedId);
       return result;
@@ -1411,6 +1524,7 @@ export async function connectWithConfig(
     throw error;
   } finally {
     sshConnecting.set(false);
+    sshConnectingId.set(null);
   }
 }
 
@@ -1433,6 +1547,8 @@ export async function saveSshConnectionForm(): Promise<boolean> {
     if (!config) return false;
     await invokeRawCommand<void>("ssh_save_connection", { config });
     await loadSavedConnections();
+    void loadWorkspaces();
+    if (fleetActive()) void refreshFleetNavigator();
     if (sshEditOnly()) {
       sshConnectionModalOpen.set(false);
     } else {
@@ -1515,12 +1631,18 @@ export function openAuthPrompt(conn: SavedConnection): void {
 }
 
 export function closeAuthPrompt(): void {
+  const dismissed = authPromptDismissCallback;
+  authPromptDismissCallback = null;
   authPromptOpen.set(false);
   authPromptTarget.set(null);
   authPromptPassword.set("");
   authPromptPassphrase.set("");
   authPromptVerificationCode.set("");
   authPromptError.set("");
+  if (dismissed) {
+    sshConnectedCallback = null;
+    dismissed();
+  }
 }
 
 export async function submitAuthPrompt(): Promise<void> {
@@ -1833,6 +1955,9 @@ export async function openRemoteWorkspace(
     }
 
     await loadWorkspaces();
+    if (fleetActive()) {
+      void refreshFleetNavigator();
+    }
 
     if (openedRecord?.id && !workspaces().some(ws => ws.id === openedRecord?.id)) {
       workspaces.update(current => [openedRecord!, ...current]);
@@ -1909,7 +2034,7 @@ export async function confirmBrowserSelection(): Promise<void> {
 
 export async function closeWorkspaceRecord(workspaceId: string): Promise<void> {
   const target = workspaces().find(ws => ws.id === workspaceId);
-  await invokeCommand<void>("close_workspace", { workspaceId });
+  await closeWorkspace(workspaceId);
   if (target?.workspaceKind === "remote") {
     const currentRemote = activeRemoteWorkspace();
     if (!currentRemote || currentRemote.workspaceId === workspaceId) {
@@ -1917,7 +2042,11 @@ export async function closeWorkspaceRecord(workspaceId: string): Promise<void> {
       activeRemoteWorkspace.set(null);
     }
   }
-  await loadWorkspaces();
+  if (fleetActive()) {
+    await refreshFleetNavigator();
+  } else {
+    await loadWorkspaces();
+  }
 }
 
 export async function closeCurrentRemoteWorkspace(): Promise<void> {
@@ -1931,7 +2060,11 @@ export async function closeCurrentRemoteWorkspace(): Promise<void> {
   if (wsId) {
     await invokeCommand<void>("close_workspace", { workspaceId: wsId }).catch(() => undefined);
   }
-  await loadWorkspaces();
+  if (fleetActive()) {
+    await refreshFleetNavigator();
+  } else {
+    await loadWorkspaces();
+  }
 }
 
 export async function removeRemoteWorkspaceEntry(
@@ -2098,6 +2231,11 @@ export function setNewWorkspaceSource(source: WorkspaceSource): void {
   }
   newWorkspaceSource.set(source);
   newWorkspaceSelectedEnvId.set(null);
+  if (nextLoc === "other" && !newWorkspaceSelectedHostId()) {
+    // One known host is the only sensible choice: preselect it.
+    const hosts = newWorkspaceHostOptions();
+    if (hosts.length === 1) newWorkspaceSelectedHostId.set(hosts[0].id);
+  }
   newWorkspaceConnectedRemote.set(null);
   newWorkspaceError.set("");
   newWorkspaceEnvContainers.set([]);
@@ -2207,11 +2345,17 @@ export const newWorkspaceHostOptions = computed<WorkspaceSourceOption[]>(() => {
     const hostname = entry.hostname || entry.host;
     const port = entry.port || DEFAULT_SSH_PORT;
     const user = entry.user || "";
-    if (saved.some(c => c.host === hostname && c.port === port && c.username === user)) continue;
+    if (
+      saved.some(
+        c => (c.host === hostname || c.host === entry.host) && c.port === port && c.username === user,
+      )
+    ) {
+      continue;
+    }
     options.push({
       id: `ssh-config:${entry.host}`,
       label: entry.host,
-      description: `${user}@${hostname}:${port}`,
+      description: user ? `${user}@${hostname}:${port}` : `${hostname}:${port}`,
       target: "ssh",
       sshConfigEntry: entry,
       sourceKind: "sshConfig",
@@ -2364,6 +2508,20 @@ async function connectSourceOptionForNewWorkspace(
       ) {
         throw error;
       }
+      // The saved profile is right but its secret is missing or stale: ask for it in place
+      // instead of routing through the connection list.
+      const conn = option.connection;
+      return new Promise<NonNullable<ProjectFolder["remote"]> | null>(resolve => {
+        sshConnectedCallback = (config, connectionId) => {
+          const remote = { connectionId, connectionName: config.name, sshHost: config.host };
+          newWorkspaceConnectedRemote.set(remote);
+          void loadSavedConnections();
+          resolve(remote);
+        };
+        pendingConnectBrowseOverride = false;
+        openAuthPrompt(conn);
+        authPromptDismissCallback = () => resolve(null);
+      });
     }
   }
 
@@ -2373,9 +2531,10 @@ async function connectSourceOptionForNewWorkspace(
       targetType: source,
       fixedSource: true,
       browseAfterConnect: false,
-      confirmLabel: "Connect",
+      startWithForm: true,
       sshConfigEntry: option?.sshConfigEntry,
       containerHost: source === "remoteDocker" ? hostOpt?.connection : undefined,
+      onDismiss: () => resolve(null),
       onConnected: (config, connectionId) => {
         const remote = {
           connectionId,
@@ -2403,6 +2562,19 @@ export function addLocalFolderToNewWorkspace(rawPath?: string): void {
     newWorkspaceLocalPathInput.set("");
   }
   newWorkspaceError.set("");
+}
+
+/** Opens the host's native directory picker and appends the chosen local folder. */
+export async function pickLocalFolderForNewWorkspace(title: string): Promise<void> {
+  try {
+    const picked = await pickLocalDirectory({ title });
+    if (picked?.trim()) {
+      newWorkspaceLocalPathInput.set(picked.trim());
+      newWorkspaceError.set("");
+    }
+  } catch (error) {
+    newWorkspaceError.set(errorMessage(error));
+  }
 }
 
 export function removeNewWorkspaceFolder(folder: ProjectFolder): void {
@@ -2439,12 +2611,9 @@ export async function browseFolderForNewWorkspace(): Promise<void> {
       connectionName: remote.connectionName,
       sshHost: remote.sshHost,
       onSelect: selectedPath => {
-        const folder: ProjectFolder = { path: selectedPath, remote };
-        newWorkspaceFolders.update(current =>
-          current.some(item => projectFolderKey(item) === projectFolderKey(folder))
-            ? current
-            : [...current, folder],
-        );
+        // A workspace opens one root: a new pick replaces the previous one.
+        newWorkspaceFolders.set([{ path: selectedPath, remote }]);
+        newWorkspaceError.set("");
       },
     });
   } catch (error) {
@@ -2461,6 +2630,9 @@ export async function createAssistantFromNewWorkspace(): Promise<boolean> {
   try {
     const created = await invokeCommand<WorkspaceRecord>("create_assistant_workspace", {});
     await loadWorkspaces();
+    if (fleetActive()) {
+      void refreshFleetNavigator();
+    }
     if (created?.id) {
       if (!workspaces().some(w => w.id === created.id)) {
         workspaces.update(current => [created, ...current]);
@@ -2484,11 +2656,12 @@ export async function confirmNewWorkspace(): Promise<boolean> {
   const folders = newWorkspaceFolders();
   const name = newWorkspaceName().trim();
 
-  if (folders.length !== 1 && !name) {
+  const typedLocalPath = source === "host" ? newWorkspaceLocalPathInput().trim() : "";
+  if (folders.length === 0 && !typedLocalPath && !name) {
     newWorkspaceError.set("Workspace name is required.");
     return false;
   }
-  if (folders.length === 0 && (/[\\/]/.test(name) || name === "." || name === "..")) {
+  if (folders.length === 0 && !typedLocalPath && (/[\\/]/.test(name) || name === "." || name === "..")) {
     newWorkspaceError.set("Workspace name must be a single folder name.");
     return false;
   }
@@ -2574,7 +2747,8 @@ export async function confirmNewWorkspace(): Promise<boolean> {
 // ============================================================================
 
 export async function openNewWorkspaceModal(options: OpenNewWorkspaceOptions = {}): Promise<void> {
-  newWorkspaceStep.set(options.step ?? "choice");
+  // The project form is the entry; the assistant is a secondary action on its footer.
+  newWorkspaceStep.set(options.step ?? "project");
   newWorkspaceShowAssistantChoice.set(options.showAssistantChoice ?? true);
   newWorkspaceSource.set("host");
   newWorkspaceName.set("");
@@ -2615,7 +2789,11 @@ export async function openSshConnectionModal(
   presetConnectionId?: string,
   options: OpenSshConnectionOptions = {},
 ): Promise<void> {
+  const abandoned = sshDismissCallback;
+  sshDismissCallback = null;
+  abandoned?.();
   sshConnectedCallback = options.onConnected ?? null;
+  sshDismissCallback = options.onDismiss ?? null;
   pendingConnectBrowseOverride =
     options.browseAfterConnect !== undefined ? options.browseAfterConnect : null;
 
@@ -2626,6 +2804,9 @@ export async function openSshConnectionModal(
   sshEditingProfile.set(null);
   sshSelectedConnectionId.set(presetConnectionId ?? null);
   sshContainerHost.set(options.containerHost ?? null);
+  sshConnectingId.set(null);
+  sshMatchedConfigHost.set("");
+  sshAliasCustomized.set(false);
   sshSavedSearch.set("");
   sshConfigSearch.set("");
   sshShowAdvanced.set(false);
@@ -2681,7 +2862,7 @@ export async function openSshConnectionModal(
     const match = list.find(conn => conn.id === presetConnectionId);
     if (match) {
       populateFormFromSavedConnection(match);
-      sshConnectionView.set(options.edit ? "new" : "saved");
+      sshConnectionView.set(options.edit || options.startWithForm ? "new" : "saved");
       if (match.authType.type === "Password") {
         void checkHasStoredPassword(match.id);
       }
@@ -2692,7 +2873,9 @@ export async function openSshConnectionModal(
   const matchingSaved = list.filter(conn =>
     sameWorkspaceSource(savedConnectionTarget(conn), initialTarget),
   );
-  sshConnectionView.set(matchingSaved.length > 0 && !options.edit ? "saved" : "new");
+  sshConnectionView.set(
+    matchingSaved.length > 0 && !options.edit && !options.startWithForm ? "saved" : "new",
+  );
 }
 
 export function closeSshConnectionModal(): void {
@@ -2700,6 +2883,9 @@ export function closeSshConnectionModal(): void {
   sshConnectionModalOpen.set(false);
   sshConnectedCallback = null;
   pendingConnectBrowseOverride = null;
+  const dismissed = sshDismissCallback;
+  sshDismissCallback = null;
+  dismissed?.();
   sshError.set("");
   sshNotice.set("");
 }
@@ -2710,6 +2896,7 @@ export async function openRemoteFileBrowser(
   options: OpenRemoteFileBrowserOptions = {},
 ): Promise<void> {
   browserSelectCallback = options.onSelect ?? null;
+  browserPickerMode.set(Boolean(options.onSelect));
   browserConnectionId.set(connectionId);
   const saved = savedConnections().find(conn => conn.id === connectionId);
   browserConnectionName.set(

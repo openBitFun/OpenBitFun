@@ -507,7 +507,15 @@ import {
   subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "../ui/motion";
-import { DropdownMenu, ModalDialog, SelectDropdown, pushToast, type SelectDropdownOption } from "../ui/overlays";
+import {
+  DropdownMenu,
+  ListRowContent,
+  ModalDialog,
+  SelectDropdown,
+  listRowHoverBg,
+  pushToast,
+  type SelectDropdownOption,
+} from "../ui/overlays";
 // wave22-p2: the external Chrome or Edge connect status.
 import { ExternalBrowserSection } from "../ui/externalBrowser";
 // wave22-p5 settings parity: shortcut remapping, desktop control permissions, settings export/import.
@@ -2432,38 +2440,51 @@ function ChoiceRow(props: {
       <If when={!props.first}>
         <RowSeparator edge="top" inset={props.icon ? 44 : SETTINGS_ROW_INSET} />
       </If>
-      <If when={props.icon ?? ""}>
-        {icon => (
-          <Icon
-            name={icon() as IconName}
-            size={16}
-            color={props.selected && props.warning ? stateColor("needs_you") : palette().textMuted}
-          />
-        )}
-      </If>
-      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-        <Text
-          style={textStyle("body", {
-            color: props.selected && props.warning ? stateColor("needs_you") : palette().text,
-          })}
-        >
-          {props.label}
-        </Text>
-        <If when={props.detail ?? ""}>
-          {detail => (
-            <Text style={textStyle("caption")}>
-              {detail()}
-            </Text>
+      {/* Glyph and check sit on the label line; the detail hangs under the label. */}
+      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: space.md }}>
+        <If when={props.icon ?? ""}>
+          {icon => (
+            <View style={{ height: settingsRowLabelLineHeight(), flexShrink: 0, justifyContent: "center" }}>
+              <Icon
+                name={icon() as IconName}
+                size={16}
+                color={props.selected && props.warning ? stateColor("needs_you") : palette().textMuted}
+              />
+            </View>
           )}
         </If>
-      </View>
-      <View style={{ width: 16, alignItems: "center", flexShrink: 0 }}>
-        <If when={props.selected}>
-          <Icon name="check" size={14} color={props.warning ? stateColor("needs_you") : palette().accent} />
-        </If>
+        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+          <Text
+            style={{
+              ...textStyle("body", {
+                color: props.selected && props.warning ? stateColor("needs_you") : palette().text,
+              }),
+              fontWeight: props.selected ? "500" : "400",
+            }}
+          >
+            {props.label}
+          </Text>
+          <If when={props.detail ?? ""}>
+            {detail => (
+              <Text style={textStyle("caption")}>
+                {detail()}
+              </Text>
+            )}
+          </If>
+        </View>
+        <View style={{ width: 16, height: settingsRowLabelLineHeight(), alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <If when={props.selected}>
+            <Icon name="check" size={14} color={props.warning ? stateColor("needs_you") : palette().accent} />
+          </If>
+        </View>
       </View>
     </View>
   );
+}
+
+/** Line height of a settings row's label (`body`); glyphs and the check centre on it. */
+function settingsRowLabelLineHeight(): number {
+  return textStyle("body").lineHeight as number;
 }
 
 function PermissionsSection() {
@@ -3569,7 +3590,9 @@ function McpSection() {
                 <RowSeparator edge="top" />
               </If>
               <If when={row().enabled && row().status.trim().toLowerCase() === "failed"}>
-                <StateMark state="failed" size={12} />
+                <View style={{ alignSelf: "flex-start", height: settingsRowLabelLineHeight(), justifyContent: "center" }}>
+                  <StateMark state="failed" size={12} />
+                </View>
               </If>
               <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
                 <Text
@@ -4466,7 +4489,9 @@ function AcpSection() {
                   <RowSeparator edge="top" />
                 </If>
                 <If when={client().status === "running" || client().status === "starting"}>
-                  <StateMark state="working" size={12} />
+                  <View style={{ alignSelf: "flex-start", height: settingsRowLabelLineHeight(), justifyContent: "center" }}>
+                    <StateMark state="working" size={12} />
+                  </View>
                 </If>
                 <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
                   <Text
@@ -7030,55 +7055,32 @@ function ModelSection() {
                           borderRadius: radii.md,
                           borderCurve: "continuous",
                           borderWidth: 1,
-                          borderColor: selected() ? palette().accentBorder : palette().borderSubtle,
-                          backgroundColor: selected()
-                            ? palette().accentSoft
-                            : palette().surfaceTertiary,
+                          borderColor: selected() ? palette().borderStrong : palette().borderSubtle,
+                          backgroundColor: palette().surfaceTertiary,
                           cursor: "pointer",
                           userSelect: "none",
                           ...pressTransition(MOTION_DURATION.fast),
                         }}
-                        hoverStyle={{ backgroundColor: palette().panelHover }}
+                        hoverStyle={{ backgroundColor: listRowHoverBg() }}
                         activeStyle={tactileActiveStyle(0.99)}
                         focusVisibleStyle={focusRingStyle()}
                       >
-                        <Icon
-                          name={selected() ? "check" : "plus"}
-                          size={13}
-                          color={selected() ? palette().accent : palette().textMuted}
-                        />
-                        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                          <Text
-                            style={{
-                              ...textStyle("label"),
-                              fontWeight: "600",
-                              numberOfLines: 1,
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {item().label}
-                          </Text>
-                          <If when={item().description}>
-                            {desc => (
-                              <Text
-                                style={{
-                                  ...textStyle("caption", { tabular: true }),
-                                  numberOfLines: 1,
-                                  textOverflow: "ellipsis",
-                                }}
-                              >
-                                {desc()}
-                              </Text>
-                            )}
-                          </If>
-                        </View>
-                        <Badge
-                          label={
-                            item().source === "remote"
-                              ? tr("common.remote")
-                              : tr("settings.models.catalog")
+                        <ListRowContent
+                          icon={selected() ? "check" : "plus"}
+                          iconColor={selected() ? palette().textSecondary : palette().textMuted}
+                          title={item().label}
+                          titleWeight={selected() ? "500" : "400"}
+                          subtitle={item().description}
+                          trailing={
+                            <Badge
+                              label={
+                                item().source === "remote"
+                                  ? tr("common.remote")
+                                  : tr("settings.models.catalog")
+                              }
+                              tone={item().source === "remote" ? "accent" : "neutral"}
+                            />
                           }
-                          tone={item().source === "remote" ? "accent" : "neutral"}
                         />
                       </View>
                     );

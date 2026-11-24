@@ -232,6 +232,9 @@ import {
 import {
   ContextMenuOverlay,
   DropdownMenu,
+  ListRowContent,
+  listRowHoverBg,
+  menuSurfaceStyle,
   ModalDialog,
   ToastHost,
   pushToast,
@@ -2216,13 +2219,9 @@ function SearchPanel() {
           maxHeight: "100%",
           flexShrink: 1,
           minHeight: 0,
+          ...menuSurfaceStyle(),
           borderRadius: radii.xl,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderStrong,
-          backgroundColor: palette().glassOverlayBg,
-          backdropFilter: "blur(18px) saturate(1.2)",
-          boxShadow: elevationShadow(3),
+          boxShadow: `${elevationShadow(3)}, ${palette().innerHighlight}`,
           overflow: "hidden",
           flexDirection: "column",
         }}
@@ -2233,9 +2232,11 @@ function SearchPanel() {
             flexDirection: "row",
             alignItems: "center",
             gap: space.sm,
-            paddingHorizontal: compactLayout() ? space.lg : space.xl,
-            paddingTop: compactLayout() ? space.lg : space.xl,
-            paddingBottom: space.md,
+            paddingLeft: compactLayout() ? space.lg : space.xl,
+            paddingRight: compactLayout() ? space.md : space.lg,
+            minHeight: 56,
+            borderBottomWidth: 1,
+            borderColor: palette().borderSubtle,
             flexShrink: 0,
           }}
         >
@@ -2247,21 +2248,10 @@ function SearchPanel() {
               minHeight: controlHeight.lg,
               flexDirection: "row",
               alignItems: "center",
-              gap: space.sm,
-              paddingHorizontal: space.md,
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().border,
-              backgroundColor: palette().inputBg,
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-            focusWithinStyle={{
-              borderColor: palette().fieldFocusBorder,
-              boxShadow: `0 0 0 3px ${palette().accentSoft}`,
+              gap: space.md,
             }}
           >
-            <Icon name="search" size={15} color={palette().textMuted} />
+            <Icon name="search" size={16} color={palette().textMuted} />
             <Input
               autoFocus
               value={searchQuery()}
@@ -2276,7 +2266,9 @@ function SearchPanel() {
                 color: palette().text,
                 placeholderColor: palette().textMuted,
                 caretColor: palette().accent,
-                fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(14),
+                backgroundColor: "transparent",
+                borderWidth: 0,
+                fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
               }}
               onChange={event => {
                 setSearchQuery(event.value);
@@ -2326,12 +2318,11 @@ function SearchPanel() {
             scrollbar={false}
             style={{
               flexShrink: 0,
-              borderBottomWidth: 1,
-              borderColor: palette().borderSubtle,
             }}
             contentStyle={{
-              paddingHorizontal: compactLayout() ? space.lg : space.xl,
-              paddingBottom: space.sm,
+              paddingHorizontal: compactLayout() ? space.md : space.lg,
+              paddingTop: space.md,
+              paddingBottom: space.xs,
               flexDirection: "row",
               alignItems: "center",
               gap: space.chip,
@@ -2425,22 +2416,21 @@ function SearchPanel() {
                         paddingVertical: space.xs,
                       }}
                     >
-                      <Icon name={group().icon} size={12} color={palette().textElevatedMuted} />
                       <Text
                         style={{
                           flex: 1,
                           minWidth: 0,
-                          color: palette().textElevatedMuted,
+                          color: palette().textMuted,
                           fontSize: textSize(12),
                           lineHeight: textLineHeight(12, 1.3),
-                          fontWeight: "600",
+                          fontWeight: "500",
                         }}
                       >
                         {tr(group().titleKey)}
                       </Text>
                       <Text
                         style={{
-                          color: palette().textElevatedMuted,
+                          color: palette().textMuted,
                           fontSize: textSize(12),
                           lineHeight: textLineHeight(12, 1.3),
                           fontVariant: ["tabular-nums"],
@@ -2470,75 +2460,34 @@ function SearchPanel() {
                             }}
                             onPress={() => runShellSearchItem(item())}
                             style={{
-                              minHeight: compactLayout() ? layout.touchTarget : undefined,
+                              minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
                               flexDirection: "row",
                               alignItems: "center",
-                              gap: space.sm,
-                              paddingHorizontal: space.sm,
+                              paddingHorizontal: space.md,
                               paddingVertical: space.sm,
-                              borderRadius: radii.sm,
+                              borderRadius: radii.md,
                               borderCurve: "continuous",
-                              borderWidth: 1,
-                              borderColor: isSelected()
-                                ? palette().accentBorder
-                                : "transparent",
-                              backgroundColor: isSelected()
-                                ? palette().accentSoft
-                                : "transparent",
+                              backgroundColor: isSelected() ? listRowHoverBg() : "transparent",
                               cursor: "pointer",
                               userSelect: "none",
                               ...pressTransition(MOTION_DURATION.fast),
                             }}
-                            hoverStyle={{
-                              backgroundColor: isSelected()
-                                ? palette().accentSoft
-                                : palette().panelHover,
-                            }}
+                            hoverStyle={{ backgroundColor: listRowHoverBg() }}
                             activeStyle={tactileActiveStyle(0.99)}
                             focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                           >
-                            <Icon
-                              name={group().icon}
-                              size={14}
-                              color={
-                                isSelected() ? palette().accent : palette().textMuted
+                            <ListRowContent
+                              icon={searchItemIcon(item(), group().icon)}
+                              iconColor={isSelected() ? palette().textSecondary : palette().textMuted}
+                              title={item().label}
+                              titleWeight="500"
+                              titleOverflow={item().kind === "file" ? "ellipsis-middle" : "ellipsis"}
+                              subtitle={item().detail || undefined}
+                              subtitleOverflow={item().kind === "file" ? "ellipsis-middle" : "ellipsis"}
+                              trailing={
+                                isSelected() && !compactLayout() ? <KbdHint keys="↵" /> : undefined
                               }
                             />
-                            <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                              <Text
-                                style={{
-                                  color: palette().text,
-                                  fontSize: textSize(13),
-                                  lineHeight: textLineHeight(13, 1.35),
-                                  fontWeight: isSelected() ? "600" : "500",
-                                  numberOfLines: 1,
-                                  textOverflow:
-                                    item().kind === "file" ? "ellipsis-middle" : "ellipsis",
-                                }}
-                              >
-                                {item().label}
-                              </Text>
-                              <If when={item().detail}>
-                                {detail => (
-                                  <Text
-                                    style={{
-                                      color: palette().textElevatedMuted,
-                                      fontFamily: item().kind === "file" ? fontMono : undefined,
-                                      fontSize: textSize(12),
-                                      lineHeight: textLineHeight(12, 1.38),
-                                      numberOfLines: 1,
-                                      textOverflow:
-                                        item().kind === "file" ? "ellipsis-middle" : "ellipsis",
-                                    }}
-                                  >
-                                    {detail()}
-                                  </Text>
-                                )}
-                              </If>
-                            </View>
-                            <If when={isSelected() && !compactLayout()}>
-                              <KbdHint keys="↵" />
-                            </If>
                           </View>
                         );
                       }}
@@ -2621,6 +2570,29 @@ function SearchPanel() {
       </View>
     </Overlay>
   );
+}
+
+/** A command names its own destination glyph; other hits use their group's. */
+const COMMAND_ICONS: Readonly<Record<string, IconName>> = {
+  "": "edit",
+  openbitfun: "sparkles",
+  "all-sessions": "layers",
+  assistants: "bot",
+  agents: "shapes",
+  skills: "bolt",
+  routines: "clock",
+  files: "folder",
+  git: "git-branch",
+  terminal: "terminal",
+  browser: "globe",
+  spaces: "layout-grid",
+  devices: "laptop",
+  settings: "settings",
+};
+
+function searchItemIcon(item: SearchItem, fallback: IconName): IconName {
+  if (item.kind !== "command") return fallback;
+  return COMMAND_ICONS[item.target] ?? fallback;
 }
 
 /**

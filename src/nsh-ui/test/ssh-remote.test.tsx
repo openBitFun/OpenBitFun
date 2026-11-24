@@ -639,13 +639,12 @@ test("New Workspace modal creates Assistant and Local Project without mixing rem
   expect(ssh.callsFor("create_assistant_workspace")[0]?.raw).toBe(false);
   expect(app.shows("new-workspace-modal")).toBe(false);
 
-  // Local Project flow: explicit local path opens via open_workspace
+  // Local Project flow: the form opens directly; a typed path is the folder to open,
+  // and the "new project" name field steps aside once a folder is given.
   await openNewWorkspaceViaUi(app);
-  await app.press("new-workspace-choice-project");
+  expect(app.shows("new-workspace-name")).toBe(true);
   await app.type("new-workspace-local-path", "/tmp/new-local-proj");
-  await app.press("new-workspace-add-local");
-  await app.waitFor("new-local-proj");
-  await app.type("new-workspace-name", "My Local App");
+  expect(app.shows("new-workspace-name")).toBe(false);
   await app.press("new-workspace-confirm");
 
   await app.waitUntil(() => ssh.localOpenCalls.length === 1);
@@ -654,7 +653,6 @@ test("New Workspace modal creates Assistant and Local Project without mixing rem
 
   // Local Project flow: empty folder name creates directory under ~/OpenBitFun/Projects
   await openNewWorkspaceViaUi(app);
-  await app.press("new-workspace-choice-project");
   await app.type("new-workspace-name", "fresh-proj");
   await app.press("new-workspace-confirm");
 
@@ -674,32 +672,34 @@ test("New Workspace remote SSH and Docker/WSL host selection opens via remote_op
 
   await app.waitFor("nav-library");
   await openNewWorkspaceViaUi(app);
-  await app.press("new-workspace-choice-project");
 
   // WSL environment on current host triggers ssh_list_wsl_distributions
+  await app.press("new-workspace-env-mode");
   await app.press("WSL");
   await app.waitUntil(() => ssh.callsFor("ssh_list_wsl_distributions").length >= 1);
   expect(ssh.callsFor("ssh_list_wsl_distributions")[0]?.raw).toBe(true);
 
-  // Switch to Other Host (SSH)
-  await app.press("Other Host (SSH)");
+  // Switch to Remote
+  await app.press("new-workspace-location-other");
   await app.press("new-workspace-host-select");
   await app.waitFor("new-ws-host-opt-conn-prod-1");
   await app.press("new-ws-host-opt-conn-prod-1");
 
   // Remote Docker discovery
-  await app.press("Remote Docker");
+  await app.press("new-workspace-env-mode");
+  await app.press("new-ws-env-container");
   await app.waitUntil(() => ssh.callsFor("ssh_list_docker_containers").length >= 1);
   expect(ssh.callsFor("ssh_list_docker_containers")[0]?.raw).toBe(true);
 
   // Back to System (SSH), browse remote directory, confirm open
-  await app.press("System (SSH)");
+  await app.press("new-workspace-env-mode");
+  await app.press("new-ws-env-system");
   await app.press("new-workspace-browse-remote");
   await app.waitFor("remote-file-browser-modal");
   await app.press("remote-entry-apps");
   await app.waitFor("remote-entry-openbitfun-api");
   await app.press("remote-browser-open");
-  await app.waitFor("Prod App Box: /home/deploy/apps");
+  await app.waitFor("/home/deploy/apps");
   await app.press("new-workspace-confirm");
 
   await app.waitUntil(() => ssh.callsFor("remote_open_workspace").length === 1);
@@ -730,6 +730,7 @@ test("SSH Connection modal supports ~/.ssh/config import, ssh_get_config, test r
 
   // Switch to New Connection and import ~/.ssh/config entry
   await app.press("New Connection");
+  await app.press("ssh-config-import");
   await app.waitFor("ssh-config-host-bastion-dev");
   await app.press("ssh-config-host-bastion-dev");
   expect(app.value("ssh-form-host")).toBe("bastion-dev");
@@ -753,7 +754,8 @@ test("SSH Connection modal supports ~/.ssh/config import, ssh_get_config, test r
   await app.waitFor("Connection profile saved.");
   expect(ssh.callsFor("ssh_save_connection")[0]?.raw).toBe(true);
 
-  // Edit Staging Box -> calls ssh_has_stored_password
+  // Edit Staging Box (row ⋯ menu) -> calls ssh_has_stored_password
+  await app.press("ssh-saved-more-conn-staging-2");
   await app.press("ssh-edit-conn-staging-2");
   await app.waitUntil(() => ssh.callsFor("ssh_has_stored_password").length >= 1);
   expect(ssh.callsFor("ssh_has_stored_password")[0]).toMatchObject({
@@ -763,6 +765,7 @@ test("SSH Connection modal supports ~/.ssh/config import, ssh_get_config, test r
 
   // Delete Staging Box via in-place Cancel | Confirm
   await app.press("Saved Connections");
+  await app.press("ssh-saved-more-conn-staging-2");
   await app.press("ssh-delete-conn-staging-2");
   await app.waitFor("ssh-delete-confirm-conn-staging-2");
   await app.press("ssh-delete-confirm-conn-staging-2");
@@ -827,8 +830,10 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
     payload: { connectionId: "conn-prod-1", path: "/home/deploy/scratch-dir", recursive: true },
   });
 
-  // Rename created folder
-  await app.press("Rename scratch-dir");
+  // Rename created folder (row context menu)
+  await app.rightClick("remote-entry-scratch-dir");
+  await app.waitFor("Rename");
+  await app.press("Rename");
   await app.clear("remote-browser-rename-input");
   await app.type("remote-browser-rename-input", "renamed-dir");
   await app.press("remote-browser-rename-save");
@@ -843,7 +848,9 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
   });
 
   // Delete renamed folder -> in-place Cancel | Confirm calls positional remote_remove
-  await app.press("Delete renamed-dir");
+  await app.rightClick("remote-entry-renamed-dir");
+  await app.waitFor("Delete");
+  await app.press("Delete");
   await app.waitFor("remote-delete-confirm-renamed-dir");
   await app.press("remote-delete-confirm-renamed-dir");
   await app.waitUntil(() => ssh.callsFor("remote_remove").length === 1);
@@ -912,6 +919,7 @@ test("Port Forwarding modal detects listeners without auto-forwarding, normalize
 
   await app.waitFor("nav-library");
   await openSshModalViaUi(app);
+  await app.press("ssh-saved-more-conn-prod-1");
   await app.press("ssh-pf-conn-prod-1");
   await app.waitFor("port-forward-modal");
 
@@ -1083,12 +1091,12 @@ test("Remote link state follows the backend's remote://link-state events and ask
   await app.waitUntil(() => ssh.callsFor("remote_workspace_ensure_connected").length === 1);
   expect(app.shows("remote-link-reconnecting")).toBe(false);
 
-  // The backend's heartbeat lost the link and is restoring it: the banner shows its attempt.
+  // The backend's heartbeat lost the link and is restoring it: the banner shows its alias & attempt.
   const send = (payload: Record<string, unknown>) =>
     app.host.send("openbitfun.event", { event: "remote://link-state", payload });
   await send({ connectionId: "conn-prod-1", state: "reconnecting", attempt: 2, nextRetryMs: 10000, revision: 50 });
   await app.waitFor("remote-link-reconnecting");
-  await app.waitFor("Reconnecting to prod.example.com (attempt 2)…");
+  await app.waitFor("Reconnecting to Prod App Box (attempt 2)…");
   // An older event that arrives late does not move the banner back.
   await send({ connectionId: "conn-prod-1", state: "connected", revision: 10 });
   await app.waitFor("remote-link-reconnecting");
@@ -1096,7 +1104,7 @@ test("Remote link state follows the backend's remote://link-state events and ask
   // The host stopped: the server refused the stored key. Only now does this surface ask the user.
   await send({ connectionId: "conn-prod-1", state: "failed", reason: "auth_required", detail: "Authentication failed (publickey)", revision: 51 });
   await app.waitFor("remote-link-auth-required");
-  await app.waitFor("prod.example.com needs your credentials to reconnect");
+  await app.waitFor("Prod App Box needs your credentials to reconnect");
 
   // Restored: the banner goes away.
   await send({ connectionId: "conn-prod-1", state: "connected", revision: 52 });
@@ -1118,7 +1126,7 @@ test("A host without backend link supervision gets an explicit update-the-host s
   await app.press("workspace-row-ws-staging");
   await openToolScene(app, "files");
   await app.waitFor("remote-link-host-outdated");
-  await app.waitFor("staging.example.com: this device cannot restore remote connections");
+  await app.waitFor("Staging Box: this device cannot restore remote connections");
   expect(ssh.callsFor("ssh_connect")).toHaveLength(0);
   expect(app.shows("remote-link-reconnect")).toBe(false);
 });
@@ -1364,4 +1372,158 @@ test("Fleet mode remote workspaces call remote_workspace_ensure_connected (even 
   });
   await app.waitFor("remote-link-offline");
   await app.waitFor("Connection refused by 10.0.0.9");
+});
+
+test("SSH Connection modal promotes Alias field with ~/.ssh/config default, custom override, IP fallback, and friendly handshake disconnect errors", async () => {
+  const ssh = createSshBackend();
+  const inner = ssh.base.handlers["openbitfun.invoke"] as (data: unknown) => unknown;
+  ssh.base.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = asRecord(data);
+    if (String(args.action ?? "") === "ssh_connect") {
+      return {
+        ok: false,
+        error: 'target root@190.92.203.184:58949 SSH handshake failed: HandlerError("Disconnect")',
+        transport: "dev",
+      };
+    }
+    return inner(data);
+  };
+
+  const app = await open("../App.tsx", {
+    ...DESKTOP,
+    host: { handlers: ssh.base.handlers },
+  });
+
+  await app.waitFor("nav-library");
+  await openSshModalViaUi(app);
+  await app.waitFor("ssh-saved-conn-prod-1");
+
+  // 1. Handshake Disconnect error is localized into clear copy without leaking Rust HandlerError details.
+  // A connected profile offers Reconnect from its ⋯ menu.
+  await app.press("ssh-saved-more-conn-prod-1");
+  await app.press("ssh-connect-conn-prod-1");
+  await app.waitUntil(() =>
+    app.texts().some(t => t.includes("190.92.203.184:58949") && t.includes("closed the SSH handshake")),
+  );
+  expect(app.texts().some(t => t.includes("HandlerError"))).toBe(false);
+
+  // 2. Alias input is visible directly in New Connection without expanding Advanced Settings.
+  await app.press("ssh-new-connection-btn");
+  await app.waitFor("ssh-form-name");
+  await app.press("ssh-config-import");
+  await app.waitFor("ssh-config-host-bastion-dev");
+
+  // Importing from ~/.ssh/config sets the default alias to the config Host name and lets the user override it.
+  await app.press("ssh-config-host-bastion-dev");
+  expect(app.value("ssh-form-name")).toBe("bastion-dev");
+  await app.clear("ssh-form-name");
+  await app.type("ssh-form-name", "Dev Bastion");
+  await app.press("ssh-save-btn");
+  await app.waitUntil(() => ssh.callsFor("ssh_save_connection").length === 1);
+  expect(asRecord(ssh.callsFor("ssh_save_connection")[0]?.payload.config).name).toBe("Dev Bastion");
+
+  // 3. Manual IP entry without custom alias defaults config.name to the IP (not user@ip).
+  await app.press("ssh-new-connection-btn");
+  await app.waitFor("ssh-form-name");
+  expect(app.value("ssh-form-name")).toBe("");
+  await app.type("ssh-form-host", "192.168.1.50");
+  await app.type("ssh-form-username", "root");
+  await app.type("ssh-form-password", "secret-pass");
+  await app.press("ssh-save-btn");
+  await app.waitUntil(() => ssh.callsFor("ssh_save_connection").length === 2);
+  expect(asRecord(ssh.callsFor("ssh_save_connection")[1]?.payload.config).name).toBe("192.168.1.50");
+});
+
+test("Fleet mode displays remote workspace aliases instead of raw IPs and removes closed workspaces on refresh", async () => {
+  const ssh = createSshBackend();
+  const inner = ssh.base.handlers["openbitfun.invoke"] as (data: unknown) => unknown;
+
+  const nav = {
+    revision: 10,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "ws-local",
+            name: "OpenBitFun",
+            rootPath: "/Users/me/OpenBitFun",
+            kind: "local",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "ws-local", "s-local", "Local thread")],
+          },
+          {
+            workspaceId: "ws-remote",
+            name: "repos",
+            rootPath: "/root/repos",
+            kind: "remote_ssh",
+            sshHost: "190.92.203.184",
+            connectionId: "ssh-root@190.92.203.184",
+            connectionName: "Prod GPU",
+            sessions: [fleetSessionRow("dev-a", "ws-remote", "s-remote", "Remote thread")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+    ],
+  };
+
+  ssh.base.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = asRecord(data);
+    const action = String(args.action ?? "");
+    const request = asRecord(args.request);
+    if (action === "remote_workspace_ensure_connected" && request.workspaceId === "ws-remote") {
+      return {
+        ok: true,
+        value: {
+          link: {
+            connectionId: "ssh-root@190.92.203.184",
+            state: "failed",
+            reason: "unreachable",
+            detail: "Connection refused by host",
+            revision: 3,
+          },
+          activated: false,
+        },
+        transport: "dev",
+      };
+    }
+    if (action === "close_workspace") {
+      const closedId = String(request.workspaceId ?? "");
+      nav.revision += 1;
+      const dev = nav.devices[0] as { workspaces: Array<{ workspaceId: string }> };
+      dev.workspaces = dev.workspaces.filter(ws => ws.workspaceId !== closedId);
+    }
+    return inner(data);
+  };
+
+  const host = fleetObpHost(ssh.base, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: nav,
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("id:sidebar-workspace-row-ws-remote");
+
+  // Sidebar displays the connection alias ("Prod GPU") rather than raw IP ("190.92.203.184").
+  expect(app.texts().some(t => t.includes("Prod GPU"))).toBe(true);
+  expect(app.texts().some(t => t.includes("190.92.203.184"))).toBe(false);
+
+  // Offline status banner and conversation header also display the alias rather than the raw IP.
+  await app.press("id:sidebar-session-s-remote");
+  await app.waitFor("remote-link-offline");
+  await app.waitFor("Prod GPU is offline");
+  expect(app.texts().some(t => t.includes("190.92.203.184"))).toBe(false);
+
+  // Closing the remote workspace from its workspace menu calls close_workspace and refreshes Fleet navigator so it disappears from the sidebar immediately.
+  await showDevices(app);
+  await app.waitFor("workspace-actions-ws-remote");
+  await app.press("workspace-actions-ws-remote");
+  await app.waitFor("Close workspace");
+  await app.press("Close workspace");
+  await app.waitUntil(() => !app.shows("id:sidebar-workspace-row-ws-remote"));
+  expect(ssh.callsFor("close_workspace").some(c => c.payload.workspaceId === "ws-remote")).toBe(true);
 });

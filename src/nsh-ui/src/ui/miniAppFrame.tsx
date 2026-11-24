@@ -716,27 +716,32 @@ export function ElsewhereList(props: {
               activeStyle={tactileActiveStyle(0.99)}
               focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
             >
-              <Icon name="layout-grid" size={16} color={palette().textSecondary} />
-              <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                <Text
-                  style={{
-                    ...textStyle("body", { color: palette().text }),
-                    fontWeight: "500",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {app().name}
-                </Text>
-                <Text
-                  style={{
-                    ...textStyle("caption", { color: palette().textMuted }),
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {app().description || tr("common.noDescription")}
-                </Text>
+              {/* The glyph sits on the name line; the description hangs under the name. */}
+              <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: space.md }}>
+                <View style={{ height: textStyle("body").lineHeight as number, flexShrink: 0, justifyContent: "center" }}>
+                  <Icon name="layout-grid" size={16} color={palette().textSecondary} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+                  <Text
+                    style={{
+                      ...textStyle("body", { color: palette().text }),
+                      fontWeight: "500",
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {app().name}
+                  </Text>
+                  <Text
+                    style={{
+                      ...textStyle("caption", { color: palette().textMuted }),
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {app().description || tr("common.noDescription")}
+                  </Text>
+                </View>
               </View>
               <DeviceBadge
                 name={deviceLabel(primaryDeviceId()) || tr("spaces.p4.anotherDevice")}

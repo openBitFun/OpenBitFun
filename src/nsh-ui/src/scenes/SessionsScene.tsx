@@ -173,6 +173,7 @@ import {
   modelPickerOpen,
   reasoningPickerOpen,
 } from "../modelStore";
+import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
 import { midTurnSendPolicy } from "../sendPolicyStore";
 import {
   type AgentChoice,
@@ -356,7 +357,17 @@ import {
   subtleCrossfadeMotion,
   tactileActiveStyle,
 } from "../ui/motion";
-import { DropdownMenu, ModalDialog, pushToast, registerEscapeDismiss, type DropdownMenuItem } from "../ui/overlays";
+import {
+  DropdownMenu,
+  ListRowContent,
+  ModalDialog,
+  listRowHoverBg,
+  listRowTitleLineHeight,
+  menuSurfaceStyle,
+  pushToast,
+  registerEscapeDismiss,
+  type DropdownMenuItem,
+} from "../ui/overlays";
 import {
   askSideQuestion,
   cancelSideQuestion,
@@ -605,17 +616,106 @@ function closePickers(except?: "model" | "reasoning" | "agent" | "actions"): voi
   composerPlusOpen.set(false);
 }
 
-/** Shared frosted surface styling for anchored composer & thread menus. */
+/** Shared surface of the anchored composer & thread menus (the overlays menu surface). */
 function overlayPopoverStyle(): ViewStyle {
+  return menuSurfaceStyle();
+}
+
+/** Inset of the anchored popovers; rows inside take the concentric radius. */
+const POPOVER_PADDING = space.xs;
+const POPOVER_ROW_RADIUS = radii.md;
+
+/**
+ * One row of an anchored popover list: hover / keyboard-highlight fill that stays
+ * visible on the popover surface; the content is a `ListRowContent`.
+ */
+function popoverRowStyle(highlighted = false, disabled = false): ViewStyle {
   return {
-    borderRadius: radii.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : controlHeight.md,
+    paddingHorizontal: space.sm,
+    paddingVertical: 7,
+    borderRadius: POPOVER_ROW_RADIUS,
     borderCurve: "continuous",
-    borderWidth: 1,
-    borderColor: palette().border,
-    backgroundColor: palette().glassOverlayBg,
-    backdropFilter: "blur(16px)",
-    boxShadow: palette().shadowOverlay,
+    backgroundColor: highlighted ? listRowHoverBg() : "transparent",
+    opacity: disabled ? 0.45 : 1,
+    cursor: disabled ? "not-allowed" : "pointer",
+    userSelect: "none",
+    ...paintTransition(MOTION_DURATION.fast),
   };
+}
+
+function popoverRowHoverStyle(disabled = false): ViewStyle {
+  return { backgroundColor: disabled ? "transparent" : listRowHoverBg() };
+}
+
+function popoverRowActiveStyle(): ViewStyle {
+  return { backgroundColor: palette().buttonSecondaryHover };
+}
+
+/** The current value of a picker: a check on the title line. */
+function PopoverCheck() {
+  return <Icon name="check" size={13} color={palette().accent} />;
+}
+
+/** Section header inside a popover: 12 px, medium, muted, no glyph, optional count. */
+function PopoverSectionHeader(props: { label: string; count?: number; first?: boolean }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.sm,
+        paddingHorizontal: space.sm,
+        paddingTop: props.first === false ? space.sm : space.xs,
+        paddingBottom: space.xs,
+        pointerEvents: "none",
+      }}
+    >
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 0,
+          color: palette().textMuted,
+          fontSize: textSize(12),
+          fontWeight: "500",
+          lineHeight: textLineHeight(12, 1.3),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={props.count !== undefined}>
+        <Text
+          style={{
+            flexShrink: 0,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.3),
+            fontVariant: ["tabular-nums"],
+          }}
+        >
+          {String(props.count ?? "")}
+        </Text>
+      </If>
+    </View>
+  );
+}
+
+/** 1 px separator between popover groups. */
+function PopoverSeparator() {
+  return (
+    <View
+      style={{
+        height: 1,
+        marginVertical: space.xs,
+        marginHorizontal: space.sm,
+        backgroundColor: palette().borderSubtle,
+      }}
+    />
+  );
 }
 
 function isArchived(session: { status?: string; persistedStatus?: string }): boolean {
@@ -1055,7 +1155,11 @@ function sessionWorkspaceName(): string {
   const id = activeSessionId();
   const device = fleetDeviceById(activeSessionDevice());
   const workspace = id ? device?.workspaces.find(item => item.sessions.some(session => session.sessionId === id)) : undefined;
-  return workspace?.name ?? activeWorkspace()?.name ?? "";
+  const record = workspace ?? activeWorkspace();
+  const name = record?.name ?? "";
+  if (!name) return "";
+  const alias = remoteWorkspaceAliasOf(record);
+  return alias ? `${name} · ${alias}` : name;
 }
 
 /**
@@ -1688,16 +1792,7 @@ function ConversationHeader() {
 }
 
 function ThreadMenuDivider() {
-  return (
-    <View
-      style={{
-        height: 1,
-        marginVertical: space.xs,
-        marginHorizontal: space.xs,
-        backgroundColor: palette().borderSubtle,
-      }}
-    />
-  );
+  return <PopoverSeparator />;
 }
 
 function ThreadActionsSurface(props: {
@@ -1715,7 +1810,7 @@ function ThreadActionsSurface(props: {
         {
           minWidth: 212,
           maxWidth: 264,
-          padding: space.chip,
+          padding: POPOVER_PADDING,
           gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "end"),
         },
@@ -1866,10 +1961,10 @@ function ThreadActionsSurface(props: {
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : 30,
+                  minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : controlHeight.md,
                   paddingHorizontal: space.xs,
                   gap: space.xs,
-                  borderRadius: radii.xs,
+                  borderRadius: POPOVER_ROW_RADIUS,
                   borderCurve: "continuous",
                   backgroundColor: palette().dangerSoft,
                 }}
@@ -1888,7 +1983,7 @@ function ThreadActionsSurface(props: {
                     userSelect: "none",
                     ...pressTransition(MOTION_DURATION.fast),
                   }}
-                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  hoverStyle={{ backgroundColor: listRowHoverBg() }}
                   activeStyle={tactileActiveStyle(0.96)}
                   focusVisibleStyle={focusRingStyle(-1)}
                 >
@@ -1949,60 +2044,23 @@ function ThreadMenuAction(props: {
       onPress={() => {
         if (!props.disabled) props.onPress();
       }}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.sm,
-        minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : 30,
-        opacity: props.disabled ? 0.45 : 1,
-        paddingHorizontal: space.sm,
-        paddingVertical: space.chip,
-        borderRadius: radii.xs,
-        borderCurve: "continuous",
-        cursor: "pointer",
-        userSelect: "none",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: props.danger ? palette().dangerSoft : palette().panelHover }}
-      activeStyle={{
-        backgroundColor: props.danger ? palette().dangerSoft : palette().panelHover,
-        opacity: 0.88,
-      }}
+      style={popoverRowStyle(false, props.disabled)}
+      hoverStyle={
+        props.disabled ? {} : { backgroundColor: props.danger ? palette().dangerSoft : listRowHoverBg() }
+      }
+      activeStyle={
+        props.danger ? { backgroundColor: palette().dangerHoverBg } : popoverRowActiveStyle()
+      }
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <Icon
-        name={props.icon}
-        size={13}
-        color={props.danger ? palette().danger : palette().textSecondary}
+      <ListRowContent
+        icon={props.icon}
+        iconColor={props.danger ? palette().danger : palette().textSecondary}
+        title={props.label}
+        titleColor={props.danger ? palette().danger : palette().text}
+        subtitle={props.hint}
+        subtitleLines={2}
       />
-      <Text
-        style={{
-          flex: 1,
-          minWidth: 0,
-          color: props.danger ? palette().danger : palette().text,
-          fontSize: textSize(12.5),
-          lineHeight: textLineHeight(12.5, 1.35),
-          fontWeight: "500",
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.label}
-      </Text>
-      <If when={props.hint ?? ""}>
-        {hintText => (
-          <Text
-            style={{
-              flexShrink: 0,
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
-            }}
-          >
-            {hintText()}
-          </Text>
-        )}
-      </If>
     </View>
   );
 }
@@ -4787,7 +4845,7 @@ function SlashCommandSurface(props: { placement: Placement }) {
         {
           width: 380,
           maxWidth: "92%",
-          padding: space.chip,
+          padding: POPOVER_PADDING,
           gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
@@ -4797,86 +4855,32 @@ function SlashCommandSurface(props: { placement: Placement }) {
       <Scroll style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <If when={cmdCount() > 0}>
-            <Text
-              style={{
-                paddingHorizontal: space.sm,
-                paddingTop: space.hair,
-                paddingBottom: space.xs,
-                color: palette().textMuted,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.3),
-                fontWeight: "600",
-              }}
-            >
-              {tr("chat.slash.title")}
-            </Text>
+            <PopoverSectionHeader label={tr("chat.slash.title")} />
             <Each of={slashMatches() ?? []} key={entry => entry.id}>
               {(entry, idx) => (
                 <View
                   role="button"
                   accessibilityLabel={`slash-command-${entry().id}`}
                   onPress={() => void executeSlashCommand(entry())}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    minHeight: compactLayout() ? layout.touchTarget : 30,
-                    gap: space.sm,
-                    paddingHorizontal: space.sm,
-                    paddingVertical: space.chip,
-                    borderRadius: radii.sm,
-                    borderCurve: "continuous",
-                    backgroundColor: idx() === slashSelectedIndex() ? palette().accentSoft : "transparent",
-                    cursor: "pointer",
-                    userSelect: "none",
-                    ...paintTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  style={popoverRowStyle(idx() === slashSelectedIndex())}
+                  hoverStyle={popoverRowHoverStyle()}
+                  activeStyle={popoverRowActiveStyle()}
                   focusVisibleStyle={focusRingStyle(-1)}
                 >
-                  <Text
-                    style={{
-                      color: idx() === slashSelectedIndex() ? palette().accent : palette().text,
-                      fontFamily: fontMono,
-                      fontSize: textSize(12.5),
-                      lineHeight: textLineHeight(12.5, 1.35),
-                      fontWeight: "500",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {entry().command}
-                  </Text>
-                  <Text
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      color: palette().textMuted,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.35),
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {slashCommandLabel(entry())}
-                  </Text>
+                  <ListRowContent
+                    icon="command"
+                    iconColor={palette().textSecondary}
+                    title={entry().command}
+                    titleWeight="500"
+                    subtitle={slashCommandLabel(entry())}
+                  />
                 </View>
               )}
             </Each>
           </If>
 
           <If when={slashSkillMatches().length > 0}>
-            <Text
-              style={{
-                paddingHorizontal: space.sm,
-                paddingTop: cmdCount() > 0 ? space.sm : space.hair,
-                paddingBottom: space.xs,
-                color: palette().textMuted,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.3),
-                fontWeight: "600",
-              }}
-            >
-              {tr("sessions.slashSkillsSection")}
-            </Text>
+            <PopoverSectionHeader label={tr("sessions.slashSkillsSection")} first={cmdCount() === 0} />
             <Each of={slashSkillMatches()} key={skill => skill.name}>
               {(skill, idx) => {
                 const flatIndex = () => cmdCount() + idx();
@@ -4885,53 +4889,18 @@ function SlashCommandSurface(props: { placement: Placement }) {
                     role="button"
                     accessibilityLabel={`slash-skill-${skill().name}`}
                     onPress={() => insertSlashSkill(skill(), composerInputRef)}
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      minHeight: compactLayout() ? layout.touchTarget : 30,
-                      gap: space.sm,
-                      paddingHorizontal: space.sm,
-                      paddingVertical: space.chip,
-                      borderRadius: radii.sm,
-                      borderCurve: "continuous",
-                      backgroundColor: flatIndex() === slashSelectedIndex() ? palette().accentSoft : "transparent",
-                      cursor: "pointer",
-                      userSelect: "none",
-                      ...paintTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{ backgroundColor: palette().panelHover }}
+                    style={popoverRowStyle(flatIndex() === slashSelectedIndex())}
+                    hoverStyle={popoverRowHoverStyle()}
+                    activeStyle={popoverRowActiveStyle()}
                     focusVisibleStyle={focusRingStyle(-1)}
                   >
-                    <Icon
-                      name="sparkles"
-                      size={12}
-                      color={flatIndex() === slashSelectedIndex() ? palette().accent : palette().textMuted}
+                    <ListRowContent
+                      icon="sparkles"
+                      iconColor={palette().textSecondary}
+                      title={`/${skill().name}`}
+                      titleWeight="500"
+                      subtitle={skill().description || skill().argumentHint || ""}
                     />
-                    <Text
-                      style={{
-                        color: flatIndex() === slashSelectedIndex() ? palette().accent : palette().text,
-                        fontFamily: fontMono,
-                        fontSize: textSize(12.5),
-                        lineHeight: textLineHeight(12.5, 1.35),
-                        fontWeight: "500",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {`/${skill().name}`}
-                    </Text>
-                    <Text
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        color: palette().textMuted,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.35),
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {skill().description || skill().argumentHint || ""}
-                    </Text>
                   </View>
                 );
               }}
@@ -5123,6 +5092,9 @@ function PermissionModeSurface(props: { placement: Placement; align: "start" | "
     permissionModePlacement.set("top");
   });
   const targetSessionId = () => permissionModeTarget()?.sessionId ?? activeSessionId();
+  const permissionRowCurrent = (mode: (typeof PERMISSION_MODE_ROWS)[number]["mode"]) =>
+    (mode === null && followsDefaultMode(targetSessionId())) ||
+    (mode !== null && !followsDefaultMode(targetSessionId()) && effectivePermissionMode(targetSessionId()) === mode);
   return (
     <View
       testID="permission-mode-surface"
@@ -5132,7 +5104,7 @@ function PermissionModeSurface(props: { placement: Placement; align: "start" | "
         {
           width: 280,
           maxWidth: "92%",
-          padding: space.chip,
+          padding: POPOVER_PADDING,
           gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, props.align),
         },
@@ -5149,39 +5121,22 @@ function PermissionModeSurface(props: { placement: Placement; align: "start" | "
               permissionModeTarget.set(null);
               void chooseSessionPermissionMode(row().mode, target ?? undefined);
             }}
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-start",
-              minHeight: compactLayout() ? layout.touchTarget : undefined,
-              gap: space.sm,
-              paddingHorizontal: space.sm,
-              paddingVertical: space.chip,
-              borderRadius: radii.sm,
-              borderCurve: "continuous",
-              cursor: "pointer",
-              userSelect: "none",
-              backgroundColor:
-                (row().mode === null && followsDefaultMode(targetSessionId())) ||
-                (row().mode !== null &&
-                  !followsDefaultMode(targetSessionId()) &&
-                  effectivePermissionMode(targetSessionId()) === row().mode)
-                  ? palette().surfaceSubtle
-                  : "transparent",
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{ backgroundColor: palette().panelHover }}
+            style={popoverRowStyle()}
+            hoverStyle={popoverRowHoverStyle()}
+            activeStyle={popoverRowActiveStyle()}
             focusVisibleStyle={focusRingStyle(-1)}
           >
-            <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-              <Text style={{ color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35), fontWeight: "500" }}>
-                {row().mode === null
+            <ListRowContent
+              title={
+                row().mode === null
                   ? tr("chat.permissionMode.defaultWith", { mode: permissionModeLabel(permissionMode() ?? "ask") })
-                  : tr(row().labelKey)}
-              </Text>
-              <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-                {tr(row().detailKey)}
-              </Text>
-            </View>
+                  : tr(row().labelKey)
+              }
+              titleWeight={permissionRowCurrent(row().mode) ? "500" : "400"}
+              subtitle={tr(row().detailKey)}
+              subtitleLines={2}
+              trailing={permissionRowCurrent(row().mode) ? <PopoverCheck /> : undefined}
+            />
           </View>
         )}
       </Each>
@@ -6908,7 +6863,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           width: 440,
           maxWidth: "92%",
           gap: space.sm,
-          padding: space.md,
+          padding: space.sm,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion ? motion.style : undefined,
@@ -7050,15 +7005,14 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                 <View
                   style={{
                     flexDirection: "row",
-                    alignItems: "center",
+                    alignItems: "flex-start",
                     gap: space.hair,
                     borderRadius: radii.xs,
                     borderCurve: "continuous",
-                    backgroundColor:
-                      idx() === mentionSelectedIndex() ? palette().accentSoft : "transparent",
+                    backgroundColor: idx() === mentionSelectedIndex() ? listRowHoverBg() : "transparent",
                     ...paintTransition(MOTION_DURATION.fast),
                   }}
-                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  hoverStyle={{ backgroundColor: listRowHoverBg() }}
                 >
                   <View
                     role="button"
@@ -7069,66 +7023,39 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                       minWidth: 0,
                       flexDirection: "row",
                       alignItems: "center",
-                      minHeight: compactLayout() ? layout.touchTarget : 30,
-                      gap: space.sm,
+                      minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
                       paddingHorizontal: space.sm,
-                      paddingVertical: space.chip,
+                      paddingVertical: 7,
                       cursor: "pointer",
                       userSelect: "none",
                     }}
                     activeStyle={{ opacity: 0.9 }}
                     focusVisibleStyle={focusRingStyle(-1)}
                   >
-                    <Icon
-                      name={hit().directory ? "folder" : "file-code"}
-                      size={13}
-                      color={
-                        idx() === mentionSelectedIndex()
-                          ? palette().accent
-                          : hit().directory
-                            ? palette().accent
-                            : palette().textSecondary
-                      }
+                    <ListRowContent
+                      icon={hit().directory ? "folder" : "file-code"}
+                      iconColor={palette().textSecondary}
+                      title={hit().name}
+                      titleWeight="500"
+                      subtitle={hit().relativePath || hit().path}
+                      subtitleOverflow="ellipsis-middle"
                     />
-                    <Text
-                      style={{
-                        maxWidth: "56%",
-                        flexShrink: 0,
-                        color:
-                          idx() === mentionSelectedIndex() ? palette().accent : palette().text,
-                        fontSize: textSize(12),
-                        lineHeight: textLineHeight(12, 1.35),
-                        fontWeight: "600",
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {hit().name}
-                    </Text>
-                    <Text
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        textAlign: "right",
-                        color: palette().textElevatedMuted,
-                        fontFamily: fontMono,
-                        fontSize: textSize(11.5),
-                        lineHeight: textLineHeight(11.5, 1.3),
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis-middle",
-                      }}
-                    >
-                      {hit().relativePath || hit().path}
-                    </Text>
                   </View>
                   <If when={hit().directory}>
-                    <IconButton
-                      icon="chevron-right"
-                      size="xs"
-                      accessibilityLabel={`mention-browse-${hit().name}`}
-                      tooltip={tr("sessions.mentionBrowseDir")}
-                      onPress={() => browseMentionDir(hit().path)}
-                    />
+                    <View
+                      style={{
+                        paddingTop: Math.max(0, 7 + listRowTitleLineHeight() / 2 - controlHeight.xs / 2),
+                        paddingRight: space.xs,
+                      }}
+                    >
+                      <IconButton
+                        icon="chevron-right"
+                        size="xs"
+                        accessibilityLabel={`mention-browse-${hit().name}`}
+                        tooltip={tr("sessions.mentionBrowseDir")}
+                        onPress={() => browseMentionDir(hit().path)}
+                      />
+                    </View>
                   </If>
                 </View>
               )}
@@ -7158,10 +7085,10 @@ function QuickActionsSurface(props: { placement: Placement }) {
     >
       <Text
         style={{
-          color: palette().textElevatedMuted,
+          color: palette().textMuted,
           fontSize: textSize(12),
           lineHeight: textLineHeight(12, 1.3),
-          fontWeight: "600",
+          fontWeight: "500",
         }}
       >
         {tr("sessions.quickActions")}
@@ -7222,61 +7149,23 @@ function AgentRow(props: { choice: AgentChoice }) {
       accessibilityLabel={`agent-option-${props.choice.id}`}
       accessibilityState={{ selected: current() }}
       onPress={() => void chooseAgentMode(props.choice.id)}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        minHeight: compactLayout() ? layout.touchTarget : undefined,
-        gap: space.sm,
-        paddingHorizontal: space.sm,
-        paddingVertical: space.chip,
-        borderRadius: radii.sm,
-        borderCurve: "continuous",
-        backgroundColor: current() ? palette().accentSoft : "transparent",
-        cursor: "pointer",
-        userSelect: "none",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: current() ? palette().accentSoft : palette().panelHover }}
-      activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.92 }}
+      style={popoverRowStyle()}
+      hoverStyle={popoverRowHoverStyle()}
+      activeStyle={popoverRowActiveStyle()}
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-        <Text
-          style={{
-            color: current() ? palette().accent : palette().text,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.35),
-            fontWeight: current() ? "600" : "500",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.choice.label}
-        </Text>
-        <If when={desc()}>
-          {text => (
-            <Text
-              style={{
-                color: palette().textElevatedMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {text()}
-            </Text>
-          )}
-        </If>
-      </View>
-      <If when={current()}>
-        <View
-          accessibilityLabel={`✓ ${props.choice.label}`}
-          style={{ flexShrink: 0 }}
-        >
-          <Icon name="check" size={13} color={palette().accent} />
-        </View>
-      </If>
+      <ListRowContent
+        title={props.choice.label}
+        titleWeight={current() ? "500" : "400"}
+        subtitle={desc()}
+        trailing={
+          current() ? (
+            <View accessibilityLabel={`✓ ${props.choice.label}`} style={{ flexShrink: 0 }}>
+              <PopoverCheck />
+            </View>
+          ) : undefined
+        }
+      />
     </View>
   );
 }
@@ -7290,29 +7179,18 @@ function AgentPickerSurface(props: { placement: Placement }) {
         {
           width: 320,
           maxWidth: "92%",
-          gap: space.chip,
-          padding: space.sm,
+          gap: space.xs,
+          padding: POPOVER_PADDING,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
       <Scroll style={{ maxHeight: 332, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: space.chip }}>
+        <View style={{ gap: space.xs }}>
           <If when={agentProfiles().length > 0}>
             <View style={{ gap: space.hair }}>
-              <Text
-                style={{
-                  color: palette().textElevatedMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.3),
-                  fontWeight: "600",
-                  paddingHorizontal: space.sm,
-                  paddingVertical: space.xs,
-                }}
-              >
-                {tr("sessions.profiles")}
-              </Text>
+              <PopoverSectionHeader label={tr("sessions.profiles")} />
               <Each of={agentProfiles()} key={choice => choice.id}>
                 {choice => <AgentRow choice={choice()} />}
               </Each>
@@ -7324,25 +7202,14 @@ function AgentPickerSurface(props: { placement: Placement }) {
                 gap: space.hair,
                 ...(agentProfiles().length > 0
                   ? {
-                      paddingTop: space.chip,
+                      paddingTop: space.xs,
                       borderTopWidth: 1,
                       borderColor: palette().borderSubtle,
                     }
                   : {}),
               }}
             >
-              <Text
-                style={{
-                  color: palette().textElevatedMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.3),
-                  fontWeight: "600",
-                  paddingHorizontal: space.sm,
-                  paddingVertical: space.xs,
-                }}
-              >
-                {tr("sessions.agents")}
-              </Text>
+              <PopoverSectionHeader label={tr("sessions.agents")} />
               <Each of={agentAgents()} key={choice => choice.id}>
                 {choice => <AgentRow choice={choice()} />}
               </Each>
@@ -7353,8 +7220,8 @@ function AgentPickerSurface(props: { placement: Placement }) {
       <View
         style={{
           paddingHorizontal: space.sm,
-          paddingTop: space.chip,
-          paddingBottom: space.hair,
+          paddingTop: space.sm,
+          paddingBottom: space.xs,
           borderTopWidth: 1,
           borderColor: palette().borderSubtle,
           gap: space.chip,
@@ -7362,7 +7229,7 @@ function AgentPickerSurface(props: { placement: Placement }) {
       >
         <Text
           style={{
-            color: palette().textElevatedMuted,
+            color: palette().textMuted,
             fontSize: textSize(12),
             lineHeight: textLineHeight(12, 1.38),
           }}
@@ -7418,67 +7285,41 @@ function ModelPickerSurface(props: { placement: Placement }) {
         {
           width: 344,
           maxWidth: "92%",
-          padding: space.sm,
-          gap: space.chip,
+          padding: POPOVER_PADDING,
+          gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
-      <Text
-        style={{
-          color: palette().textElevatedMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.3),
-          fontWeight: "600",
-          paddingHorizontal: space.chip,
-        }}
-      >
-        {tr("sessions.model")}
-      </Text>
+      <PopoverSectionHeader label={tr("sessions.model")} />
       <If when={fleetModelGroups()}>
         {groups => <FleetModelList groups={groups()} />}
       </If>
       <If when={!fleetModelGroups()}>
-      <Scroll style={{ maxHeight: 204, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: space.hair }}>
-          <Each of={chatModels()} key="index">
-            {option => (
-              <View
-                role="button"
-                accessibilityLabel={`model-option-${option().id}`}
-                onPress={() => void chooseModel(option().id)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  minHeight: compactLayout() ? layout.touchTarget : 30,
-                  gap: space.sm,
-                  paddingHorizontal: space.sm,
-                  paddingVertical: space.chip,
-                  borderRadius: radii.sm,
-                  borderCurve: "continuous",
-                  backgroundColor:
-                    option().id === activeModelId() ? palette().accentSoft : "transparent",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  ...paintTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{
-                  backgroundColor:
-                    option().id === activeModelId() ? palette().accentSoft : palette().panelHover,
-                }}
-                activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.9 }}
-                focusVisibleStyle={focusRingStyle(-1)}
-              >
-                <ModelRowText active={option().id === activeModelId()} label={option().label} detail={option().detail} />
-                <If when={option().id === activeModelId()}>
-                  <Icon name="check" size={12} color={palette().accent} />
-                </If>
-              </View>
-            )}
-          </Each>
-        </View>
-      </Scroll>
+        <Scroll style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
+          <View style={{ gap: space.hair }}>
+            <Each of={chatModels()} key="index">
+              {option => (
+                <View
+                  role="button"
+                  accessibilityLabel={`model-option-${option().id}`}
+                  onPress={() => void chooseModel(option().id)}
+                  style={popoverRowStyle()}
+                  hoverStyle={popoverRowHoverStyle()}
+                  activeStyle={popoverRowActiveStyle()}
+                  focusVisibleStyle={focusRingStyle(-1)}
+                >
+                  <ModelRowText
+                    active={option().id === activeModelId()}
+                    label={option().label}
+                    detail={option().detail}
+                  />
+                </View>
+              )}
+            </Each>
+          </View>
+        </Scroll>
       </If>
     </View>
   );
@@ -7504,17 +7345,29 @@ function FleetModelList(props: { groups: FleetModelsDevice[] }) {
     <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
       <View style={{ gap: space.hair }}>
         <Each of={props.groups} key="index">
-          {device => (
-            <View testID={`model-device-${device().deviceId}`} style={{ gap: space.hair, paddingTop: space.xs }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.chip, paddingHorizontal: space.chip, paddingVertical: space.hair }}>
+          {(device, idx) => (
+            <View testID={`model-device-${device().deviceId}`} style={{ gap: space.hair }}>
+              <If when={idx() > 0}>
+                <PopoverSeparator />
+              </If>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.sm,
+                  paddingHorizontal: space.sm,
+                  paddingTop: space.xs,
+                  paddingBottom: space.xs,
+                }}
+              >
                 <Text
                   style={{
                     flexShrink: 1,
                     minWidth: 0,
-                    color: palette().textElevatedMuted,
+                    color: palette().textMuted,
                     fontSize: textSize(12),
                     lineHeight: textLineHeight(12, 1.3),
-                    fontWeight: "600",
+                    fontWeight: "500",
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
                   }}
@@ -7527,6 +7380,7 @@ function FleetModelList(props: { groups: FleetModelsDevice[] }) {
                     style={{
                       flexShrink: 1,
                       minWidth: 0,
+                      marginLeft: "auto",
                       color: palette().textMuted,
                       fontSize: textSize(12),
                       lineHeight: textLineHeight(12, 1.3),
@@ -7550,43 +7404,27 @@ function FleetModelList(props: { groups: FleetModelsDevice[] }) {
 }
 
 /**
- * A model row's text: the model, then its provider in the muted secondary style,
- * both as the host labelled them. The label keeps its width; the provider gives
- * way first when the row is narrow.
+ * A model row's text: the model on the title line, its provider under it in the
+ * muted subtitle style, both as the host labelled them. The current model carries
+ * a check and medium weight on the title line; `trailing` adds marks before it.
  */
-function ModelRowText(props: { active: boolean; label: string; detail: string }) {
+function ModelRowText(props: { active: boolean; label: string; detail: string; trailing?: JSX.Element }) {
   return (
-    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
-      <Text
-        style={{
-          flexShrink: 1,
-          minWidth: 0,
-          color: props.active ? palette().accent : palette().text,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.35),
-          fontWeight: props.active ? "600" : "500",
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.label}
-      </Text>
-      <If when={props.detail}>
-        <Text
-          style={{
-            flexShrink: 2,
-            minWidth: 0,
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.3),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.detail}
-        </Text>
-      </If>
-    </View>
+    <ListRowContent
+      title={props.label}
+      titleWeight={props.active ? "500" : "400"}
+      subtitle={props.detail}
+      trailing={
+        props.active || props.trailing ? (
+          <>
+            {props.trailing}
+            <If when={props.active}>
+              <PopoverCheck />
+            </If>
+          </>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -7601,33 +7439,23 @@ function FleetModelRow(props: { choice: FleetModelChoice }) {
       onPress={() => {
         if (props.choice.selectable) void chooseModel(props.choice.modelRef);
       }}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        minHeight: compactLayout() ? layout.touchTarget : 30,
-        gap: space.sm,
-        paddingHorizontal: space.sm,
-        paddingVertical: space.chip,
-        borderRadius: radii.sm,
-        borderCurve: "continuous",
-        backgroundColor: active() ? palette().accentSoft : "transparent",
-        opacity: props.choice.selectable ? 1 : 0.5,
-        cursor: props.choice.selectable ? "pointer" : "not-allowed",
-        userSelect: "none",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={props.choice.selectable ? { backgroundColor: active() ? palette().accentSoft : palette().panelHover } : {}}
+      style={popoverRowStyle(false, !props.choice.selectable)}
+      hoverStyle={popoverRowHoverStyle(!props.choice.selectable)}
+      activeStyle={props.choice.selectable ? popoverRowActiveStyle() : {}}
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <ModelRowText active={active()} label={fleetModelText(props.choice).label} detail={fleetModelText(props.choice).detail} />
-      <If when={props.choice.primary}>
-        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
-          {tr("models.primary")}
-        </Text>
-      </If>
-      <If when={active()}>
-        <Icon name="check" size={12} color={palette().accent} />
-      </If>
+      <ModelRowText
+        active={active()}
+        label={fleetModelText(props.choice).label}
+        detail={fleetModelText(props.choice).detail}
+        trailing={
+          props.choice.primary ? (
+            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
+              {tr("models.primary")}
+            </Text>
+          ) : undefined
+        }
+      />
     </View>
   );
 }
@@ -7641,68 +7469,30 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
         {
           minWidth: 228,
           maxWidth: 300,
-          padding: space.sm,
-          gap: space.chip,
+          padding: POPOVER_PADDING,
+          gap: space.hair,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
-      <Text
-        style={{
-          color: palette().textElevatedMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.3),
-          fontWeight: "600",
-          paddingHorizontal: space.chip,
-        }}
-      >
-        {tr("sessions.reasoning")}
-      </Text>
-      <Scroll style={{ maxHeight: 176, minHeight: 0 }} scrollbar={true}>
+      <PopoverSectionHeader label={tr("sessions.reasoning")} />
+      <Scroll style={{ maxHeight: 208, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <View
             role="button"
             accessibilityLabel="reasoning-option-default"
             onPress={() => void chooseReasoning(null)}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              minHeight: compactLayout() ? layout.touchTarget : 30,
-              gap: space.sm,
-              paddingHorizontal: space.sm,
-              paddingVertical: space.chip,
-              borderRadius: radii.sm,
-              borderCurve: "continuous",
-              backgroundColor: activeReasoningId() === null ? palette().accentSoft : "transparent",
-              cursor: "pointer",
-              userSelect: "none",
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{
-              backgroundColor:
-                activeReasoningId() === null ? palette().accentSoft : palette().panelHover,
-            }}
-            activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.9 }}
+            style={popoverRowStyle()}
+            hoverStyle={popoverRowHoverStyle()}
+            activeStyle={popoverRowActiveStyle()}
             focusVisibleStyle={focusRingStyle(-1)}
           >
-            <Text
-              style={{
-                flex: 1,
-                minWidth: 0,
-                color: activeReasoningId() === null ? palette().accent : palette().text,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-                fontWeight: activeReasoningId() === null ? "600" : "500",
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {tr("common.default")}
-            </Text>
-            <If when={activeReasoningId() === null}>
-              <Icon name="check" size={12} color={palette().accent} />
-            </If>
+            <ListRowContent
+              title={tr("common.default")}
+              titleWeight={activeReasoningId() === null ? "500" : "400"}
+              trailing={activeReasoningId() === null ? <PopoverCheck /> : undefined}
+            />
           </View>
           <Each of={activeReasoningChoices()} key={choice => choice.id}>
             {choice => (
@@ -7710,47 +7500,16 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
                 role="button"
                 accessibilityLabel={`reasoning-option-${choice().id}`}
                 onPress={() => void chooseReasoning(choice().id)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  minHeight: compactLayout() ? layout.touchTarget : 30,
-                  gap: space.sm,
-                  paddingHorizontal: space.sm,
-                  paddingVertical: space.chip,
-                  borderRadius: radii.sm,
-                  borderCurve: "continuous",
-                  backgroundColor:
-                    choice().id === activeReasoningId() ? palette().accentSoft : "transparent",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  ...paintTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{
-                  backgroundColor:
-                    choice().id === activeReasoningId()
-                      ? palette().accentSoft
-                      : palette().panelHover,
-                }}
-                activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.9 }}
+                style={popoverRowStyle()}
+                hoverStyle={popoverRowHoverStyle()}
+                activeStyle={popoverRowActiveStyle()}
                 focusVisibleStyle={focusRingStyle(-1)}
               >
-                <Text
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: choice().id === activeReasoningId() ? palette().accent : palette().text,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                    fontWeight: choice().id === activeReasoningId() ? "600" : "500",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {choice().label}
-                </Text>
-                <If when={choice().id === activeReasoningId()}>
-                  <Icon name="check" size={12} color={palette().accent} />
-                </If>
+                <ListRowContent
+                  title={choice().label}
+                  titleWeight={choice().id === activeReasoningId() ? "500" : "400"}
+                  trailing={choice().id === activeReasoningId() ? <PopoverCheck /> : undefined}
+                />
               </View>
             )}
           </Each>
@@ -8860,7 +8619,12 @@ function SecondaryHeader() {
       breadcrumb={
         <SessionBreadcrumb
           device={secondaryDeviceLabel}
-          workspaceName={secondaryWorkspaceName}
+          workspaceName={() => {
+            const name = secondaryWorkspaceName();
+            if (!name) return "";
+            const alias = remoteWorkspaceAliasOf(secondaryWorkspaceRecord());
+            return alias ? `${name} · ${alias}` : name;
+          }}
         />
       }
       deviation={

@@ -48,8 +48,8 @@ export function LibraryToolbar(props: {
       accessibilityLabel={props.accessibilityLabel}
       style={{
         ...libraryColumnStyle(props.wide),
-        paddingTop: layout.titleToSection,
-        paddingBottom: space.lg,
+        paddingTop: space.lg,
+        paddingBottom: space.md,
         flexDirection: "row",
         alignItems: "center",
         flexWrap: studioCompact() ? "wrap" : "nowrap",
