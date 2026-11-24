@@ -1760,6 +1760,13 @@ export function ExploreGroupCard(props: {
   stateOf: (call: ToolCallView) => ToolRunState;
   renderThinking?: (item: Extract<FoldedProcessItem, { kind: "thinking" }>) => JSX.Element;
   live?: boolean;
+  /**
+   * Draw the open group's steps inside this card (default). A virtualized
+   * transcript passes `false` and lays each step out as a row of its own
+   * (`FoldedGroupStep`), so an open group of hundreds of steps never mounts
+   * as one cell.
+   */
+  inlineSteps?: boolean;
 }) {
   const resolvedItems = computed<FoldedProcessItem[]>(() => {
     if (props.items) return props.items;
@@ -1919,7 +1926,7 @@ export function ExploreGroupCard(props: {
         </View>
         <TranscriptRowChevron expanded={expanded} />
       </View>
-      <If when={expanded()}>
+      <If when={expanded() && props.inlineSteps !== false}>
         {() => {
           const reveal = subtleCrossfadeMotion();
           return (
@@ -1946,7 +1953,7 @@ export function ExploreGroupCard(props: {
                       <ToolCard
                         call={(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call}
                         status={props.stateOf((entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
-                        cardId={`${props.cardId}|${(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call.id ?? `${index()}:${(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call.name}`}`}
+                        cardId={foldedStepCardId(props.cardId, entry(), index())}
                       />
                     }
                   >
@@ -1957,6 +1964,51 @@ export function ExploreGroupCard(props: {
             </View>
           );
         }}
+      </If>
+    </View>
+  );
+}
+
+/** The card id of one step inside a folded group, shared by the inline and the row layout. */
+export function foldedStepCardId(groupCardId: string, entry: FoldedProcessItem, index: number): string {
+  if (entry.kind !== "tool") return `${groupCardId}|${entry.key}`;
+  return `${groupCardId}|${entry.call.id ?? `${index}:${entry.call.name}`}`;
+}
+
+/**
+ * One step of an open folded group, laid out as its own transcript row: the
+ * same hairline rail and indent as the inline layout, with the gap above the
+ * step drawn inside the rail so the line stays continuous from row to row.
+ */
+export function FoldedGroupStep(props: {
+  entry: FoldedProcessItem;
+  groupCardId: string;
+  index: number;
+  first: boolean;
+  stateOf: (call: ToolCallView) => ToolRunState;
+  renderThinking?: (item: Extract<FoldedProcessItem, { kind: "thinking" }>) => JSX.Element;
+}) {
+  return (
+    <View
+      style={{
+        marginLeft: TRANSCRIPT_ROW_RAIL_OFFSET,
+        paddingLeft: space.lg,
+        paddingTop: props.first ? 0 : space.hair,
+        borderLeftWidth: 1,
+        borderColor: palette().borderSubtle,
+      }}
+    >
+      <If
+        when={props.entry.kind === "thinking"}
+        else={
+          <ToolCard
+            call={(props.entry as Extract<FoldedProcessItem, { kind: "tool" }>).call}
+            status={props.stateOf((props.entry as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
+            cardId={foldedStepCardId(props.groupCardId, props.entry, props.index)}
+          />
+        }
+      >
+        {props.renderThinking?.(props.entry as Extract<FoldedProcessItem, { kind: "thinking" }>)}
       </If>
     </View>
   );

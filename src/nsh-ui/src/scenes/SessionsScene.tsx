@@ -64,6 +64,8 @@ import {
 import { permissionMode } from "../permissionPolicyStore";
 import {
   ExploreGroupCard,
+  FoldedGroupStep,
+  isCardExpanded,
   persistedToolState,
   resetExpandedCards,
   ToolCard,
@@ -827,7 +829,24 @@ function syncActiveRailForLatest(): void {
   }
 }
 
+/** Where the primary viewport is, in rows, so a jump knows whether it is a short hop. */
+let primaryFirstViewableIndex = -1;
+let primaryViewableCount = 0;
+
+/**
+ * Whether scrolling from the viewport to row `target` stays among rows the list
+ * already holds. An animated scroll across rows that were never laid out makes
+ * the list build cells for every frame of the flight, which leaves the viewport
+ * blank until it lands; such a jump goes straight to its row instead.
+ */
+function isShortHop(target: number, firstViewable: number, viewableCount: number): boolean {
+  if (firstViewable < 0 || viewableCount <= 0) return false;
+  return Math.abs(target - firstViewable) <= Math.max(6, viewableCount);
+}
+
 function syncActiveRailFromViewable(viewableItems: ReadonlyArray<ViewToken<TranscriptBlockRow>>): void {
+  primaryFirstViewableIndex = viewableItems[0]?.index ?? -1;
+  primaryViewableCount = viewableItems.length;
   const rows = visibleTurnRows();
   if (rows.length === 0) {
     if (activeRailTurnKey() !== "") activeRailTurnKey.set("");
@@ -851,7 +870,11 @@ function jumpToTurn(rowKey: string): void {
   suppressAutoFollowUntil = Date.now() + 500;
   cancelScheduledTranscriptScroll();
   activeRailTurnKey.set(rowKey);
-  transcriptListRef?.scrollToIndex({ index, viewPosition: 0, animated: true });
+  transcriptListRef?.scrollToIndex({
+    index,
+    viewPosition: 0,
+    animated: isShortHop(index, primaryFirstViewableIndex, primaryViewableCount),
+  });
 }
 
 function revealSearchMatch(): void {
@@ -2945,7 +2968,14 @@ function renderFoldedThinking(item: Extract<FoldedProcessItem, { kind: "thinking
  * persisted. Branches reactively on `props.item.kind` so recycled virtualized
  * `<List>` cells can cleanly swap between text, thinking, tool, and explore rows.
  */
-function TranscriptItemView(props: { item: TranscriptItem; live?: boolean; preserveFullReply?: boolean; pane?: 0 | 1 }) {
+function TranscriptItemView(props: {
+  item: TranscriptItem;
+  live?: boolean;
+  preserveFullReply?: boolean;
+  pane?: 0 | 1;
+  /** In the virtualized transcript an open group's steps are rows of their own. */
+  stepsAsRows?: boolean;
+}) {
   const kind = () => props.item.kind;
   const isGenUI = () => kind() === "tool" && isGenUICall((props.item as ItemOf<"tool">).call);
   const pane = props.pane ?? 0;
@@ -3005,6 +3035,7 @@ function TranscriptItemView(props: { item: TranscriptItem; live?: boolean; prese
           stateOf={persistedToolState}
           renderThinking={entry => renderFoldedThinking(entry, pane)}
           live={props.live}
+          inlineSteps={!props.stepsAsRows}
         />
       </If>
     </View>
@@ -3905,9 +3936,12 @@ function openTurnChangesReview(
 /**
  * Flat virtualized row rendered inside NSH `<List>`. Flattening each turn's
  * user bubble, individual assistant items (text / thinking / tool / explore),
- * figures, failure notice, file changes, and footer into independent list cells
- * guarantees that even a single 1,200-tool agent turn only ever mounts the
- * ~30–60 cells near the viewport instead of thousands of native NSViews at once.
+ * the steps of every open folded group, figures, failure notice, file changes,
+ * and footer into independent list cells guarantees that even a single
+ * 1,200-tool agent turn only ever mounts the ~30–60 cells near the viewport
+ * instead of thousands of native NSViews at once. An open group drawn as one
+ * cell would defeat that: jumping into it built every step before anything
+ * painted.
  */
 type TranscriptBlockRow =
   | {
@@ -3929,6 +3963,17 @@ type TranscriptBlockRow =
       turnId: string;
       item: TranscriptItem;
       preserveFullReply: boolean;
+      topGap: number;
+    }
+  | {
+      kind: "groupStep";
+      key: string;
+      turnKey: string;
+      turnId: string;
+      groupCardId: string;
+      entry: FoldedProcessItem;
+      index: number;
+      first: boolean;
       topGap: number;
     }
   | {
@@ -3969,17 +4014,53 @@ interface TranscriptBlockProjection {
   rows: TranscriptBlockRow[];
   firstIndexByTurnKey: Map<string, number>;
   firstIndexByTurnId: Map<string, number>;
+  /** The mean height the rows are likely to have, for the rows the list has not measured yet. */
+  estimatedRowHeight: number;
 }
 
-const cachedPrimaryTurnBlocks = new WeakMap<object, { turnKey: string; blocks: TranscriptBlockRow[] }>();
-const cachedSecondaryTurnBlocks = new WeakMap<object, { turnKey: string; blocks: TranscriptBlockRow[] }>();
+/**
+ * Gap above every row but the first. The list's own `gap` stays 0 so the steps
+ * of an open group can sit closer together, as they do inside the group card.
+ */
+const TRANSCRIPT_ROW_GAP = 8;
+
+type CachedTurnBlocks = { turnKey: string; openGroups: string; blocks: TranscriptBlockRow[] };
+const cachedPrimaryTurnBlocks = new WeakMap<object, CachedTurnBlocks>();
+const cachedSecondaryTurnBlocks = new WeakMap<object, CachedTurnBlocks>();
+
+/** Likely height of a row the list has not measured yet, by what it draws. */
+function estimatedRowHeightOf(row: TranscriptBlockRow): number {
+  switch (row.kind) {
+    case "user":
+      return 72 + Math.min(6, Math.floor(row.text.length / 90)) * 22;
+    case "item":
+      if (row.item.kind === "text") return 48 + Math.min(18, Math.floor(row.item.text.length / 110)) * 22;
+      return controlHeight.sm;
+    case "groupStep":
+      return controlHeight.sm + space.hair;
+    case "figures":
+      return 220;
+    case "failure":
+    case "fileChanges":
+      return 88;
+    default:
+      return controlHeight.sm;
+  }
+}
 
 function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): TranscriptBlockRow[] {
   const turn = turnRow.turn;
   const cache = isSecondary ? cachedSecondaryTurnBlocks : cachedPrimaryTurnBlocks;
+  const items = turnItems(turn);
+  // Reading each group's open state here makes the projection follow it: an
+  // open group contributes one row per step, so the list virtualizes them.
+  const openGroups = items
+    .filter(item => item.kind === "explore" && isCardExpanded(item.key))
+    .map(item => item.key)
+    .join("\n");
   if (turn && typeof turn === "object") {
     const hit = cache.get(turn);
-    if (hit && hit.turnKey === turnRow.key) return hit.blocks;
+    if (hit && hit.turnKey === turnRow.key && hit.openGroups === openGroups) return hit.blocks;
   }
 
   const turnKey = turnRow.key;
@@ -4005,7 +4086,6 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
     });
   });
 
-  const items = turnItems(turn);
   const preserveFullReply = !isSecondary && liveStreamedTurnIds.has(turnId);
   const seenItemKeys = new Set<string>();
   items.forEach((item, index) => {
@@ -4019,8 +4099,24 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       turnId,
       item,
       preserveFullReply,
-      topGap: index === 0 && userParts.length > 0 ? space.xs : 0,
+      topGap: TRANSCRIPT_ROW_GAP + (index === 0 && userParts.length > 0 ? space.xs : 0),
     });
+    if (item.kind === "explore" && isCardExpanded(item.key)) {
+      item.items.forEach((entry, stepIndex) => {
+        blocks.push({
+          kind: "groupStep",
+          key: `${key}|step:${entry.key || stepIndex}`,
+          turnKey,
+          turnId,
+          groupCardId: item.key,
+          entry,
+          index: stepIndex,
+          first: stepIndex === 0,
+          // The card's own header-to-steps gap; the gap between steps is drawn inside the rail.
+          topGap: stepIndex === 0 ? space.xs : 0,
+        });
+      });
+    }
   });
 
   const figures = publishedFiguresOf(turn);
@@ -4031,7 +4127,7 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       turnKey,
       turnId,
       figures,
-      topGap: 0,
+      topGap: TRANSCRIPT_ROW_GAP,
     });
   }
 
@@ -4044,7 +4140,7 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       turnId,
       turn,
       failure,
-      topGap: space.xs,
+      topGap: TRANSCRIPT_ROW_GAP + space.xs,
     });
   }
 
@@ -4056,7 +4152,7 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       turnKey,
       turnId,
       changes: fileChanges,
-      topGap: space.xs,
+      topGap: TRANSCRIPT_ROW_GAP + space.xs,
     });
   }
 
@@ -4067,12 +4163,12 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
       turnKey,
       turnId,
       turn,
-      topGap: 0,
+      topGap: TRANSCRIPT_ROW_GAP,
     });
   }
 
   if (turn && typeof turn === "object") {
-    cache.set(turn, { turnKey, blocks });
+    cache.set(turn, { turnKey, openGroups, blocks });
   }
   return blocks;
 }
@@ -4084,6 +4180,7 @@ function buildTranscriptBlockProjection(
   const rows: TranscriptBlockRow[] = [];
   const firstIndexByTurnKey = new Map<string, number>();
   const firstIndexByTurnId = new Map<string, number>();
+  let estimatedTotal = 0;
   for (let t = 0; t < turnRows.length; t += 1) {
     const turnRow = turnRows[t]!;
     const turnBlocks = blocksForSingleTurn(turnRow, isSecondary);
@@ -4094,17 +4191,19 @@ function buildTranscriptBlockProjection(
     if (tid && !firstIndexByTurnId.has(tid)) {
       firstIndexByTurnId.set(tid, startIdx);
     }
-    const interTurnGap = t > 0 ? space.sm : 0;
+    // A turn opens with the row gap plus the space between turns; the very first row has none.
+    const turnGap = rows.length > 0 ? TRANSCRIPT_ROW_GAP + space.sm : 0;
     for (let i = 0; i < turnBlocks.length; i += 1) {
       const block = turnBlocks[i]!;
-      if (i === 0 && interTurnGap !== block.topGap) {
-        rows.push({ ...block, topGap: interTurnGap });
-      } else {
-        rows.push(block);
-      }
+      const row = i === 0 && turnGap !== block.topGap ? { ...block, topGap: turnGap } : block;
+      rows.push(row);
+      estimatedTotal += estimatedRowHeightOf(row) + row.topGap;
     }
   }
-  return { rows, firstIndexByTurnKey, firstIndexByTurnId };
+  // Rounded so a turn more or less does not keep changing the list's estimate.
+  const estimatedRowHeight =
+    rows.length > 0 ? Math.max(controlHeight.sm, Math.round(estimatedTotal / rows.length / 4) * 4) : 44;
+  return { rows, firstIndexByTurnKey, firstIndexByTurnId, estimatedRowHeight };
 }
 
 const primaryTranscriptBlocks = computed<TranscriptBlockProjection>(() =>
@@ -4172,6 +4271,18 @@ function TranscriptBlockCell(props: { row: () => TranscriptBlockRow; pane?: 0 | 
                 liveStreamedTurnIds.has(turnId()))
             }
             pane={props.pane}
+            stepsAsRows={true}
+          />
+        </If>
+
+        <If when={kind() === "groupStep"}>
+          <FoldedGroupStep
+            entry={(props.row() as Extract<TranscriptBlockRow, { kind: "groupStep" }>).entry}
+            groupCardId={(props.row() as Extract<TranscriptBlockRow, { kind: "groupStep" }>).groupCardId}
+            index={(props.row() as Extract<TranscriptBlockRow, { kind: "groupStep" }>).index}
+            first={(props.row() as Extract<TranscriptBlockRow, { kind: "groupStep" }>).first}
+            stateOf={persistedToolState}
+            renderThinking={entry => renderFoldedThinking(entry, props.pane ?? 0)}
           />
         </If>
 
@@ -4507,6 +4618,11 @@ interface SessionTranscriptListProps {
   hasEarlier: () => boolean;
   loadingEarlier: () => boolean;
   onLoadEarlier: () => void;
+  /**
+   * Until when (epoch ms) a jump is still settling: reaching the start meanwhile
+   * loads earlier turns only after it, so the rows jumped to paint first.
+   */
+  loadEarlierHoldUntil?: () => number;
   onListRef: (ref: ListRef | undefined) => void;
   onScroll: (event: ScrollEvent) => void;
   onViewableItemsChange: (viewableItems: ReadonlyArray<ViewToken<TranscriptBlockRow>>) => void;
@@ -4546,6 +4662,24 @@ interface SessionTranscriptListProps {
 function SessionTranscriptList(props: SessionTranscriptListProps) {
   const prefix = props.cardPrefix ?? "";
   const fallbackItems = () => props.liveFallbackItems?.() ?? [];
+  let deferredEarlierLoad: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (deferredEarlierLoad) clearTimeout(deferredEarlierLoad);
+    deferredEarlierLoad = null;
+  });
+  const requestEarlierTurns = (): void => {
+    if (!props.hasEarlier() || props.loadingEarlier()) return;
+    const wait = (props.loadEarlierHoldUntil?.() ?? 0) - Date.now();
+    if (wait > 0) {
+      if (deferredEarlierLoad) return;
+      deferredEarlierLoad = setTimeout(() => {
+        deferredEarlierLoad = null;
+        requestEarlierTurns();
+      }, wait);
+      return;
+    }
+    props.onLoadEarlier();
+  };
 
   const renderHeader = () => (
     <If
@@ -4555,7 +4689,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
         Boolean(props.loadingEmpty?.())
       }
     >
-      <View style={{ width: "100%", alignItems: "center", paddingBottom: space.sm }}>
+      <View style={{ width: "100%", alignItems: "center", paddingBottom: space.lg }}>
         <View style={{ width: "100%", maxWidth: contentWidth(), gap: space.md }}>
           <If when={props.notice()}>
             {notice => (
@@ -4602,7 +4736,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
         Boolean(props.sendNotice())
       }
     >
-      <View style={{ width: "100%", alignItems: "center", paddingTop: props.visibleTurnRows().length > 0 ? space.sm : 0 }}>
+      <View style={{ width: "100%", alignItems: "center", paddingTop: props.visibleTurnRows().length > 0 ? space.lg : 0 }}>
         <View style={{ width: "100%", maxWidth: contentWidth(), gap: 16 }}>
           <If
             when={
@@ -4675,13 +4809,11 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
           style={{ flex: 1, minHeight: 0 }}
           each={props.blocks().rows}
           keyExtractor={row => row.key}
-          estimatedItemSize={44}
+          estimatedItemSize={props.blocks().estimatedRowHeight}
           initialScrollAtEnd={true}
           maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 24 }}
           loadMoreAtStartThreshold={0.5}
-          onLoadMoreAtStart={() => {
-            if (props.hasEarlier() && !props.loadingEarlier()) props.onLoadEarlier();
-          }}
+          onLoadMoreAtStart={requestEarlierTurns}
           onScroll={props.onScroll}
           onViewableItemsChange={info => props.onViewableItemsChange(info.viewableItems)}
           contentStyle={{
@@ -4689,7 +4821,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
             paddingRight: sessionsPadX(),
             paddingTop: space.xl,
             paddingBottom: space.x3l,
-            gap: 8,
+            gap: 0,
           }}
           header={renderHeader}
           footer={renderFooter}
@@ -4800,6 +4932,7 @@ function Transcript() {
       hasEarlier={() => hasEarlierTurns() && sessionTurns().length > 0}
       loadingEarlier={loadingEarlier}
       onLoadEarlier={() => void showEarlierTurns()}
+      loadEarlierHoldUntil={() => suppressAutoFollowUntil}
       onListRef={el => {
         transcriptListRef = el;
       }}
@@ -9543,6 +9676,8 @@ function SecondaryTranscript() {
   const secFollowLatest = signal(true);
   const loadingEarlierSec = signal(false);
   const secActiveRailKey = signal("");
+  let secFirstViewableIndex = -1;
+  let secViewableCount = 0;
 
   const syncSecRailForLatest = () => {
     const rows = secondaryVisibleTurnRows();
@@ -9557,6 +9692,8 @@ function SecondaryTranscript() {
   };
 
   const syncSecRailFromViewable = (viewableItems: ReadonlyArray<ViewToken<TranscriptBlockRow>>) => {
+    secFirstViewableIndex = viewableItems[0]?.index ?? -1;
+    secViewableCount = viewableItems.length;
     const rows = secondaryVisibleTurnRows();
     if (rows.length === 0) {
       if (secActiveRailKey() !== "") secActiveRailKey.set("");
@@ -9579,7 +9716,11 @@ function SecondaryTranscript() {
     secFollowLatest.set(false);
     secSuppressAutoFollowUntil = Date.now() + 500;
     secActiveRailKey.set(rowKey);
-    listRef?.scrollToIndex({ index, viewPosition: 0, animated: true });
+    listRef?.scrollToIndex({
+      index,
+      viewPosition: 0,
+      animated: isShortHop(index, secFirstViewableIndex, secViewableCount),
+    });
   };
 
   registerSecondaryAutoBackfillGuard(() => secFollowLatest());
@@ -9665,6 +9806,7 @@ function SecondaryTranscript() {
       hasEarlier={() => secondaryHasEarlierTurns() && secondaryTurns().length > 0}
       loadingEarlier={loadingEarlierSec}
       onLoadEarlier={() => void showEarlierSecTurns()}
+      loadEarlierHoldUntil={() => secSuppressAutoFollowUntil}
       onListRef={el => {
         listRef = el;
       }}
