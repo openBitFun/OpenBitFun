@@ -289,13 +289,60 @@ export function resolveModelRef(raw: string | null | undefined): string | null {
   return trimmed;
 }
 
-export const activeModelId = computed<string | null>(() => {
-  const sessionId = activeSessionId();
-  const key = activeSessionKey();
-  if (!sessionId || !key) return resolveModelRef(defaultModelId());
-  const raw = sessionModels()[key] ?? boundModelOf(sessionId, activeSessionDevice()) ?? defaultModelId();
+export interface SessionModelTarget {
+  sessionId: string | null;
+  deviceId?: string;
+  workspaceId?: string | null;
+}
+
+function resolveTarget(target?: SessionModelTarget): {
+  sessionId: string | null;
+  deviceId: string;
+  key: string | null;
+  workspaceId: string | null;
+} {
+  if (!target) {
+    const sessionId = activeSessionId();
+    return {
+      sessionId,
+      deviceId: activeSessionDevice(),
+      key: activeSessionKey() ?? (sessionId ? sessionKey(sessionId) : null),
+      workspaceId: activeWorkspaceId(),
+    };
+  }
+  const sessionId = target.sessionId;
+  const deviceId = target.deviceId ?? activeSessionDevice();
+  return {
+    sessionId,
+    deviceId,
+    key: sessionId ? sessionKey(sessionId, deviceId) : null,
+    workspaceId: target.workspaceId !== undefined ? target.workspaceId : activeWorkspaceId(),
+  };
+}
+
+export function modelIdForSession(sessionId: string | null, deviceId?: string): string | null {
+  if (!sessionId) return resolveModelRef(defaultModelId());
+  const key = sessionKey(sessionId, deviceId ?? activeSessionDevice());
+  const raw = sessionModels()[key] ?? boundModelOf(sessionId, deviceId ?? activeSessionDevice()) ?? defaultModelId();
   return resolveModelRef(raw);
-});
+}
+
+export function modelTextForSession(sessionId: string | null, deviceId?: string): { label: string; detail: string } {
+  const id = modelIdForSession(sessionId, deviceId);
+  if (!id) return { label: "default model", detail: "" };
+  const remote = fleetChoiceOf(id);
+  if (remote) {
+    const text = fleetModelText(remote.choice);
+    return remote.device.isThisDevice ? text : { label: `${text.label} · ${remote.device.name}`, detail: text.detail };
+  }
+  const match = findOption(id);
+  if (match) return { label: match.label, detail: match.detail };
+  return { label: id, detail: "" };
+}
+
+export const activeModelId = computed<string | null>(() =>
+  modelIdForSession(activeSessionId(), activeSessionDevice()),
+);
 
 /** The model the host already has this session on, from its own record. */
 function boundModelOf(sessionId: string, deviceId?: string): string | undefined {
@@ -305,19 +352,9 @@ function boundModelOf(sessionId: string, deviceId?: string): string | undefined 
   return name && name.trim() ? name.trim() : undefined;
 }
 
-const activeModelText = computed<{ label: string; detail: string }>(() => {
-  const id = activeModelId();
-  if (!id) return { label: "default model", detail: "" };
-  // Another device's model: its label and the device it lives on.
-  const remote = fleetChoiceOf(id);
-  if (remote) {
-    const text = fleetModelText(remote.choice);
-    return remote.device.isThisDevice ? text : { label: `${text.label} · ${remote.device.name}`, detail: text.detail };
-  }
-  const match = findOption(id);
-  if (match) return { label: match.label, detail: match.detail };
-  return { label: id, detail: "" };
-});
+const activeModelText = computed<{ label: string; detail: string }>(() =>
+  modelTextForSession(activeSessionId(), activeSessionDevice()),
+);
 
 /** The session's model as the composer badge names it: the model, and the device for another device's. */
 export const activeModelLabel = computed<string>(() => activeModelText().label);
@@ -418,17 +455,16 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
   };
 }
 
-/** Binds the selected session to a model, the way the composer's picker does. */
-export async function chooseModel(modelId: string): Promise<void> {
-  const sessionId = activeSessionId();
-  const key = activeSessionKey();
+/** Binds the target (or active) session to a model, the way the composer's picker does. */
+export async function chooseModel(modelId: string, target?: SessionModelTarget): Promise<void> {
+  const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
   modelPickerOpen.set(false);
   if (!sessionId || !key) return;
   const resolved = findOption(modelId)?.id ?? modelId;
-  const workspaceId = activeWorkspaceId();
   const wasPool = Boolean(sessionPoolIds()[key]);
-  const keepReasoning = reasoningOfferedFor(resolved);
-  const preset = keepReasoning ? activeReasoningId() : null;
+  const currentReasoning = reasoningIdForSession(sessionId, deviceId);
+  const keepReasoning = reasoningOfferedFor(resolved, currentReasoning);
+  const preset = keepReasoning ? currentReasoning : null;
   bumpWriteGen(key);
   await runStep(async () => {
     if (wasPool) {
@@ -483,37 +519,48 @@ export const reasoningPickerOpen = signal(false);
  */
 const reasoningReadFor: Record<string, string> = {};
 
+export function reasoningIdForSession(sessionId: string | null, deviceId?: string): string | null {
+  if (!sessionId) return null;
+  const key = sessionKey(sessionId, deviceId ?? activeSessionDevice());
+  return sessionReasoning()[key] ?? null;
+}
+
+export function reasoningChoicesForSession(sessionId: string | null, deviceId?: string): ReasoningChoice[] {
+  const modelId = modelIdForSession(sessionId, deviceId);
+  if (!modelId) return [];
+  return reasoningByModel()[modelId] ?? [];
+}
+
+export function reasoningLabelForSession(sessionId: string | null, deviceId?: string): string {
+  const id = reasoningIdForSession(sessionId, deviceId);
+  if (!id) return "Default";
+  const match = reasoningChoicesForSession(sessionId, deviceId).find(choice => choice.id === id);
+  return match ? match.label : id;
+}
+
 /**
  * What the next turn runs at, `null` for the model's own default. A session this
  * surface never read a setting for reads as the default rather than as an unknown
  * value, which is also how the host reports a session nobody has set.
  */
-export const activeReasoningId = computed<string | null>(() => {
-  const key = activeSessionKey();
-  if (!key) return null;
-  return sessionReasoning()[key] ?? null;
-});
+export const activeReasoningId = computed<string | null>(() =>
+  reasoningIdForSession(activeSessionId(), activeSessionDevice()),
+);
 
-export const activeReasoningChoices = computed<ReasoningChoice[]>(() => {
-  const modelId = activeModelId();
-  if (!modelId) return [];
-  return reasoningByModel()[modelId] ?? [];
-});
+export const activeReasoningChoices = computed<ReasoningChoice[]>(() =>
+  reasoningChoicesForSession(activeSessionId(), activeSessionDevice()),
+);
 
-export const activeReasoningLabel = computed<string>(() => {
-  const id = activeReasoningId();
-  if (!id) return "Default";
-  const match = activeReasoningChoices().find(choice => choice.id === id);
-  return match ? match.label : id;
-});
+export const activeReasoningLabel = computed<string>(() =>
+  reasoningLabelForSession(activeSessionId(), activeSessionDevice()),
+);
 
-function reasoningOfferedFor(modelId: string): boolean {
+function reasoningOfferedFor(modelId: string, presetId: string | null = activeReasoningId()): boolean {
   const choices = reasoningByModel()[modelId];
   // Until the host answers, the pair is left alone: sending a preset it may not
   // know would make the model change fail, which is worse than not carrying it.
   if (choices === null || choices === undefined) return false;
-  const id = activeReasoningId();
-  return id !== null && choices.some(choice => choice.id === id);
+  return presetId !== null && choices.some(choice => choice.id === presetId);
 }
 
 function applyReasoningToSession(key: string, preset: string | null): void {
@@ -527,13 +574,11 @@ function applyReasoningToSession(key: string, preset: string | null): void {
  * actual bound model (even on fleet connections where `FleetSession` omits
  * `modelName`) and loads reasoning options for that real model.
  */
-export async function ensureReasoningLoaded(): Promise<void> {
-  const sessionId = activeSessionId();
-  const key = activeSessionKey() ?? (sessionId ? sessionKey(sessionId) : null);
+export async function ensureReasoningLoaded(target?: SessionModelTarget): Promise<void> {
+  const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
   if (!sessionId || !key) return;
-  const workspaceId = activeWorkspaceId();
   const needTarget = !targetReadFor.has(key);
-  const initialModelId = activeModelId();
+  const initialModelId = modelIdForSession(sessionId, deviceId);
   const needReasoningForInitial =
     !needTarget && Boolean(initialModelId) && reasoningReadFor[key] !== initialModelId;
   if (!needTarget && !needReasoningForInitial) return;
@@ -544,25 +589,25 @@ export async function ensureReasoningLoaded(): Promise<void> {
   await runStep(
     async () => {
       if (needTarget) {
-        const target = await getSessionModelTarget({
+        const result = await getSessionModelTarget({
           sessionId,
           ...(workspaceId ? { workspaceId } : {}),
         }).catch(() => null);
         // Never overwrite an explicit user pick made while this read was in flight.
-        if (target && (sessionWriteGen[key] ?? 0) === writeGenBefore) {
-          const { modelRef, poolId } = extractTargetModel(target);
+        if (result && (sessionWriteGen[key] ?? 0) === writeGenBefore) {
+          const { modelRef, poolId } = extractTargetModel(result);
           if (modelRef) {
             setSessionModelBinding(key, sessionId, modelRef, poolId);
           }
           // A host older than the field omits it; that is not a session set to the
           // default, so nothing is written for it.
-          if (target.reasoningPreset !== undefined) {
-            applyReasoningToSession(key, target.reasoningPreset ?? null);
+          if (result.reasoningPreset !== undefined) {
+            applyReasoningToSession(key, result.reasoningPreset ?? null);
           }
         }
       }
 
-      const effectiveModelId = activeModelId();
+      const effectiveModelId = modelIdForSession(sessionId, deviceId);
       if (!effectiveModelId) return;
       if (reasoningReadFor[key] === effectiveModelId && reasoningByModel()[effectiveModelId] !== undefined) {
         return;
@@ -633,19 +678,17 @@ async function storedModelEntry(modelId: string): Promise<StoredModel | null> {
 }
 
 /** Sets the reasoning the next turn runs at, alongside the model it is bound to. */
-export async function chooseReasoning(presetId: string | null): Promise<void> {
-  const sessionId = activeSessionId();
-  const key = activeSessionKey();
+export async function chooseReasoning(presetId: string | null, target?: SessionModelTarget): Promise<void> {
+  const { sessionId, deviceId, key, workspaceId } = resolveTarget(target);
   reasoningPickerOpen.set(false);
   if (!sessionId || !key) return;
   // Ensure the session's authoritative model has been read before writing the pair,
   // so changing reasoning never overwrites the session's real model with a default.
   if (!targetReadFor.has(key)) {
-    await ensureReasoningLoaded();
+    await ensureReasoningLoaded(target);
   }
-  const modelId = activeModelId();
+  const modelId = modelIdForSession(sessionId, deviceId);
   if (!modelId) return;
-  const workspaceId = activeWorkspaceId();
   bumpWriteGen(key);
   await runStep(async () => {
     await updateSessionModel({

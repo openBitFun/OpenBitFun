@@ -108,6 +108,7 @@ export interface LiveModelRound {
   effectiveModelName?: string;
   thinking: string;
   reasoningKind?: "reasoning" | "summary";
+  thinkingEnded?: boolean;
   text: string;
   tools: LiveToolItem[];
   completed: boolean;
@@ -131,6 +132,7 @@ interface LiveRoundMeta {
   attemptId?: string;
   effectiveModelName?: string;
   reasoningKind?: "reasoning" | "summary";
+  thinkingEnded?: boolean;
   tools: LiveToolItem[];
   completed: boolean;
   durationMs?: number;
@@ -145,10 +147,14 @@ interface RoundStreamChannel {
   displayedText: string;
   /** Fractional character carry across animation frames. */
   carry: number;
+  /** UTF-16 offset of the latest tool boundary in this round, for coarse trailing-text checks. */
+  tailOffset: number;
   /** Reactive displayed text signal bound by UI views. */
   displayed: Signal<string>;
   /** Coarse boolean guard so `<If>` mounts once instead of re-evaluating per frame. */
   hasAny: Signal<boolean>;
+  /** Coarse boolean guard for whether non-whitespace text has arrived after `tailOffset`. */
+  hasTail: Signal<boolean>;
 }
 
 interface RoundStreamEntry {
@@ -408,9 +414,39 @@ function createChannel(): RoundStreamChannel {
     revealed: 0,
     displayedText: "",
     carry: 0,
+    tailOffset: 0,
     displayed: signal<string>(""),
     hasAny: signal<boolean>(false),
+    hasTail: signal<boolean>(false),
   };
+}
+
+function syncChannelFlags(channel: RoundStreamChannel): void {
+  const text = channel.displayedText;
+  const nonEmpty = text.trim().length > 0;
+  if (channel.hasAny() !== nonEmpty) {
+    channel.hasAny.set(nonEmpty);
+  }
+  const tailNonEmpty =
+    text.length > channel.tailOffset && text.slice(channel.tailOffset).trim().length > 0;
+  if (channel.hasTail() !== tailNonEmpty) {
+    channel.hasTail.set(tailNonEmpty);
+  }
+}
+
+function setChannelTailOffset(channel: RoundStreamChannel, offset: number): void {
+  const clamped = Math.max(0, offset);
+  if (channel.tailOffset === clamped) return;
+  channel.tailOffset = clamped;
+  syncChannelFlags(channel);
+}
+
+function maxToolTextOffset(tools: readonly LiveToolItem[]): number {
+  let max = 0;
+  for (const tool of tools) {
+    if (typeof tool.textOffset === "number" && tool.textOffset > max) max = tool.textOffset;
+  }
+  return max;
 }
 
 function ensureRoundStream(roundId: string): RoundStreamEntry {
@@ -443,13 +479,12 @@ function resetChannel(channel: RoundStreamChannel): void {
   channel.target = "";
   channel.revealed = 0;
   channel.carry = 0;
+  channel.tailOffset = 0;
   if (channel.displayedText !== "") {
     channel.displayedText = "";
     channel.displayed.set("");
   }
-  if (channel.hasAny()) {
-    channel.hasAny.set(false);
-  }
+  syncChannelFlags(channel);
 }
 
 function commitChannelImmediate(channel: RoundStreamChannel): boolean {
@@ -461,10 +496,7 @@ function commitChannelImmediate(channel: RoundStreamChannel): boolean {
   channel.revealed = target.length;
   channel.displayedText = target;
   channel.displayed.set(target);
-  const nonEmpty = target.length > 0;
-  if (channel.hasAny() !== nonEmpty) {
-    channel.hasAny.set(nonEmpty);
-  }
+  syncChannelFlags(channel);
   return true;
 }
 
@@ -482,8 +514,7 @@ function advanceChannel(
       channel.revealed = targetLen;
       channel.displayedText = target;
       channel.displayed.set(target);
-      const nonEmpty = targetLen > 0;
-      if (channel.hasAny() !== nonEmpty) channel.hasAny.set(nonEmpty);
+      syncChannelFlags(channel);
       return true;
     }
     return false;
@@ -516,9 +547,7 @@ function advanceChannel(
   const nextText = nextRevealed >= targetLen ? target : target.slice(0, nextRevealed);
   channel.displayedText = nextText;
   channel.displayed.set(nextText);
-  if (!channel.hasAny() && nextText.length > 0) {
-    channel.hasAny.set(true);
-  }
+  syncChannelFlags(channel);
   return true;
 }
 
@@ -807,6 +836,12 @@ export function hasLiveRoundText(roundId: string): boolean {
   return entry ? entry.text.hasAny() : false;
 }
 
+/** Coarse boolean reactive guard for whether a live round has text after its latest tool boundary. */
+export function hasLiveRoundTailText(roundId: string): boolean {
+  const entry = roundStreams.get(roundId);
+  return entry ? entry.text.hasTail() : false;
+}
+
 /** Coarse boolean reactive guard for whether a live round has any displayed thinking. */
 export function hasLiveRoundThinking(roundId: string): boolean {
   const entry = roundStreams.get(roundId);
@@ -831,6 +866,12 @@ export function hasSecondaryLiveRoundText(roundId: string): boolean {
   return entry ? entry.text.hasAny() : false;
 }
 
+/** Coarse boolean reactive guard for whether a secondary live round has text after its latest tool boundary. */
+export function hasSecondaryLiveRoundTailText(roundId: string): boolean {
+  const entry = secondaryRoundStreams.get(roundId);
+  return entry ? entry.text.hasTail() : false;
+}
+
 /** Coarse boolean reactive guard for whether a secondary live round has thinking. */
 export function hasSecondaryLiveRoundThinking(roundId: string): boolean {
   const entry = secondaryRoundStreams.get(roundId);
@@ -847,6 +888,7 @@ function makeLiveRound(meta: LiveRoundMeta, entry: RoundStreamEntry): LiveModelR
   if (meta.attemptId !== undefined) round.attemptId = meta.attemptId;
   if (meta.effectiveModelName !== undefined) round.effectiveModelName = meta.effectiveModelName;
   if (meta.reasoningKind !== undefined) round.reasoningKind = meta.reasoningKind;
+  if (meta.thinkingEnded !== undefined) round.thinkingEnded = meta.thinkingEnded;
   if (meta.durationMs !== undefined) round.durationMs = meta.durationMs;
 
   // Enumerable reactive getters keep existing `round().text` / `round().thinking`
@@ -879,6 +921,7 @@ function extractRoundMeta(round: LiveModelRound): LiveRoundMeta {
       ? { effectiveModelName: round.effectiveModelName }
       : {}),
     ...(round.reasoningKind !== undefined ? { reasoningKind: round.reasoningKind } : {}),
+    ...(round.thinkingEnded !== undefined ? { thinkingEnded: round.thinkingEnded } : {}),
     tools: round.tools,
     completed: round.completed,
     ...(round.durationMs !== undefined ? { durationMs: round.durationMs } : {}),
@@ -1112,6 +1155,7 @@ function restoreParkedTurn(sessionId: string | null, key: string | null): void {
     const rounds: LiveModelRound[] = [];
     for (const round of parked.rounds) {
       const entry = ensureRoundStream(round.meta.roundId);
+      setChannelTailOffset(entry.text, maxToolTextOffset(round.meta.tools));
       entry.text.target = round.text;
       entry.thinking.target = round.thinking;
       commitChannelImmediate(entry.text);
@@ -1151,7 +1195,13 @@ function parkEvent(kind: "chunk" | "roundStarted" | "roundCompleted" | "supersed
       const round = parkedRoundFor(turn, roundId, { attemptId });
       if (chunkPayload.contentType === "thinking") {
         round.thinking += chunk;
-        if (chunkPayload.reasoningKind) round.meta = { ...round.meta, reasoningKind: chunkPayload.reasoningKind };
+        if (chunkPayload.reasoningKind || chunkPayload.isThinkingEnd === true) {
+          round.meta = {
+            ...round.meta,
+            ...(chunkPayload.reasoningKind ? { reasoningKind: chunkPayload.reasoningKind } : {}),
+            ...(chunkPayload.isThinkingEnd === true ? { thinkingEnded: true } : {}),
+          };
+        }
       } else {
         round.text += chunk;
       }
@@ -1339,6 +1389,7 @@ function restoreParkedSecondaryTurn(sessionId: string | null, key: string | null
     const rounds: LiveModelRound[] = [];
     for (const round of parked.rounds) {
       const entry = ensureSecondaryRoundStream(round.meta.roundId);
+      setChannelTailOffset(entry.text, maxToolTextOffset(round.meta.tools));
       entry.text.target = round.text;
       entry.thinking.target = round.thinking;
       commitChannelImmediate(entry.text);
@@ -2027,8 +2078,17 @@ export function subscribeAgentEvents(): void {
       const chunk = payload.text ?? payload.delta ?? payload.content ?? payload.chunk ?? "";
       if (!chunk) {
         if (isThinking && payload.isThinkingEnd === true) {
-          const entry = secondaryRoundStreams.get(roundId);
-          if (entry && commitChannelImmediate(entry.thinking)) bumpSecondaryScrollTick();
+          batch(() => {
+            const entry = secondaryRoundStreams.get(roundId);
+            if (entry && commitChannelImmediate(entry.thinking)) bumpSecondaryScrollTick();
+            const current = secondaryLiveTurn();
+            if (current && current.sessionId === rawSession) {
+              const updated = upsertSecondaryRoundMeta(current, roundId, meta =>
+                meta.thinkingEnded ? meta : { ...meta, thinkingEnded: true },
+              );
+              if (updated !== current) secondaryLiveTurn.set(updated);
+            }
+          });
         }
         return;
       }
@@ -2048,7 +2108,8 @@ export function subscribeAgentEvents(): void {
         (Boolean(attemptId) && existingRound.attemptId !== attemptId) ||
         (isThinking &&
           Boolean(payload.reasoningKind) &&
-          existingRound.reasoningKind !== payload.reasoningKind);
+          existingRound.reasoningKind !== payload.reasoningKind) ||
+        (isThinking && payload.isThinkingEnd === true && !existingRound.thinkingEnded);
       batch(() => {
         if (needsStructuralUpdate) {
           const base = ensureSecondaryLiveTurn(rawSession, turnId);
@@ -2061,6 +2122,7 @@ export function subscribeAgentEvents(): void {
               ...(isThinking && payload.reasoningKind
                 ? { reasoningKind: payload.reasoningKind }
                 : {}),
+              ...(isThinking && payload.isThinkingEnd === true ? { thinkingEnded: true } : {}),
             }),
             { attemptId },
           );
@@ -2099,7 +2161,17 @@ export function subscribeAgentEvents(): void {
     const chunk = payload.text ?? payload.delta ?? payload.content ?? payload.chunk ?? "";
     if (!chunk) {
       if (isThinking && payload.isThinkingEnd === true) {
-        flushRoundChannelImmediate(roundId, "thinking");
+        batch(() => {
+          flushRoundChannelImmediate(roundId, "thinking");
+          const current = liveTurn();
+          const sessionId = sessionOf(payload) || activeSessionId() || "";
+          if (current && current.sessionId === sessionId) {
+            const updated = upsertRoundMeta(current, roundId, meta =>
+              meta.thinkingEnded ? meta : { ...meta, thinkingEnded: true },
+            );
+            if (updated !== current) liveTurn.set(updated);
+          }
+        });
       }
       return;
     }
@@ -2124,7 +2196,8 @@ export function subscribeAgentEvents(): void {
       (Boolean(attemptId) && existingRound.attemptId !== attemptId) ||
       (isThinking &&
         Boolean(payload.reasoningKind) &&
-        existingRound.reasoningKind !== payload.reasoningKind);
+        existingRound.reasoningKind !== payload.reasoningKind) ||
+      (isThinking && payload.isThinkingEnd === true && !existingRound.thinkingEnded);
 
     const applyChunk = () => {
       if (needsStructuralUpdate) {
@@ -2138,6 +2211,7 @@ export function subscribeAgentEvents(): void {
             ...(isThinking && payload.reasoningKind
               ? { reasoningKind: payload.reasoningKind }
               : {}),
+            ...(isThinking && payload.isThinkingEnd === true ? { thinkingEnded: true } : {}),
           }),
           { attemptId },
         );
@@ -2312,6 +2386,7 @@ export function subscribeAgentEvents(): void {
           ...meta,
           tools: [],
           attemptId: undefined,
+          thinkingEnded: undefined,
         }));
         secondaryLiveTurn.set(updated);
         if (!hasAnyPendingBacklog()) {
@@ -2339,6 +2414,7 @@ export function subscribeAgentEvents(): void {
         ...meta,
         tools: [],
         attemptId: undefined,
+        thinkingEnded: undefined,
       }));
       liveTurn.set(updated);
       syncFlatStreamSignals(true, true);
@@ -2379,10 +2455,15 @@ export function subscribeAgentEvents(): void {
       const roundId = roundOf(payload);
       batch(() => {
         const base = ensureSecondaryLiveTurn(rawSession, turnId);
+        const stream = ensureSecondaryRoundStream(roundId);
         const updated = upsertSecondaryRoundMeta(
           base,
           roundId,
-          meta => applyToolEvent(meta, rawTool, ensureSecondaryRoundStream(roundId).text.target.length),
+          meta => {
+            const nextMeta = applyToolEvent(meta, rawTool, stream.text.target.length);
+            setChannelTailOffset(stream.text, maxToolTextOffset(nextMeta.tools));
+            return nextMeta;
+          },
           { attemptId },
         );
         if (updated !== base || secondaryLiveTurn() !== base) {
@@ -2423,10 +2504,15 @@ export function subscribeAgentEvents(): void {
     const roundId = roundOf(payload);
     batch(() => {
       const base = ensureLiveTurn(sessionId, turnId);
+      const stream = ensureRoundStream(roundId);
       const updated = upsertRoundMeta(
         base,
         roundId,
-        meta => applyToolEvent(meta, rawTool, ensureRoundStream(roundId).text.target.length),
+        meta => {
+          const nextMeta = applyToolEvent(meta, rawTool, stream.text.target.length);
+          setChannelTailOffset(stream.text, maxToolTextOffset(nextMeta.tools));
+          return nextMeta;
+        },
         { attemptId },
       );
       if (updated !== base || liveTurn() !== base) {

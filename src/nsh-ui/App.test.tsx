@@ -885,7 +885,12 @@ test("a tool card expands into its checklist and its edit", async () => {
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
-  // A tool call that carries a todo list shows its progress directly in the compact strip.
+  // Consecutive non-text tool calls (todo_write + edit) fold into one collapsed activity row.
+  await app.waitFor("Completed");
+  expect(app.texts().join("")).toContain("1 edit, 1 step");
+  await app.press("Completed");
+
+  // Expanding the activity group reveals the compact todo strip and edit card.
   await app.waitFor("checklist 1/3");
   await app.press("tool-card-todo_write");
   await app.waitFor("Move the list");

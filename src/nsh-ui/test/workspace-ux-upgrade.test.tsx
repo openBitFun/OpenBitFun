@@ -317,10 +317,32 @@ test("split view keeps TurnJumpRail in both Primary and Secondary panes with uni
   expect(app.shows("turn-jump-rail")).toBe(true);
   expect(app.shows("secondary-turn-jump-rail")).toBe(true);
   expect(app.shows("id:secondary-session-header")).toBe(true);
+  expect(app.shows("session-tool-files")).toBe(true);
+  expect(app.shows("secondary-session-tool-files")).toBe(true);
   expect(app.shows("secondary-composer-plus")).toBe(true);
   expect(app.shows("secondary-agent-picker")).toBe(true);
   expect(app.shows("secondary-bot-capsule-trigger")).toBe(true);
   expect(app.shows("secondary-send-turn")).toBe(true);
+
+  // Picking a model from Secondary updates Secondary's session (`session-2`), not Primary's (`session-1`).
+  await app.press("secondary-bot-capsule-trigger");
+  await app.waitFor("model-option-fast-small");
+  await app.press("model-option-fast-small");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as Record<string, unknown>)?.sessionId === "session-2" &&
+        (call.request as Record<string, unknown>)?.modelName === "fast-small",
+    ),
+  );
+  expect(
+    backend.calls.some(
+      call =>
+        call.action === "update_session_model" &&
+        (call.request as Record<string, unknown>)?.sessionId === "session-1",
+    ),
+  ).toBe(false);
 
   // Closing split view leaves Primary TurnJumpRail intact.
   await app.press("session-pane-close-1");
@@ -378,11 +400,18 @@ test("/btw opens unified right-side ephemeral split pane with workspace context,
   });
   await app.waitFor("It ports the session list to NSH.");
 
-  // Multi-turn follow-up reuses the same ephemeral child session ID and activates BTW's TurnJumpRail.
+  // Multi-turn follow-up reuses the same ephemeral child session ID, shares unified SessionComposer
+  // controls (+ menu & model selector), forwards an overridden modelId, and activates BTW's TurnJumpRail.
+  expect(app.shows("btw-composer-plus")).toBe(true);
+  expect(app.shows("btw-bot-capsule-trigger")).toBe(true);
+  await app.press("btw-bot-capsule-trigger");
+  await app.waitFor("model-option-fast-small");
+  await app.press("model-option-fast-small");
   await app.type("side-question-input", "Any blockers?");
   await app.press("side-question-ask");
   await app.waitUntil(() => btwRequests.length === 2);
   expect(btwRequests[1]?.childSessionId).toBe(firstChildId);
+  expect(btwRequests[1]?.modelId).toBe("fast-small");
   await app.waitFor("btw-turn-jump-rail");
 
   // Closing the split pane discards ephemeral state cleanly.

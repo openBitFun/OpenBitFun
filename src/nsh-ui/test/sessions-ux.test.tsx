@@ -134,17 +134,22 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
   await openSession(app, "Muse workflow");
   await app.waitFor("Inspect and update the pipeline.");
 
-  // Layered progressive disclosure: compact tool strips show cleanly; reasoning & checklist/diff stay collapsed.
+  // Layered progressive disclosure: thinking stays collapsed and consecutive non-text
+  // tool calls (bash, todo_write, edit) fold into one compact activity summary row.
   await app.waitFor("Thinking summary");
   expect(app.texts()).not.toContain("Checking git status and cargo workspace before patching.");
-  // Tool rows read as a localized verb plus their target, not as a raw tool name.
+  await app.waitFor("Completed");
+  expect(app.texts().join("")).toContain("1 command, 1 edit, 1 step");
+  await app.waitFor("Primary model · 1.2s");
+
+  // Expanding the folded activity group reveals every compact tool strip cleanly.
+  await app.press("Completed");
   await app.waitFor("Ran");
   await app.waitFor("cargo test -p core");
   await app.waitFor("Updated plan");
   await app.waitFor("Edited");
   await app.waitFor("main.rs");
   await app.waitFor("checklist 2/2");
-  await app.waitFor("Primary model · 1.2s");
 
   // Expanding thinking reveals the reasoning notes.
   await app.press("label:thinking-turn-rich-1|thinking|0");
@@ -2023,21 +2028,30 @@ test("a single heavy turn with hundreds of items virtualizes its cells and halts
     settled: true,
     user: { id: `u-${turnIndex}`, text: `Heavy prompt ${turnIndex}`, timestampMs: 1763100000000 + turnIndex * 1000 },
     items: [
-      ...Array.from({ length: itemCount }, (_, i) => ({
-        kind: "tool" as const,
-        id: `t-${turnIndex}-${i}`,
-        roundIndex: 0,
-        tool: {
-          id: `t-${turnIndex}-${i}`,
-          name: "ExecCommand",
-          status: "completed",
-          startMs: 1763100000000 + i,
-          inputPreview: `step-${turnIndex}-${i}`,
-          input: { cmd: `echo step-${turnIndex}-${i}`, payload: "x".repeat(2048) },
-          result: { output: `output-${turnIndex}-${i}: ${"y".repeat(2048)}`, exit_code: 0 },
-          success: true,
-        },
-      })),
+      ...Array.from({ length: itemCount }, (_, i) =>
+        i % 2 === 0
+          ? {
+              kind: "tool" as const,
+              id: `t-${turnIndex}-${i}`,
+              roundIndex: 0,
+              tool: {
+                id: `t-${turnIndex}-${i}`,
+                name: "ExecCommand",
+                status: "completed",
+                startMs: 1763100000000 + i,
+                inputPreview: `step-${turnIndex}-${i}`,
+                input: { cmd: `echo step-${turnIndex}-${i}`, payload: "x".repeat(2048) },
+                result: { output: `output-${turnIndex}-${i}: ${"y".repeat(2048)}`, exit_code: 0 },
+                success: true,
+              },
+            }
+          : {
+              kind: "text" as const,
+              id: `note-${turnIndex}-${i}`,
+              roundIndex: 0,
+              text: `Progress note step-${turnIndex}-${i}`,
+            },
+      ),
       {
         kind: "text" as const,
         id: `final-${turnIndex}`,
@@ -2153,4 +2167,106 @@ test("markdownPreviewCut and markdownPreviewSlice bound oversized fenced code bl
   // Preview closes the open fence so the Markdown renderer does not ingest an unterminated code block.
   const fenceCount = (preview.match(/^```/gm) ?? []).length;
   expect(fenceCount % 2).toBe(0);
+});
+
+test("interleaved thinking and non-explore commands fold both live and settled without double spinners", async () => {
+  const { turnItems } = await import("../src/format");
+  // Unit check: consecutive thinking + ExecCommand across rounds fold into one group,
+  // while a failed tool breaks the fold and stays visibly uncollapsed.
+  const foldedTurn = {
+    turnId: "turn-fold-unit",
+    user: { id: "u-fold", text: "Check build" },
+    items: [
+      { kind: "thinking", id: "th-1", text: "Check git status first" },
+      { kind: "tool", id: "t-1", tool: { id: "t-1", name: "ExecCommand", status: "completed", input: { command: "git status" } } },
+      { kind: "thinking", id: "th-2", text: "Run build next" },
+      { kind: "tool", id: "t-2", tool: { id: "t-2", name: "ExecCommand", status: "completed", input: { command: "cargo check" } } },
+      { kind: "tool", id: "t-fail", tool: { id: "t-fail", name: "ExecCommand", status: "error", error: "exit 1", input: { command: "false" } } },
+      { kind: "text", id: "txt-1", text: "Found a failure." },
+      { kind: "tool", id: "t-single", tool: { id: "t-single", name: "Read", status: "completed", input: { file_path: "/repo/a.rs" } } },
+    ],
+  };
+  const projected = turnItems(foldedTurn);
+  expect(projected.map(i => i.kind)).toEqual(["explore", "tool", "text", "tool"]);
+  const group = projected[0]!;
+  expect(group.kind).toBe("explore");
+  if (group.kind === "explore") {
+    expect(group.items.map(i => i.kind)).toEqual(["thinking", "tool", "thinking", "tool"]);
+    expect(group.calls.map(c => c.id)).toEqual(["t-1", "t-2"]);
+    expect(group.key).toBe("explore:tool:t-1");
+  }
+
+  // Live streaming UI check: thinking + ExecCommand across rounds folds live into one row
+  // and expanding reveals both Thinking and ExecCommand entries with no stuck "Thinking…" spinner.
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-fold-live", userInput: "Inspect memory usage" },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-1", turnId: "turn-fold-live", roundId: "r-1", contentType: "thinking", text: "Inspecting PID first." },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-fold-live",
+      roundId: "r-1",
+      toolEvent: {
+        event_type: "Started",
+        tool_id: "cmd-1",
+        tool_name: "ExecCommand",
+        params: { command: "ps aux" },
+      },
+    },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-fold-live",
+      roundId: "r-1",
+      toolEvent: {
+        event_type: "Completed",
+        tool_id: "cmd-1",
+        tool_name: "ExecCommand",
+        result: { output: "pid 123" },
+      },
+    },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-1", turnId: "turn-fold-live", roundId: "r-2", contentType: "thinking", text: "Now checking footprint." },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-fold-live",
+      roundId: "r-2",
+      toolEvent: {
+        event_type: "Started",
+        tool_id: "cmd-2",
+        tool_name: "ExecCommand",
+        params: { command: "footprint -p 123" },
+      },
+    },
+  });
+
+  // Live folded activity group collapses all 4 non-text entries (2 thinking + 2 commands) into one row.
+  await app.waitFor("label:explore-group-explore:tool:cmd-1");
+  expect(app.texts().join("")).toContain("2 commands");
+  expect(app.texts().join("\n")).not.toContain("ps aux");
+  expect(app.texts().join("\n")).not.toContain("footprint -p 123");
+
+  // Expanding reveals the inner rows and confirms r-2 thinking is no longer stuck in "Thinking…" while cmd-2 runs.
+  await app.press("label:explore-group-explore:tool:cmd-1");
+  await app.waitFor("ps aux");
+  await app.waitFor("footprint -p 123");
+  expect(app.texts()).not.toContain("Thinking…");
 });

@@ -16,21 +16,22 @@ import { cleanup, Clipboard, computed, effect, Image, openUrl, Scroll, signal, T
 import type { JSX, Signal, ViewStyle } from "nsh";
 import { DiffView } from "nsh/base";
 import {
+  activityCounts,
   basename,
   commandOf,
   toolCallOf,
   diffOf,
-  exploreCounts,
   formatDuration,
   formatPlural,
   pathOf,
   todosOf,
+  type FoldedProcessItem,
   type ToolCallView,
 } from "../format";
 import { tr, type MessageKey } from "../i18n";
 import { addReviewNote, editingReviewNote, removeReviewNote, reviewNotesFor, updateReviewNote, type ReviewNote } from "../reviewStore";
 import { activeSessionKey, openInAuxPane, selectSession } from "../state";
-import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { openImageLightbox } from "./ImageLightbox";
@@ -1104,18 +1105,29 @@ function SubagentSteps(props: { call: ToolCallView; cardId: string }) {
       </If>
       <Each of={visible()} key={row => row.key}>
         {row => (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: space.xxl, paddingHorizontal: space.chip }}>
-            <Icon
-              name={row().icon}
-              size={14}
-              color={
-                row().state === "failed"
-                  ? stateColor("failed")
-                  : row().state === "running"
-                    ? stateColor("working")
-                    : stateColor("idle")
-              }
-            />
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.sm,
+              minHeight: space.xxl,
+              paddingHorizontal: space.chip,
+              marginLeft: -space.chip,
+            }}
+          >
+            <TranscriptRowIconSlot>
+              <Icon
+                name={row().icon}
+                size={14}
+                color={
+                  row().state === "failed"
+                    ? stateColor("failed")
+                    : row().state === "running"
+                      ? stateColor("working")
+                      : stateColor("idle")
+                }
+              />
+            </TranscriptRowIconSlot>
             <Text
               style={{
                 flexShrink: 0,
@@ -1428,6 +1440,71 @@ function stateLabel(state: ToolRunState, call: ToolCallView): string {
 }
 
 /**
+ * Shared geometry for every quiet transcript row (`ThinkingBlock`, `ToolCard`,
+ * `ExploreGroupCard`, `SubagentSteps`, and inline status lines):
+ * - Hover hit-pill bleeds `-space.chip` (-6px) so the 16×16 leading icon slot
+ *   starts flush at `x = 0` with Markdown prose (icon center `x = 8px`).
+ * - Fixed `space.sm` (8px) gap places every label at `x = 24px`.
+ * - Expanded guide rails sit at `marginLeft: 7` (centered beneath `x = 8px`)
+ *   with child content starting at `x = 24px` directly under the row's label.
+ */
+export const TRANSCRIPT_ROW_ICON_SLOT = 16;
+export const TRANSCRIPT_ROW_RAIL_OFFSET = 7;
+
+export function transcriptRowStyle(interactive: boolean): ViewStyle {
+  return {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+    paddingHorizontal: space.chip,
+    paddingVertical: 0,
+    marginLeft: -space.chip,
+    borderRadius: radii.md,
+    borderCurve: "continuous",
+    cursor: interactive ? "pointer" : "default",
+    userSelect: interactive ? "none" : undefined,
+    ...pressTransition(MOTION_DURATION.fast),
+  };
+}
+
+/** Fixed 16×16 centered leading icon/spinner slot so SVGs and matrix spinners never drift. */
+export function TranscriptRowIconSlot(props: { children?: JSX.Element; style?: ViewStyle }) {
+  return (
+    <View
+      style={{
+        width: TRANSCRIPT_ROW_ICON_SLOT,
+        height: TRANSCRIPT_ROW_ICON_SLOT,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        ...props.style,
+      }}
+    >
+      {props.children}
+    </View>
+  );
+}
+
+/** Fixed 14×14 centered rotating chevron shared by every collapsible transcript row. */
+export function TranscriptRowChevron(props: { expanded: () => boolean }) {
+  return (
+    <View
+      style={{
+        width: 14,
+        height: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        ...rotatingChevronStyle(props.expanded()),
+      }}
+    >
+      <Icon name="chevron-right" size={12} color={palette().textMuted} />
+    </View>
+  );
+}
+
+/**
  * One tool call. The summary row is always drawn; the body only once opened, so
  * a long transcript does not build hundreds of diff views it never shows.
  */
@@ -1471,21 +1548,6 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
     state() === "failed" ? stateColor("failed") : muted() ? palette().textMuted : palette().text,
   );
 
-  // Visual spec §3 Tool: every call is one quiet 28 row; nothing is boxed.
-  const rowStyle = (): ViewStyle => ({
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-    minHeight: compactLayout() ? layout.touchTarget : 28,
-    paddingHorizontal: space.chip,
-    paddingVertical: 0,
-    borderRadius: radii.md,
-    borderCurve: "continuous",
-    cursor: expandable() ? "pointer" : "default",
-    userSelect: expandable() ? "none" : undefined,
-    ...pressTransition(MOTION_DURATION.fast),
-  });
-
   return (
     <View style={{ borderRadius: radii.md, borderCurve: "continuous" }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
@@ -1496,19 +1558,19 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
           onPress={() => {
             if (expandable()) toggleCard(props.cardId);
           }}
-          style={{ flex: 1, minWidth: 0, ...rowStyle() }}
+          style={{ flex: 1, minWidth: 0, ...transcriptRowStyle(expandable()) }}
           hoverStyle={expandable() ? { backgroundColor: palette().surfaceSubtle } : undefined}
           activeStyle={expandable() ? tactileActiveStyle(0.985) : undefined}
           focusVisibleStyle={expandable() ? focusRingStyle() : undefined}
         >
-          <If
-            when={state() === "running"}
-            else={
-              <Icon name={ICON_BY_KIND[kind()]} size={14} color={palette().textMuted} />
-            }
-          >
-            <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
-          </If>
+          <TranscriptRowIconSlot>
+            <If
+              when={state() === "running"}
+              else={<Icon name={ICON_BY_KIND[kind()]} size={14} color={palette().textMuted} />}
+            >
+              <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
+            </If>
+          </TranscriptRowIconSlot>
           <Text
             style={{
               flexShrink: 0,
@@ -1589,9 +1651,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
             )}
           </If>
           <If when={expandable()}>
-            <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
-              <Icon name="chevron-right" size={12} color={palette().textMuted} />
-            </View>
+            <TranscriptRowChevron expanded={expanded} />
           </If>
         </View>
         <If when={filePath() ?? ""}>
@@ -1659,7 +1719,7 @@ function ExploreCountSegment(props: { count: () => number; one: MessageKey; othe
   const textStyleObj = () => ({
     color: palette().textMuted,
     fontSize: textSize(13),
-    lineHeight: textLineHeight(13, 1.35),
+    lineHeight: textLineHeight(13, 18 / 13),
   });
   return (
     <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0 }}>
@@ -1674,21 +1734,47 @@ function ExploreCountSegment(props: { count: () => number; one: MessageKey; othe
   );
 }
 
+function ExploreCountComma() {
+  return (
+    <Text
+      style={{
+        color: palette().textMuted,
+        fontSize: textSize(13),
+        lineHeight: textLineHeight(13, 18 / 13),
+      }}
+    >
+      {", "}
+    </Text>
+  );
+}
+
 /**
- * Consecutive reads, searches and listings folded into one row ("Explored 3
- * files, 2 searches"); opening it shows each call as its own row.
- * Uses a fixed 16×16 leading icon slot, running-state settle hysteresis, and
- * in-place `RollingCount` digits so live tool counts tick smoothly without
- * flickering or shifting the row.
+ * Consecutive non-text process steps (thinking blocks and tool calls with no
+ * text between them) folded into one quiet aligned row; expanding reveals each
+ * thinking block and tool call in chronological order under a hairline rail.
  */
 export function ExploreGroupCard(props: {
-  calls: ToolCallView[];
+  items?: FoldedProcessItem[];
+  calls?: ToolCallView[];
   cardId: string;
   stateOf: (call: ToolCallView) => ToolRunState;
+  renderThinking?: (item: Extract<FoldedProcessItem, { kind: "thinking" }>) => JSX.Element;
   live?: boolean;
 }) {
+  const resolvedItems = computed<FoldedProcessItem[]>(() => {
+    if (props.items) return props.items;
+    return (props.calls ?? []).map((call, index) => ({
+      kind: "tool" as const,
+      key: `tool:${call.id ?? `${index}:${call.name}-${call.detail}`}`,
+      call,
+    }));
+  });
   const expanded = computed(() => isCardExpanded(props.cardId));
-  const rawRunning = computed(() => props.calls.some(call => props.stateOf(call) === "running"));
+  const rawRunning = computed(() =>
+    resolvedItems().some(item =>
+      item.kind === "thinking" ? Boolean(item.live) : props.stateOf(item.call) === "running",
+    ),
+  );
   const displayRunning = signal(rawRunning());
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1704,7 +1790,7 @@ export function ExploreGroupCard(props: {
     }
     if (props.live) {
       // Hold the spinning state briefly across inter-tool gaps so consecutive
-      // read/search calls never flicker between "Exploring" and "Explored".
+      // calls never flicker between running and settled labels.
       settleTimer = setTimeout(() => {
         settleTimer = null;
         if (!rawRunning()) displayRunning.set(false);
@@ -1720,56 +1806,76 @@ export function ExploreGroupCard(props: {
     }
   });
 
-  const counts = computed(() => exploreCounts(props.calls));
+  const counts = computed(() => activityCounts(resolvedItems()));
   const reads = computed(() => counts().reads);
   const searches = computed(() => counts().searches);
+  const commands = computed(() => counts().commands);
+  const edits = computed(() => counts().edits);
+  const otherTools = computed(() => counts().otherTools);
+  const thinkings = computed(() => counts().thinkings);
+  const totalTools = computed(() => counts().totalTools);
+
+  const groupKind = computed<"explore" | "exec" | "thinking" | "mixed">(() => {
+    const c = counts();
+    if (c.totalTools === 0) return "thinking";
+    if (c.commands === 0 && c.edits === 0 && c.otherTools === 0) return "explore";
+    if (c.reads === 0 && c.searches === 0 && c.edits === 0 && c.otherTools === 0 && c.commands > 0) return "exec";
+    return "mixed";
+  });
+
+  const settledIcon = computed<IconName>(() => {
+    switch (groupKind()) {
+      case "explore":
+        return "compass";
+      case "exec":
+        return "terminal";
+      case "thinking":
+        return "bulb";
+      default:
+        return "layers";
+    }
+  });
+
+  const headingLabel = computed(() => {
+    const running = displayRunning();
+    switch (groupKind()) {
+      case "explore":
+        return running ? tr("chat.tool.exploring") : tr("chat.tool.explored");
+      case "exec":
+        return running ? tr("chat.tool.exec.running") : tr("chat.tool.exec.done");
+      case "thinking":
+        return running ? tr("state.thinking") : tr("chat.thinking");
+      default:
+        return running ? tr("chat.tool.working") : tr("chat.tool.worked");
+    }
+  });
 
   return (
-    <View style={{ gap: space.hair }}>
+    <View style={{ gap: space.xs }}>
       <View
         role="button"
         accessibilityLabel={`explore-group-${props.cardId}`}
         onPress={() => toggleCard(props.cardId)}
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: space.sm,
-          minHeight: compactLayout() ? layout.touchTarget : 28,
-          paddingHorizontal: space.chip,
-          paddingVertical: space.xs,
-          borderRadius: radii.sm,
-          borderCurve: "continuous",
-          cursor: "pointer",
-          userSelect: "none",
-          ...pressTransition(MOTION_DURATION.fast),
-        }}
+        style={transcriptRowStyle(true)}
         hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
         activeStyle={tactileActiveStyle(0.985)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <View
-          style={{
-            width: 16,
-            height: 16,
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          <If when={displayRunning()} else={<Icon name="compass" size={15} color={palette().textSecondary} />}>
+        <TranscriptRowIconSlot>
+          <If when={displayRunning()} else={<Icon name={settledIcon()} size={14} color={palette().textMuted} />}>
             <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
           </If>
-        </View>
+        </TranscriptRowIconSlot>
         <Text
           style={{
             flexShrink: 0,
             color: palette().text,
             fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.35),
+            lineHeight: textLineHeight(13, 18 / 13),
             fontWeight: "500",
           }}
         >
-          {displayRunning() ? tr("chat.tool.exploring") : tr("chat.tool.explored")}
+          {headingLabel()}
         </Text>
         <View
           style={{
@@ -1784,36 +1890,68 @@ export function ExploreGroupCard(props: {
             <ExploreCountSegment count={reads} one="chat.tool.fileOne" other="chat.tool.fileOther" />
           </If>
           <If when={reads() > 0 && searches() > 0}>
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(13),
-                lineHeight: textLineHeight(13, 1.35),
-              }}
-            >
-              {", "}
-            </Text>
+            <ExploreCountComma />
           </If>
           <If when={searches() > 0}>
             <ExploreCountSegment count={searches} one="chat.tool.searchOne" other="chat.tool.searchOther" />
           </If>
+          <If when={reads() + searches() > 0 && commands() > 0}>
+            <ExploreCountComma />
+          </If>
+          <If when={commands() > 0}>
+            <ExploreCountSegment count={commands} one="chat.tool.commandOne" other="chat.tool.commandOther" />
+          </If>
+          <If when={reads() + searches() + commands() > 0 && edits() > 0}>
+            <ExploreCountComma />
+          </If>
+          <If when={edits() > 0}>
+            <ExploreCountSegment count={edits} one="chat.tool.editOne" other="chat.tool.editOther" />
+          </If>
+          <If when={reads() + searches() + commands() + edits() > 0 && otherTools() > 0}>
+            <ExploreCountComma />
+          </If>
+          <If when={otherTools() > 0}>
+            <ExploreCountSegment count={otherTools} one="chat.tool.stepOne" other="chat.tool.stepOther" />
+          </If>
+          <If when={totalTools() === 0 && thinkings() > 0}>
+            <ExploreCountSegment count={thinkings} one="chat.tool.stepOne" other="chat.tool.stepOther" />
+          </If>
         </View>
-        <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
-          <Icon name="chevron-right" size={14} color={palette().textMuted} />
-        </View>
+        <TranscriptRowChevron expanded={expanded} />
       </View>
       <If when={expanded()}>
         {() => {
           const reveal = subtleCrossfadeMotion();
           return (
-            <View style={[{ paddingLeft: space.lg, gap: space.hair }, reveal.style]}>
-              <Each of={props.calls} key={(call: ToolCallView, index: number) => call.id ?? `${index}:${call.name}-${call.detail}`}>
-                {(call, index) => (
-                  <ToolCard
-                    call={call()}
-                    status={props.stateOf(call())}
-                    cardId={`${props.cardId}|${call().id ?? `${index()}:${call().name}-${call().detail}`}`}
-                  />
+            <View
+              style={[
+                {
+                  marginLeft: TRANSCRIPT_ROW_RAIL_OFFSET,
+                  paddingLeft: space.lg,
+                  borderLeftWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  gap: space.hair,
+                },
+                reveal.style,
+              ]}
+            >
+              <Each
+                of={resolvedItems()}
+                key={(entry: FoldedProcessItem, index: number) => entry.key || `${entry.kind}-${index}`}
+              >
+                {(entry, index) => (
+                  <If
+                    when={entry().kind === "thinking"}
+                    else={
+                      <ToolCard
+                        call={(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call}
+                        status={props.stateOf((entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call)}
+                        cardId={`${props.cardId}|${(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call.id ?? `${index()}:${(entry() as Extract<FoldedProcessItem, { kind: "tool" }>).call.name}`}`}
+                      />
+                    }
+                  >
+                    {props.renderThinking?.(entry() as Extract<FoldedProcessItem, { kind: "thinking" }>)}
+                  </If>
                 )}
               </Each>
             </View>

@@ -141,39 +141,61 @@ export function toolCallsOf(turn: unknown): ToolCallView[] {
 }
 
 /**
+ * One non-text process step that can fold into a collapsed activity group: a
+ * reasoning block or a tool call, kept in chronological order.
+ */
+export type FoldedProcessItem =
+  | {
+      kind: "thinking";
+      key: string;
+      text: string;
+      reasoningKind?: "reasoning" | "summary";
+      live?: boolean;
+      /** Set for live rounds so collapsed groups read streaming text lazily on expand. */
+      roundId?: string;
+    }
+  | { kind: "tool"; key: string; call: ToolCallView };
+
+/**
  * One thing a reader sees in a turn, in the order it happened: a stretch of the
- * answer, a block of reasoning, a tool call, or a run of exploring tool calls
- * (reads, searches, listings) folded into one row.
+ * answer, a block of reasoning, a tool call, or a run of consecutive non-text
+ * items (thinking and tool calls) folded into one collapsible row.
  */
 export type TranscriptItem =
   | { kind: "text"; key: string; text: string }
-  | { kind: "thinking"; key: string; text: string; reasoningKind?: "reasoning" | "summary"; live?: boolean }
+  | { kind: "thinking"; key: string; text: string; reasoningKind?: "reasoning" | "summary"; live?: boolean; roundId?: string }
   | { kind: "tool"; key: string; call: ToolCallView }
-  | { kind: "explore"; key: string; calls: ToolCallView[] };
+  | { kind: "explore"; key: string; items: FoldedProcessItem[]; calls: ToolCallView[] };
 
 /**
  * The turn's items as the transcript draws them. Keys are the host's item ids,
  * so a re-read never remounts an opened card; a thinking block keeps its
- * turn-plus-text key so its disclosure survives the live-to-persisted swap.
+ * turn-plus-index key so its disclosure stays bounded and stable.
  */
 export function turnItems(turn: unknown): TranscriptItem[] {
   const view = viewOf(turn);
   if (!view) return [];
-  const items: TranscriptItem[] = view.items.map((item, index) => {
+  const items: TranscriptItem[] = [];
+  for (let index = 0; index < view.items.length; index += 1) {
+    const item = view.items[index]!;
     if (item.kind === "text") {
-      return { kind: "text", key: `text:${item.id || `${view.turnId}-${index}`}`, text: item.text };
+      if (!item.text.trim()) continue;
+      items.push({ kind: "text", key: `text:${item.id || `${view.turnId}-${index}`}`, text: item.text });
+      continue;
     }
     if (item.kind === "thinking") {
-      return {
+      if (!item.text.trim()) continue;
+      items.push({
         kind: "thinking",
         key: `${view.turnId}|thinking|${index}`,
         text: item.text,
         ...(item.reasoningKind ? { reasoningKind: item.reasoningKind } : {}),
-      };
+      });
+      continue;
     }
     const call = toolCallOf(item.tool);
-    return { kind: "tool", key: `tool:${item.tool.id || `${view.turnId}-${index}-${item.tool.name}`}`, call };
-  });
+    items.push({ kind: "tool", key: `tool:${item.tool.id || `${view.turnId}-${index}-${item.tool.name}`}`, call });
+  }
   return groupExploreItems(items);
 }
 
@@ -188,35 +210,78 @@ export function isExploreTool(name: string): boolean {
     lower === "ls" ||
     lower === "listdir" ||
     lower === "listdirectory" ||
+    lower === "findfiles" ||
     lower === "searchfiles" ||
-    lower === "codebasesearch"
+    lower === "codebasesearch" ||
+    lower === "websearch" ||
+    lower === "webfetch" ||
+    lower === "viewimage"
   );
 }
 
+const NON_FOLDABLE_TOOL_NAMES = new Set(["GenerativeUI", "generative_ui", "GenUI"]);
+
 /**
- * Folds two or more consecutive exploring tool calls into one `explore` item, the
- * way the desktop collapses an agent looking around into "Explored …". A failed
- * call stays out of a group so its error is never hidden behind a summary.
+ * Whether a tool call can join a collapsed non-text activity run. GenerativeUI
+ * surfaces, failed/rejected calls, and tools awaiting user confirmation stay
+ * visible at top level so errors and user-facing actions are never hidden.
+ */
+export function isFoldableToolCall(call: ToolCallView): boolean {
+  if (NON_FOLDABLE_TOOL_NAMES.has(call.name)) return false;
+  const status = (call.status ?? "").toLowerCase();
+  if (
+    Boolean(call.error) ||
+    call.success === false ||
+    status === "failed" ||
+    status === "error" ||
+    status === "rejected" ||
+    status === "confirmation" ||
+    status === "awaiting_confirmation"
+  ) {
+    return false;
+  }
+  const normalized = call.name.toLowerCase().replace(/[^a-z]/g, "");
+  if (normalized === "askuserquestion" && (status === "running" || status === "waiting" || status === "in_progress")) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Folds two or more consecutive non-text items (thinking blocks and foldable
+ * tool calls, with no visible text between them) into one collapsed group row.
+ * Failed/rejected calls, pending approvals, and GenerativeUI cards break the
+ * run and remain visible on their own.
  */
 export function groupExploreItems(items: TranscriptItem[]): TranscriptItem[] {
   const grouped: TranscriptItem[] = [];
-  let run: Array<{ kind: "tool"; key: string; call: ToolCallView }> = [];
+  let run: FoldedProcessItem[] = [];
   const flush = () => {
     if (run.length >= 2) {
-      grouped.push({ kind: "explore", key: `explore:${run[0].key}`, calls: run.map(entry => entry.call) });
+      const firstTool = run.find(entry => entry.kind === "tool");
+      const calls = run.flatMap(entry => (entry.kind === "tool" ? [entry.call] : []));
+      grouped.push({
+        kind: "explore",
+        key: `explore:${(firstTool ?? run[0]!).key}`,
+        items: run,
+        calls,
+      });
     } else {
       grouped.push(...run);
     }
     run = [];
   };
   for (const item of items) {
-    if (
-      item.kind === "tool" &&
-      isExploreTool(item.call.name) &&
-      !item.call.error &&
-      item.call.success !== false
-    ) {
+    if (item.kind === "thinking") {
       run.push(item);
+      continue;
+    }
+    if (item.kind === "tool" && isFoldableToolCall(item.call)) {
+      run.push(item);
+      continue;
+    }
+    if (item.kind === "explore") {
+      run.push(...item.items);
       continue;
     }
     flush();
@@ -236,6 +301,59 @@ export function exploreCounts(calls: ToolCallView[]): { reads: number; searches:
     else searches += 1;
   }
   return { reads, searches };
+}
+
+export interface ActivityCounts {
+  reads: number;
+  searches: number;
+  commands: number;
+  edits: number;
+  otherTools: number;
+  thinkings: number;
+  totalTools: number;
+}
+
+const READ_TOOL_NAMES = new Set(["read", "readfile", "webfetch", "viewimage"]);
+const SEARCH_TOOL_NAMES = new Set(["grep", "glob", "ls", "listdir", "listdirectory", "findfiles", "searchfiles", "codebasesearch", "websearch"]);
+const COMMAND_TOOL_NAMES = new Set(["bash", "execcommand", "runcode", "runcommand", "shell", "exec", "terminal", "writestdin", "execcontrol"]);
+const EDIT_TOOL_NAMES = new Set(["edit", "editfile", "multiedit", "strreplace", "strreplaceeditor", "searchreplace", "applypatch", "write", "writefile", "createfile", "delete", "deletefile"]);
+
+/** Breaks down a folded non-text activity group by operation category. */
+export function activityCounts(items: readonly FoldedProcessItem[]): ActivityCounts {
+  let reads = 0;
+  let searches = 0;
+  let commands = 0;
+  let edits = 0;
+  let otherTools = 0;
+  let thinkings = 0;
+  for (const item of items) {
+    if (item.kind === "thinking") {
+      thinkings += 1;
+      continue;
+    }
+    const call = item.call;
+    if (call.name.startsWith("mcp__")) {
+      otherTools += 1;
+      continue;
+    }
+    const normalized = call.name.toLowerCase().replace(/[^a-z]/g, "");
+    if (READ_TOOL_NAMES.has(normalized)) reads += 1;
+    else if (SEARCH_TOOL_NAMES.has(normalized)) searches += 1;
+    else if (COMMAND_TOOL_NAMES.has(normalized)) commands += 1;
+    else if (EDIT_TOOL_NAMES.has(normalized)) edits += 1;
+    else if (diffOf(call.input) !== null) edits += 1;
+    else if (commandOf(call.input)) commands += 1;
+    else otherTools += 1;
+  }
+  return {
+    reads,
+    searches,
+    commands,
+    edits,
+    otherTools,
+    thinkings,
+    totalTools: reads + searches + commands + edits + otherTools,
+  };
 }
 
 /** Why a persisted turn did not finish, when the host recorded it. */

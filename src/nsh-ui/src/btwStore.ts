@@ -6,6 +6,12 @@
 // pane immediately releases all ephemeral state.
 
 import { batch, signal } from "nsh";
+import {
+  buildAttachmentContexts,
+  composeMessageWithFileAttachments,
+  type FileAttachment,
+  type ImageAttachment,
+} from "./attachmentStore";
 import { fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { isMissingCommand } from "./settingsMutations";
 
@@ -17,6 +23,7 @@ export interface SideQuestion {
   parentSessionId: string;
   deviceId: string;
   question: string;
+  images?: ImageAttachment[];
   answer: string;
   state: SideQuestionState;
   error?: string;
@@ -24,6 +31,9 @@ export interface SideQuestion {
 
 export const sideQuestionOpen = signal(false);
 export const sideQuestionDraft = signal("");
+export const sideQuestionImageAttachments = signal<ImageAttachment[]>([]);
+export const sideQuestionFileAttachments = signal<FileAttachment[]>([]);
+export const sideQuestionModelOverride = signal<string | null>(null);
 export const sideQuestion = signal<SideQuestion | null>(null);
 /** Multi-turn ephemeral messages inside the active BTW side-question pane. */
 export const sideQuestionHistory = signal<SideQuestion[]>([]);
@@ -34,9 +44,32 @@ export const sideQuestionParentId = signal<string | null>(null);
 /** Set when the session's host predates `btw_ask_stream`. */
 export const sideQuestionUnsupported = signal(false);
 
+export function addSideQuestionImageAttachment(item: ImageAttachment): void {
+  sideQuestionImageAttachments.update(list => (list.some(x => x.id === item.id) ? list : [...list, item]));
+}
+
+export function removeSideQuestionImageAttachment(id: string): void {
+  sideQuestionImageAttachments.update(list => list.filter(item => item.id !== id));
+}
+
+export function addSideQuestionFileAttachment(item: FileAttachment): void {
+  sideQuestionFileAttachments.update(list => (list.some(x => x.path === item.path) ? list : [...list, item]));
+}
+
+export function removeSideQuestionFileAttachment(id: string): void {
+  sideQuestionFileAttachments.update(list => list.filter(item => item.id !== id));
+}
+
+function clearSideQuestionAttachments(): void {
+  sideQuestionImageAttachments.set([]);
+  sideQuestionFileAttachments.set([]);
+}
+
 function newId(prefix: string): string {
-  const random = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID;
-  if (typeof random === "function") return `${prefix}_${random()}`;
+  const cryptoObj = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
+    return `${prefix}_${cryptoObj.randomUUID()}`;
+  }
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -61,6 +94,8 @@ export function resetSideQuestionThread(): void {
     sideQuestionChildId.set(null);
     sideQuestionParentId.set(null);
     sideQuestionDraft.set("");
+    clearSideQuestionAttachments();
+    sideQuestionModelOverride.set(null);
     sideQuestionUnsupported.set(false);
   });
 }
@@ -76,6 +111,8 @@ export function closeSideQuestion(): void {
     sideQuestionChildId.set(null);
     sideQuestionParentId.set(null);
     sideQuestionDraft.set("");
+    clearSideQuestionAttachments();
+    sideQuestionModelOverride.set(null);
   });
 }
 
@@ -93,11 +130,19 @@ function updateTurnEntry(requestId: string, updater: (entry: SideQuestion) => Si
 
 /** Asks `question` beside `sessionId`; follow-ups reuse the ephemeral child session. */
 export async function askSideQuestion(
-  target: { sessionId: string; deviceId: string; workspaceId?: string | null; workspacePath?: string | null },
+  target: {
+    sessionId: string;
+    deviceId: string;
+    workspaceId?: string | null;
+    workspacePath?: string | null;
+    modelId?: string | null;
+  },
   question: string,
 ): Promise<void> {
-  const text = question.trim();
-  if (!text || !target.sessionId) return;
+  const outgoingImages = [...sideQuestionImageAttachments()];
+  const outgoingFiles = [...sideQuestionFileAttachments()];
+  const text = composeMessageWithFileAttachments(question, outgoingFiles);
+  if ((!text && outgoingImages.length === 0) || !target.sessionId) return;
   const previous = sideQuestion();
   if (previous?.state === "running") await cancelSideQuestion();
 
@@ -105,6 +150,8 @@ export async function askSideQuestion(
   // start a clean thread if the user switched parent sessions.
   const sameParent = sideQuestionParentId() === target.sessionId && Boolean(sideQuestionChildId());
   const childSessionId = sameParent ? sideQuestionChildId()! : newId("btw_session");
+  const imageContexts = buildAttachmentContexts(outgoingImages);
+  const modelId = target.modelId ?? sideQuestionModelOverride();
 
   const entry: SideQuestion = {
     requestId: newId("btw"),
@@ -112,6 +159,7 @@ export async function askSideQuestion(
     parentSessionId: target.sessionId,
     deviceId: target.deviceId,
     question: text,
+    ...(outgoingImages.length > 0 ? { images: outgoingImages } : {}),
     answer: "",
     state: "running",
   };
@@ -123,6 +171,7 @@ export async function askSideQuestion(
     sideQuestion.set(entry);
     sideQuestionHistory.set(sameParent ? [...sideQuestionHistory(), entry] : [entry]);
     sideQuestionDraft.set("");
+    clearSideQuestionAttachments();
     sideQuestionUnsupported.set(false);
   });
 
@@ -136,7 +185,9 @@ export async function askSideQuestion(
         ...(target.workspacePath ? { workspacePath: target.workspacePath } : {}),
         question: text,
         childSessionId: entry.childSessionId,
-        childSessionName: oneLine(text),
+        childSessionName: oneLine(text || "image"),
+        ...(modelId ? { modelId } : {}),
+        ...(imageContexts.length > 0 ? { imageContexts } : {}),
       },
       fleetActive() && target.deviceId ? { target: target.deviceId } : undefined,
     );
@@ -223,6 +274,8 @@ export function resetSideQuestion(): void {
     sideQuestionChildId.set(null);
     sideQuestionParentId.set(null);
     sideQuestionDraft.set("");
+    clearSideQuestionAttachments();
+    sideQuestionModelOverride.set(null);
     sideQuestionOpen.set(false);
     sideQuestionUnsupported.set(false);
   });
