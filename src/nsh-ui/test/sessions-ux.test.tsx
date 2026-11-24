@@ -794,27 +794,132 @@ test("unread marks are the host's, and legacy local seen marks are handed over o
 });
 
 test("a long history opens on its newest turns and loads earlier ones on request", async () => {
-  const turns = Array.from({ length: 3 }, (_, index) => ({
+  const allTurns = Array.from({ length: 24 }, (_, index) => ({
     turnId: `turn-${index + 1}`,
-    userMessage: { id: `u-${index}`, content: `Question ${index + 1}` },
-    modelRounds: [{ textItems: [{ id: `t-${index}`, content: `Answer ${index + 1}` }] }],
+    turnIndex: index,
+    kind: "user_dialog",
+    status: "done",
+    settled: true,
+    user: { id: `u-${index}`, text: `Question ${index + 1}`, timestampMs: 1_763_100_000_000 + index * 1000 },
+    items: [{ kind: "text", id: `t-${index}`, roundIndex: 0, text: `Answer ${index + 1}` }],
+    startTimeMs: 1_763_100_000_000 + index * 1000,
+    assistantTimestampMs: 1_763_100_000_500 + index * 1000,
   }));
   const backend = createBackend({
     sessions: [
-      { sessionId: "session-long", sessionName: "Long history", lastUpdated: 1763100000000, messageCount: 80, turnCount: 40, agentType: "Standard" } as never,
+      { sessionId: "session-long", sessionName: "Long history", lastUpdated: 1763100000000, messageCount: 48, turnCount: 24, agentType: "Standard" } as never,
     ],
   });
-  withCustomTurns(backend, { "session-long": turns });
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  const transcriptCalls: Array<Record<string, unknown>> = [];
+  backend.handlers["openbitfun.invoke"] = (payload: unknown) => {
+    const args = payload as { action?: string; request?: Record<string, unknown> };
+    if (args.action === "get_session_transcript_view" && args.request?.session_id === "session-long") {
+      const req = args.request ?? {};
+      transcriptCalls.push({ ...req });
+      const limit = typeof req.limit === "number" && req.limit > 0 ? req.limit : allTurns.length;
+      const before = typeof req.before_turn_index === "number" ? req.before_turn_index : undefined;
+      if (before !== undefined) {
+        const eligible = allTurns.filter(t => t.turnIndex < before);
+        const start = Math.max(0, eligible.length - limit);
+        return {
+          ok: true,
+          value: {
+            sessionId: "session-long",
+            mode: "before",
+            turns: eligible.slice(start),
+            hasEarlier: start > 0,
+          },
+          transport: "dev",
+        };
+      }
+      const start = Math.max(0, allTurns.length - limit);
+      const slice = allTurns.slice(start);
+      const last = slice[slice.length - 1];
+      return {
+        ok: true,
+        value: {
+          sessionId: "session-long",
+          mode: "full",
+          turns: slice,
+          cursor: last ? `tv1:${last.turnIndex}:fake:${last.turnId}` : undefined,
+          hasEarlier: start > 0,
+        },
+        transport: "dev",
+      };
+    }
+    return baseInvoke(payload);
+  };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "Long history");
-  await app.waitFor("Answer 3");
-  const first = backend.calls.find(call => call.action === "get_session_transcript_view")?.request;
-  expect(first).toMatchObject({ session_id: "session-long", limit: 30 });
+  // Instant Stage 1 paint opens on the newest 2 turns without loading all 24.
+  await app.waitFor("Answer 24");
+  expect(transcriptCalls[0]).toMatchObject({ session_id: "session-long", limit: 2 });
+  // Stage 2 idle backfill pulls earlier turns incrementally via before_turn_index.
+  await app.waitUntil(() =>
+    transcriptCalls.some(call => typeof call.before_turn_index === "number"),
+  );
   await app.waitFor("load-earlier-turns");
+  const beforeCount = transcriptCalls.filter(call => typeof call.before_turn_index === "number").length;
   await app.press("load-earlier-turns");
   await app.waitUntil(() =>
-    backend.calls.some(call => call.action === "get_session_transcript_view" && (call.request as { limit?: number })?.limit === 60),
+    transcriptCalls.filter(call => typeof call.before_turn_index === "number").length > beforeCount,
   );
+  // Earlier turns prepend cleanly while newest Answer 24 remains mounted.
+  await app.waitFor("Answer 5");
+  expect(app.texts().join("\n")).toContain("Answer 24");
+  // Never re-fetched a full 24-turn window.
+  expect(transcriptCalls.every(call => Number(call.limit ?? 0) <= 10)).toBe(true);
+});
+
+test("older host ignoring before_turn_index gracefully falls back to widened limit", async () => {
+  const turns = Array.from({ length: 14 }, (_, index) => ({
+    turnId: `legacy-turn-${index + 1}`,
+    turnIndex: index,
+    kind: "user_dialog",
+    status: "done",
+    settled: true,
+    user: { id: `lu-${index}`, text: `Legacy Q${index + 1}`, timestampMs: 1_763_100_000_000 + index * 1000 },
+    items: [{ kind: "text", id: `lt-${index}`, roundIndex: 0, text: `Legacy A${index + 1}` }],
+    startTimeMs: 1_763_100_000_000 + index * 1000,
+    assistantTimestampMs: 1_763_100_000_500 + index * 1000,
+  }));
+  const backend = createBackend({
+    sessions: [
+      { sessionId: "session-legacy-host", sessionName: "Legacy host history", lastUpdated: 1763100000000, messageCount: 28, turnCount: 14, agentType: "Standard" } as never,
+    ],
+  });
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  const calls: Array<Record<string, unknown>> = [];
+  backend.handlers["openbitfun.invoke"] = (payload: unknown) => {
+    const args = payload as { action?: string; request?: Record<string, unknown> };
+    if (args.action === "get_session_transcript_view" && args.request?.session_id === "session-legacy-host") {
+      const req = args.request ?? {};
+      calls.push({ ...req });
+      // Simulates an older 2.0 host that ignores `before_turn_index` and always
+      // answers `mode: "full"` with the newest `limit` turns.
+      const limit = typeof req.limit === "number" && req.limit > 0 ? req.limit : turns.length;
+      const start = Math.max(0, turns.length - limit);
+      return {
+        ok: true,
+        value: {
+          sessionId: "session-legacy-host",
+          mode: "full",
+          turns: turns.slice(start),
+          hasEarlier: start > 0,
+        },
+        transport: "dev",
+      };
+    }
+    return baseInvoke(payload);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Legacy host history");
+  await app.waitFor("Legacy A14");
+  await app.waitFor("load-earlier-turns");
+  await app.press("load-earlier-turns");
+  await app.waitFor("Legacy A3");
+  expect(calls.some(call => Number(call.limit ?? 0) >= 12 && call.before_turn_index === undefined)).toBe(true);
 });
 
 test("an approval can be rejected with a reason the agent receives", async () => {

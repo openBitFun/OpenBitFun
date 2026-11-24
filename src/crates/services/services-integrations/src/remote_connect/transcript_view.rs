@@ -31,8 +31,82 @@ const CHAT_TOOL_INPUT_NAMES: &[&str] = &[
     "TodoWrite",
 ];
 
+/// Tool names whose full result payload renders directly as UI and must never
+/// be truncated in transcript projection.
+const GENUI_TOOL_NAMES: &[&str] = &["GenerativeUI", "generative_ui", "GenUI"];
+
+/// Upper bound for individual raw text blobs inside persisted tool results
+/// projected for display. Comfortably exceeds the UI card display cap (24 KiB)
+/// while preventing megabyte tool outputs from stalling IPC serialization and
+/// frontend JSON parsing on collapsed history cards.
+const MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES: usize = 32_768;
+
+/// Duplicate `resultForAssistant` text larger than this is omitted when
+/// `result` already carries displayable text, avoiding double-shipping huge
+/// tool outputs over IPC.
+const MAX_REDUNDANT_RESULT_FOR_ASSISTANT_BYTES: usize = 4_096;
+
+const MAX_TOOL_RESULT_TRAVERSAL_DEPTH: usize = 8;
+
 /// The cursor format version; an unknown prefix is answered with a full view.
 const CURSOR_PREFIX: &str = "tv1";
+
+fn should_preserve_raw_tool_string(value: &str) -> bool {
+    value.starts_with("data:") || value.contains('\u{E200}')
+}
+
+fn truncate_utf8_with_ellipsis(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes || should_preserve_raw_tool_string(&value) {
+        return value;
+    }
+    let mut end = max_bytes.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value.push_str("\n…");
+    value
+}
+
+fn bound_tool_result_value(value: serde_json::Value, depth: usize) -> serde_json::Value {
+    if depth >= MAX_TOOL_RESULT_TRAVERSAL_DEPTH {
+        return value;
+    }
+    match value {
+        serde_json::Value::String(text) => serde_json::Value::String(truncate_utf8_with_ellipsis(
+            text,
+            MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES,
+        )),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .into_iter()
+                .map(|entry| bound_tool_result_value(entry, depth + 1))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, entry)| (key, bound_tool_result_value(entry, depth + 1)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn result_has_display_text(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::String(text)) => !text.trim().is_empty(),
+        Some(serde_json::Value::Object(map)) => [
+            "output", "content", "text", "stdout", "result", "summary", "message",
+        ]
+        .iter()
+        .any(|key| {
+            map.get(*key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+        }),
+        _ => false,
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +397,29 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
             let status = tool_status(item.status.as_deref(), item.has_result);
             let plan =
                 project_remote_plan_tool(&item.name, Some(&item.call.input), item.result.as_ref());
+            let preserve_full_result = GENUI_TOOL_NAMES.contains(&item.name.as_str());
+            let bounded_result = if preserve_full_result {
+                item.result
+            } else {
+                item.result.map(|value| bound_tool_result_value(value, 0))
+            };
+            let bounded_result_for_assistant = if preserve_full_result {
+                item.result_for_assistant
+            } else {
+                item.result_for_assistant.and_then(|text| {
+                    if text.len() > MAX_REDUNDANT_RESULT_FOR_ASSISTANT_BYTES
+                        && result_has_display_text(bounded_result.as_ref())
+                        && !should_preserve_raw_tool_string(&text)
+                    {
+                        None
+                    } else {
+                        Some(truncate_utf8_with_ellipsis(
+                            text,
+                            MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES,
+                        ))
+                    }
+                })
+            };
             ordered.push(OrderedEntry {
                 order_index: item.order_index,
                 sequence,
@@ -339,8 +436,8 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
                         status,
                         success: item.success,
                         error: item.error,
-                        result: item.result,
-                        result_for_assistant: item.result_for_assistant,
+                        result: bounded_result,
+                        result_for_assistant: bounded_result_for_assistant,
                         duration_ms: item.duration_ms,
                         start_ms: item.start_ms,
                         plan,
@@ -676,6 +773,26 @@ pub fn session_transcript_view(
     }
 }
 
+/// Build the answer to a backward history page read (`before_turn_index`).
+///
+/// The client prepends `turns` before its earliest held turn without touching
+/// its tail cursor or re-fetching newer turns.
+pub fn session_transcript_view_before(
+    session_id: impl Into<String>,
+    turns: Vec<TranscriptTurnView>,
+    has_earlier: bool,
+) -> SessionTranscriptView {
+    SessionTranscriptView {
+        session_id: session_id.into(),
+        mode: "before".to_string(),
+        kept_through_index: None,
+        turns,
+        cursor: None,
+        has_earlier,
+        prompt_suggestion: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,5 +1020,102 @@ mod tests {
             view[0].user.images[0].image_path.as_deref(),
             Some("/tmp/shot.png")
         );
+    }
+
+    #[test]
+    fn before_page_view_uses_before_mode_and_omits_cursor() {
+        let turns = build_transcript_view(vec![history_turn(4, false), history_turn(5, false)]);
+        let page = session_transcript_view_before("s", turns, true);
+        assert_eq!(page.mode, "before");
+        assert_eq!(page.kept_through_index, None);
+        assert_eq!(page.cursor, None);
+        assert!(page.has_earlier);
+        assert_eq!(page.turns.len(), 2);
+        assert_eq!(page.turns[0].turn_index, 4);
+        assert_eq!(page.turns[1].turn_index, 5);
+    }
+
+    #[test]
+    fn oversized_tool_results_are_bounded_while_preserving_genui_and_visualize() {
+        let mut turn = history_turn(0, false);
+        let huge_output = "中".repeat(20_000); // 60 KiB multi-byte UTF-8
+        let huge_redundant = "x".repeat(12_000);
+        let visualize_payload = format!(
+            "{}\u{E200}visualize\u{E202}{{\"path\":\"artifacts/visualizations/a.html\"}}\u{E201}",
+            "y".repeat(40_000)
+        );
+        let huge_genui_html = format!("<div>{}</div>", "z".repeat(60_000));
+        turn.rounds[0].tool_items = vec![
+            RemoteChatHistoryToolItem {
+                id: "tool-exec".to_string(),
+                name: "ExecCommand".to_string(),
+                call: RemoteChatHistoryToolCall {
+                    id: "c1".to_string(),
+                    input: serde_json::json!({"cmd": "cargo test"}),
+                },
+                result: Some(serde_json::json!({"output": huge_output, "exit_code": 0})),
+                has_result: true,
+                success: Some(true),
+                result_for_assistant: Some(huge_redundant),
+                start_ms: 1,
+                ..Default::default()
+            },
+            RemoteChatHistoryToolItem {
+                id: "tool-vis".to_string(),
+                name: "Write".to_string(),
+                call: RemoteChatHistoryToolCall {
+                    id: "c2".to_string(),
+                    input: serde_json::json!({"file_path": "artifacts/visualizations/a.html"}),
+                },
+                result: Some(serde_json::json!({"output": visualize_payload})),
+                has_result: true,
+                success: Some(true),
+                start_ms: 2,
+                ..Default::default()
+            },
+            RemoteChatHistoryToolItem {
+                id: "tool-genui".to_string(),
+                name: "GenerativeUI".to_string(),
+                call: RemoteChatHistoryToolCall {
+                    id: "c3".to_string(),
+                    input: serde_json::json!({}),
+                },
+                result: Some(serde_json::json!({"html": huge_genui_html})),
+                has_result: true,
+                success: Some(true),
+                start_ms: 3,
+                ..Default::default()
+            },
+        ];
+
+        let view = build_transcript_view(vec![turn]);
+        let tools: Vec<&TranscriptToolView> = view[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItemView::Tool { tool, .. } => Some(tool),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools.len(), 3);
+
+        // Oversized Bash output is cleanly truncated on a UTF-8 boundary and
+        // redundant large result_for_assistant is omitted.
+        let exec_output = tools[0].result.as_ref().unwrap()["output"]
+            .as_str()
+            .unwrap();
+        assert!(exec_output.len() <= MAX_TRANSCRIPT_TOOL_RESULT_STRING_BYTES + 8);
+        assert!(exec_output.ends_with("\n…"));
+        assert_eq!(tools[0].result.as_ref().unwrap()["exit_code"], 0);
+        assert!(tools[0].result_for_assistant.is_none());
+
+        // Visualize directive payloads and GenUI HTML payloads are preserved intact.
+        let vis_output = tools[1].result.as_ref().unwrap()["output"]
+            .as_str()
+            .unwrap();
+        assert!(vis_output.contains('\u{E200}'));
+        assert!(vis_output.len() > 40_000);
+        let genui_output = tools[2].result.as_ref().unwrap()["html"].as_str().unwrap();
+        assert_eq!(genui_output.len(), huge_genui_html.len());
     }
 }

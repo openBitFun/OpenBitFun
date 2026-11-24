@@ -494,40 +494,62 @@ pub(crate) async fn get_session_transcript_view(
         .and_then(|value| value.as_u64())
         .map(|value| value as usize)
         .filter(|value| *value > 0);
-    let turns = state
+    let before_turn_index = request
+        .get("before_turn_index")
+        .or_else(|| request.get("beforeTurnIndex"))
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize);
+    let page = state
         .compatibility
-        .load_persisted_session_turns(&workspace_path, &session_id, limit)
+        .load_persisted_session_turns_page(&workspace_path, &session_id, before_turn_index, limit)
         .await
         .map_err(|e| format!("Failed to load session transcript: {e}"))?;
-    let metadata = state
-        .compatibility
-        .load_persisted_session_metadata(&workspace_path, &session_id)
-        .await
-        .ok()
-        .flatten();
-    let has_earlier = limit.is_some_and(|limit| {
-        turns.len() >= limit && turns.first().is_some_and(|turn| turn.turn_index > 0)
-    });
+    let is_before_page = before_turn_index.is_some();
     let cursor = optional_string(request, "cursor");
-    let mut view = openbitfun_core::session_transcript_view_from_turns(
-        &session_id,
-        &turns,
-        cursor.as_deref(),
-        has_earlier,
-    );
-    let snapshot_workspace_id = optional_string(request, "workspace_id")
-        .or_else(|| optional_string(request, "workspaceId"))
-        .or_else(|| {
-            metadata
-                .as_ref()
-                .and_then(|meta| meta.workspace_id.as_deref())
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        });
-    if view.turns.iter().any(|turn| turn.settled) {
+    let mut view = if is_before_page {
+        openbitfun_core::session_transcript_view_before_from_turns(
+            &session_id,
+            &page.turns,
+            page.has_earlier,
+        )
+    } else {
+        openbitfun_core::session_transcript_view_from_turns(
+            &session_id,
+            &page.turns,
+            cursor.as_deref(),
+            page.has_earlier,
+        )
+    };
+    let explicit_workspace_id = optional_string(request, "workspace_id")
+        .or_else(|| optional_string(request, "workspaceId"));
+    let settled_turn_indices: std::collections::BTreeSet<usize> = view
+        .turns
+        .iter()
+        .filter(|turn| turn.settled)
+        .map(|turn| turn.turn_index)
+        .collect();
+    let need_metadata =
+        !is_before_page || (explicit_workspace_id.is_none() && !settled_turn_indices.is_empty());
+    let metadata = if need_metadata {
+        state
+            .compatibility
+            .load_persisted_session_metadata(&workspace_path, &session_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let snapshot_workspace_id = explicit_workspace_id.or_else(|| {
+        metadata
+            .as_ref()
+            .and_then(|meta| meta.workspace_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    });
+    if !settled_turn_indices.is_empty() {
         if let Some(workspace_id) = snapshot_workspace_id.as_deref() {
-            let max_turn_exclusive = turns.iter().map(|turn| turn.turn_index + 1).max();
             if let Ok(manager) =
                 openbitfun_core::service::snapshot::open_snapshot_history_for_workspace(
                     workspace_id,
@@ -535,7 +557,7 @@ pub(crate) async fn get_session_transcript_view(
                 .await
             {
                 if let Ok(by_turn) = manager
-                    .get_turn_file_change_summaries_before(&session_id, max_turn_exclusive)
+                    .get_turn_file_change_summaries_for_turns(&session_id, &settled_turn_indices)
                     .await
                 {
                     for turn in &mut view.turns {
@@ -559,9 +581,9 @@ pub(crate) async fn get_session_transcript_view(
             }
         }
     }
-    if openbitfun_core::is_prompt_suggestion_enabled().await {
+    if !is_before_page && openbitfun_core::is_prompt_suggestion_enabled().await {
         view.prompt_suggestion =
-            openbitfun_core::resolved_transcript_prompt_suggestion(metadata.as_ref(), &turns);
+            openbitfun_core::resolved_transcript_prompt_suggestion(metadata.as_ref(), &page.turns);
     }
     serde_json::to_value(view).map_err(|e| format!("serialize transcript view: {e}"))
 }

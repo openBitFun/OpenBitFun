@@ -825,6 +825,50 @@ impl SnapshotCore {
             }
         }
 
+        self.compute_turn_file_change_summaries(ops_by_turn).await
+    }
+
+    /// Computes net per-turn file change summaries only for the specified
+    /// `turn_indices`, avoiding disk reads and diffing for turns outside the
+    /// loaded transcript page.
+    pub async fn get_turn_file_change_summaries_for_turns(
+        &self,
+        session_id: &str,
+        turn_indices: &std::collections::BTreeSet<usize>,
+    ) -> SnapshotResult<
+        std::collections::BTreeMap<
+            usize,
+            Vec<crate::service::snapshot::types::TurnFileChangeSummary>,
+        >,
+    > {
+        if turn_indices.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        let Some(session) = self.sessions.get(session_id) else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+
+        let mut ops_by_turn: std::collections::BTreeMap<usize, Vec<&FileOperation>> =
+            std::collections::BTreeMap::new();
+        for op in session.all_operations_iter() {
+            if turn_indices.contains(&op.turn_index) && operation_is_completed_for_session_file(op)
+            {
+                ops_by_turn.entry(op.turn_index).or_default().push(op);
+            }
+        }
+
+        self.compute_turn_file_change_summaries(ops_by_turn).await
+    }
+
+    async fn compute_turn_file_change_summaries(
+        &self,
+        ops_by_turn: std::collections::BTreeMap<usize, Vec<&FileOperation>>,
+    ) -> SnapshotResult<
+        std::collections::BTreeMap<
+            usize,
+            Vec<crate::service::snapshot::types::TurnFileChangeSummary>,
+        >,
+    > {
         let mut out = std::collections::BTreeMap::new();
         for (turn_index, mut ops) in ops_by_turn {
             ops.sort_by_key(|op| op.seq_in_turn);
@@ -2305,5 +2349,28 @@ mod tests {
         assert_eq!(rolled_back.len(), 1);
         assert!(rolled_back.contains_key(&0));
         assert!(!rolled_back.contains_key(&1));
+
+        // Scoped turn query computes diffs only for the requested turn indices.
+        let only_turn1 = runtime
+            .core
+            .get_turn_file_change_summaries_for_turns(
+                "session-turn-diff",
+                &std::collections::BTreeSet::from([1usize]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(only_turn1.len(), 1);
+        assert!(!only_turn1.contains_key(&0));
+        assert_eq!(only_turn1.get(&1).unwrap()[0].change_kind, "delete");
+
+        let empty_scope = runtime
+            .core
+            .get_turn_file_change_summaries_for_turns(
+                "session-turn-diff",
+                &std::collections::BTreeSet::new(),
+            )
+            .await
+            .unwrap();
+        assert!(empty_scope.is_empty());
     }
 }

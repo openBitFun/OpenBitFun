@@ -254,6 +254,8 @@ import {
   openInAuxPane,
   pendingTurn,
   pendingTurnState,
+  registerTranscriptAutoBackfillGuard,
+  registerTranscriptBeforePrependListener,
   renameSession,
   runningTurnId,
   secondarySessionDevice,
@@ -281,6 +283,8 @@ import {
   createSecondarySession,
   loadSecondaryEarlierTurns,
   openSplitPane,
+  registerSecondaryAutoBackfillGuard,
+  registerSecondaryBeforePrependListener,
   removeSecondaryFileAttachment,
   removeSecondaryImageAttachment,
   secondaryComposerText,
@@ -3037,6 +3041,21 @@ const liveFallbackItems = computed<TranscriptItem[]>(() => {
   return fallback;
 });
 
+/** Cheap O(items) check so TurnFooter never strips/joins markdown on mount. */
+function turnHasAssistantText(turn: unknown): boolean {
+  if (!turn || typeof turn !== "object") return false;
+  const view = turn as { items?: ReadonlyArray<{ kind?: string; text?: string }> };
+  if (Array.isArray(view.items)) {
+    for (const item of view.items) {
+      if (item?.kind === "text" && typeof item.text === "string" && item.text.trim().length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return turnAnswerText(turn).length > 0;
+}
+
 /** The answer text of one persisted turn, for its footer's copy button. */
 function turnAnswerText(turn: unknown): string {
   return turnParts(turn)
@@ -3063,7 +3082,7 @@ function turnTokenLabel(turn: unknown): string {
 /** One footer per settled turn: copy the answer, fork from here, and what it cost. */
 /** Copy, fork and "{model} · {duration}": on hover only (spec §3 Assistant). */
 function TurnFooter(props: { turn: unknown; visible?: boolean }) {
-  const answer = computed(() => turnAnswerText(props.turn));
+  const hasAnswer = computed(() => turnHasAssistantText(props.turn));
   const turnId = computed(() => turnKeyOf(props.turn));
   const meta = computed(() =>
     [turnMetadataLabel(props.turn), turnTokenLabel(props.turn)].filter(Boolean).join(" · "),
@@ -3089,27 +3108,27 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
       }}
       focusWithinStyle={{ opacity: 1 }}
     >
-      <If when={answer()}>
-        {text => (
-          <IconButton
-            icon={copiedBlock() === `answer-${turnId()}` ? "check" : "copy"}
-            size="sm"
-            accessibilityLabel={`copy-answer-${turnId()}`}
-            tooltip={tr("chat.copyAnswer")}
-            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-            onPress={() => {
-              const id = turnId();
-              void Clipboard.writeText(text()).then(() => {
-                copiedBlock.set(`answer-${id}`);
-                if (copyTimer) clearTimeout(copyTimer);
-                copyTimer = setTimeout(() => {
-                  copyTimer = null;
-                  if (copiedBlock() === `answer-${id}`) copiedBlock.set("");
-                }, 1500);
-              });
-            }}
-          />
-        )}
+      <If when={hasAnswer()}>
+        <IconButton
+          icon={copiedBlock() === `answer-${turnId()}` ? "check" : "copy"}
+          size="sm"
+          accessibilityLabel={`copy-answer-${turnId()}`}
+          tooltip={tr("chat.copyAnswer")}
+          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+          onPress={() => {
+            const text = turnAnswerText(props.turn);
+            if (!text) return;
+            const id = turnId();
+            void Clipboard.writeText(text).then(() => {
+              copiedBlock.set(`answer-${id}`);
+              if (copyTimer) clearTimeout(copyTimer);
+              copyTimer = setTimeout(() => {
+                copyTimer = null;
+                if (copiedBlock() === `answer-${id}`) copiedBlock.set("");
+              }, 1500);
+            });
+          }}
+        />
       </If>
       <If when={turnId() && !runningTurnId() ? turnId() : ""}>
         {id => (
@@ -3286,6 +3305,8 @@ let lastContentHeight = 0;
 let lastViewportHeight = 0;
 let lastEventContentHeight = 0;
 let lastEventViewportHeight = 0;
+let pendingSyncBottomSnap = false;
+let pendingPrependScrollAnchor: { prevHeight: number; prevScrollY: number; anchorKey: string } | null = null;
 
 function cancelScheduledTranscriptScroll(): void {
   if (transcriptScrollRafId !== null && typeof cancelAnimationFrame === "function") {
@@ -3302,6 +3323,8 @@ function resetTranscriptScrollTracking(): void {
   lastViewportHeight = 0;
   lastEventContentHeight = 0;
   lastEventViewportHeight = 0;
+  pendingSyncBottomSnap = false;
+  pendingPrependScrollAnchor = null;
   turnOffsets.clear();
   suppressAutoFollowUntil = 0;
   activeRailTurnKey.set("");
@@ -3386,9 +3409,9 @@ function handleTranscriptScroll(event: ScrollEvent): void {
     }
   }
   syncActiveRailTurn(y);
-  // A reader who scrolled up to the top of a windowed history gets the turns
-  // before it; the initial layout pass (still following) never triggers this.
-  if (y <= 2 && !followLatest() && contentHeight > viewportHeight && hasEarlierTurns() && !loadingEarlier()) {
+  // Proactively lazy-load earlier turns as the reader nears the top of a windowed
+  // history, keeping scrollback smooth without slamming into the top boundary.
+  if (y <= 140 && !followLatest() && contentHeight > viewportHeight && hasEarlierTurns() && !loadingEarlier()) {
     void showEarlierTurns();
   }
 }
@@ -3643,17 +3666,26 @@ async function showEarlierTurns(): Promise<void> {
   const anchorKey = turnKeyOf(visibleTurns()[0]);
   loadingEarlier.set(true);
   followLatest.set(false);
+  pendingPrependScrollAnchor = {
+    prevHeight: lastContentHeight,
+    prevScrollY: lastObservedScrollY,
+    anchorKey,
+  };
   try {
     await loadEarlierTurns();
   } finally {
     loadingEarlier.set(false);
   }
-  if (anchorKey) {
+  // Fallback reveal only if `onLayout` has not already restored the exact offset.
+  if (anchorKey && pendingPrependScrollAnchor?.anchorKey === anchorKey) {
     if (earlierRevealTimer) clearTimeout(earlierRevealTimer);
     earlierRevealTimer = setTimeout(() => {
       earlierRevealTimer = null;
-      turnRefs.get(anchorKey)?.reveal({ vertical: "start", animated: false });
-    }, 0);
+      if (pendingPrependScrollAnchor?.anchorKey === anchorKey) {
+        pendingPrependScrollAnchor = null;
+        turnRefs.get(anchorKey)?.reveal({ vertical: "start", animated: false });
+      }
+    }, 32);
   }
 }
 
@@ -4061,6 +4093,22 @@ function TurnJumpPreview(props: {
 
 function Transcript() {
   resetTranscriptScrollTracking();
+  registerTranscriptAutoBackfillGuard(() => followLatest());
+  registerTranscriptBeforePrependListener(() => {
+    if (followLatest()) {
+      pendingSyncBottomSnap = true;
+    } else if (!pendingPrependScrollAnchor && lastContentHeight > 0) {
+      pendingPrependScrollAnchor = {
+        prevHeight: lastContentHeight,
+        prevScrollY: lastObservedScrollY,
+        anchorKey: turnKeyOf(visibleTurns()[0]),
+      };
+    }
+  });
+  cleanup(() => {
+    registerTranscriptAutoBackfillGuard(null);
+    registerTranscriptBeforePrependListener(null);
+  });
   let lastSessionId = activeSessionId();
   let lastOptimisticText = optimisticUserText();
   let pendingInitialBottomSnap = Boolean(lastSessionId);
@@ -4152,14 +4200,25 @@ function Transcript() {
                 onLayout={event => {
                   const height = event.bounds.size.height;
                   if (height > 0 && Math.abs(height - lastContentHeight) > 1) {
+                    const prevHeight = lastContentHeight;
                     lastContentHeight = height;
                     if (followLatest()) {
-                      if (pendingInitialBottomSnap && sessionTurns().length > 0) {
+                      if ((pendingInitialBottomSnap || pendingSyncBottomSnap) && sessionTurns().length > 0) {
                         pendingInitialBottomSnap = false;
+                        pendingSyncBottomSnap = false;
                         cancelScheduledTranscriptScroll();
                         transcriptScrollRef?.scrollToEnd({ animated: false });
                       } else {
                         stickToTranscriptEnd();
+                      }
+                    } else if (pendingPrependScrollAnchor && height > prevHeight && prevHeight > 0) {
+                      const anchor = pendingPrependScrollAnchor;
+                      pendingPrependScrollAnchor = null;
+                      const delta = height - anchor.prevHeight;
+                      if (delta > 0) {
+                        const targetY = Math.max(0, anchor.prevScrollY + delta);
+                        lastObservedScrollY = targetY;
+                        transcriptScrollRef?.scrollTo({ y: targetY, animated: false });
                       }
                     }
                   }
@@ -8821,6 +8880,43 @@ function SecondaryTranscript() {
     ref.reveal({ vertical: "start", animated: true });
   };
 
+  let secLastContentHeight = 0;
+  let secLastObservedScrollY = 0;
+  let secPeakFollowScrollY = 0;
+  let secPendingSyncBottomSnap = false;
+  let secPendingPrependAnchor: { prevHeight: number; prevScrollY: number } | null = null;
+
+  registerSecondaryAutoBackfillGuard(() => secFollowLatest());
+  registerSecondaryBeforePrependListener(() => {
+    if (secFollowLatest()) {
+      secPendingSyncBottomSnap = true;
+    } else if (!secPendingPrependAnchor && secLastContentHeight > 0) {
+      secPendingPrependAnchor = {
+        prevHeight: secLastContentHeight,
+        prevScrollY: secLastObservedScrollY,
+      };
+    }
+  });
+  cleanup(() => {
+    registerSecondaryAutoBackfillGuard(null);
+    registerSecondaryBeforePrependListener(null);
+  });
+
+  const showEarlierSecTurns = async (): Promise<void> => {
+    if (loadingEarlierSec() || !secondaryHasEarlierTurns()) return;
+    loadingEarlierSec.set(true);
+    secFollowLatest.set(false);
+    secPendingPrependAnchor = {
+      prevHeight: secLastContentHeight,
+      prevScrollY: secLastObservedScrollY,
+    };
+    try {
+      await loadSecondaryEarlierTurns();
+    } finally {
+      loadingEarlierSec.set(false);
+    }
+  };
+
   effect(() => {
     const id = secondarySessionId();
     if (id !== lastSession) {
@@ -8829,6 +8925,11 @@ function SecondaryTranscript() {
       secTurnOffsets.clear();
       secActiveRailKey.set("");
       secFollowLatest.set(true);
+      secLastContentHeight = 0;
+      secLastObservedScrollY = 0;
+      secPeakFollowScrollY = 0;
+      secPendingSyncBottomSnap = true;
+      secPendingPrependAnchor = null;
     }
     secondaryTurns().length;
     secondaryOptimisticUserText();
@@ -8836,19 +8937,33 @@ function SecondaryTranscript() {
     secondaryLiveRounds().length;
     if (secFollowLatest()) {
       scrollRef?.scrollToEnd({ animated: false });
-      syncSecRail(0);
+      syncSecRail(secLastObservedScrollY);
     }
   });
 
   const handleScroll = (event: ScrollEvent) => {
-    const max = Math.max(0, event.contentSize.height - event.size.height);
-    const atBottom = event.offset.y >= max - 24;
-    if (atBottom && !secFollowLatest() && Date.now() >= secSuppressAutoFollowUntil) {
-      secFollowLatest.set(true);
-    } else if (!atBottom && secFollowLatest() && event.offset.y < max - 48) {
-      secFollowLatest.set(false);
+    const y = event.offset.y;
+    const contentHeight = event.contentSize.height;
+    const viewportHeight = event.size.height;
+    secLastObservedScrollY = y;
+    const max = Math.max(0, contentHeight - viewportHeight);
+    const atBottom = y >= max - 24;
+    if (atBottom) {
+      if (!secFollowLatest() && Date.now() >= secSuppressAutoFollowUntil) {
+        secFollowLatest.set(true);
+      }
+      if (secFollowLatest()) secPeakFollowScrollY = y;
+    } else if (secFollowLatest()) {
+      if (y < secPeakFollowScrollY - 4) {
+        secFollowLatest.set(false);
+      } else if (y > secPeakFollowScrollY) {
+        secPeakFollowScrollY = y;
+      }
     }
-    syncSecRail(event.offset.y);
+    syncSecRail(y);
+    if (y <= 140 && !secFollowLatest() && contentHeight > viewportHeight && secondaryHasEarlierTurns() && !loadingEarlierSec()) {
+      void showEarlierSecTurns();
+    }
   };
 
   return (
@@ -8868,6 +8983,28 @@ function SecondaryTranscript() {
         onScroll={handleScroll}
       >
         <View
+          onLayout={event => {
+            const height = event.bounds.size.height;
+            if (height > 0 && Math.abs(height - secLastContentHeight) > 1) {
+              const prevHeight = secLastContentHeight;
+              secLastContentHeight = height;
+              if (secFollowLatest()) {
+                if (secPendingSyncBottomSnap && secondaryTurns().length > 0) {
+                  secPendingSyncBottomSnap = false;
+                }
+                scrollRef?.scrollToEnd({ animated: false });
+              } else if (secPendingPrependAnchor && height > prevHeight && prevHeight > 0) {
+                const anchor = secPendingPrependAnchor;
+                secPendingPrependAnchor = null;
+                const delta = height - anchor.prevHeight;
+                if (delta > 0) {
+                  const targetY = Math.max(0, anchor.prevScrollY + delta);
+                  secLastObservedScrollY = targetY;
+                  scrollRef?.scrollTo({ y: targetY, animated: false });
+                }
+              }
+            }
+          }}
           style={{
             width: "100%",
             maxWidth: contentWidth(),
@@ -8888,11 +9025,7 @@ function SecondaryTranscript() {
                 leadingIcon="history"
                 loading={loadingEarlierSec()}
                 accessibilityLabel="secondary-load-earlier"
-                onPress={() => {
-                  if (loadingEarlierSec()) return;
-                  loadingEarlierSec.set(true);
-                  void loadSecondaryEarlierTurns().finally(() => loadingEarlierSec.set(false));
-                }}
+                onPress={() => void showEarlierSecTurns()}
               />
             </View>
           </If>

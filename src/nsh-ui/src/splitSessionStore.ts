@@ -52,12 +52,19 @@ import {
   secondarySessionDevice,
   secondarySessionId,
   secondarySessionKey,
+  BACKFILL_DELAY_MS,
+  BACKFILL_TURN_BATCH,
+  earliestTurnIndexOf,
+  INITIAL_BACKFILL_TARGET,
+  INITIAL_FAST_TURN_COUNT,
+  mergePrependedTurns,
   secondaryWorkspaceId,
   selectSession,
   sessionKey,
   sessionLastActivityMs,
   sessions,
   splitPaneOpen,
+  TAIL_REFRESH_MIN_LIMIT,
   TURN_WINDOW_STEP,
   workspaces,
   type PendingTurnState,
@@ -73,10 +80,33 @@ export const secondaryPendingTurnState = signal<PendingTurnState | null>(null);
 export const secondaryComposerText = signal("");
 export const secondaryImageAttachments = signal<ImageAttachment[]>([]);
 export const secondaryFileAttachments = signal<FileAttachment[]>([]);
-export const secondaryTurnWindow = signal(TURN_WINDOW_STEP);
+export const secondaryTurnWindow = signal(INITIAL_FAST_TURN_COUNT);
+const secondaryTranscriptHasEarlier = signal<boolean | null>(null);
+const secondaryEarlierExhausted = signal(false);
 
-let secondaryTranscriptCursor: { sessionKey: string; limit: number; cursor: string } | null = null;
+let secondaryTranscriptCursor: { sessionKey: string; cursor: string } | null = null;
 let secondaryTurnsLoadSeq = 0;
+let secondaryEarlierLoadSeq = 0;
+let secondaryEarlierInFlight = false;
+let secondaryBackfillTimer: ReturnType<typeof setTimeout> | null = null;
+let secondaryAutoBackfillGuard: (() => boolean) | null = null;
+let secondaryBeforePrependListener: (() => void) | null = null;
+const secondaryLegacyBeforeUnsupportedKeys = new Set<string>();
+
+export function registerSecondaryAutoBackfillGuard(guard: (() => boolean) | null): void {
+  secondaryAutoBackfillGuard = guard;
+}
+
+export function registerSecondaryBeforePrependListener(listener: (() => void) | null): void {
+  secondaryBeforePrependListener = listener;
+}
+
+function cancelPendingSecondaryBackfill(): void {
+  if (secondaryBackfillTimer !== null) {
+    clearTimeout(secondaryBackfillTimer);
+    secondaryBackfillTimer = null;
+  }
+}
 
 function secondaryRouteOptions(deviceId?: string): { target: string } | undefined {
   const device = deviceId ?? secondarySessionDevice();
@@ -141,10 +171,13 @@ export const secondarySessionTitle = computed<string>(() => {
 export const secondaryHasEarlierTurns = computed<boolean>(() => {
   const id = secondarySessionId();
   if (!id) return false;
+  if (secondaryEarlierExhausted()) return false;
+  const hostFlag = secondaryTranscriptHasEarlier();
+  if (hostFlag === true) return true;
   const loaded = secondaryTurns().length;
   const row = secondarySessionSummary() as ({ turnCount?: number } | null);
   if (typeof row?.turnCount === "number") return row.turnCount > loaded;
-  return loaded >= secondaryTurnWindow();
+  return hostFlag === null ? false : hostFlag;
 });
 
 export function addSecondaryImageAttachment(item: ImageAttachment): void {
@@ -257,8 +290,13 @@ function reconcileSecondaryPendingWithPersisted(
 }
 
 function resetSecondaryRuntimeState(): void {
+  cancelPendingSecondaryBackfill();
   secondaryTurnsLoadSeq += 1;
+  secondaryEarlierLoadSeq += 1;
+  secondaryEarlierInFlight = false;
   secondaryTranscriptCursor = null;
+  secondaryTranscriptHasEarlier.set(null);
+  secondaryEarlierExhausted.set(false);
   secondaryTurns.set([]);
   secondaryTurnsLoading.set(false);
   secondaryTranscriptNotice.set("");
@@ -267,7 +305,7 @@ function resetSecondaryRuntimeState(): void {
   secondaryPendingTurnState.set(null);
   secondaryComposerText.set("");
   clearSecondaryAttachments();
-  secondaryTurnWindow.set(TURN_WINDOW_STEP);
+  secondaryTurnWindow.set(INITIAL_FAST_TURN_COUNT);
 }
 
 /** Picks the best default second session when opening split view without a target. */
@@ -450,9 +488,117 @@ export function clearSecondarySession(): void {
   });
 }
 
+function scheduleSecondaryBackfill(sessionId: string, key: string, expectedLoadSeq: number): void {
+  cancelPendingSecondaryBackfill();
+  if (secondaryLegacyBeforeUnsupportedKeys.has(key)) return;
+  if (secondaryEarlierExhausted() || secondaryTranscriptHasEarlier() !== true) return;
+  if (secondaryTurns().length >= INITIAL_BACKFILL_TARGET) return;
+  secondaryBackfillTimer = setTimeout(() => {
+    secondaryBackfillTimer = null;
+    if (!splitPaneOpen() || secondaryTurnsLoadSeq !== expectedLoadSeq || secondarySessionKey() !== key) return;
+    if (secondaryEarlierInFlight) return;
+    if (secondaryEarlierExhausted() || secondaryTranscriptHasEarlier() !== true) return;
+    if (secondaryTurns().length === 0 || secondaryTurns().length >= INITIAL_BACKFILL_TARGET) return;
+    if (secondaryAutoBackfillGuard && !secondaryAutoBackfillGuard()) return;
+    void fetchSecondaryEarlierPage(sessionId, key, BACKFILL_TURN_BATCH, {
+      isAutoBackfill: true,
+      expectedLoadSeq,
+    });
+  }, BACKFILL_DELAY_MS);
+}
+
+async function fetchSecondaryEarlierPage(
+  sessionId: string,
+  key: string,
+  pageSize: number,
+  options?: { isAutoBackfill?: boolean; expectedLoadSeq?: number },
+): Promise<void> {
+  if (!splitPaneOpen() || secondarySessionId() !== sessionId) return;
+  const workspaceId = secondaryWorkspaceId() || activeWorkspaceId();
+  if (!workspaceId || secondaryEarlierInFlight) return;
+  const device = secondarySessionDevice();
+  const held = secondaryTurns();
+  const earliest = earliestTurnIndexOf(held);
+  const canUseBefore =
+    !secondaryLegacyBeforeUnsupportedKeys.has(key) &&
+    earliest !== undefined &&
+    earliest > 0;
+
+  if (!canUseBefore) {
+    if (options?.isAutoBackfill) return;
+    secondaryTurnWindow.set(Math.max(held.length, secondaryTurnWindow()) + pageSize);
+    await loadSecondaryTurns(sessionId, { silent: true, forceFullWindow: true });
+    return;
+  }
+
+  const reqSeq = ++secondaryEarlierLoadSeq;
+  const loadSeqSnapshot = options?.expectedLoadSeq ?? secondaryTurnsLoadSeq;
+  secondaryEarlierInFlight = true;
+  let fallbackToLegacy = false;
+  try {
+    const view = await invokeCommand<SessionTranscriptView>(
+      "get_session_transcript_view",
+      {
+        session_id: sessionId,
+        workspace_id: workspaceId,
+        limit: pageSize,
+        before_turn_index: earliest,
+      },
+      secondaryRouteOptions(device),
+    );
+    if (
+      !splitPaneOpen() ||
+      reqSeq !== secondaryEarlierLoadSeq ||
+      secondaryTurnsLoadSeq !== loadSeqSnapshot ||
+      secondarySessionKey() !== key
+    ) {
+      return;
+    }
+    if (view.mode === "before") {
+      const older = Array.isArray(view.turns) ? view.turns : [];
+      const more = Boolean(view.hasEarlier);
+      if (older.length > 0) {
+        secondaryBeforePrependListener?.();
+      }
+      batch(() => {
+        if (older.length > 0) {
+          secondaryTurns.set(mergePrependedTurns(older, secondaryTurns()));
+        }
+        secondaryTranscriptHasEarlier.set(more);
+        secondaryEarlierExhausted.set(!more);
+      });
+      if (
+        options?.isAutoBackfill &&
+        more &&
+        older.length > 0 &&
+        secondaryTurns().length < INITIAL_BACKFILL_TARGET
+      ) {
+        scheduleSecondaryBackfill(sessionId, key, loadSeqSnapshot);
+      }
+      return;
+    }
+    secondaryLegacyBeforeUnsupportedKeys.add(key);
+    fallbackToLegacy = !options?.isAutoBackfill;
+  } catch (error) {
+    if (!options?.isAutoBackfill) throw error;
+  } finally {
+    secondaryEarlierInFlight = false;
+  }
+
+  if (
+    fallbackToLegacy &&
+    splitPaneOpen() &&
+    secondaryTurnsLoadSeq === loadSeqSnapshot &&
+    secondarySessionKey() === key
+  ) {
+    secondaryTurnWindow.set(Math.max(secondaryTurns().length, secondaryTurnWindow()) + pageSize);
+    await loadSecondaryTurns(sessionId, { silent: true, forceFullWindow: true });
+  }
+}
+
 export async function loadSecondaryTurns(
   sessionId: string,
-  options?: { silent?: boolean },
+  options?: { silent?: boolean; forceFullWindow?: boolean },
 ): Promise<TranscriptTurnView[] | null> {
   if (!splitPaneOpen() || secondarySessionId() !== sessionId) return null;
   const workspaceId = secondaryWorkspaceId() || activeWorkspaceId();
@@ -461,20 +607,23 @@ export async function loadSecondaryTurns(
   if (!key) return null;
   const device = secondarySessionDevice();
   const seq = ++secondaryTurnsLoadSeq;
+  if (options?.forceFullWindow) cancelPendingSecondaryBackfill();
   let loaded: TranscriptTurnView[] | null = null;
 
   await runStep(
     async () => {
-      const limit = secondaryTurnWindow();
       const held = secondaryTurns();
-      const cursor =
-        secondaryTranscriptCursor &&
-        secondaryTranscriptCursor.sessionKey === key &&
-        secondaryTranscriptCursor.limit === limit &&
+      const useCursor =
+        !options?.forceFullWindow &&
+        Boolean(secondaryTranscriptCursor && secondaryTranscriptCursor.sessionKey === key) &&
         secondarySessionKey() === key &&
-        held.length > 0
-          ? secondaryTranscriptCursor.cursor
-          : undefined;
+        held.length > 0;
+      const cursor = useCursor ? secondaryTranscriptCursor!.cursor : undefined;
+      const limit = options?.forceFullWindow
+        ? secondaryTurnWindow()
+        : useCursor
+          ? Math.max(TAIL_REFRESH_MIN_LIMIT, INITIAL_FAST_TURN_COUNT)
+          : INITIAL_FAST_TURN_COUNT;
       let view: SessionTranscriptView | null = null;
       try {
         view = await invokeCommand<SessionTranscriptView>(
@@ -489,12 +638,13 @@ export async function loadSecondaryTurns(
         );
         if (seq !== secondaryTurnsLoadSeq || secondarySessionKey() !== key) return;
         if (view.mode === "after" && !held.some(turn => turn.turnIndex === view!.keptThroughIndex)) {
+          const fallbackLimit = Math.min(Math.max(held.length, INITIAL_FAST_TURN_COUNT), 30);
           view = await invokeCommand<SessionTranscriptView>(
             "get_session_transcript_view",
             {
               session_id: sessionId,
               workspace_id: workspaceId,
-              ...(limit ? { limit } : {}),
+              limit: fallbackLimit,
             },
             secondaryRouteOptions(device),
           );
@@ -503,6 +653,8 @@ export async function loadSecondaryTurns(
         if (isCommandUnavailable(error, "get_session_transcript_view")) {
           if (seq === secondaryTurnsLoadSeq && secondarySessionKey() === key) {
             secondaryTranscriptCursor = null;
+            secondaryTranscriptHasEarlier.set(false);
+            secondaryEarlierExhausted.set(true);
             secondaryTranscriptNotice.set(tr("sessions.transcriptHostOutdated"));
             secondaryTurns.set([]);
           }
@@ -528,10 +680,14 @@ export async function loadSecondaryTurns(
           : Array.isArray(view.turns)
             ? view.turns
             : [];
-      secondaryTranscriptCursor = view.cursor ? { sessionKey: key, limit, cursor: view.cursor } : null;
+      secondaryTranscriptCursor = view.cursor ? { sessionKey: key, cursor: view.cursor } : null;
       batch(() => {
         secondaryTranscriptNotice.set("");
         secondaryTurnsLoading.set(false);
+        if (view!.mode === "full") {
+          secondaryTranscriptHasEarlier.set(Boolean(view!.hasEarlier));
+          secondaryEarlierExhausted.set(false);
+        }
         if (!unchanged) secondaryTurns.set(list);
         reconcileSecondaryPendingWithPersisted(sessionId, list, key);
         hydratePromptSuggestionFromTranscript(
@@ -544,6 +700,9 @@ export async function loadSecondaryTurns(
       if (view.runningTurn?.activeTurnId) {
         notifySecondaryRunningTurn(sessionId, device, view.runningTurn);
       }
+      if (view.mode === "full" && view.hasEarlier && list.length < INITIAL_BACKFILL_TARGET) {
+        scheduleSecondaryBackfill(sessionId, key, seq);
+      }
       loaded = list;
     },
     options?.silent ? { trackBusy: false, clearError: false } : undefined,
@@ -553,9 +712,10 @@ export async function loadSecondaryTurns(
 
 export async function loadSecondaryEarlierTurns(): Promise<void> {
   const sessionId = secondarySessionId();
-  if (!sessionId) return;
-  secondaryTurnWindow.update(n => n + TURN_WINDOW_STEP);
-  await loadSecondaryTurns(sessionId, { silent: true });
+  const key = secondarySessionKey();
+  if (!sessionId || !key) return;
+  cancelPendingSecondaryBackfill();
+  await fetchSecondaryEarlierPage(sessionId, key, TURN_WINDOW_STEP, { isAutoBackfill: false });
 }
 
 export async function sendSecondaryTurn(

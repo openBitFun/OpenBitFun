@@ -1115,13 +1115,18 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
     setActiveSession(sessionId, device);
     if (previousKey !== key) {
       evictTurnWindow(previousKey);
+      cancelPendingTranscriptBackfill();
       turnsLoadSeq += 1;
+      earlierLoadSeq += 1;
+      earlierLoadInFlight = false;
       notifySessionSwitch("leave", previous, previousKey);
       if (previousKey) {
         composerText.set("");
         clearAttachments();
       }
       transcriptCursor = null;
+      transcriptHasEarlier.set(null);
+      transcriptEarlierExhausted.set(false);
       sessionTurns.set([]);
       turnsLoading.set(true);
       clearPendingTurn();
@@ -1140,14 +1145,93 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   void loadQuestionMailbox(sessionId);
 }
 
-/** How many of the newest turns a session loads; "Load earlier" widens it. */
-export const TURN_WINDOW_STEP = 30;
+/**
+ * Progressive transcript loading constants:
+ * 1. Open on the newest `INITIAL_FAST_TURN_COUNT` turns for instant first paint.
+ * 2. Smoothly backfill small `BACKFILL_TURN_BATCH` chunks up to
+ *    `INITIAL_BACKFILL_TARGET` while idle at the bottom.
+ * 3. Load `TURN_WINDOW_STEP` earlier turns per page on scroll-up / "Load earlier".
+ */
+export const INITIAL_FAST_TURN_COUNT = 2;
+export const BACKFILL_TURN_BATCH = 4;
+export const INITIAL_BACKFILL_TARGET = 10;
+export const BACKFILL_DELAY_MS = 48;
+export const TURN_WINDOW_STEP = 10;
+export const TAIL_REFRESH_MIN_LIMIT = 6;
 const MAX_TURN_WINDOW_ENTRIES = 16;
-/** Turn window per `sessionKey`. */
+/** Fallback turn window per `sessionKey` for older hosts without `before_turn_index`. */
 export const turnWindows = signal<Record<string, number>>({});
+/** Authoritative `hasEarlier` from the last `full` or `before` host read (`null` before first read). */
+const transcriptHasEarlier = signal<boolean | null>(null);
+/** Set true once a `before` page confirms no earlier visible turns remain. */
+const transcriptEarlierExhausted = signal(false);
+/** Session keys whose host ignored `before_turn_index` and requires legacy limit widening. */
+const legacyBeforeUnsupportedKeys = new Set<string>();
+
+export function earliestTurnIndexOf(turns: ReadonlyArray<TranscriptTurnView>): number | undefined {
+  let min: number | undefined;
+  for (const turn of turns) {
+    if (typeof turn.turnIndex === "number" && Number.isFinite(turn.turnIndex)) {
+      min = min === undefined ? turn.turnIndex : Math.min(min, turn.turnIndex);
+    }
+  }
+  return min;
+}
+
+/** Prepends an older page onto `existing` without duplicating or reordering turns. */
+export function mergePrependedTurns(
+  older: ReadonlyArray<TranscriptTurnView>,
+  existing: ReadonlyArray<TranscriptTurnView>,
+): TranscriptTurnView[] {
+  if (older.length === 0) return [...existing];
+  const seenIndices = new Set<number>();
+  const seenIds = new Set<string>();
+  for (const turn of existing) {
+    if (typeof turn.turnIndex === "number" && Number.isFinite(turn.turnIndex)) {
+      seenIndices.add(turn.turnIndex);
+    }
+    if (turn.turnId) seenIds.add(turn.turnId);
+  }
+  const uniqueOlder: TranscriptTurnView[] = [];
+  for (const turn of older) {
+    if (typeof turn.turnIndex === "number" && Number.isFinite(turn.turnIndex) && seenIndices.has(turn.turnIndex)) {
+      continue;
+    }
+    if (turn.turnId && seenIds.has(turn.turnId)) continue;
+    if (typeof turn.turnIndex === "number" && Number.isFinite(turn.turnIndex)) {
+      seenIndices.add(turn.turnIndex);
+    }
+    if (turn.turnId) seenIds.add(turn.turnId);
+    uniqueOlder.push(turn);
+  }
+  if (uniqueOlder.length === 0) return [...existing];
+  return [...uniqueOlder, ...existing].sort((a, b) => a.turnIndex - b.turnIndex);
+}
+
+let transcriptAutoBackfillGuard: (() => boolean) | null = null;
+let transcriptBackfillTimer: ReturnType<typeof setTimeout> | null = null;
+let transcriptBeforePrependListener: (() => void) | null = null;
+
+/** Registers a guard so idle backfill only runs while the viewport follows the bottom. */
+export function registerTranscriptAutoBackfillGuard(guard: (() => boolean) | null): void {
+  transcriptAutoBackfillGuard = guard;
+}
+
+/** Notifies the transcript view right before an automatic or manual prepend commits. */
+export function registerTranscriptBeforePrependListener(listener: (() => void) | null): void {
+  transcriptBeforePrependListener = listener;
+}
+
+function cancelPendingTranscriptBackfill(): void {
+  if (transcriptBackfillTimer !== null) {
+    clearTimeout(transcriptBackfillTimer);
+    transcriptBackfillTimer = null;
+  }
+}
 
 function evictTurnWindow(key: string | null | undefined): void {
   if (!key) return;
+  legacyBeforeUnsupportedKeys.delete(key);
   if (!(key in turnWindows())) return;
   turnWindows.update(current => {
     if (!(key in current)) return current;
@@ -1173,78 +1257,182 @@ function setTurnWindow(key: string, value: number): void {
 }
 
 function turnWindowOf(sessionId: string, key = sessionKey(sessionId)): number {
-  return turnWindows()[key] ?? TURN_WINDOW_STEP;
+  return turnWindows()[key] ?? INITIAL_FAST_TURN_COUNT;
 }
 
 /**
- * Whether the host holds turns older than the loaded window: the catalogue's
- * `turnCount` says so exactly, and without it a full window is taken to mean
- * there may be more.
+ * Whether the host holds turns older than the loaded window: trusts the host's
+ * `hasEarlier` flag first, and falls back to catalog `turnCount` when a fixture
+ * or older host does not set `hasEarlier` on a full read.
  */
 export const hasEarlierTurns = computed(() => {
   const sessionId = activeSessionId();
   if (!sessionId) return false;
+  if (transcriptEarlierExhausted()) return false;
+  const hostFlag = transcriptHasEarlier();
+  if (hostFlag === true) return true;
   const loaded = sessionTurns().length;
   const row = sessions().find(item => item.sessionId === sessionId) as
     | (SessionSummary & { turnCount?: number })
     | undefined;
   if (typeof row?.turnCount === "number") return row.turnCount > loaded;
-  return loaded >= turnWindowOf(sessionId, activeSessionKey() ?? sessionKey(sessionId));
+  return hostFlag === null ? false : hostFlag;
 });
 
-/** Widens the open session's window by one step and reloads it. */
+/** Monotonic sequence for backward page reads so switches cancel in-flight prepends. */
+let earlierLoadSeq = 0;
+let earlierLoadInFlight = false;
+
+function scheduleTranscriptBackfill(sessionId: string, key: string, expectedLoadSeq: number): void {
+  cancelPendingTranscriptBackfill();
+  if (legacyBeforeUnsupportedKeys.has(key)) return;
+  if (transcriptEarlierExhausted() || transcriptHasEarlier() !== true) return;
+  if (sessionTurns().length >= INITIAL_BACKFILL_TARGET) return;
+  transcriptBackfillTimer = setTimeout(() => {
+    transcriptBackfillTimer = null;
+    if (turnsLoadSeq !== expectedLoadSeq || activeSessionKey() !== key) return;
+    if (earlierLoadInFlight) return;
+    if (transcriptEarlierExhausted() || transcriptHasEarlier() !== true) return;
+    if (sessionTurns().length === 0 || sessionTurns().length >= INITIAL_BACKFILL_TARGET) return;
+    if (transcriptAutoBackfillGuard && !transcriptAutoBackfillGuard()) return;
+    void fetchEarlierTurnsPage(sessionId, key, BACKFILL_TURN_BATCH, {
+      isAutoBackfill: true,
+      expectedLoadSeq,
+    });
+  }, BACKFILL_DELAY_MS);
+}
+
+async function fetchEarlierTurnsPage(
+  sessionId: string,
+  key: string,
+  pageSize: number,
+  options?: { isAutoBackfill?: boolean; expectedLoadSeq?: number },
+): Promise<void> {
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId || earlierLoadInFlight) return;
+  const held = sessionTurns();
+  const earliest = earliestTurnIndexOf(held);
+  const canUseBefore =
+    !legacyBeforeUnsupportedKeys.has(key) &&
+    earliest !== undefined &&
+    earliest > 0;
+
+  if (!canUseBefore) {
+    if (options?.isAutoBackfill) return;
+    const nextWindow = Math.max(held.length, turnWindowOf(sessionId, key)) + pageSize;
+    setTurnWindow(key, nextWindow);
+    await loadTurns(sessionId, { silent: true, forceFullWindow: true });
+    return;
+  }
+
+  const reqSeq = ++earlierLoadSeq;
+  const loadSeqSnapshot = options?.expectedLoadSeq ?? turnsLoadSeq;
+  earlierLoadInFlight = true;
+  let fallbackToLegacy = false;
+  try {
+    const view = await getSessionTranscriptView(sessionId, workspaceId, pageSize, undefined, earliest);
+    if (reqSeq !== earlierLoadSeq || turnsLoadSeq !== loadSeqSnapshot || activeSessionKey() !== key) {
+      return;
+    }
+    if (view.mode === "before") {
+      const older = Array.isArray(view.turns) ? view.turns : [];
+      const more = Boolean(view.hasEarlier);
+      if (older.length > 0) {
+        transcriptBeforePrependListener?.();
+      }
+      batch(() => {
+        if (older.length > 0) {
+          sessionTurns.set(mergePrependedTurns(older, sessionTurns()));
+        }
+        transcriptHasEarlier.set(more);
+        transcriptEarlierExhausted.set(!more);
+      });
+      if (
+        options?.isAutoBackfill &&
+        more &&
+        older.length > 0 &&
+        sessionTurns().length < INITIAL_BACKFILL_TARGET
+      ) {
+        scheduleTranscriptBackfill(sessionId, key, loadSeqSnapshot);
+      }
+      return;
+    }
+    // Older 2.0 host ignored `before_turn_index` and answered with a full tail.
+    legacyBeforeUnsupportedKeys.add(key);
+    fallbackToLegacy = !options?.isAutoBackfill;
+  } catch (error) {
+    if (!options?.isAutoBackfill) throw error;
+  } finally {
+    earlierLoadInFlight = false;
+  }
+
+  if (fallbackToLegacy && turnsLoadSeq === loadSeqSnapshot && activeSessionKey() === key) {
+    const nextWindow = Math.max(sessionTurns().length, turnWindowOf(sessionId, key)) + pageSize;
+    setTurnWindow(key, nextWindow);
+    await loadTurns(sessionId, { silent: true, forceFullWindow: true });
+  }
+}
+
+/** Loads the next page of older turns strictly before the earliest held turn. */
 export async function loadEarlierTurns(): Promise<void> {
   const sessionId = activeSessionId();
   const key = activeSessionKey();
   if (!sessionId || !key) return;
-  setTurnWindow(key, turnWindowOf(sessionId, key) + TURN_WINDOW_STEP);
-  await loadTurns(sessionId, { silent: true });
+  cancelPendingTranscriptBackfill();
+  await fetchEarlierTurnsPage(sessionId, key, TURN_WINDOW_STEP, { isAutoBackfill: false });
 }
 
 /** What the last view read returned, so the next one asks only for what changed. */
-let transcriptCursor: { sessionKey: string; limit: number; cursor: string } | null = null;
+let transcriptCursor: { sessionKey: string; cursor: string } | null = null;
 /** Monotonic sequence for transcript view loads so an older overlapping response never overwrites newer state. */
 let turnsLoadSeq = 0;
 
 /**
- * Re-reads the open session's transcript view. With the cursor of the previous
- * read the host answers only the turns after the last settled one (`after`);
- * anything it cannot vouch for comes back whole (`full`). A host without the
- * view gets `transcriptNotice` instead of a client-side projection.
+ * Re-reads the open session's transcript view. On initial open it asks for only
+ * the newest `INITIAL_FAST_TURN_COUNT` turns for instant paint, then lazily
+ * backfills earlier turns via `before_turn_index`. With a tail `cursor`, the
+ * host answers only turns after the last settled one (`after`) while keeping
+ * already-loaded older turns intact.
  */
 export async function loadTurns(
   sessionId: string,
-  options?: { silent?: boolean },
+  options?: { silent?: boolean; forceFullWindow?: boolean },
 ): Promise<TranscriptTurnView[] | null> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return null;
   const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
   const seq = ++turnsLoadSeq;
+  if (options?.forceFullWindow) cancelPendingTranscriptBackfill();
   let loaded: TranscriptTurnView[] | null = null;
   await runStep(
     async () => {
-      const limit = turnWindowOf(sessionId, key);
       const held = sessionTurns();
-      const cursor =
-        transcriptCursor &&
-        transcriptCursor.sessionKey === key &&
-        transcriptCursor.limit === limit &&
+      const useCursor =
+        !options?.forceFullWindow &&
+        Boolean(transcriptCursor && transcriptCursor.sessionKey === key) &&
         activeSessionKey() === key &&
-        held.length > 0
-          ? transcriptCursor.cursor
-          : undefined;
+        held.length > 0;
+      const cursor = useCursor ? transcriptCursor!.cursor : undefined;
+      const limit = options?.forceFullWindow
+        ? turnWindowOf(sessionId, key)
+        : useCursor
+          ? Math.max(TAIL_REFRESH_MIN_LIMIT, INITIAL_FAST_TURN_COUNT)
+          : INITIAL_FAST_TURN_COUNT;
       let view: SessionTranscriptView | null = null;
       try {
         view = await getSessionTranscriptView(sessionId, workspaceId, limit, cursor);
         if (seq !== turnsLoadSeq || activeSessionKey() !== key) return;
         if (view.mode === "after" && !held.some(turn => turn.turnIndex === view!.keptThroughIndex)) {
           // The turns this surface holds are not the ones the cursor named.
-          view = await getSessionTranscriptView(sessionId, workspaceId, limit);
+          const fallbackLimit = Math.min(Math.max(held.length, INITIAL_FAST_TURN_COUNT), 30);
+          view = await getSessionTranscriptView(sessionId, workspaceId, fallbackLimit);
         }
       } catch (error) {
         if (isMissingCommand(error, "get_session_transcript_view")) {
           if (seq === turnsLoadSeq && activeSessionKey() === key) {
             transcriptCursor = null;
+            transcriptHasEarlier.set(false);
+            transcriptEarlierExhausted.set(true);
             transcriptNotice.set(tr("sessions.transcriptHostOutdated"));
             sessionTurns.set([]);
           }
@@ -1268,10 +1456,15 @@ export async function loadTurns(
           : Array.isArray(view.turns)
             ? view.turns
             : [];
-      transcriptCursor = view.cursor ? { sessionKey: key, limit, cursor: view.cursor } : null;
+      transcriptCursor = view.cursor ? { sessionKey: key, cursor: view.cursor } : null;
       batch(() => {
         transcriptNotice.set("");
         turnsLoading.set(false);
+        if (view!.mode === "full") {
+          const hostHasEarlier = Boolean(view!.hasEarlier);
+          transcriptHasEarlier.set(hostHasEarlier);
+          transcriptEarlierExhausted.set(false);
+        }
         if (!unchanged) sessionTurns.set(list);
         reconcilePendingTurnWithPersisted(sessionId, list, key);
         hydratePromptSuggestionFromTranscript(
@@ -1282,6 +1475,9 @@ export async function loadTurns(
         );
       });
       if (view.runningTurn?.activeTurnId) notifyRunningTurn(sessionId, view.runningTurn);
+      if (view.mode === "full" && view.hasEarlier && list.length < INITIAL_BACKFILL_TARGET) {
+        scheduleTranscriptBackfill(sessionId, key, seq);
+      }
       loaded = list;
     },
     options?.silent ? { trackBusy: false, clearError: false } : undefined,
@@ -1772,7 +1968,10 @@ export async function archiveSessionRow(sessionId: string, archived: boolean): P
       evictTurnWindow(key);
     }
     if (archived && activeSessionId() === sessionId) {
+      cancelPendingTranscriptBackfill();
       transcriptCursor = null;
+      transcriptHasEarlier.set(null);
+      transcriptEarlierExhausted.set(false);
       setActiveSession(null);
       sessionTurns.set([]);
     }
@@ -1799,7 +1998,10 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     clearPendingTurn(sessionId, key);
     evictTurnWindow(key);
     if (activeSessionId() === sessionId) {
+      cancelPendingTranscriptBackfill();
       transcriptCursor = null;
+      transcriptHasEarlier.set(null);
+      transcriptEarlierExhausted.set(false);
       setActiveSession(null);
       sessionTurns.set([]);
     }

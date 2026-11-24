@@ -23,9 +23,11 @@ use crate::runtime::DesktopRuntimeContext;
 use openbitfun_core::service::snapshot::open_snapshot_history_for_workspace;
 use openbitfun_core::{
     is_prompt_suggestion_enabled, resolved_transcript_prompt_suggestion,
-    session_transcript_view_from_turns, SessionTranscriptView, TranscriptTurnFileChange,
+    session_transcript_view_before_from_turns, session_transcript_view_from_turns,
+    SessionTranscriptView, TranscriptTurnFileChange,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// The transcript view plus the turn running right now, when one is.
 ///
@@ -60,9 +62,15 @@ pub struct GetSessionTranscriptViewRequest {
     /// The `cursor` the previous read returned.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Exclusive upper bound on storage `turn_index` for backward pagination.
+    /// When set, returns up to `limit` visible turns strictly older than this
+    /// index (`mode: "before"`) without re-reading newer turns.
+    #[serde(default, alias = "beforeTurnIndex")]
+    pub before_turn_index: Option<usize>,
 }
 
 /// Whether the host holds turns older than a window read with `limit`.
+#[cfg(test)]
 pub(crate) fn window_has_earlier(
     limit: Option<usize>,
     loaded: usize,
@@ -84,6 +92,7 @@ pub async fn get_session_transcript_view(
         return Err("session_id is required".to_string());
     }
     let limit = request.limit.filter(|limit| *limit > 0);
+    let before_turn_index = request.before_turn_index;
     let request_workspace_id = request.workspace_id.clone();
     let scope = desktop_session_scope(
         request.workspace_id,
@@ -91,64 +100,80 @@ pub async fn get_session_transcript_view(
         request.remote_connection_id,
         request.remote_ssh_host,
     );
-    let turns = runtime
+    let page = runtime
         .session_application()
-        .load_session_turns(scope.clone(), &session_id, limit)
+        .load_session_turns_page(scope.clone(), &session_id, before_turn_index, limit)
         .await
         .map_err(|error| format!("Failed to load session transcript: {error}"))?;
-    let metadata = runtime
-        .session_application()
-        .load_session_metadata(scope, &session_id)
-        .await
-        .ok()
-        .flatten();
-    let has_earlier = window_has_earlier(
-        limit,
-        turns.len(),
-        turns.first().map(|turn| turn.turn_index),
-    );
-    let mut view = session_transcript_view_from_turns(
-        &session_id,
-        &turns,
-        request
-            .cursor
-            .as_deref()
-            .filter(|cursor| !cursor.is_empty()),
-        has_earlier,
-    );
-    let running_turn = runtime
-        .session_application()
-        .running_turn_projection(&session_id)
-        .and_then(|(snapshot, acp)| running_turn_event_snapshot(snapshot, acp))
-        // A turn the view already reports settled is not running any more,
-        // whatever the journal still holds for late subscribers.
-        .filter(|snapshot| {
-            snapshot.active_turn_id.as_deref().is_some_and(|turn_id| {
-                !view
-                    .turns
-                    .iter()
-                    .any(|turn| turn.turn_id == turn_id && turn.settled)
+    let is_before_page = before_turn_index.is_some();
+    let mut view = if is_before_page {
+        session_transcript_view_before_from_turns(&session_id, &page.turns, page.has_earlier)
+    } else {
+        session_transcript_view_from_turns(
+            &session_id,
+            &page.turns,
+            request
+                .cursor
+                .as_deref()
+                .filter(|cursor| !cursor.is_empty()),
+            page.has_earlier,
+        )
+    };
+    let running_turn = if is_before_page {
+        None
+    } else {
+        runtime
+            .session_application()
+            .running_turn_projection(&session_id)
+            .and_then(|(snapshot, acp)| running_turn_event_snapshot(snapshot, acp))
+            // A turn the view already reports settled is not running any more,
+            // whatever the journal still holds for late subscribers.
+            .filter(|snapshot| {
+                snapshot.active_turn_id.as_deref().is_some_and(|turn_id| {
+                    !view
+                        .turns
+                        .iter()
+                        .any(|turn| turn.turn_id == turn_id && turn.settled)
+                })
             })
-        });
-    let workspace_id_for_snapshot = request_workspace_id
+    };
+    let explicit_workspace_id = request_workspace_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            metadata
-                .as_ref()
-                .and_then(|meta| meta.workspace_id.as_deref())
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        });
-    if view.turns.iter().any(|turn| turn.settled) {
+        .map(str::to_string);
+    let need_prompt_suggestion = !is_before_page && running_turn.is_none();
+    let settled_turn_indices: BTreeSet<usize> = view
+        .turns
+        .iter()
+        .filter(|turn| turn.settled)
+        .map(|turn| turn.turn_index)
+        .collect();
+    let need_metadata = need_prompt_suggestion
+        || (explicit_workspace_id.is_none() && !settled_turn_indices.is_empty());
+    let metadata = if need_metadata {
+        runtime
+            .session_application()
+            .load_session_metadata(scope, &session_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let workspace_id_for_snapshot = explicit_workspace_id.or_else(|| {
+        metadata
+            .as_ref()
+            .and_then(|meta| meta.workspace_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    });
+    if !settled_turn_indices.is_empty() {
         if let Some(workspace_id) = workspace_id_for_snapshot.as_deref() {
-            let max_turn_exclusive = turns.iter().map(|turn| turn.turn_index + 1).max();
             if let Ok(manager) = open_snapshot_history_for_workspace(workspace_id).await {
                 if let Ok(by_turn) = manager
-                    .get_turn_file_change_summaries_before(&session_id, max_turn_exclusive)
+                    .get_turn_file_change_summaries_for_turns(&session_id, &settled_turn_indices)
                     .await
                 {
                     for turn in &mut view.turns {
@@ -172,8 +197,9 @@ pub async fn get_session_transcript_view(
             }
         }
     }
-    if running_turn.is_none() && is_prompt_suggestion_enabled().await {
-        view.prompt_suggestion = resolved_transcript_prompt_suggestion(metadata.as_ref(), &turns);
+    if need_prompt_suggestion && is_prompt_suggestion_enabled().await {
+        view.prompt_suggestion =
+            resolved_transcript_prompt_suggestion(metadata.as_ref(), &page.turns);
     }
     Ok(DesktopSessionTranscriptView { view, running_turn })
 }
@@ -192,13 +218,22 @@ mod tests {
         assert_eq!(snake.workspace_id.as_deref(), Some("w1"));
         assert_eq!(snake.limit, Some(30));
         assert!(snake.cursor.is_none());
+        assert!(snake.before_turn_index.is_none());
         let camel: GetSessionTranscriptViewRequest = serde_json::from_value(serde_json::json!({
-            "sessionId": "s2", "workspaceId": "w2", "cursor": "tv1:0:abc:t"
+            "sessionId": "s2", "workspaceId": "w2", "cursor": "tv1:0:abc:t", "beforeTurnIndex": 12
         }))
         .unwrap();
         assert_eq!(camel.session_id, "s2");
         assert_eq!(camel.cursor.as_deref(), Some("tv1:0:abc:t"));
+        assert_eq!(camel.before_turn_index, Some(12));
         assert_eq!(camel.workspace_path, "");
+        let snake_before: GetSessionTranscriptViewRequest =
+            serde_json::from_value(serde_json::json!({
+                "session_id": "s3", "limit": 10, "before_turn_index": 5
+            }))
+            .unwrap();
+        assert_eq!(snake_before.before_turn_index, Some(5));
+        assert_eq!(snake_before.limit, Some(10));
     }
 
     #[test]

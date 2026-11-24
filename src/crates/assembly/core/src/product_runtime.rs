@@ -58,7 +58,9 @@ use crate::agentic::core::Session;
 use crate::agentic::events::EventQueue;
 use crate::agentic::keyed_lock::KeyedAsyncLockGuard;
 use crate::agentic::persistence::session_branch::SessionBranchRequest;
-use crate::agentic::persistence::{PersistenceManager, SessionMetadataPage};
+use crate::agentic::persistence::{
+    PersistedSessionTurnPage, PersistenceManager, SessionMetadataPage,
+};
 use crate::agentic::session::transcript_render::transcript_final_assistant_content;
 #[cfg(feature = "product-search")]
 use crate::agentic::session::transcript_render::{
@@ -555,17 +557,18 @@ async fn load_visible_persisted_session_turns(
     visible_turn_end: Option<usize>,
     limit: Option<usize>,
 ) -> OpenBitFunResult<Vec<DialogTurnData>> {
-    let mut turns = persistence
-        .load_session_turns(storage_path, session_id)
+    let page = persistence
+        .load_session_turns_page(
+            storage_path,
+            session_id,
+            visible_turn_end,
+            None,
+            limit,
+            false,
+            false,
+        )
         .await?;
-    if let Some(end) = visible_turn_end {
-        turns.retain(|turn| turn.turn_index < end);
-    }
-    if let Some(limit) = limit {
-        let start = turns.len().saturating_sub(limit);
-        turns = turns.split_off(start);
-    }
-    Ok(turns)
+    Ok(page.turns)
 }
 
 fn runtime_lineage_snapshot(
@@ -2055,6 +2058,29 @@ impl CoreAgentRuntimeCompatibility {
             limit,
         )
         .await
+    }
+
+    pub async fn load_persisted_session_turns_page(
+        &self,
+        storage_path: &Path,
+        session_id: &str,
+        before_turn_index: Option<usize>,
+        limit: Option<usize>,
+    ) -> OpenBitFunResult<PersistedSessionTurnPage> {
+        let read = self
+            .begin_persisted_session_read(storage_path, session_id)
+            .await?;
+        self.persistence
+            .load_session_turns_page(
+                storage_path,
+                session_id,
+                read.visible_turn_end(),
+                before_turn_index,
+                limit,
+                true,
+                true,
+            )
+            .await
     }
 
     pub async fn load_persisted_session_turns_for_mutation(

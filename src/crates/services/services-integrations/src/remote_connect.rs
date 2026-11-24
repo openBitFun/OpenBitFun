@@ -80,9 +80,9 @@ use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 pub use transcript_view::{
     build_transcript_view, chat_messages_from_transcript, session_transcript_view,
-    SessionTranscriptView, TranscriptImage, TranscriptItemView, TranscriptPromptSuggestion,
-    TranscriptTokenUsage, TranscriptToolView, TranscriptTurnFileChange, TranscriptTurnRecovery,
-    TranscriptTurnView, TranscriptUserMessage,
+    session_transcript_view_before, SessionTranscriptView, TranscriptImage, TranscriptItemView,
+    TranscriptPromptSuggestion, TranscriptTokenUsage, TranscriptToolView, TranscriptTurnFileChange,
+    TranscriptTurnRecovery, TranscriptTurnView, TranscriptUserMessage,
 };
 
 fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>

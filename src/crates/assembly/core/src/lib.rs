@@ -83,7 +83,8 @@ pub use openbitfun_services_integrations::remote_connect::{
 pub use service_agent_runtime::is_prompt_suggestion_enabled;
 #[cfg(feature = "remote-connect")]
 pub use service_agent_runtime::{
-    resolved_transcript_prompt_suggestion, session_transcript_view_from_turns,
+    resolved_transcript_prompt_suggestion, session_transcript_view_before_from_turns,
+    session_transcript_view_from_turns,
 };
 
 #[cfg(feature = "agent-runtime")]

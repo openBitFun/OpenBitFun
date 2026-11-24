@@ -308,18 +308,50 @@ function readRangeOf(call: ToolCallView): string {
   return to !== undefined ? `L${from}–${to}` : `L${from}+`;
 }
 
+function countLinesFast(text: string): number {
+  if (!text) return 0;
+  let lines = 1;
+  let idx = text.indexOf("\n");
+  while (idx !== -1) {
+    lines += 1;
+    idx = text.indexOf("\n", idx + 1);
+  }
+  return lines;
+}
+
+const MAX_EXACT_DIFF_STATS_CHARS = 100_000;
+
 function diffStatsOf(call: ToolCallView): { added: number; removed: number } | null {
   const diff = diffOf(call.input);
   if (diff) {
     if ("patch" in diff) {
       let added = 0;
       let removed = 0;
-      for (const line of diff.patch.split("\n")) {
-        if (line.startsWith("+++") || line.startsWith("---")) continue;
-        if (line.startsWith("+")) added += 1;
-        else if (line.startsWith("-")) removed += 1;
+      const patch = diff.patch;
+      let start = 0;
+      while (start <= patch.length) {
+        const end = patch.indexOf("\n", start);
+        const stop = end === -1 ? patch.length : end;
+        if (stop > start) {
+          const ch = patch.charCodeAt(start);
+          if (ch === 43 /* + */ && !(stop >= start + 3 && patch.startsWith("+++", start))) {
+            added += 1;
+          } else if (ch === 45 /* - */ && !(stop >= start + 3 && patch.startsWith("---", start))) {
+            removed += 1;
+          }
+        }
+        if (end === -1) break;
+        start = end + 1;
       }
       return { added, removed };
+    }
+    if (diff.oldText.length + diff.newText.length > MAX_EXACT_DIFF_STATS_CHARS) {
+      const oldCount = countLinesFast(diff.oldText);
+      const newCount = countLinesFast(diff.newText);
+      return {
+        added: Math.max(0, newCount - oldCount),
+        removed: Math.max(0, oldCount - newCount),
+      };
     }
     const oldLines = diff.oldText ? diff.oldText.split("\n") : [];
     const newLines = diff.newText ? diff.newText.split("\n") : [];
@@ -336,7 +368,7 @@ function diffStatsOf(call: ToolCallView): { added: number; removed: number } | n
     return { added: newLines.length - common, removed: oldLines.length - common };
   }
   const content = writeContentOf(call);
-  if (content) return { added: content.split("\n").length, removed: 0 };
+  if (content) return { added: countLinesFast(content), removed: 0 };
   return null;
 }
 

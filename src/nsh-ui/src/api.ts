@@ -260,8 +260,12 @@ export interface TranscriptPromptSuggestion {
 
 export interface SessionTranscriptView {
   sessionId: string;
-  /** `full` replaces the held turns; `after` keeps them through `keptThroughIndex` and appends. */
-  mode: "full" | "after";
+  /**
+   * `full` replaces the held turns; `after` keeps them through `keptThroughIndex`
+   * and appends; `before` returns an older page strictly before the caller's
+   * `beforeTurnIndex` to prepend without touching the tail cursor.
+   */
+  mode: "full" | "after" | "before";
   keptThroughIndex?: number;
   turns: TranscriptTurnView[];
   cursor?: string;
@@ -293,12 +297,14 @@ export const getSessionTranscriptView = (
   workspaceId: string,
   limit?: number,
   cursor?: string,
+  beforeTurnIndex?: number,
 ) =>
   invokeCommand<SessionTranscriptView>("get_session_transcript_view", {
     session_id: sessionId,
     workspace_id: workspaceId,
     ...(limit ? { limit } : {}),
     ...(cursor ? { cursor } : {}),
+    ...(beforeTurnIndex !== undefined ? { before_turn_index: beforeTurnIndex } : {}),
   });
 
 export interface OperationDiffResult {

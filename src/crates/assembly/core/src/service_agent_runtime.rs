@@ -1055,6 +1055,29 @@ pub fn session_transcript_view_from_turns(
     )
 }
 
+/// Backward history page projection (`mode: "before"`), used when a client
+/// prepends older turns strictly before its earliest held `turn_index`.
+#[cfg(feature = "remote-connect")]
+pub fn session_transcript_view_before_from_turns(
+    session_id: &str,
+    turns: &[DialogTurnData],
+    has_earlier: bool,
+) -> openbitfun_services_integrations::remote_connect::SessionTranscriptView {
+    use openbitfun_services_integrations::remote_connect::{
+        build_transcript_view, session_transcript_view_before,
+    };
+    let projected_turns = turns
+        .iter()
+        .filter(|turn| turn.kind.is_transcript_visible())
+        .map(|turn| remote_chat_history_turn_from_core_turn(turn, None))
+        .collect::<Vec<_>>();
+    session_transcript_view_before(
+        session_id,
+        build_transcript_view(projected_turns),
+        has_earlier,
+    )
+}
+
 /// Returns the persisted next-input suggestion when it still applies to the
 /// session's latest completed user dialog turn.
 #[cfg(feature = "remote-connect")]

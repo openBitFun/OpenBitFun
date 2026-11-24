@@ -18,7 +18,9 @@ use openbitfun_agent_runtime::sdk::{
 };
 use openbitfun_core::agentic::coordination::{ConversationCoordinator, DialogScheduler};
 use openbitfun_core::agentic::core::{ProcessingPhase, Session, SessionState};
-use openbitfun_core::agentic::persistence::{SessionBranchResult, SessionMetadataPage};
+use openbitfun_core::agentic::persistence::{
+    PersistedSessionTurnPage, SessionBranchResult, SessionMetadataPage,
+};
 use openbitfun_core::agentic::session::SessionViewRestoreTiming;
 use openbitfun_core::product_runtime::{CoreAgentRuntimeCompatibility, CoreProductAgentRuntime};
 #[cfg(test)]
@@ -506,6 +508,21 @@ impl DesktopSessionApplication {
         let storage_path = self.storage_path(&scope);
         self.compatibility
             .load_persisted_session_turns(&storage_path, session_id, limit)
+            .await
+            .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))
+    }
+
+    pub(crate) async fn load_session_turns_page(
+        &self,
+        request: DesktopSessionScopeRequest,
+        session_id: &str,
+        before_turn_index: Option<usize>,
+        limit: Option<usize>,
+    ) -> DesktopSessionApplicationResult<PersistedSessionTurnPage> {
+        let scope = self.resolved_scope(request).await?;
+        let storage_path = self.storage_path(&scope);
+        self.compatibility
+            .load_persisted_session_turns_page(&storage_path, session_id, before_turn_index, limit)
             .await
             .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))
     }

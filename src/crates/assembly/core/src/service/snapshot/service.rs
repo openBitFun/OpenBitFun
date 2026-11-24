@@ -311,6 +311,26 @@ impl SnapshotService {
             .await
     }
 
+    pub async fn get_turn_file_change_summaries_for_turns(
+        &self,
+        session_id: &str,
+        turn_indices: &std::collections::BTreeSet<usize>,
+    ) -> SnapshotResult<
+        std::collections::BTreeMap<
+            usize,
+            Vec<crate::service::snapshot::types::TurnFileChangeSummary>,
+        >,
+    > {
+        if turn_indices.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        self.ensure_initialized().await?;
+        let snapshot_core = self.snapshot_core.read().await;
+        snapshot_core
+            .get_turn_file_change_summaries_for_turns(session_id, turn_indices)
+            .await
+    }
+
     pub async fn get_operation_summary(
         &self,
         session_id: &str,

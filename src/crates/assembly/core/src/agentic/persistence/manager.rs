@@ -527,6 +527,14 @@ pub struct MaterializedSessionReferenceTranscript {
     pub line_count: usize,
 }
 
+/// Bounded chronological page of persisted turns returned without scanning
+/// unrelated turn files on disk.
+#[derive(Debug, Clone)]
+pub struct PersistedSessionTurnPage {
+    pub turns: Vec<DialogTurnData>,
+    pub has_earlier: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompressionTranscriptArtifact {
     pub(crate) uri: String,
@@ -4400,6 +4408,146 @@ impl PersistenceManager {
             .await
     }
 
+    /// Load a bounded chronological page of persisted turns without parsing
+    /// unrelated turn files outside the requested slice.
+    ///
+    /// Both `visible_turn_end` (the staged-revert boundary) and
+    /// `before_turn_index` (backward pagination cursor) act as exclusive upper
+    /// bounds on storage `turn_index`. When `transcript_visible_only` is true,
+    /// non-visible records (e.g. `LocalCommand`) are skipped so a bounded page
+    /// still returns up to `limit` displayable turns.
+    pub async fn load_session_turns_page(
+        &self,
+        workspace_path: &Path,
+        session_id: &str,
+        visible_turn_end: Option<usize>,
+        before_turn_index: Option<usize>,
+        limit: Option<usize>,
+        transcript_visible_only: bool,
+        for_display: bool,
+    ) -> OpenBitFunResult<PersistedSessionTurnPage> {
+        Self::validate_session_id(session_id)?;
+        let ceiling = match (visible_turn_end, before_turn_index) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+
+        #[cfg(feature = "external-sources")]
+        if let Some(bundle) =
+            Box::pin(self.external_history_snapshot(workspace_path, session_id, false)).await?
+        {
+            let mut filtered: Vec<DialogTurnData> = bundle
+                .into_bundle()
+                .turns
+                .into_iter()
+                .filter(|turn| ceiling.is_none_or(|end| turn.turn_index < end))
+                .filter(|turn| !transcript_visible_only || turn.kind.is_transcript_visible())
+                .collect();
+            let has_earlier = if let Some(limit) = limit {
+                if limit == 0 {
+                    let any = !filtered.is_empty();
+                    filtered.clear();
+                    any
+                } else if filtered.len() > limit {
+                    let start = filtered.len() - limit;
+                    filtered = filtered.split_off(start);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            return Ok(PersistedSessionTurnPage {
+                turns: filtered,
+                has_earlier,
+            });
+        }
+        #[cfg(feature = "external-sources")]
+        self.ensure_external_session_materialized(workspace_path, session_id)
+            .await?;
+
+        let mut indexed_paths = self
+            .list_indexed_turn_paths(workspace_path, session_id)
+            .await?;
+        if let Some(end) = ceiling {
+            indexed_paths.retain(|(index, _)| *index < end);
+        }
+        indexed_paths.sort_by_key(|(index, _)| *index);
+
+        let Some(limit) = limit else {
+            let mut turns = self
+                .read_turn_paths(indexed_paths, for_display)
+                .await?
+                .turns;
+            if transcript_visible_only {
+                turns.retain(|turn| turn.kind.is_transcript_visible());
+            }
+            return Ok(PersistedSessionTurnPage {
+                turns,
+                has_earlier: false,
+            });
+        };
+
+        if limit == 0 {
+            return Ok(PersistedSessionTurnPage {
+                turns: Vec::new(),
+                has_earlier: !indexed_paths.is_empty(),
+            });
+        }
+
+        if !transcript_visible_only {
+            let start = indexed_paths.len().saturating_sub(limit);
+            let has_earlier = start > 0;
+            let selected = indexed_paths.split_off(start);
+            let turns = self.read_turn_paths(selected, for_display).await?.turns;
+            return Ok(PersistedSessionTurnPage { turns, has_earlier });
+        }
+
+        let mut cursor = indexed_paths.len();
+        let mut chunks_rev: Vec<Vec<DialogTurnData>> = Vec::new();
+        let mut collected_len = 0usize;
+        let mut empty_batches = 0u32;
+
+        while collected_len < limit && cursor > 0 {
+            let remaining = limit - collected_len;
+            let batch_size = if empty_batches == 0 {
+                remaining
+            } else {
+                remaining.max(1usize << empty_batches.min(3))
+            };
+            let batch_start = cursor.saturating_sub(batch_size);
+            let selected = indexed_paths[batch_start..cursor].to_vec();
+            cursor = batch_start;
+
+            let mut batch_turns = self.read_turn_paths(selected, for_display).await?.turns;
+            batch_turns.retain(|turn| turn.kind.is_transcript_visible());
+            if batch_turns.is_empty() {
+                empty_batches = empty_batches.saturating_add(1);
+            } else {
+                empty_batches = 0;
+                collected_len += batch_turns.len();
+                chunks_rev.push(batch_turns);
+            }
+        }
+
+        let mut turns = Vec::with_capacity(collected_len);
+        for chunk in chunks_rev.into_iter().rev() {
+            turns.extend(chunk);
+        }
+
+        let mut dropped_visible = false;
+        if turns.len() > limit {
+            let extra = turns.len() - limit;
+            turns.drain(..extra);
+            dropped_visible = true;
+        }
+        let has_earlier = dropped_visible || cursor > 0;
+        Ok(PersistedSessionTurnPage { turns, has_earlier })
+    }
+
     async fn read_session_turns(
         &self,
         workspace_path: &Path,
@@ -6369,6 +6517,118 @@ mod tests {
 
         assert_eq!(view_turn_indices, vec![3, 4]);
         assert_eq!(total_turn_count, 5);
+    }
+
+    #[tokio::test]
+    async fn load_session_turns_page_reads_only_requested_slice_and_skips_local_commands() {
+        let workspace = TestWorkspace::new();
+        let manager = PersistenceManager::new(workspace.path_manager()).unwrap();
+        let session_id = Uuid::new_v4().to_string();
+        let session = Session::new_with_id(
+            session_id.clone(),
+            "Bounded page test".into(),
+            "Standard".into(),
+            SessionConfig {
+                workspace_path: Some(workspace.path().to_string_lossy().into()),
+                ..Default::default()
+            },
+        );
+        manager
+            .save_session(workspace.path(), &session)
+            .await
+            .unwrap();
+
+        for index in 0..8usize {
+            let mut turn = DialogTurnData::new(
+                format!("turn-{index}"),
+                index,
+                session_id.clone(),
+                user_message(&format!("prompt {index}")),
+            );
+            if index == 7 {
+                turn.kind = crate::service::session::DialogTurnKind::LocalCommand;
+            }
+            manager
+                .save_dialog_turn(workspace.path(), &turn)
+                .await
+                .unwrap();
+        }
+
+        // Corrupt early turn files (0..=2) on disk: bounded tail/page reads for
+        // turns >= 3 must succeed without ever opening or deserializing them.
+        for corrupt_index in 0..=2usize {
+            let corrupt_path = manager.turn_path(workspace.path(), &session_id, corrupt_index);
+            tokio::fs::write(&corrupt_path, b"{corrupt json")
+                .await
+                .unwrap();
+        }
+
+        // Tail read with transcript_visible_only=true skips LocalCommand turn 7
+        // and delivers the newest 2 visible turns [5, 6] with has_earlier=true.
+        let tail = manager
+            .load_session_turns_page(
+                workspace.path(),
+                &session_id,
+                None,
+                None,
+                Some(2),
+                true,
+                true,
+            )
+            .await
+            .expect("bounded tail page must not read corrupted earlier files");
+        assert_eq!(
+            tail.turns.iter().map(|t| t.turn_index).collect::<Vec<_>>(),
+            vec![5, 6]
+        );
+        assert!(tail.has_earlier);
+
+        // Backward page before turn 5 returns [3, 4] with has_earlier=true,
+        // still without opening turns 0..=2 or 5..=7.
+        let earlier = manager
+            .load_session_turns_page(
+                workspace.path(),
+                &session_id,
+                None,
+                Some(5),
+                Some(2),
+                true,
+                true,
+            )
+            .await
+            .expect("backward page must read only turns 3 and 4");
+        assert_eq!(
+            earlier
+                .turns
+                .iter()
+                .map(|t| t.turn_index)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(earlier.has_earlier);
+
+        // Respects visible_turn_end (staged revert boundary) together with limit.
+        let reverted = manager
+            .load_session_turns_page(
+                workspace.path(),
+                &session_id,
+                Some(5),
+                None,
+                Some(2),
+                true,
+                true,
+            )
+            .await
+            .expect("reverted tail must respect visible_turn_end");
+        assert_eq!(
+            reverted
+                .turns
+                .iter()
+                .map(|t| t.turn_index)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(reverted.has_earlier);
     }
 
     #[tokio::test]
