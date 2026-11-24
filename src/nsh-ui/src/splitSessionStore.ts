@@ -80,9 +80,7 @@ export const secondaryPendingTurnState = signal<PendingTurnState | null>(null);
 export const secondaryComposerText = signal("");
 export const secondaryImageAttachments = signal<ImageAttachment[]>([]);
 export const secondaryFileAttachments = signal<FileAttachment[]>([]);
-export const secondaryTurnWindow = signal(INITIAL_FAST_TURN_COUNT);
-const secondaryTranscriptHasEarlier = signal<boolean | null>(null);
-const secondaryEarlierExhausted = signal(false);
+const secondaryTranscriptHasEarlier = signal(false);
 
 let secondaryTranscriptCursor: { sessionKey: string; cursor: string } | null = null;
 let secondaryTurnsLoadSeq = 0;
@@ -91,7 +89,6 @@ let secondaryEarlierInFlight = false;
 let secondaryBackfillTimer: ReturnType<typeof setTimeout> | null = null;
 let secondaryAutoBackfillGuard: (() => boolean) | null = null;
 let secondaryBeforePrependListener: (() => void) | null = null;
-const secondaryLegacyBeforeUnsupportedKeys = new Set<string>();
 
 export function registerSecondaryAutoBackfillGuard(guard: (() => boolean) | null): void {
   secondaryAutoBackfillGuard = guard;
@@ -168,17 +165,9 @@ export const secondarySessionTitle = computed<string>(() => {
   return id;
 });
 
-export const secondaryHasEarlierTurns = computed<boolean>(() => {
-  const id = secondarySessionId();
-  if (!id) return false;
-  if (secondaryEarlierExhausted()) return false;
-  const hostFlag = secondaryTranscriptHasEarlier();
-  if (hostFlag === true) return true;
-  const loaded = secondaryTurns().length;
-  const row = secondarySessionSummary() as ({ turnCount?: number } | null);
-  if (typeof row?.turnCount === "number") return row.turnCount > loaded;
-  return hostFlag === null ? false : hostFlag;
-});
+export const secondaryHasEarlierTurns = computed<boolean>(
+  () => Boolean(secondarySessionId()) && secondaryTranscriptHasEarlier(),
+);
 
 export function addSecondaryImageAttachment(item: ImageAttachment): void {
   secondaryImageAttachments.update(current => [...current, item]);
@@ -219,7 +208,6 @@ export function setSecondaryPendingTurn(
   const trimmed = userText.trim();
   if (!sessionId || !trimmed) return;
   const key = secondarySessionKey() ?? sessionKey(sessionId, secondarySessionDevice());
-  secondaryTurnWindow.update(n => n + 1);
   secondaryPendingTurnState.set({
     sessionId,
     sessionKey: key,
@@ -295,8 +283,7 @@ function resetSecondaryRuntimeState(): void {
   secondaryEarlierLoadSeq += 1;
   secondaryEarlierInFlight = false;
   secondaryTranscriptCursor = null;
-  secondaryTranscriptHasEarlier.set(null);
-  secondaryEarlierExhausted.set(false);
+  secondaryTranscriptHasEarlier.set(false);
   secondaryTurns.set([]);
   secondaryTurnsLoading.set(false);
   secondaryTranscriptNotice.set("");
@@ -305,7 +292,6 @@ function resetSecondaryRuntimeState(): void {
   secondaryPendingTurnState.set(null);
   secondaryComposerText.set("");
   clearSecondaryAttachments();
-  secondaryTurnWindow.set(INITIAL_FAST_TURN_COUNT);
 }
 
 /** Picks the best default second session when opening split view without a target. */
@@ -490,14 +476,12 @@ export function clearSecondarySession(): void {
 
 function scheduleSecondaryBackfill(sessionId: string, key: string, expectedLoadSeq: number): void {
   cancelPendingSecondaryBackfill();
-  if (secondaryLegacyBeforeUnsupportedKeys.has(key)) return;
-  if (secondaryEarlierExhausted() || secondaryTranscriptHasEarlier() !== true) return;
+  if (!secondaryTranscriptHasEarlier()) return;
   if (secondaryTurns().length >= INITIAL_BACKFILL_TARGET) return;
   secondaryBackfillTimer = setTimeout(() => {
     secondaryBackfillTimer = null;
     if (!splitPaneOpen() || secondaryTurnsLoadSeq !== expectedLoadSeq || secondarySessionKey() !== key) return;
-    if (secondaryEarlierInFlight) return;
-    if (secondaryEarlierExhausted() || secondaryTranscriptHasEarlier() !== true) return;
+    if (secondaryEarlierInFlight || !secondaryTranscriptHasEarlier()) return;
     if (secondaryTurns().length === 0 || secondaryTurns().length >= INITIAL_BACKFILL_TARGET) return;
     if (secondaryAutoBackfillGuard && !secondaryAutoBackfillGuard()) return;
     void fetchSecondaryEarlierPage(sessionId, key, BACKFILL_TURN_BATCH, {
@@ -517,24 +501,15 @@ async function fetchSecondaryEarlierPage(
   const workspaceId = secondaryWorkspaceId() || activeWorkspaceId();
   if (!workspaceId || secondaryEarlierInFlight) return;
   const device = secondarySessionDevice();
-  const held = secondaryTurns();
-  const earliest = earliestTurnIndexOf(held);
-  const canUseBefore =
-    !secondaryLegacyBeforeUnsupportedKeys.has(key) &&
-    earliest !== undefined &&
-    earliest > 0;
-
-  if (!canUseBefore) {
-    if (options?.isAutoBackfill) return;
-    secondaryTurnWindow.set(Math.max(held.length, secondaryTurnWindow()) + pageSize);
-    await loadSecondaryTurns(sessionId, { silent: true, forceFullWindow: true });
+  const earliest = earliestTurnIndexOf(secondaryTurns());
+  if (earliest === undefined || earliest === 0) {
+    secondaryTranscriptHasEarlier.set(false);
     return;
   }
 
   const reqSeq = ++secondaryEarlierLoadSeq;
   const loadSeqSnapshot = options?.expectedLoadSeq ?? secondaryTurnsLoadSeq;
   secondaryEarlierInFlight = true;
-  let fallbackToLegacy = false;
   try {
     const view = await invokeCommand<SessionTranscriptView>(
       "get_session_transcript_view",
@@ -554,51 +529,36 @@ async function fetchSecondaryEarlierPage(
     ) {
       return;
     }
-    if (view.mode === "before") {
-      const older = Array.isArray(view.turns) ? view.turns : [];
-      const more = Boolean(view.hasEarlier);
-      if (older.length > 0) {
-        secondaryBeforePrependListener?.();
-      }
-      batch(() => {
-        if (older.length > 0) {
-          secondaryTurns.set(mergePrependedTurns(older, secondaryTurns()));
-        }
-        secondaryTranscriptHasEarlier.set(more);
-        secondaryEarlierExhausted.set(!more);
-      });
-      if (
-        options?.isAutoBackfill &&
-        more &&
-        older.length > 0 &&
-        secondaryTurns().length < INITIAL_BACKFILL_TARGET
-      ) {
-        scheduleSecondaryBackfill(sessionId, key, loadSeqSnapshot);
-      }
-      return;
+    if (view.mode !== "before") return;
+    const older = Array.isArray(view.turns) ? view.turns : [];
+    const more = Boolean(view.hasEarlier);
+    if (older.length > 0) {
+      secondaryBeforePrependListener?.();
     }
-    secondaryLegacyBeforeUnsupportedKeys.add(key);
-    fallbackToLegacy = !options?.isAutoBackfill;
+    batch(() => {
+      if (older.length > 0) {
+        secondaryTurns.set(mergePrependedTurns(older, secondaryTurns()));
+      }
+      secondaryTranscriptHasEarlier.set(more);
+    });
+    if (
+      options?.isAutoBackfill &&
+      more &&
+      older.length > 0 &&
+      secondaryTurns().length < INITIAL_BACKFILL_TARGET
+    ) {
+      scheduleSecondaryBackfill(sessionId, key, loadSeqSnapshot);
+    }
   } catch (error) {
     if (!options?.isAutoBackfill) throw error;
   } finally {
     secondaryEarlierInFlight = false;
   }
-
-  if (
-    fallbackToLegacy &&
-    splitPaneOpen() &&
-    secondaryTurnsLoadSeq === loadSeqSnapshot &&
-    secondarySessionKey() === key
-  ) {
-    secondaryTurnWindow.set(Math.max(secondaryTurns().length, secondaryTurnWindow()) + pageSize);
-    await loadSecondaryTurns(sessionId, { silent: true, forceFullWindow: true });
-  }
 }
 
 export async function loadSecondaryTurns(
   sessionId: string,
-  options?: { silent?: boolean; forceFullWindow?: boolean },
+  options?: { silent?: boolean },
 ): Promise<TranscriptTurnView[] | null> {
   if (!splitPaneOpen() || secondarySessionId() !== sessionId) return null;
   const workspaceId = secondaryWorkspaceId() || activeWorkspaceId();
@@ -607,23 +567,19 @@ export async function loadSecondaryTurns(
   if (!key) return null;
   const device = secondarySessionDevice();
   const seq = ++secondaryTurnsLoadSeq;
-  if (options?.forceFullWindow) cancelPendingSecondaryBackfill();
   let loaded: TranscriptTurnView[] | null = null;
 
   await runStep(
     async () => {
       const held = secondaryTurns();
       const useCursor =
-        !options?.forceFullWindow &&
         Boolean(secondaryTranscriptCursor && secondaryTranscriptCursor.sessionKey === key) &&
         secondarySessionKey() === key &&
         held.length > 0;
       const cursor = useCursor ? secondaryTranscriptCursor!.cursor : undefined;
-      const limit = options?.forceFullWindow
-        ? secondaryTurnWindow()
-        : useCursor
-          ? Math.max(TAIL_REFRESH_MIN_LIMIT, INITIAL_FAST_TURN_COUNT)
-          : INITIAL_FAST_TURN_COUNT;
+      const limit = useCursor
+        ? Math.max(TAIL_REFRESH_MIN_LIMIT, INITIAL_FAST_TURN_COUNT)
+        : INITIAL_FAST_TURN_COUNT;
       let view: SessionTranscriptView | null = null;
       try {
         view = await invokeCommand<SessionTranscriptView>(
@@ -654,7 +610,6 @@ export async function loadSecondaryTurns(
           if (seq === secondaryTurnsLoadSeq && secondarySessionKey() === key) {
             secondaryTranscriptCursor = null;
             secondaryTranscriptHasEarlier.set(false);
-            secondaryEarlierExhausted.set(true);
             secondaryTranscriptNotice.set(tr("sessions.transcriptHostOutdated"));
             secondaryTurns.set([]);
           }
@@ -686,7 +641,6 @@ export async function loadSecondaryTurns(
         secondaryTurnsLoading.set(false);
         if (view!.mode === "full") {
           secondaryTranscriptHasEarlier.set(Boolean(view!.hasEarlier));
-          secondaryEarlierExhausted.set(false);
         }
         if (!unchanged) secondaryTurns.set(list);
         reconcileSecondaryPendingWithPersisted(sessionId, list, key);

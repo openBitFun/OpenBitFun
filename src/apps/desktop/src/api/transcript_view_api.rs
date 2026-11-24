@@ -69,19 +69,6 @@ pub struct GetSessionTranscriptViewRequest {
     pub before_turn_index: Option<usize>,
 }
 
-/// Whether the host holds turns older than a window read with `limit`.
-#[cfg(test)]
-pub(crate) fn window_has_earlier(
-    limit: Option<usize>,
-    loaded: usize,
-    first_index: Option<usize>,
-) -> bool {
-    match limit {
-        Some(limit) => loaded >= limit && first_index.is_some_and(|index| index > 0),
-        None => false,
-    }
-}
-
 // @backend-command
 pub async fn get_session_transcript_view(
     runtime: State<'_, DesktopRuntimeContext>,
@@ -234,13 +221,5 @@ mod tests {
             .unwrap();
         assert_eq!(snake_before.before_turn_index, Some(5));
         assert_eq!(snake_before.limit, Some(10));
-    }
-
-    #[test]
-    fn earlier_turns_exist_only_behind_a_full_window() {
-        assert!(!window_has_earlier(None, 100, Some(5)));
-        assert!(!window_has_earlier(Some(30), 12, Some(0)));
-        assert!(!window_has_earlier(Some(30), 30, Some(0)));
-        assert!(window_has_earlier(Some(30), 30, Some(4)));
     }
 }

@@ -872,56 +872,6 @@ test("a long history opens on its newest turns and loads earlier ones on request
   expect(transcriptCalls.every(call => Number(call.limit ?? 0) <= 10)).toBe(true);
 });
 
-test("older host ignoring before_turn_index gracefully falls back to widened limit", async () => {
-  const turns = Array.from({ length: 14 }, (_, index) => ({
-    turnId: `legacy-turn-${index + 1}`,
-    turnIndex: index,
-    kind: "user_dialog",
-    status: "done",
-    settled: true,
-    user: { id: `lu-${index}`, text: `Legacy Q${index + 1}`, timestampMs: 1_763_100_000_000 + index * 1000 },
-    items: [{ kind: "text", id: `lt-${index}`, roundIndex: 0, text: `Legacy A${index + 1}` }],
-    startTimeMs: 1_763_100_000_000 + index * 1000,
-    assistantTimestampMs: 1_763_100_000_500 + index * 1000,
-  }));
-  const backend = createBackend({
-    sessions: [
-      { sessionId: "session-legacy-host", sessionName: "Legacy host history", lastUpdated: 1763100000000, messageCount: 28, turnCount: 14, agentType: "Standard" } as never,
-    ],
-  });
-  const baseInvoke = backend.handlers["openbitfun.invoke"];
-  const calls: Array<Record<string, unknown>> = [];
-  backend.handlers["openbitfun.invoke"] = (payload: unknown) => {
-    const args = payload as { action?: string; request?: Record<string, unknown> };
-    if (args.action === "get_session_transcript_view" && args.request?.session_id === "session-legacy-host") {
-      const req = args.request ?? {};
-      calls.push({ ...req });
-      // Simulates an older 2.0 host that ignores `before_turn_index` and always
-      // answers `mode: "full"` with the newest `limit` turns.
-      const limit = typeof req.limit === "number" && req.limit > 0 ? req.limit : turns.length;
-      const start = Math.max(0, turns.length - limit);
-      return {
-        ok: true,
-        value: {
-          sessionId: "session-legacy-host",
-          mode: "full",
-          turns: turns.slice(start),
-          hasEarlier: start > 0,
-        },
-        transport: "dev",
-      };
-    }
-    return baseInvoke(payload);
-  };
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await openSession(app, "Legacy host history");
-  await app.waitFor("Legacy A14");
-  await app.waitFor("load-earlier-turns");
-  await app.press("load-earlier-turns");
-  await app.waitFor("Legacy A3");
-  expect(calls.some(call => Number(call.limit ?? 0) >= 12 && call.before_turn_index === undefined)).toBe(true);
-});
-
 test("an approval can be rejected with a reason the agent receives", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
