@@ -15,10 +15,12 @@ const WORKER_TIMEOUT_MS = 120_000;
 if (process.argv.includes("--worker")) {
   await runWorker();
 } else {
-  await runParent();
+  for (const outcome of ["allow", "reject", "missing"]) {
+    await runParent(outcome);
+  }
 }
 
-async function runParent() {
+async function runParent(outcome) {
   const isolatedRoot = await mkdtemp(join(tmpdir(), "openbitfun-sdk-real-host-"));
   const workspace = join(isolatedRoot, "workspace");
   const userRoot = join(isolatedRoot, "user-root");
@@ -71,7 +73,7 @@ async function runParent() {
               index: 0,
               id: "call_sdk_read",
               type: "function",
-              function: { name: "Read", arguments: JSON.stringify({ file_path: fixtureFile }) },
+              function: { name: "Read", arguments: JSON.stringify({ file_path: outcome === "missing" ? "missing-sdk-fixture.txt" : fixtureFile }) },
             }],
           },
           finish_reason: "tool_calls",
@@ -81,7 +83,13 @@ async function runParent() {
           const toolReply = body.messages.find((message) =>
             message.role === "tool" && message.tool_call_id === "call_sdk_read");
           assert.ok(toolReply, "model must receive the result for the requested tool call");
-          assert.ok(JSON.stringify(toolReply.content).includes(fileMarker), "Read must return the file contents");
+          const content = JSON.stringify(toolReply.content);
+          if (outcome === "allow") {
+            assert.ok(content.includes(fileMarker), "Read must return the file contents");
+          } else {
+            assert.ok(!content.includes(fileMarker), "a failed or rejected call exposed file contents");
+            assert.match(content, outcome === "reject" ? /user rejected this tool call/i : /file does not exist: .*missing-sdk-fixture\.txt/i);
+          }
         }
         const text = { 1: "fixture response", 3: "read completed", 4: "session resumed" }[index];
         chunks = [
@@ -115,6 +123,7 @@ async function runParent() {
   try {
     const address = await listenLocalhost(server);
     const workerEnvironment = {
+      OPENBITFUN_SDK_SMOKE_READ_OUTCOME: outcome,
       OPENBITFUN_SDK_SMOKE_BASE_URL: `http://127.0.0.1:${String(address.port)}/v1`,
       OPENBITFUN_SDK_SMOKE_WORKSPACE: workspace,
       OPENBITFUN_E2E_STORAGE_GUARD: "1",
@@ -173,7 +182,7 @@ async function runParent() {
     assert.ok(!catalog.opened_workspace_ids.includes(id));
     assert.notEqual(catalog.current_workspace_id, id);
     await assertTreeDoesNotContain(isolatedRoot, apiKey);
-    process.stdout.write("real-host-smoke: PASS\n");
+    process.stdout.write(`real-host-smoke (${outcome}): PASS\n`);
   } finally {
     if (worker !== undefined && worker.exitCode === null) {
       worker.kill();
@@ -190,6 +199,7 @@ async function runParent() {
 
 async function runWorker() {
   const apiKey = await readApiKeyFromStdin();
+  const outcome = requiredEnvironment("OPENBITFUN_SDK_SMOKE_READ_OUTCOME");
   const workspace = requiredEnvironment("OPENBITFUN_SDK_SMOKE_WORKSPACE");
   const baseUrl = requiredEnvironment("OPENBITFUN_SDK_SMOKE_BASE_URL");
   const missingHost = join(workspace, "missing-openbitfun-sdk-host");
@@ -260,15 +270,20 @@ async function runWorker() {
     for await (const item of read) {
       readEvents.push(item);
       if (item.type === "permission_request") {
-        await read.respondPermission(item.requestId, { decision: "allow_once" });
+        await read.respondPermission(item.requestId, { decision: outcome === "reject" ? "reject" : "allow_once" });
       }
     }
     const readResult = await read.result();
     assert.equal(readResult.status, "completed");
     assert.equal(readResult.outputText, "OpenBitFun SDK read completed");
-    assert.equal(readEvents.filter((item) => item.type === "permission_request").length, 1);
-    assert.ok(readEvents.some((item) => item.type === "tool_event" &&
-      item.toolName === "Read" && item.status === "completed"));
+    assert.equal(readEvents.filter((item) => item.type === "permission_request").length, outcome === "missing" ? 0 : 1);
+    const toolEvents = readEvents.filter((item) => item.type === "tool_event" && item.toolName === "Read");
+    if (outcome === "reject") {
+      assert.ok(!toolEvents.some((item) => item.status === "completed"));
+    } else {
+      const expectedStatus = outcome === "missing" ? "failed" : "completed";
+      assert.equal(toolEvents.filter((item) => item.status === expectedStatus).length, 1);
+    }
     assert.equal(readEvents.filter((item) => item.type === "result").length, 1);
     assert.equal(JSON.stringify(readEvents).includes(apiKey), false);
     await read.close();

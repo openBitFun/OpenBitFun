@@ -16,6 +16,7 @@ openbitfun-core-types = { path = "../../contracts/core-types" }
 openbitfun-events = { path = "../../contracts/events" }
 openbitfun-runtime-ports = { path = "../../contracts/runtime-ports", features = ["workspace-ports"] }
 dashmap = { workspace = true }
+futures = { workspace = true }
 globset = { workspace = true }
 dunce = { workspace = true }
 grep-regex = { workspace = true }

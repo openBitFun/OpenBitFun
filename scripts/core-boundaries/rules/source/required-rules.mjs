@@ -2687,13 +2687,22 @@ export const requiredContentRules = [
         message: 'missing tool cancellation token owner delegation',
       },
       {
-        regex: /\bshould_retry_tool_attempt\b/,
-        message: 'missing tool-runtime retry decision delegation',
+        regex: /\brun_tool_attempts\s*\(/,
+        message: 'missing tool-runtime retry execution delegation',
       },
       {
-        regex: /\bretry_delay_ms\b/,
-        message: 'missing tool-runtime retry backoff delegation',
+        regex: /\bexecute_segments\s*\(/,
+        message: 'missing tool-runtime batch execution delegation',
       },
+    ],
+  },
+  {
+    path: 'src/crates/execution/tool-execution/src/pipeline/execution.rs',
+    reason: 'portable tool execution must apply the existing retry and batch policies',
+    patterns: [
+      { regex: /\bshould_retry_tool_attempt\s*\(/, message: 'missing tool retry policy' },
+      { regex: /\bretry_delay_ms\s*\(/, message: 'missing tool retry backoff' },
+      { regex: /\bpartition_tool_batches\s*\(/, message: 'missing ordered batch planning' },
     ],
   },
   {
@@ -7685,7 +7694,7 @@ export const requiredContentRules = [
   {
     path: 'src/crates/assembly/core/src/agentic/execution/execution_engine.rs',
     reason:
-      'core execution must pass deferred-tool loaded-spec state through product runtime owner and keep DeepResearch post-turn hooks',
+      'core execution must use the product tool catalog and invoke the assembled turn completion hook',
     patterns: [
       {
         regex: /\bcollect_product_loaded_deferred_tool_specs\b/,
@@ -7703,6 +7712,16 @@ export const requiredContentRules = [
         regex: /\bGetToolSpec\b/,
         message: 'missing GetToolSpec execution contract',
       },
+      {
+        regex: /\.on_completion\s*\(/,
+        message: 'missing assembled turn completion hook',
+      },
+    ],
+  },
+  {
+    path: 'src/crates/assembly/core/src/agentic/system.rs',
+    reason: 'product assembly supplies the gated DeepResearch report postprocessor',
+    patterns: [
       {
         regex: /\bshould_post_process_research_report\b/,
         message: 'missing DeepResearch post-process runtime gate',

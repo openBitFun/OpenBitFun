@@ -386,7 +386,12 @@ pub trait SecurityDecisionPort: Send + Sync {
 模型请求提供方、事件队列及路由器交给同一执行链。工作区目录可在启动时传入，也可在宿主完成注册后供执行器读取。
 `CoreSessionStorePort` 定位会话存储，`SessionRecords` 读写会话和对话轮记录，产品装配使用同一个
 `PersistenceManager` 完成这些读写与原有的索引、快照维护。会话管理器继续持有写锁并决定提交顺序。
-`ModelRequests::send_once` 只发送一次模型请求；重试、取消和工具审批仍由原执行器处理。
+`ModelRequests::send_once` 发送一次模型请求。执行层的 `model_round` 负责打开和消费流之间的取消、
+同一逻辑轮次的尝试计数、部分输出恢复，以及先提交助手工具调用再执行工具的顺序。
+`turn_execution` 推进轮次、拼接模型历史、处理工具失败或流中断后的续写，并决定收尾请求何时重试。其 `context` 模块按模型或模型池预算计算输入上限，超出上下文窗口时按完整消息轮裁剪历史。
+`tool-runtime::pipeline::execution` 按段运行预检，等待 Hook 改写最终参数后再安排权限和并发批次，
+并按调用顺序收集结果。Core 把已有的工具、审批邮箱、账户路由、存储及事件对象接入这些执行点；
+具体会话读写、模型压缩请求和压缩结果的持久化仍经过 Core。DeepResearch 的完成回调由产品装配按 feature 安装。
 构造入口和两轮文件读取回归分别见 [共享装配](../../src/crates/assembly/core/src/agentic/system.rs)
 和 [真实 SDK Host 用例](../../sdk/typescript/test/real-host-smoke.mjs)。
 

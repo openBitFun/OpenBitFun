@@ -247,7 +247,7 @@ Computer Use 的控制会话、系统共享提示、后台输入边界与 macOS 
 
 原子逻辑模块应满足三个条件：一个明确 owner、一个可独立测试的输入输出契约、一个变化原因。`core.basic`、`core.agent`、`core.session`、`core.git`、`core.web`、`core.mcp`、`core.computer-use`、`core.review`、`core.miniapp`、`core.creation` 分别表达实际工具职责；其中 `core.creation` 只承载创造模式的产品创作入口，不吸收 MiniApp runtime/market owner。不得重新合成 `core.integration` 这类同时包含网络、Git、MCP、产品工具和平台能力的大组。
 
-当前生产循环仍由 `assembly/core` 的 `ConversationCoordinator → Scheduler → ExecutionEngine → RoundExecutor → ToolPipeline` 持有；`agent-runtime` 已拥有可移植决策与 Rust preview facade，但尚未独立拥有完整循环。`assembly/core` 因此仍是过渡期兼容组装与实际 owner，不能被描述成只有 wiring。后续迁移必须逐条切换真实调用方、保留行为等价测试并删除旧写入方；移动 DTO、增加 feature 或 re-export 均不算 owner 迁移。当前仍位于 Runtime/Core 的 DeepReview 兼容逻辑只允许迁出和修复，不继续承接新的产品行为。
+桌面、CLI 和 SDK Host 通过 `assembly/core` 的 `ConversationCoordinator → Scheduler → ExecutionEngine → RoundExecutor → ToolPipeline` 进入同一生产链。模型尝试、工具结果回送和 Turn 的继续或结束由 `agent-runtime` 的 `model_round` 和 `turn_execution` 处理，工具批次的预检、执行与重试由 `tool-runtime` 处理。Core 仍持有会话协调、上下文压缩及模型与工具的产品适配。`assembly/core` 因此仍是过渡期兼容组装与实际 owner，不能被描述成只有 wiring。后续迁移必须逐条切换真实调用方、保留行为等价测试并删除旧写入方；移动 DTO、增加 feature 或 re-export 均不算 owner 迁移。当前仍位于 Runtime/Core 的 DeepReview 兼容逻辑只允许迁出和修复，不继续承接新的产品行为。
 
 `assembly/agent-content` 只持有随产品发布的不可变内置 Agent prompt 字节和兼容 key；选择、渲染、模式策略、
 Memory/Insights 工作流与运行时状态仍由 Core 的既有 owner 持有。该 crate 不是通用 prompt registry，也不加载

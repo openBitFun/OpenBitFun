@@ -3515,8 +3515,8 @@ export function runManifestParserSelfTest({
       contracts: [
         'remote_workspace_route_root_isolated_from_same_local_path',
         'once_and_always_replies_control_execution_and_remembered_grants',
-        'should_retry_tool_attempt',
-        'retry_delay_ms',
+        'run_tool_attempts',
+        'execute_segments',
         'build_normal_tool_json_repair_notice',
         'build_write_tail_closure_notice',
         'normal_json_repair_notice_for_interactive_tools_does_not_claim_file_write',
@@ -4237,6 +4237,12 @@ export function runManifestParserSelfTest({
         'loaded_deferred_tool_specs',
         'deferred_tool_names',
         'GetToolSpec',
+        'on_completion',
+      ],
+    },
+    {
+      path: 'src/crates/assembly/core/src/agentic/system.rs',
+      contracts: [
         'should_post_process_research_report',
         'openbitfun_services_integrations::deep_research::run_for_session_workspace',
       ],

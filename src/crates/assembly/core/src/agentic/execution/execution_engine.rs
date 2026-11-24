@@ -4,7 +4,7 @@
 
 mod context_estimate;
 
-use super::context_budget::CompressionTriggerBudget;
+use super::context_budget::{request_budget, CompressionTriggerBudget};
 use super::model_exchange_trace::{
     prepare_model_exchange_trace_for_workspace, ModelExchangeTraceOperation,
 };
@@ -135,9 +135,11 @@ fn deferred_tool_listing_reminder(
     }
 }
 
-fn reached_fixed_model_round_limit(max_rounds: usize, completed_rounds: usize) -> bool {
-    max_rounds > 0 && completed_rounds >= max_rounds
-}
+#[cfg(test)]
+use openbitfun_agent_runtime::turn_execution::reached_fixed_model_round_limit;
+use openbitfun_agent_runtime::turn_execution::{
+    RoundOutput, ToolFailureRecovery, TurnBoundary, TurnExecution,
+};
 
 fn runtime_context_needs_for_manifest(manifest: &ResolvedToolManifest) -> RuntimeContextNeeds {
     RuntimeContextNeeds::from_tool_names(
@@ -711,8 +713,14 @@ struct RoundExecutionModel {
     routing: Option<openbitfun_events::agentic::ModelRoutingDecision>,
 }
 
+#[async_trait::async_trait]
+pub(crate) trait TurnPostprocessor: Send + Sync {
+    async fn on_completion(&self, agent_type: &str, context: &ExecutionContext, completed: bool);
+}
+
 /// Execution engine
 pub struct ExecutionEngine {
+    turn_postprocessor: Option<Arc<dyn TurnPostprocessor>>,
     round_executor: Arc<RoundExecutor>,
     event_queue: Arc<EventQueue>,
     session_manager: Arc<SessionManager>,
@@ -795,7 +803,26 @@ impl ExecutionEngine {
         context_compressor: Arc<ContextCompressor>,
         config: ExecutionEngineConfig,
     ) -> Self {
+        Self::with_turn_postprocessor(
+            round_executor,
+            event_queue,
+            session_manager,
+            context_compressor,
+            config,
+            crate::agentic::system::product_turn_postprocessor(),
+        )
+    }
+
+    pub(crate) fn with_turn_postprocessor(
+        round_executor: Arc<RoundExecutor>,
+        event_queue: Arc<EventQueue>,
+        session_manager: Arc<SessionManager>,
+        context_compressor: Arc<ContextCompressor>,
+        config: ExecutionEngineConfig,
+        turn_postprocessor: Option<Arc<dyn TurnPostprocessor>>,
+    ) -> Self {
         Self {
+            turn_postprocessor,
             round_executor,
             event_queue,
             session_manager,
@@ -1057,48 +1084,6 @@ impl ExecutionEngine {
         Self::tool_call_signature(tool_calls)
     }
 
-    /// Whether a partial stream recovery should trigger a continuation round
-    /// instead of treating truncated assistant text as the final answer.
-    ///
-    /// User-initiated cancellation is excluded; all other partial recoveries
-    /// (idle timeout, watchdog timeout, mid-stream errors) may continue.
-    fn should_continue_after_partial_response(reason: &str) -> bool {
-        let lower = reason.to_ascii_lowercase();
-        !lower.contains("cancelled")
-    }
-
-    /// Detect periodic tool-signature loops in the trailing window.
-    ///
-    /// Returns `true` when the last `2 * threshold` rounds contain at most
-    /// `threshold` distinct signatures AND every signature in that window
-    /// appeared at least twice. Such windows have no new exploration and
-    /// represent the model toggling between a small fixed set of calls
-    /// (e.g. `A-B-A-B-A-B`, `A-B-C-A-B-C`).
-    ///
-    /// The window length is `2 * threshold` (rather than `threshold`) so the
-    /// strict consecutive check (`windows(2).all(eq)`) keeps owning the
-    /// `A-A-A` case at threshold rounds, and this detector only fires once
-    /// the alternating pattern has had room to repeat.
-    fn is_periodic_tool_signature_loop(recent_signatures: &[String], threshold: usize) -> bool {
-        let threshold = threshold.max(1);
-        let window_size = threshold.saturating_mul(2);
-        if window_size == 0 || recent_signatures.len() < window_size {
-            return false;
-        }
-
-        let tail = &recent_signatures[recent_signatures.len() - window_size..];
-        let mut counts: HashMap<&str, usize> = HashMap::new();
-        for sig in tail {
-            *counts.entry(sig.as_str()).or_insert(0) += 1;
-        }
-
-        if counts.len() > threshold {
-            return false;
-        }
-
-        counts.values().all(|&count| count >= 2)
-    }
-
     fn assistant_has_tool_calls(message: &Message) -> bool {
         matches!(
             &message.content,
@@ -1129,25 +1114,6 @@ impl ExecutionEngine {
         restrictions
     }
 
-    fn build_local_final_response_message(reason: &str) -> String {
-        match reason {
-            "repeated_tool_failures" => {
-                "I'm stopping here because repeated tool failures prevented further progress in this turn.".to_string()
-            }
-            "max_rounds" => {
-                "I'm stopping here because this turn reached its round limit before I could complete a final response.".to_string()
-            }
-            _ => "I'm stopping here because this turn could not be completed successfully.".to_string(),
-        }
-    }
-
-    fn should_mark_has_final_response(
-        has_assistant_message: bool,
-        used_local_final_response_synthesis: bool,
-    ) -> bool {
-        has_assistant_message && !used_local_final_response_synthesis
-    }
-
     fn build_finalize_cache_anchor_messages(turn_id: &str, reminder_text: &str) -> Vec<Message> {
         vec![
             Message::internal_reminder(
@@ -1174,90 +1140,20 @@ impl ExecutionEngine {
     ) -> Vec<Message> {
         use crate::agentic::core::MessageRole;
 
-        // Separate preserved head (system + first user) from droppable body.
-        let mut preserved: Vec<Message> = Vec::new();
-        let mut droppable: Vec<Message> = Vec::new();
-        let mut seen_first_user = false;
-
-        for msg in messages {
-            if !seen_first_user {
-                let is_user = msg.role == MessageRole::User;
-                preserved.push(msg);
-                if is_user {
-                    seen_first_user = true;
-                }
-            } else {
-                droppable.push(msg);
-            }
-        }
-
-        if droppable.is_empty() {
-            return preserved;
-        }
-
-        // Group droppable messages into API rounds.
-        // An API round starts with an Assistant message and includes all
-        // following Tool messages until the next Assistant or User message.
-        let mut rounds: Vec<Vec<Message>> = Vec::new();
-        for msg in droppable {
-            match msg.role {
-                MessageRole::Assistant => {
-                    rounds.push(vec![msg]);
-                }
-                MessageRole::Tool => {
-                    if let Some(last_round) = rounds.last_mut() {
-                        last_round.push(msg);
-                    } else {
-                        rounds.push(vec![msg]);
-                    }
-                }
-                _ => {
-                    rounds.push(vec![msg]);
-                }
-            }
-        }
-
-        // Drop rounds from the front until we fit.
-        let tool_tokens = tools
-            .map(TokenCounter::estimate_tool_definitions_tokens)
-            .unwrap_or(0);
-        let preserved_tokens: usize = preserved
-            .iter()
-            .map(|m| m.estimate_tokens_with_reasoning(true))
-            .sum::<usize>()
-            + tool_tokens
-            + prepended_reminder_tokens
-            + 3;
-
-        let mut kept_start = 0;
-        let mut total_tokens = preserved_tokens
-            + rounds
-                .iter()
-                .flat_map(|r| r.iter())
-                .map(|m| m.estimate_tokens_with_reasoning(true))
-                .sum::<usize>();
-
-        while total_tokens > context_window && kept_start < rounds.len() {
-            let round_tokens: usize = rounds[kept_start]
-                .iter()
-                .map(|m| m.estimate_tokens_with_reasoning(true))
-                .sum();
-            total_tokens -= round_tokens;
-            kept_start += 1;
-        }
-
-        if kept_start > 0 {
-            warn!(
-                "Emergency truncation dropped {} API round(s) from context head",
-                kept_start
-            );
-        }
-
-        let mut result = preserved;
-        for round in rounds.into_iter().skip(kept_start) {
-            result.extend(round);
-        }
-        result
+        openbitfun_agent_runtime::turn_execution::context::trim_history(
+            messages,
+            context_window,
+            |message| message.role == MessageRole::User,
+            |message| message.role == MessageRole::Tool,
+            |message| message.estimate_tokens_with_reasoning(true),
+            || {
+                tools
+                    .map(TokenCounter::estimate_tool_definitions_tokens)
+                    .unwrap_or(0)
+                    + prepended_reminder_tokens
+                    + 3
+            },
+        )
     }
 
     fn is_redacted_image_context(image: &ImageContextData) -> bool {
@@ -2888,7 +2784,7 @@ impl ExecutionEngine {
                     None
                 };
             let compression_trigger_budget =
-                CompressionTriggerBudget::for_request(&scaffold.ai_client.config, pool_budget);
+                request_budget(&scaffold.ai_client.config, pool_budget);
             let context_window = compression_trigger_budget.context_window;
             *resolved_context_window = Some(context_window);
             let prepended_reminders = scaffold.prepended_prompt_reminders.ordered_reminders();
@@ -3593,7 +3489,7 @@ impl ExecutionEngine {
         .await;
         let mut primary_supports_image_understanding = primary_model_facts.supports_image_inputs;
 
-        let mut compression_trigger_budget = CompressionTriggerBudget::for_request(
+        let mut compression_trigger_budget = request_budget(
             &ai_client.config,
             initial_pool_attempt
                 .as_ref()
@@ -3740,11 +3636,12 @@ impl ExecutionEngine {
         // wholesale, but durable recovered-Turn completion must still append
         // every assistant/tool/injection message produced by this generation.
 
-        let mut round_index = initial_round_index(&context.context);
-        let mut completed_rounds = 0usize;
+        let mut turn = TurnExecution::new(
+            initial_round_index(&context.context),
+            self.config.max_rounds,
+        );
         let mut total_tools = 0;
         let mut last_partial_recovery_reason: Option<String> = None;
-        let mut finalization_reason: Option<&'static str> = None;
         let mut main_context_overflow_recoveries = 0usize;
         let mut active_round_lifecycle: Option<ModelRoundLifecycle> = None;
         let mut active_round_model: Option<RoundExecutionModel> = None;
@@ -3872,26 +3769,11 @@ impl ExecutionEngine {
             router_context.observe(&messages);
         }
 
-        // Track tool-call patterns for context health, but only use rounds with
-        // actual failed tool results for no-progress recovery decisions.
-        let mut recent_tool_signatures: Vec<String> = Vec::new();
-        let mut recent_failed_tool_signatures: Vec<String> = Vec::new();
-        let mut failed_tool_recovery_attempts: usize = 0;
-        const MAX_FAILED_TOOL_RECOVERY_ATTEMPTS: usize = 3;
-        const MAX_PARTIAL_CONTINUATION_ATTEMPTS: usize = 3;
         let mut full_compression_count = 0usize;
         let compression_failure_count = 0u32;
 
         // Save the last token usage statistics
         let mut last_usage: Option<crate::util::types::ai::GeminiUsage> = None;
-
-        // Track thinking-only rescue reminders for observability. This counter
-        // is not a stop condition.
-        let mut thinking_only_rescue_attempts: usize = 0;
-        let mut partial_continuation_attempts: usize = 0;
-        // Bounds how often Stop hooks may reopen a finished turn.
-        let mut stop_hook_continuations: usize = 0;
-        const MAX_STOP_HOOK_CONTINUATIONS: usize = 3;
 
         // Add detailed logging showing the execution context messages.
         debug!(
@@ -3983,23 +3865,16 @@ impl ExecutionEngine {
             }
         }
 
-        // Loop to execute model rounds
-        loop {
+        while let Some(round_index) = turn.next_round(|| {
             if self
                 .round_executor
                 .is_dialog_turn_cancelled(&dialog_turn_id)
             {
-                return Err(OpenBitFunError::Cancelled("Dialog cancelled".to_string()));
+                Err(OpenBitFunError::Cancelled("Dialog cancelled".to_string()))
+            } else {
+                Ok(())
             }
-            if reached_fixed_model_round_limit(self.config.max_rounds, completed_rounds) {
-                warn!(
-                    "Reached max rounds limit: {}, stopping execution",
-                    self.config.max_rounds
-                );
-                finalization_reason = Some("max_rounds");
-                break;
-            }
-
+        })? {
             if selected_pool.is_none() {
                 // Select once at the logical-round boundary. Everything below, including
                 // provider retries and context-overflow recovery, reuses this selection.
@@ -4182,8 +4057,7 @@ impl ExecutionEngine {
                 channel_client_source = selected_model.client.channel_source;
                 primary_model_facts = selected_model.model_facts;
                 primary_supports_image_understanding = primary_model_facts.supports_image_inputs;
-                compression_trigger_budget =
-                    CompressionTriggerBudget::for_request(&ai_client.config, None);
+                compression_trigger_budget = request_budget(&ai_client.config, None);
 
                 execution_context_vars.insert(
                     "max_context_tokens".into(),
@@ -4672,7 +4546,7 @@ impl ExecutionEngine {
                 send_pressure.usage_ratio,
                 full_compression_count,
                 compression_failure_count,
-                &recent_tool_signatures,
+                turn.tool_signatures(),
                 &messages,
             )
             .log(
@@ -4818,7 +4692,8 @@ impl ExecutionEngine {
                     result
                 }
                 Err(error)
-                    if pool_attempt.is_some() && round_lifecycle.allows_pool_failover(&error) =>
+                    if pool_attempt.is_some()
+                        && RoundExecutor::allows_pool_failover(round_lifecycle, &error) =>
                 {
                     let attempt = pool_attempt.as_ref().expect("pool attempt checked");
                     let provider_error = match &error {
@@ -4996,7 +4871,7 @@ impl ExecutionEngine {
                 round_result.has_more_rounds,
                 round_result.tool_calls.len()
             );
-            completed_rounds += 1;
+            turn.round_completed();
 
             // Save the last token usage statistics (update each time, keep the last one)
             if let Some(ref usage) = round_result.usage {
@@ -5028,32 +4903,20 @@ impl ExecutionEngine {
                 self.session_manager.remember_token_anchor(anchor).await;
             }
 
-            // Add assistant message to history
-            messages.push(round_result.assistant_message.clone());
-            self.remember_generation_message(
-                &context.session_id,
-                &context.dialog_turn_id,
-                &round_result.assistant_message,
-            );
-
-            // Publish the assistant message and all tool results as one context
-            // mutation.  A fork must never observe the assistant tool calls
-            // without their corresponding results.
-            let mut committed_round_messages = Vec::new();
-            if !round_result.assistant_message_committed {
-                committed_round_messages.push(round_result.assistant_message.clone());
-            }
-
-            // Add tool result messages to history
-            for tool_result_msg in round_result.tool_result_messages.iter() {
-                messages.push(tool_result_msg.clone());
-                self.remember_generation_message(
-                    &context.session_id,
-                    &context.dialog_turn_id,
-                    tool_result_msg,
+            let committed_round_messages =
+                openbitfun_agent_runtime::turn_execution::append_round_messages(
+                    &mut messages,
+                    &round_result.assistant_message,
+                    round_result.assistant_message_committed,
+                    &round_result.tool_result_messages,
+                    |message| {
+                        self.remember_generation_message(
+                            &context.session_id,
+                            &context.dialog_turn_id,
+                            message,
+                        )
+                    },
                 );
-                committed_round_messages.push(tool_result_msg.clone());
-            }
             if let Err(e) = self
                 .session_manager
                 .add_messages(&context.session_id, committed_round_messages)
@@ -5094,24 +4957,14 @@ impl ExecutionEngine {
                 last_partial_recovery_reason = round_result.partial_recovery_reason.clone();
             }
 
-            if let Some(round_signature) = Self::tool_call_signature(&round_result.tool_calls) {
-                recent_tool_signatures.push(round_signature.clone());
-                if Self::failed_tool_round_signature(
+            turn.observe_tools(
+                Self::tool_call_signature(&round_result.tool_calls),
+                Self::failed_tool_round_signature(
                     &round_result.tool_calls,
                     &round_result.tool_result_messages,
                 )
-                .is_some()
-                {
-                    recent_failed_tool_signatures.push(round_signature);
-                } else {
-                    recent_failed_tool_signatures.clear();
-                    failed_tool_recovery_attempts = 0;
-                }
-            } else {
-                recent_tool_signatures.clear();
-                recent_failed_tool_signatures.clear();
-                failed_tool_recovery_attempts = 0;
-            }
+                .is_some(),
+            );
 
             let after_round_pressure = Self::estimate_auto_compression_pressure(
                 &messages,
@@ -5123,7 +4976,7 @@ impl ExecutionEngine {
                 after_round_pressure.usage_ratio,
                 full_compression_count,
                 compression_failure_count,
-                &recent_tool_signatures,
+                turn.tool_signatures(),
                 &messages,
             );
             after_round_health.log(
@@ -5132,113 +4985,36 @@ impl ExecutionEngine {
                 round_index,
                 "after_round",
             );
-            let max_consec = self.config.max_consecutive_same_tool.max(1);
-            if recent_failed_tool_signatures.len() >= max_consec {
-                let tail = &recent_failed_tool_signatures
-                    [recent_failed_tool_signatures.len() - max_consec..];
-                if tail.windows(2).all(|w| w[0] == w[1]) {
-                    if failed_tool_recovery_attempts < MAX_FAILED_TOOL_RECOVERY_ATTEMPTS {
-                        failed_tool_recovery_attempts += 1;
-                        warn!(
-                            "Repeated tool failure detected: {} consecutive rounds with identical tool signatures, injecting recovery prompt #{}",
-                            max_consec, failed_tool_recovery_attempts
-                        );
-                        let reminder = format!(
-                            "<system_reminder>Repeated tool failure detected: the same tool call with identical arguments has failed {} times in a row. \
-                            The current approach is not making progress. You MUST now change your strategy: \
-                            (1) if the tool keeps failing, try a completely different approach or tool; \
-                            (2) if you are stuck, step back and reason about the root cause before acting; \
-                            (3) if the task is genuinely impossible with the available tools, provide a clear explanation to the user. \
-                            Do NOT repeat the same tool call again.</system_reminder>",
-                            max_consec
-                        );
-                        let user_msg = Message::internal_reminder(
-                            InternalReminderKind::LoopRecovery,
-                            reminder,
-                        )
-                        .with_turn_id(context.dialog_turn_id.clone());
-                        messages.push(user_msg.clone());
-                        self.remember_generation_message(
-                            &context.session_id,
-                            &context.dialog_turn_id,
-                            &user_msg,
-                        );
-                        if let Err(e) = self
-                            .session_manager
-                            .add_message(&context.session_id, user_msg)
-                            .await
-                        {
-                            warn!("Failed to persist failed-tool recovery reminder: {}", e);
-                        }
-                        recent_failed_tool_signatures.clear();
-                    } else {
-                        warn!(
-                            "Repeated tool failure detected: {} consecutive rounds with identical tool signatures, max recovery attempts ({}) exhausted, finalizing without tools",
-                            max_consec, MAX_FAILED_TOOL_RECOVERY_ATTEMPTS
-                        );
-                        finalization_reason = Some("repeated_tool_failures");
-                        break;
-                    }
+            let failure_recovery =
+                turn.tool_failure_recovery(self.config.max_consecutive_same_tool);
+            let reminder = match failure_recovery {
+                ToolFailureRecovery::None => None,
+                ToolFailureRecovery::Repeated(text) => {
+                    Some((InternalReminderKind::LoopRecovery, text))
                 }
-            }
-
-            // Periodic-pattern loop detection.
-            //
-            // The strict consecutive check above only fires on `A-A-A` patterns.
-            // Real-world subagent loops often alternate between a small set of
-            // signatures (e.g. `A-B-A-B-A-B` when the model toggles a single
-            // argument such as the regex pattern, while every other call is
-            // identical). Such rounds never collapse to a single signature, so
-            // the model can stay stuck for hundreds of rounds without tripping
-            // the strict check.
-            //
-            // The periodic detector inspects the last `2 * max_consec` rounds:
-            // if at most `max_consec` distinct signatures appear AND every one
-            // of those signatures appears at least twice, the window contains
-            // no genuine new exploration and we treat it as a loop.
-            if Self::is_periodic_tool_signature_loop(&recent_failed_tool_signatures, max_consec) {
-                let window_size = max_consec.max(1).saturating_mul(2);
-                if failed_tool_recovery_attempts < MAX_FAILED_TOOL_RECOVERY_ATTEMPTS {
-                    failed_tool_recovery_attempts += 1;
-                    warn!(
-                        "Repeated tool failure detected: last {} failed rounds form a periodic tool-call pattern (<= {} distinct signatures, each repeated), injecting recovery prompt #{}",
-                        window_size, max_consec, failed_tool_recovery_attempts
-                    );
-                    let reminder = format!(
-                        "<system_reminder>Repeated tool failure detected: your last {} failed tool calls form a repeating pattern with no new progress. \
-                        You are cycling between failing actions without advancing the task. You MUST now change your strategy: \
-                        (1) try a completely different approach or tool; \
-                        (2) step back and reason about the root cause before acting; \
-                        (3) if the task is genuinely impossible with the available tools, provide a clear explanation to the user. \
-                        Do NOT repeat the same pattern of tool calls.</system_reminder>",
-                        window_size
-                    );
-                    let user_msg = Message::internal_reminder(
-                        InternalReminderKind::PeriodicLoopRecovery,
-                        reminder,
-                    )
-                    .with_turn_id(context.dialog_turn_id.clone());
-                    messages.push(user_msg.clone());
-                    self.remember_generation_message(
-                        &context.session_id,
-                        &context.dialog_turn_id,
-                        &user_msg,
-                    );
-                    if let Err(e) = self
-                        .session_manager
-                        .add_message(&context.session_id, user_msg)
-                        .await
-                    {
-                        warn!("Failed to persist periodic loop recovery reminder: {}", e);
-                    }
-                    recent_failed_tool_signatures.clear();
-                } else {
-                    warn!(
-                            "Repeated tool failure detected: last {} failed rounds form a periodic tool-call pattern, max recovery attempts ({}) exhausted, finalizing without tools",
-                            window_size, MAX_FAILED_TOOL_RECOVERY_ATTEMPTS
-                    );
-                    finalization_reason = Some("repeated_tool_failures");
+                ToolFailureRecovery::Periodic(text) => {
+                    Some((InternalReminderKind::PeriodicLoopRecovery, text))
+                }
+                ToolFailureRecovery::Exhausted => {
+                    turn.finish(Some("repeated_tool_failures"));
                     break;
+                }
+            };
+            if let Some((kind, text)) = reminder {
+                let message = Message::internal_reminder(kind, text)
+                    .with_turn_id(context.dialog_turn_id.clone());
+                messages.push(message.clone());
+                self.remember_generation_message(
+                    &context.session_id,
+                    &context.dialog_turn_id,
+                    &message,
+                );
+                if let Err(error) = self
+                    .session_manager
+                    .add_message(&context.session_id, message)
+                    .await
+                {
+                    warn!("Failed to persist tool recovery reminder: {}", error);
                 }
             }
 
@@ -5347,7 +5123,7 @@ impl ExecutionEngine {
                     // Persist runtime reminders before handing off, so background
                     // results arriving at this boundary stay in session context.
                     // Already-started tools and results keep their original turn.
-                    finalization_reason = Some("user_steering");
+                    turn.finish(Some("user_steering"));
                     break;
                 }
             }
@@ -5392,162 +5168,61 @@ impl ExecutionEngine {
             } else {
                 false
             };
-            if injection_applied {
-                // fall through to next round so the model can respond to the steering
-            } else if !round_result.has_more_rounds {
-                if round_result.had_assistant_text || quiet_model_end {
-                    if let Some(ref reason) = round_result.partial_recovery_reason {
-                        if Self::should_continue_after_partial_response(reason) {
-                            partial_continuation_attempts += 1;
-                            if partial_continuation_attempts <= MAX_PARTIAL_CONTINUATION_ATTEMPTS {
-                                let reminder = format!(
-                                    "<system_reminder>Your previous assistant response was interrupted mid-stream ({reason}). Continue writing from exactly where you stopped. Do not repeat content that was already delivered; pick up seamlessly and complete the answer.</system_reminder>"
-                                );
-                                let user_msg = Message::internal_reminder(
-                                    InternalReminderKind::InterruptedContinue,
-                                    reminder.clone(),
-                                )
-                                .with_turn_id(context.dialog_turn_id.clone());
-                                messages.push(user_msg.clone());
-                                self.remember_generation_message(
-                                    &context.session_id,
-                                    &context.dialog_turn_id,
-                                    &user_msg,
-                                );
-                                if let Err(e) = self
-                                    .session_manager
-                                    .add_message(&context.session_id, user_msg)
-                                    .await
-                                {
-                                    warn!("Failed to persist partial continuation reminder: {}", e);
-                                }
-                                warn!(
-                                    "Partial stream recovery with assistant text; injecting continuation reminder #{}/{}: turn={}, round={}, reason={}",
-                                    partial_continuation_attempts,
-                                    MAX_PARTIAL_CONTINUATION_ATTEMPTS,
-                                    context.dialog_turn_id,
-                                    round_index,
-                                    reason
-                                );
-                                // Continue into the next round so the model can finish.
-                            } else {
-                                warn!(
-                                    "Partial stream continuation attempts exhausted; accepting truncated answer: turn={}, round={}, reason={}",
-                                    context.dialog_turn_id, round_index, reason
-                                );
-                                finalization_reason = Some("partial_truncated");
-                                break;
-                            }
-                        } else {
-                            debug!(
-                                "Model round {} ended with partial answer after cancellation, reason: {:?}",
-                                round_index, round_result.finish_reason
-                            );
-                            break;
-                        }
-                    } else {
-                        debug!(
-                            "Model round {} ended with final answer, reason: {:?}",
-                            round_index, round_result.finish_reason
-                        );
-                        // Stop hooks may block the natural end of the turn and
-                        // ask the agent to keep working. `stop_hook_active`
-                        // tells the hook it is already running inside such a
-                        // continuation so it can avoid an endless loop, and the
-                        // engine caps continuations regardless.
-                        // Subagent turns run through this same loop; their
-                        // completion is reported by SubagentStop instead, so
-                        // Stop stays a top-level-turn event as in Codex.
-                        let stop_block_reason = if context.subagent_parent_info.is_none()
-                            && stop_hook_continuations < MAX_STOP_HOOK_CONTINUATIONS
-                        {
-                            native_hooks::dispatch_stop(
-                                Self::native_hook_facts(
-                                    &context.session_id,
-                                    &context.dialog_turn_id,
-                                    context.workspace.as_ref(),
-                                    context.workspace_services.as_ref(),
-                                    &ai_client.config.model,
-                                ),
-                                stop_hook_continuations > 0,
-                                Self::assistant_message_text(&round_result.assistant_message),
-                            )
-                            .await
-                        } else {
-                            None
-                        };
-                        if let Some(reason) = stop_block_reason {
-                            stop_hook_continuations += 1;
-                            let reminder = format!(
-                                "<system_reminder>A Stop hook blocked the end of this turn: {reason}\nAddress this before finishing, then produce your final answer.</system_reminder>"
-                            );
-                            let user_msg = Message::internal_reminder(
-                                InternalReminderKind::StopHookBlock,
-                                reminder,
-                            )
-                            .with_turn_id(context.dialog_turn_id.clone());
-                            messages.push(user_msg.clone());
-                            self.remember_generation_message(
+            let boundary = turn
+                .after_round(
+                    RoundOutput {
+                        injected: injection_applied,
+                        tool_results: round_result.has_more_rounds,
+                        assistant_text: round_result.had_assistant_text,
+                        quiet_end: quiet_model_end,
+                        thinking: round_result.had_thinking_content,
+                        partial_reason: round_result.partial_recovery_reason.as_deref(),
+                        top_level: context.subagent_parent_info.is_none(),
+                    },
+                    |already_active| {
+                        native_hooks::dispatch_stop(
+                            Self::native_hook_facts(
                                 &context.session_id,
                                 &context.dialog_turn_id,
-                                &user_msg,
-                            );
-                            if let Err(e) = self
-                                .session_manager
-                                .add_message(&context.session_id, user_msg)
-                                .await
-                            {
-                                warn!("Failed to persist Stop hook reminder: {}", e);
-                            }
-                            info!(
-                                "Stop hook blocked turn completion; continuing turn #{}/{}: turn={}, round={}",
-                                stop_hook_continuations,
-                                MAX_STOP_HOOK_CONTINUATIONS,
-                                context.dialog_turn_id,
-                                round_index
-                            );
-                            // Continue into the next round so the agent can act
-                            // on the hook feedback.
-                        } else {
-                            if quiet_model_end {
-                                finalization_reason = Some("background_quiet");
-                            }
-                            break;
-                        }
-                    }
-                } else if round_result.had_thinking_content {
-                    thinking_only_rescue_attempts += 1;
-                    let reminder = "<system_reminder>The previous round produced internal reasoning only — no tool call and no user-visible response. You MUST now either: (1) call the single tool that best advances the user's task, or (2) write your final answer to the user. Do not produce another round of reasoning without taking action.</system_reminder>".to_string();
-                    let user_msg = Message::internal_reminder(
-                        InternalReminderKind::ThinkingOnlyRescue,
-                        reminder.clone(),
-                    )
-                    .with_turn_id(context.dialog_turn_id.clone());
-                    messages.push(user_msg.clone());
-                    self.remember_generation_message(
-                        &context.session_id,
-                        &context.dialog_turn_id,
-                        &user_msg,
-                    );
-                    if let Err(e) = self
-                        .session_manager
-                        .add_message(&context.session_id, user_msg)
-                        .await
-                    {
-                        warn!("Failed to persist thinking-only rescue reminder: {}", e);
-                    }
-                    warn!(
-                        "Thinking-only round detected; injecting rescue reminder #{}: turn={}, round={}",
-                        thinking_only_rescue_attempts, context.dialog_turn_id, round_index
-                    );
-                    // Continue into the next round so the model gets a chance to act.
-                } else {
-                    warn!(
-                        "Empty round (no text/thinking/tool_call); ending turn: turn={}, round={}",
-                        context.dialog_turn_id, round_index
-                    );
-                    finalization_reason = Some("empty_round");
+                                context.workspace.as_ref(),
+                                context.workspace_services.as_ref(),
+                                &ai_client.config.model,
+                            ),
+                            already_active,
+                            Self::assistant_message_text(&round_result.assistant_message),
+                        )
+                    },
+                )
+                .await;
+            let reminder = match boundary {
+                TurnBoundary::Continue => None,
+                TurnBoundary::Finish(reason) => {
+                    turn.finish(reason);
                     break;
+                }
+                TurnBoundary::Interrupted(text) => {
+                    Some((InternalReminderKind::InterruptedContinue, text))
+                }
+                TurnBoundary::StopHook(text) => Some((InternalReminderKind::StopHookBlock, text)),
+                TurnBoundary::ThinkingOnly(text) => {
+                    Some((InternalReminderKind::ThinkingOnlyRescue, text.to_owned()))
+                }
+            };
+            if let Some((kind, text)) = reminder {
+                let message = Message::internal_reminder(kind, text)
+                    .with_turn_id(context.dialog_turn_id.clone());
+                messages.push(message.clone());
+                self.remember_generation_message(
+                    &context.session_id,
+                    &context.dialog_turn_id,
+                    &message,
+                );
+                if let Err(error) = self
+                    .session_manager
+                    .add_message(&context.session_id, message)
+                    .await
+                {
+                    warn!("Failed to persist turn continuation reminder: {}", error);
                 }
             }
 
@@ -5579,16 +5254,8 @@ impl ExecutionEngine {
                 // Note: Token will be cleaned up when outer function exits
                 return Err(OpenBitFunError::cancelled("Dialog cancelled"));
             }
-
-            // Continue to next round
-            round_index += 1;
-
-            debug!(
-                "Model round {} completed, continuing to round {}",
-                round_index - 1,
-                round_index
-            );
         }
+        let (mut completed_rounds, finalization_reason) = turn.into_result();
 
         // P1-6: Track the actual termination reason for downstream reporting.
         // Defaults to "complete" (model produced a final answer naturally).
@@ -5627,124 +5294,78 @@ impl ExecutionEngine {
                     &model_fingerprint,
                     selected_pool.is_some(),
                 );
-                let final_round_result = self
-                    .run_finalize_round(FinalizeRoundInput {
-                        permission_constraints: tool_policy.permission_constraints.clone(),
-                        ai_client: ai_client.clone(),
-                        account_client_source: account_client_source.clone(),
-                        channel_client_source: channel_client_source.clone(),
-                        context: &context,
-                        agent_type: agent_type.clone(),
-                        round_number: completed_rounds,
-                        round_group_id: finalize_round_group_id.clone(),
-                        execution_context_vars: &execution_context_vars,
-                        primary_model_facts: &primary_model_facts,
-                        model_request_context: &model_request_context,
-                        prepended_reminders: &finalize_prepended_reminders,
-                        messages: &finalize_messages,
-                        reminder_text: finalize_reminder,
-                        tool_definitions: tool_definitions.clone(),
-                        context_window,
+                let (reply, chosen_usage) =
+                    openbitfun_agent_runtime::turn_execution::finalize_turn(|| async {
+                        let result = self
+                            .run_finalize_round(FinalizeRoundInput {
+                                permission_constraints: tool_policy.permission_constraints.clone(),
+                                ai_client: ai_client.clone(),
+                                account_client_source: account_client_source.clone(),
+                                channel_client_source: channel_client_source.clone(),
+                                context: &context,
+                                agent_type: agent_type.clone(),
+                                round_number: completed_rounds,
+                                round_group_id: finalize_round_group_id.clone(),
+                                execution_context_vars: &execution_context_vars,
+                                primary_model_facts: &primary_model_facts,
+                                model_request_context: &model_request_context,
+                                prepended_reminders: &finalize_prepended_reminders,
+                                messages: &finalize_messages,
+                                reminder_text: finalize_reminder,
+                                tool_definitions: tool_definitions.clone(),
+                                context_window,
+                            })
+                            .await?;
+                        let usable = result.had_assistant_text
+                            && !Self::assistant_has_tool_calls(&result.assistant_message);
+                        Ok::<_, OpenBitFunError>((
+                            usable.then_some(result.assistant_message),
+                            result.usage,
+                        ))
                     })
                     .await?;
-
-                let mut accepted = final_round_result.had_assistant_text
-                    && !Self::assistant_has_tool_calls(&final_round_result.assistant_message);
-                let chosen_assistant_message: Option<Message>;
-                let mut chosen_usage: Option<crate::util::types::ai::GeminiUsage> =
-                    final_round_result.usage.clone();
-
-                if accepted {
-                    chosen_assistant_message = Some(final_round_result.assistant_message.clone());
-                } else {
-                    warn!(
-                        "Finalize round did not return usable assistant text; retrying once: session_id={}, turn_id={}",
-                        context.session_id, context.dialog_turn_id
+                used_local_final_response_synthesis = reply.is_none();
+                has_final_response = reply.is_some();
+                let msg = reply.unwrap_or_else(|| Message::assistant(
+                    openbitfun_agent_runtime::turn_execution::build_local_final_response_message(reason)
+                ).with_turn_id(context.dialog_turn_id.clone()));
+                if has_final_response {
+                    let finalize_cache_anchor_messages = Self::build_finalize_cache_anchor_messages(
+                        &context.dialog_turn_id,
+                        finalize_reminder,
                     );
-                    let retry_result = self
-                        .run_finalize_round(FinalizeRoundInput {
-                            permission_constraints: tool_policy.permission_constraints.clone(),
-                            ai_client: ai_client.clone(),
-                            account_client_source: account_client_source.clone(),
-                            channel_client_source: channel_client_source.clone(),
-                            context: &context,
-                            agent_type: agent_type.clone(),
-                            round_number: completed_rounds,
-                            round_group_id: finalize_round_group_id.clone(),
-                            execution_context_vars: &execution_context_vars,
-                            primary_model_facts: &primary_model_facts,
-                            model_request_context: &model_request_context,
-                            prepended_reminders: &finalize_prepended_reminders,
-                            messages: &finalize_messages,
-                            reminder_text: finalize_reminder,
-                            tool_definitions: tool_definitions.clone(),
-                            context_window,
-                        })
-                        .await?;
-                    if !retry_result.had_assistant_text
-                        || Self::assistant_has_tool_calls(&retry_result.assistant_message)
-                    {
-                        warn!(
-                            "Finalize retry did not return usable assistant text; synthesizing local final response: session_id={}, turn_id={}",
-                            context.session_id, context.dialog_turn_id
+                    for anchor_message in finalize_cache_anchor_messages {
+                        messages.push(anchor_message.clone());
+                        self.remember_generation_message(
+                            &context.session_id,
+                            &context.dialog_turn_id,
+                            &anchor_message,
                         );
-                        accepted = true;
-                        used_local_final_response_synthesis = true;
-                        chosen_assistant_message = Some(
-                            Message::assistant(Self::build_local_final_response_message(reason))
-                                .with_turn_id(context.dialog_turn_id.clone()),
-                        );
-                    } else {
-                        accepted = true;
-                        chosen_usage = retry_result.usage.clone();
-                        chosen_assistant_message = Some(retry_result.assistant_message);
-                    }
-                }
-
-                has_final_response = Self::should_mark_has_final_response(
-                    chosen_assistant_message.is_some(),
-                    used_local_final_response_synthesis,
-                );
-                if let Some(msg) = chosen_assistant_message {
-                    if accepted && !used_local_final_response_synthesis {
-                        let finalize_cache_anchor_messages =
-                            Self::build_finalize_cache_anchor_messages(
-                                &context.dialog_turn_id,
-                                finalize_reminder,
-                            );
-                        for anchor_message in finalize_cache_anchor_messages {
-                            messages.push(anchor_message.clone());
-                            self.remember_generation_message(
-                                &context.session_id,
-                                &context.dialog_turn_id,
-                                &anchor_message,
-                            );
-                            if let Err(e) = self
-                                .session_manager
-                                .add_message(&context.session_id, anchor_message)
-                                .await
-                            {
-                                warn!("Failed to persist finalize cache anchor message: {}", e);
-                            }
+                        if let Err(e) = self
+                            .session_manager
+                            .add_message(&context.session_id, anchor_message)
+                            .await
+                        {
+                            warn!("Failed to persist finalize cache anchor message: {}", e);
                         }
                     }
-                    completed_rounds += 1;
-                    if let Some(usage) = chosen_usage {
-                        last_usage = Some(usage);
-                    }
-                    messages.push(msg.clone());
-                    self.remember_generation_message(
-                        &context.session_id,
-                        &context.dialog_turn_id,
-                        &msg,
-                    );
-                    if let Err(e) = self
-                        .session_manager
-                        .add_message(&context.session_id, msg)
-                        .await
-                    {
-                        warn!("Failed to update final assistant message in memory: {}", e);
-                    }
+                }
+                completed_rounds += 1;
+                if let Some(usage) = chosen_usage {
+                    last_usage = Some(usage);
+                }
+                messages.push(msg.clone());
+                self.remember_generation_message(
+                    &context.session_id,
+                    &context.dialog_turn_id,
+                    &msg,
+                );
+                if let Err(e) = self
+                    .session_manager
+                    .add_message(&context.session_id, msg)
+                    .await
+                {
+                    warn!("Failed to update final assistant message in memory: {}", e);
                 }
             } else if reason == "partial_truncated" {
                 has_final_response = true;
@@ -5769,33 +5390,13 @@ impl ExecutionEngine {
                 "max_rounds" | "repeated_tool_failures" | "user_steering"
             );
 
-        // Post-processing hook: when a DeepResearch dialog turn finishes
-        // successfully, renumber `cit_XXX` references in the final report
-        // into consecutive `[N]` display IDs. Two gates apply (agent type +
-        // dialog success) so other agents and failed turns are unaffected.
-        #[cfg(feature = "deep-research")]
-        {
-            if openbitfun_agent_workflows::deep_research::should_post_process_research_report(
+        if let Some(hook) = self.turn_postprocessor.as_ref() {
+            hook.on_completion(
                 &agent_type,
+                &context,
                 success && effective_finish_reason != "user_steering",
-            ) {
-                if let Some(workspace) = context.workspace.as_ref() {
-                    if let Some(workspace_services) = context.workspace_services.as_ref() {
-                        openbitfun_services_integrations::deep_research::run_for_session_workspace(
-                            workspace_services.fs.as_ref(),
-                            &workspace.root_path().to_string_lossy(),
-                            &context.session_id,
-                        )
-                        .await;
-                    } else {
-                        warn!(
-                            "citation_renumber: skipped because workspace filesystem services are unavailable: session_id={}, workspace={}",
-                            context.session_id,
-                            workspace.root_path().display()
-                        );
-                    }
-                }
-            }
+            )
+            .await;
         }
 
         let background_delivery = if let Some(initial) = context
@@ -6019,8 +5620,8 @@ mod tests {
         build_skill_agent_tool_listing_sections_from_snapshot, deferred_tool_listing_reminder,
         manual_compaction_terminal_error, reached_fixed_model_round_limit,
         resolve_round_permission_mode, runtime_context_needs_for_manifest,
-        skill_agent_listing_reminders, CompressionTriggerBudget, ContextHealthSnapshot,
-        ExecutionEngine, ExecutionEngineConfig, RoundResult, TurnPromptScaffold,
+        skill_agent_listing_reminders, ContextHealthSnapshot, ExecutionEngine,
+        ExecutionEngineConfig, RoundResult, TurnPromptScaffold,
     };
     use crate::agentic::agents::{
         PrependedPromptReminders, PromptBuilderContext, ToolListingSections, UserContextPolicy,
@@ -6028,6 +5629,7 @@ mod tests {
     use crate::agentic::core::{
         InternalReminderKind, Message, MessageRole, MessageSemanticKind, ToolCall, ToolResult,
     };
+    use crate::agentic::execution::context_budget::model_budget;
     use crate::agentic::persistence::PersistenceManager;
     use crate::agentic::session::{
         ContextCompressor, PromptCachePolicy, SessionContextStore, SessionManager,
@@ -7730,7 +7332,7 @@ mod tests {
         let snapshot = ExecutionEngine::estimate_auto_compression_pressure(
             &messages,
             Some(&tools),
-            CompressionTriggerBudget::for_model(128_000, None),
+            model_budget(128_000, None),
             prepended_reminder_tokens,
         );
 
@@ -7750,7 +7352,7 @@ mod tests {
 
     #[test]
     fn compression_trigger_budget_reserves_output_and_safety_tokens() {
-        let budget = CompressionTriggerBudget::for_model(128_000, Some(32_000));
+        let budget = model_budget(128_000, Some(32_000));
 
         assert_eq!(budget.output_reserve_tokens, 32_000);
         assert_eq!(budget.safety_reserve_tokens, 10_000);
@@ -7759,7 +7361,7 @@ mod tests {
 
     #[test]
     fn compression_trigger_budget_uses_the_automatic_output_tier_when_max_tokens_is_unset() {
-        let budget = CompressionTriggerBudget::for_model(128_000, None);
+        let budget = model_budget(128_000, None);
 
         assert_eq!(budget.output_reserve_tokens, 32_000);
         assert_eq!(budget.safety_reserve_tokens, 10_000);
@@ -7794,7 +7396,7 @@ mod tests {
         let (snapshot, details) = ExecutionEngine::estimate_auto_compression_pressure_with_anchor(
             &messages,
             None,
-            CompressionTriggerBudget::for_model(1_000, None),
+            model_budget(1_000, None),
             Some(&anchor),
             0,
         );
@@ -7840,7 +7442,7 @@ mod tests {
         let (snapshot, details) = ExecutionEngine::estimate_auto_compression_pressure_with_anchor(
             &messages,
             Some(&new_tools),
-            CompressionTriggerBudget::for_model(1_000, None),
+            model_budget(1_000, None),
             Some(&anchor),
             0,
         );
@@ -7887,7 +7489,7 @@ mod tests {
         let (snapshot, details) = ExecutionEngine::estimate_auto_compression_pressure_with_anchor(
             &messages,
             None,
-            CompressionTriggerBudget::for_model(1_000, None),
+            model_budget(1_000, None),
             Some(&anchor),
             new_reminder_tokens,
         );
@@ -7969,22 +7571,30 @@ mod tests {
 
     #[test]
     fn partial_continuation_allowed_for_stream_stall_reasons() {
-        assert!(ExecutionEngine::should_continue_after_partial_response(
-            "Stream processor watchdog timeout (no data received for 45 seconds)"
-        ));
-        assert!(ExecutionEngine::should_continue_after_partial_response(
-            "Stream processing error: SSE stream error"
-        ));
+        assert!(
+            openbitfun_agent_runtime::turn_execution::should_continue_after_partial_response(
+                "Stream processor watchdog timeout (no data received for 45 seconds)"
+            )
+        );
+        assert!(
+            openbitfun_agent_runtime::turn_execution::should_continue_after_partial_response(
+                "Stream processing error: SSE stream error"
+            )
+        );
     }
 
     #[test]
     fn partial_continuation_skipped_for_user_cancellation() {
-        assert!(!ExecutionEngine::should_continue_after_partial_response(
-            "Stream processing cancelled after partial output"
-        ));
-        assert!(!ExecutionEngine::should_continue_after_partial_response(
-            "Stream processing cancelled"
-        ));
+        assert!(
+            !openbitfun_agent_runtime::turn_execution::should_continue_after_partial_response(
+                "Stream processing cancelled after partial output"
+            )
+        );
+        assert!(
+            !openbitfun_agent_runtime::turn_execution::should_continue_after_partial_response(
+                "Stream processing cancelled"
+            )
+        );
     }
 
     #[test]
@@ -8046,26 +7656,23 @@ mod tests {
     #[test]
     fn local_final_response_message_mentions_reason() {
         assert!(
-            ExecutionEngine::build_local_final_response_message("repeated_tool_failures")
-                .contains("repeated tool failures")
+            openbitfun_agent_runtime::turn_execution::build_local_final_response_message(
+                "repeated_tool_failures"
+            )
+            .contains("repeated tool failures")
         );
         assert!(
-            ExecutionEngine::build_local_final_response_message("max_rounds")
-                .contains("round limit")
+            openbitfun_agent_runtime::turn_execution::build_local_final_response_message(
+                "max_rounds"
+            )
+            .contains("round limit")
         );
         assert!(
-            !ExecutionEngine::build_local_final_response_message("max_rounds")
-                .contains("finalize mode")
+            !openbitfun_agent_runtime::turn_execution::build_local_final_response_message(
+                "max_rounds"
+            )
+            .contains("finalize mode")
         );
-    }
-
-    #[test]
-    fn local_fallback_response_does_not_count_as_agent_final_response() {
-        assert!(ExecutionEngine::should_mark_has_final_response(true, false));
-        assert!(!ExecutionEngine::should_mark_has_final_response(true, true));
-        assert!(!ExecutionEngine::should_mark_has_final_response(
-            false, false
-        ));
     }
 
     #[test]
@@ -8162,19 +7769,23 @@ mod tests {
     #[test]
     fn periodic_loop_detector_ignores_short_windows() {
         let signatures: Vec<String> = vec!["A".to_string(), "B".to_string(), "A".to_string()];
-        assert!(!ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            !openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
     fn periodic_loop_detector_catches_consecutive_identical_window() {
         let signatures: Vec<String> = std::iter::repeat_n("A".to_string(), 6).collect();
-        assert!(ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
@@ -8186,10 +7797,12 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        assert!(ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
@@ -8199,10 +7812,12 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        assert!(ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
@@ -8213,10 +7828,12 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        assert!(!ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            !openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
@@ -8227,10 +7844,12 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        assert!(!ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            !openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
@@ -8241,10 +7860,12 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        assert!(ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            3
-        ));
+        assert!(
+            openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                3
+            )
+        );
     }
 
     #[test]
@@ -8252,10 +7873,12 @@ mod tests {
         let signatures: Vec<String> = ["A", "A"].iter().map(|s| (*s).to_string()).collect();
         // A two-round window of identical signatures with threshold 0 should
         // still register as a loop (threshold is clamped to 1, window = 2).
-        assert!(ExecutionEngine::is_periodic_tool_signature_loop(
-            &signatures,
-            0
-        ));
+        assert!(
+            openbitfun_agent_runtime::turn_execution::is_periodic_tool_signature_loop(
+                &signatures,
+                0
+            )
+        );
     }
 
     #[test]

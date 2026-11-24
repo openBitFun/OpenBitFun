@@ -19,7 +19,6 @@ use crate::agentic::WorkspaceBinding;
 use crate::native_hooks::{self, NativeHookSessionFacts};
 use crate::util::elapsed_ms_u64;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
-use futures::future::join_all;
 use log::{debug, error, info, warn};
 use openbitfun_agent_runtime::permission::{
     plan_permission_intents, PendingPermissionReceiver, PermissionIntentPlan,
@@ -64,9 +63,8 @@ use tokio::sync::{Mutex as TokioMutex, RwLock as TokioRwLock};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tool_runtime::pipeline::{
-    partition_tool_batches, retry_delay_ms, should_cancel_tool_state, should_retry_tool_attempt,
-    summarize_dialog_turn_cancellation, tool_call_concurrency_safe_for_batch,
-    ToolCancellationTokenStore, ToolExecutionErrorClass, ToolRetryAttemptFacts,
+    should_cancel_tool_state, summarize_dialog_turn_cancellation,
+    tool_call_concurrency_safe_for_batch, ToolCancellationTokenStore, ToolExecutionErrorClass,
 };
 
 fn resolve_contextual_tool(
@@ -918,6 +916,80 @@ impl PtcToolCallHandler for PtcPipelineToolCallHandler {
             loaded.push(receipt);
         }
         Ok(build_ptc_tool_spec_response(language, sdk_source))
+    }
+}
+
+use tool_runtime::pipeline::execution::{
+    execute_segments, run_tool_attempts, ToolAdmission, ToolBatchOperations,
+};
+
+impl ToolBatchOperations for ToolPipeline {
+    type Output = ToolExecutionResult;
+    type Error = OpenBitFunError;
+
+    async fn pre_tool_hooks(&self, ids: &[String]) {
+        self.apply_pre_tool_use_hooks(ids).await;
+    }
+
+    async fn concurrency_after_hooks(
+        &self,
+        ids: &[String],
+        subagents: usize,
+        policy: SubagentBatchExecutionPolicy,
+    ) -> Vec<bool> {
+        let traits = self
+            .execution_traits_for_final_inputs(ids, subagents, policy)
+            .await;
+        for (id, (_, yieldable)) in ids.iter().zip(&traits) {
+            if *yieldable {
+                self.state_manager
+                    .set_round_injection_preemption_token(id, Some(CancellationToken::new()));
+            }
+        }
+        traits
+            .into_iter()
+            .map(|(concurrent, _)| concurrent)
+            .collect()
+    }
+
+    async fn prepare_permissions(&self, ids: &[String]) -> OpenBitFunResult<()> {
+        self.prepare_permission_plans(ids).await
+    }
+
+    async fn cleanup_permissions(&self, ids: &[String], reason: &str) {
+        self.cleanup_permission_plans(ids, reason.to_owned()).await;
+    }
+
+    fn batch_interrupted(&self, first: &str) -> bool {
+        self.state_manager
+            .get_task(first)
+            .is_some_and(|task| self.should_interrupt_for_round_injection(&task.context))
+    }
+
+    async fn interrupted_results(&self, ids: Vec<String>) -> Vec<ToolExecutionResult> {
+        self.build_steering_interrupted_results(ids).await
+    }
+
+    fn start_unit(&self, ids: &[String], check_interrupt: bool) -> ToolAdmission {
+        let task = ids.first().and_then(|id| self.state_manager.get_task(id));
+        if check_interrupt
+            && task
+                .as_ref()
+                .is_some_and(|task| self.should_interrupt_for_round_injection(&task.context))
+        {
+            return ToolAdmission::Interrupted;
+        }
+        let interrupt = task.and_then(|task| task.context.steering_interrupt);
+        ToolAdmission::Run(self.spawn_round_injection_preemption_watch(ids.to_vec(), interrupt))
+    }
+
+    async fn execute_task(&self, id: String) -> OpenBitFunResult<ToolExecutionResult> {
+        self.execute_single_tool(id).await
+    }
+
+    fn failed_result(&self, id: &str, error: OpenBitFunError) -> ToolExecutionResult {
+        error!("Tool execution failed: error={}", error);
+        build_error_execution_result(id, self.state_manager.get_task(id), &error)
     }
 }
 
@@ -2226,26 +2298,6 @@ impl ToolPipeline {
         results
     }
 
-    fn append_execution_result(
-        &self,
-        task_id: &str,
-        result: OpenBitFunResult<ToolExecutionResult>,
-        all_results: &mut Vec<ToolExecutionResult>,
-    ) {
-        match result {
-            Ok(execution_result) => all_results.push(execution_result),
-            Err(error) => {
-                error!("Tool execution failed: error={}", error);
-                let error_result = build_error_execution_result(
-                    task_id,
-                    self.state_manager.get_task(task_id),
-                    &error,
-                );
-                all_results.push(error_result);
-            }
-        }
-    }
-
     async fn preempt_tools_for_round_injection(
         &self,
         task_ids: impl IntoIterator<Item = String>,
@@ -2371,219 +2423,16 @@ impl ToolPipeline {
         if !segment.is_empty() {
             segments.push(segment);
         }
-        let mut results = Vec::with_capacity(task_ids.len());
-        let mut segments = segments.into_iter();
-        while let Some(segment) = segments.next() {
-            if self.should_interrupt_for_round_injection(&context) {
-                results.extend(
-                    self.build_steering_interrupted_results(
-                        segment.into_iter().chain(segments.flatten()),
-                    )
-                    .await,
-                );
-                break;
-            }
-            match self
-                .execute_preflight_segment(segment, &options, subagent_call_count)
-                .await
-            {
-                Ok(segment_results) => results.extend(segment_results),
-                Err(error) => {
-                    self.cleanup_permission_plans(&task_ids, "Tool execution failed".into())
-                        .await;
-                    return Err(error);
-                }
-            }
-        }
-        Ok(results)
-    }
-
-    async fn execute_preflight_segment(
-        &self,
-        task_ids: Vec<String>,
-        options: &ToolExecutionOptions,
-        subagent_call_count: usize,
-    ) -> OpenBitFunResult<Vec<ToolExecutionResult>> {
-        let tool_names = task_ids
-            .iter()
-            .filter_map(|id| self.state_manager.get_task(id))
-            .map(|task| task.invocation.effective_tool_name)
-            .collect::<Vec<_>>();
-        // PreToolUse hooks run before permission planning so a hook decision
-        // (deny / pre-approve / rewritten input) is visible to the planner
-        // and no permission prompt is raised for calls a hook already decided.
-        self.apply_pre_tool_use_hooks(&task_ids).await;
-
-        // Hook rewrites can change whether a command is concurrency-safe.
-        // Resolve all execution traits from the final arguments, then attach
-        // cooperative preemption tokens before scheduling starts.
-        let execution_traits = self
-            .execution_traits_for_final_inputs(
-                &task_ids,
-                subagent_call_count,
-                options.subagent_batch_execution_policy,
-            )
-            .await;
-        for (task_id, (_, round_injection_yieldable)) in
-            task_ids.iter().zip(execution_traits.iter())
-        {
-            if *round_injection_yieldable {
-                self.state_manager
-                    .set_round_injection_preemption_token(task_id, Some(CancellationToken::new()));
-            }
-        }
-        let concurrency_flags = execution_traits
-            .iter()
-            .map(|(concurrency_safe, _)| *concurrency_safe)
-            .collect::<Vec<_>>();
-        let concurrency_safe_count = concurrency_flags.iter().filter(|&&flag| flag).count();
-
-        if let Err(error) = self.prepare_permission_plans(&task_ids).await {
-            self.cleanup_permission_plans(&task_ids, "Permission planning failed".to_string())
-                .await;
-            return Err(error);
-        }
-
-        if !options.allow_parallel {
-            debug!(
-                "Tool execution plan: total_tools={}, batches=1, concurrency_safe={}, non_concurrency_safe={}, allow_parallel=false, tools={}",
-                task_ids.len(),
-                concurrency_safe_count,
-                task_ids.len().saturating_sub(concurrency_safe_count),
-                tool_names.join(", ")
-            );
-            let result = self.execute_sequential(task_ids.clone()).await;
-            self.cleanup_permission_plans(&task_ids, "Tool execution finished".to_string())
-                .await;
-            return result;
-        }
-
-        // Partition into batches of consecutive same-safety tool calls
-        let batches = partition_tool_batches(&task_ids, &concurrency_flags);
-        debug!(
-            "Tool execution plan: total_tools={}, batches={}, concurrency_safe={}, non_concurrency_safe={}, allow_parallel=true, tools={}",
-            task_ids.len(),
-            batches.len(),
-            concurrency_safe_count,
-            task_ids.len().saturating_sub(concurrency_safe_count),
-            tool_names.join(", ")
-        );
-
-        debug!(
-            "Partitioned {} tools into {} batches for mixed execution",
-            task_ids.len(),
-            batches.len()
-        );
-
-        let mut all_results = Vec::with_capacity(task_ids.len());
-        let mut batch_iter = batches.into_iter().enumerate().peekable();
-        while let Some((batch_idx, batch)) = batch_iter.next() {
-            let batch_context = batch
-                .task_ids
-                .first()
-                .and_then(|task_id| self.state_manager.get_task(task_id))
-                .map(|task| task.context);
-            if batch_context
-                .as_ref()
-                .is_some_and(|context| self.should_interrupt_for_round_injection(context))
-            {
-                let remaining_task_ids = batch
-                    .task_ids
-                    .into_iter()
-                    .chain(batch_iter.flat_map(|(_, batch)| batch.task_ids.into_iter()));
-                all_results.extend(
-                    self.build_steering_interrupted_results(remaining_task_ids)
-                        .await,
-                );
-                break;
-            }
-
-            debug!(
-                "Executing batch {}: {} tool(s), concurrent={}",
-                batch_idx,
-                batch.task_ids.len(),
-                batch.is_concurrent
-            );
-            let batch_results = if batch.is_concurrent {
-                self.execute_parallel(batch.task_ids).await?
-            } else {
-                self.execute_sequential(batch.task_ids).await?
-            };
-            all_results.extend(batch_results);
-        }
-
-        self.cleanup_permission_plans(&task_ids, "Tool execution finished".to_string())
-            .await;
-        Ok(all_results)
-    }
-
-    /// Execute tools in parallel
-    async fn execute_parallel(
-        &self,
-        task_ids: Vec<String>,
-    ) -> OpenBitFunResult<Vec<ToolExecutionResult>> {
-        let batch_interrupt = task_ids
-            .first()
-            .and_then(|task_id| self.state_manager.get_task(task_id))
-            .and_then(|task| task.context.steering_interrupt.clone());
-        let watch_handle =
-            self.spawn_round_injection_preemption_watch(task_ids.clone(), batch_interrupt);
-
-        let futures: Vec<_> = task_ids
-            .iter()
-            .map(|id| self.execute_single_tool(id.clone()))
-            .collect();
-
-        let results = join_all(futures).await;
-        if let Some(handle) = watch_handle {
-            handle.abort();
-            let _ = handle.await;
-        }
-
-        // Collect results, including failed results
-        let mut all_results = Vec::new();
-        for (idx, result) in results.into_iter().enumerate() {
-            let task_id = &task_ids[idx];
-            self.append_execution_result(task_id, result, &mut all_results);
-        }
-
-        Ok(all_results)
-    }
-
-    /// Execute tools sequentially
-    async fn execute_sequential(
-        &self,
-        task_ids: Vec<String>,
-    ) -> OpenBitFunResult<Vec<ToolExecutionResult>> {
-        let mut results = Vec::new();
-
-        let mut task_iter = task_ids.into_iter().peekable();
-        while let Some(task_id) = task_iter.next() {
-            let task = self.state_manager.get_task(&task_id);
-            if task
-                .as_ref()
-                .is_some_and(|task| self.should_interrupt_for_round_injection(&task.context))
-            {
-                let remaining_task_ids = std::iter::once(task_id).chain(task_iter);
-                results.extend(
-                    self.build_steering_interrupted_results(remaining_task_ids)
-                        .await,
-                );
-                break;
-            }
-
-            let interrupt = task.and_then(|task| task.context.steering_interrupt.clone());
-            let watch_handle =
-                self.spawn_round_injection_preemption_watch(vec![task_id.clone()], interrupt);
-            let result = self.execute_single_tool(task_id.clone()).await;
-            if let Some(handle) = watch_handle {
-                handle.abort();
-                let _ = handle.await;
-            }
-            self.append_execution_result(&task_id, result, &mut results);
-        }
-
-        Ok(results)
+        execute_segments(
+            self,
+            &task_ids,
+            segments,
+            options.allow_parallel,
+            subagent_call_count,
+            options.subagent_batch_execution_policy,
+            || self.should_interrupt_for_round_injection(&context),
+        )
+        .await
     }
 
     /// Execute single tool
@@ -3181,44 +3030,14 @@ impl ToolPipeline {
         cancellation_token: CancellationToken,
         tool: Arc<dyn crate::agentic::tools::framework::Tool>,
     ) -> OpenBitFunResult<ExecutedToolResult> {
-        let mut attempts = 0;
-        let max_attempts = task.options.max_retries + 1;
-
-        loop {
-            // Check cancellation token
-            if cancellation_token.is_cancelled() {
-                return Err(OpenBitFunError::Cancelled(
-                    "Tool execution was cancelled".to_string(),
-                ));
-            }
-
-            attempts += 1;
-
-            let result = self
-                .execute_tool_impl(task, cancellation_token.clone(), tool.clone())
-                .await;
-
-            match result {
-                Ok(r) => return Ok(r),
-                Err(e) => {
-                    if !should_retry_tool_attempt(ToolRetryAttemptFacts {
-                        attempts,
-                        max_attempts,
-                        error_class: classify_tool_retry_error(&e),
-                    }) {
-                        return Err(e);
-                    }
-
-                    debug!(
-                        "Retrying tool execution: attempt={}/{}, error={}",
-                        attempts, max_attempts, e
-                    );
-
-                    // Wait for a period of time and retry
-                    tokio::time::sleep(Duration::from_millis(retry_delay_ms(attempts))).await;
-                }
-            }
-        }
+        run_tool_attempts(
+            task.options.max_retries + 1,
+            &cancellation_token,
+            || OpenBitFunError::Cancelled("Tool execution was cancelled".to_string()),
+            classify_tool_retry_error,
+            || self.execute_tool_impl(task, cancellation_token.clone(), tool.clone()),
+        )
+        .await
     }
 
     /// Actual execution of tool

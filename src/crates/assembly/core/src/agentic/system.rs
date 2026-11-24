@@ -191,6 +191,52 @@ pub async fn init_agentic_system_with_workspaces(
     })
 }
 
+pub(crate) fn product_turn_postprocessor() -> Option<Arc<dyn execution::TurnPostprocessor>> {
+    #[cfg(feature = "deep-research")]
+    {
+        Some(Arc::new(ResearchReportPostprocessor))
+    }
+    #[cfg(not(feature = "deep-research"))]
+    {
+        None
+    }
+}
+
+#[cfg(feature = "deep-research")]
+struct ResearchReportPostprocessor;
+
+#[cfg(feature = "deep-research")]
+#[async_trait::async_trait]
+impl execution::TurnPostprocessor for ResearchReportPostprocessor {
+    async fn on_completion(
+        &self,
+        agent_type: &str,
+        context: &execution::ExecutionContext,
+        completed: bool,
+    ) {
+        if openbitfun_agent_workflows::deep_research::should_post_process_research_report(
+            agent_type, completed,
+        ) {
+            if let Some(workspace) = context.workspace.as_ref() {
+                if let Some(workspace_services) = context.workspace_services.as_ref() {
+                    openbitfun_services_integrations::deep_research::run_for_session_workspace(
+                        workspace_services.fs.as_ref(),
+                        &workspace.root_path().to_string_lossy(),
+                        &context.session_id,
+                    )
+                    .await;
+                } else {
+                    log::warn!(
+                            "citation_renumber: skipped because workspace filesystem services are unavailable: session_id={}, workspace={}",
+                            context.session_id,
+                            workspace.root_path().display()
+                        );
+                }
+            }
+        }
+    }
+}
+
 /// Connects the turn engine to the host's session, tool, model and event owners.
 pub async fn assemble_agent_execution(
     session_manager: Arc<session::SessionManager>,
@@ -211,12 +257,13 @@ pub async fn assemble_agent_execution(
     ));
 
     let execution_config = execution::execution_engine_config_from_global_config().await;
-    let execution_engine = execution::ExecutionEngine::new(
+    let execution_engine = execution::ExecutionEngine::with_turn_postprocessor(
         round_executor,
         event_queue.clone(),
         session_manager.clone(),
         Arc::new(session::ContextCompressor::new()),
         execution_config,
+        product_turn_postprocessor(),
     );
     let execution_engine = Arc::new(execution_engine);
 

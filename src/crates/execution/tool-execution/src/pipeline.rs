@@ -1,5 +1,7 @@
 //! Provider-neutral tool pipeline planning helpers.
 
+pub mod execution;
+
 use dashmap::DashMap;
 use openbitfun_events::{ToolEventData, ToolEventIdentity, ToolImageAttachment};
 use std::sync::Arc;
