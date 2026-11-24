@@ -1445,7 +1445,7 @@ async fn init_agentic_system() -> anyhow::Result<(
             "desktop",
         ),
     );
-    let coordinator = system::assemble_agent_execution(
+    let system = system::assemble_agentic_system(
         session_manager.clone(),
         tool_pipeline,
         event_queue.clone(),
@@ -1455,6 +1455,8 @@ async fn init_agentic_system() -> anyhow::Result<(
         token_usage_service.clone(),
     )
     .await;
+    let coordinator = system.coordinator;
+    let scheduler = system.scheduler;
     coordinator.set_terminal_port(
         openbitfun_core::product_runtime::CoreRuntimeServicesProvider::terminal_port(),
     );
@@ -1483,11 +1485,6 @@ async fn init_agentic_system() -> anyhow::Result<(
 
     log::info!("Token usage service initialized and subscriber registered");
 
-    // Create the DialogScheduler and wire up the outcome notification channel
-    let scheduler =
-        coordination::DialogScheduler::new(coordinator.clone(), session_manager.clone());
-    coordinator.set_scheduler_notifier(scheduler.outcome_sender());
-    coordinator.set_round_injection_source(scheduler.round_injection_monitor());
     coordination::set_global_scheduler(scheduler.clone());
 
     let cron_service = openbitfun_core::service::cron::CronService::new(

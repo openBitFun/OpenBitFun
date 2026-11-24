@@ -17,8 +17,9 @@ Shared Agent Runtime 与 Plugin Host 的进程关系见
 新增公共类型前必须有真实生产调用方、版本边界和验证路径。现有 `agent-runtime::sdk` 是
 Rust Runtime SDK（当前 preview），不是公开 Python/TypeScript OpenBitFun Agent SDK。CLI、ACP、
 Desktop 仍复用 `openbitfun-core` 的兼容 owner；只有 Desktop 与本机兼容 Server Host 选择 `product-full`。CLI 与 CLI 托管的 ACP server 已消费各自的产品组装结果；
-Desktop 主交互只消费由现有 Core 归属模块构造的少量应用接口，尚未组装完整 Desktop profile。这些接入都不等于
-协调器、调度器、持久化或工具执行 owner 已迁移；ACP 的完整持久化历史、模型/模式目录与提供方配置、MCP、客户端路径与
+Desktop 主交互只消费由现有 Core 归属模块构造的少量应用接口，尚未组装完整 Desktop profile。桌面、CLI 和 SDK Host 的生产入口通过 `assemble_agentic_system` 装配同一套执行器。每个运行实例拥有一个调度器、一套会话状态和一条引擎事件队列。执行层的 `scheduler` 持有轮次队列、在途执行租约和精确到轮次的结算状态，定向取消与出队共用会话操作锁。`session` 持有会话驻留名额、写者租约和存储绑定。Core 注入磁盘存取、工作区路径规范化和运行时缓存清理，并沿用原会话文件与写锁。SDK Host 与进程内 Rust 消费者通过 `product_runtime::embedded::EmbeddedAgentRuntime` 使用这套装配，目前仍需链接 Core。
+
+ACP 的完整持久化历史、模型/模式目录与提供方配置、MCP、客户端路径与
 Desktop 的其余入口仍保留明确的兼容边界，活动会话的模型/模式写入已通过 Agent Runtime API 回到 Core owner。
 
 阅读路径：先从公开 SDK 产品文档区分公开语言 SDK 与内部应用接口；再由第 1 节确认内核、产品特性、

@@ -32,6 +32,8 @@ async function runParent(outcome) {
     ),
   );
 
+  const embedded = outcome === "allow" && Boolean(process.env.OPENBITFUN_SMOKE_RUST_CONSUMER);
+  const embeddedMarker = randomBytes(18).toString("hex");
   const fileMarker = randomBytes(18).toString("hex");
   const fixtureFile = "sdk-smoke.txt";
   const apiKey = `openbitfun-sdk-${randomBytes(24).toString("hex")}`;
@@ -53,7 +55,7 @@ async function runParent(outcome) {
       }
       requestTraces.push(summarizeModelRequest(index, request.url, body));
 
-      assert.ok(index <= 4, "unexpected model request");
+      assert.ok(index <= (embedded ? 5 : 4), "unexpected model request");
       let chunks;
       if (index === 1) {
         await writeFile(join(workspace, fixtureFile), fileMarker);
@@ -63,17 +65,24 @@ async function runParent(outcome) {
           rules: [{ action: "read", resource: "*", effect: "ask" }],
         }));
       }
-      if (index === 2) {
+      const embeddedRead = embedded && index === 4;
+      if (embeddedRead) {
+        const previousRead = body.messages.find((message) => message.role === "tool" && message.tool_call_id === "call_sdk_read");
+        assert.ok(JSON.stringify(previousRead?.content ?? "").includes(fileMarker), "Rust must restore the previous Host tool result");
+        await writeFile(join(workspace, "embedded-smoke.txt"), embeddedMarker);
+      }
+      if (index === 2 || embeddedRead) {
         assert.ok(body.tools.some((tool) => tool.function?.name === "Read"), "Read must be offered");
-        assert.ok(!JSON.stringify(body.messages).includes(fileMarker));
+        assert.ok(!JSON.stringify(body.messages).includes(embeddedRead ? embeddedMarker : fileMarker));
+        const readPath = embeddedRead ? "embedded-smoke.txt" : outcome === "missing" ? "missing-sdk-fixture.txt" : fixtureFile;
         chunks = [{
           delta: {
             role: "assistant",
             tool_calls: [{
               index: 0,
-              id: "call_sdk_read",
+              id: embeddedRead ? "call_embedded_read" : "call_sdk_read",
               type: "function",
-              function: { name: "Read", arguments: JSON.stringify({ file_path: outcome === "missing" ? "missing-sdk-fixture.txt" : fixtureFile }) },
+              function: { name: "Read", arguments: JSON.stringify({ file_path: readPath }) },
             }],
           },
           finish_reason: "tool_calls",
@@ -91,7 +100,11 @@ async function runParent(outcome) {
             assert.match(content, outcome === "reject" ? /user rejected this tool call/i : /file does not exist: .*missing-sdk-fixture\.txt/i);
           }
         }
-        const text = { 1: "fixture response", 3: "read completed", 4: "session resumed" }[index];
+        if (embedded && index === 5) {
+          const read = body.messages.find((message) => message.role === "tool" && message.tool_call_id === "call_embedded_read");
+          assert.ok(JSON.stringify(read?.content ?? "").includes(embeddedMarker), "Rust must deliver its own approved read to the model");
+        }
+        const text = { 1: "fixture response", 3: "read completed", 4: "session resumed", 5: "session resumed" }[index];
         chunks = [
           { delta: { role: "assistant", content: "OpenBitFun SDK " }, finish_reason: null },
           { delta: { content: text }, finish_reason: null },
@@ -134,6 +147,9 @@ async function runParent(outcome) {
       HOME: home,
       USERPROFILE: home,
     };
+    if (embedded) {
+      workerEnvironment.OPENBITFUN_SMOKE_RUST_CONSUMER = resolve(process.env.OPENBITFUN_SMOKE_RUST_CONSUMER);
+    }
     assert.equal(Object.values(workerEnvironment).includes(apiKey), false);
 
     worker = spawn(process.execPath, [scriptPath, "--worker"], {
@@ -172,7 +188,7 @@ async function runParent(outcome) {
       0,
       `real Host smoke worker failed: ${captured.stderr}`,
     );
-    assert.equal(requestCount, 4);
+    assert.equal(requestCount, embedded ? 5 : 4);
     const catalog = JSON.parse(await readFile(join(userRoot, "data", "workspace_data.json"), "utf8"));
     const workspacePath = await realpath(workspace);
     const records = Object.values(catalog.workspaces).filter((record) => record.rootPath === workspacePath);
@@ -286,6 +302,9 @@ async function runWorker() {
     }
     assert.equal(readEvents.filter((item) => item.type === "result").length, 1);
     assert.equal(JSON.stringify(readEvents).includes(apiKey), false);
+    if (process.env.OPENBITFUN_SMOKE_RUST_CONSUMER) {
+      await runRustConsumer("conflict", sessionId, apiKey);
+    }
     await read.close();
     await session.close();
   } finally {
@@ -297,6 +316,10 @@ async function runWorker() {
     process.stdout.write("phase:client_closed\n");
   }
 
+  if (process.env.OPENBITFUN_SMOKE_RUST_CONSUMER) {
+    await runRustConsumer("resume", sessionId, apiKey);
+    return;
+  }
   const next = await AgentClient.start({ cwd: workspace, model: validModel });
   try {
     const resumed = await next.sessions.resume(sessionId);
@@ -337,6 +360,22 @@ async function listenLocalhost(server) {
     throw new Error("SSE fixture did not bind a TCP address");
   }
   return address;
+}
+
+async function runRustConsumer(action, sessionId, apiKey) {
+  const consumer = spawn(requiredEnvironment("OPENBITFUN_SMOKE_RUST_CONSUMER"), [action, sessionId], {
+    cwd: requiredEnvironment("OPENBITFUN_SDK_SMOKE_WORKSPACE"),
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const output = captureWorkerOutput(consumer);
+  const exited = waitForWorker(consumer, 45_000);
+  consumer.stdin.end(apiKey);
+  const { code, signal } = await exited;
+  const { stderr, stdout } = output();
+  assert.ok(!stderr.includes(apiKey) && !stdout.includes(apiKey));
+  assert.equal(signal, null);
+  assert.equal(code, 0, stderr);
 }
 
 function captureWorkerOutput(worker) {

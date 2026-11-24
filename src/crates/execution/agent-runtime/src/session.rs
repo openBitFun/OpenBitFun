@@ -1,3 +1,7 @@
+pub mod keyed_lock;
+pub mod residency;
+pub mod storage;
+
 use crate::session_state::SessionState;
 pub use openbitfun_core_types::SessionKind;
 pub use openbitfun_core_types::{

@@ -1454,6 +1454,11 @@ export const requiredContentRules = [
   },
   {
     path: 'src/apps/sdk-host/src/runtime.rs',
+    reason: 'the stdio Host must use the production embedded assembly',
+    patterns: [{ regex: /EmbeddedAgentRuntime::open\(/, message: 'SDK Host must share the embedded Rust executor' }],
+  },
+  {
+    path: 'src/crates/assembly/core/src/product_runtime/embedded.rs',
     reason:
       'the standalone SDK Host must inject its selected delivery profile into the Core tool owner before agentic system construction',
     patterns: [
@@ -5806,8 +5811,12 @@ export const requiredContentRules = [
       },
       {
         regex:
-          /use openbitfun_agent_runtime::scheduler::\{(?=[\s\S]*ActiveDialogTurn)(?=[\s\S]*ActiveDialogTurnStore)(?=[\s\S]*AgentSessionReplyAction)(?=[\s\S]*AgentSessionReplyPlan)(?=[\s\S]*BackgroundDeliveryAction)(?=[\s\S]*BackgroundDeliveryFacts)(?=[\s\S]*BackgroundInjectionKind)(?=[\s\S]*DialogReplySuppressionSet)(?=[\s\S]*DialogSteeringAction)(?=[\s\S]*DialogTurnQueue)(?=[\s\S]*SessionAbortFlags)(?=[\s\S]*resolve_agent_session_reply_action)(?=[\s\S]*resolve_background_delivery_action)(?=[\s\S]*resolve_background_delivery_injection)(?=[\s\S]*resolve_dialog_steering_action)[\s\S]*\};/,
+          /use openbitfun_agent_runtime::scheduler::\{(?=[\s\S]*ActiveDialogTurn)(?=[\s\S]*AgentSessionReplyAction)(?=[\s\S]*AgentSessionReplyPlan)(?=[\s\S]*BackgroundDeliveryAction)(?=[\s\S]*BackgroundDeliveryFacts)(?=[\s\S]*BackgroundInjectionKind)(?=[\s\S]*DialogSteeringAction)(?=[\s\S]*DialogTurnQueue)(?=[\s\S]*resolve_agent_session_reply_action)(?=[\s\S]*resolve_background_delivery_action)(?=[\s\S]*resolve_background_delivery_injection)(?=[\s\S]*resolve_dialog_steering_action)[\s\S]*\};/,
         message: 'missing agent-runtime scheduler owner imports',
+      },
+      {
+        regex: /use openbitfun_agent_runtime::scheduler::execution::\{CancellationEffects, DialogExecution\}/,
+        message: 'the Core facade must use the live scheduler and cancellation owner',
       },
       {
         regex: /\bBackgroundResult\b/,

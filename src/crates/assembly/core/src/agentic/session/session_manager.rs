@@ -57,8 +57,12 @@ use crate::service::workspace::WorkspaceInfo;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
 use crate::util::sanitize_plain_model_output;
 use crate::util::timing::elapsed_ms_u64;
-use dashmap::{mapref::entry::Entry, DashMap};
+use dashmap::DashMap;
 use log::{debug, error, info, warn};
+use openbitfun_agent_runtime::session::{
+    residency::{SessionResidency, SessionUnloadEffects},
+    storage::{StorageBindings, StorageClaim},
+};
 use openbitfun_core_types::SessionExecutionTarget;
 pub use openbitfun_runtime_ports::SessionViewRestoreTiming;
 use openbitfun_runtime_ports::{
@@ -77,7 +81,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::time;
 
 const TOOL_PRESENTATION_MODE_CONFIG_PATH: &str = "ai.tool_presentation_mode";
@@ -403,28 +407,14 @@ pub struct SessionManager {
     turn_settlement_results: Arc<DashMap<(String, String), AgentTurnSettlementResult>>,
     turn_settlement_result_order: Arc<Mutex<VecDeque<(String, String)>>>,
 
-    /// Exact admission accounting for loaded sessions. A permit is acquired
-    /// before create/restore publishes runtime state and released on unload/delete/eviction.
-    active_session_capacity: Arc<Semaphore>,
-    active_session_permits: Arc<DashMap<String, OwnedSemaphorePermit>>,
+    residency: Arc<SessionResidency<SessionWriteLock>>,
 
     /// Runtime cache of session_id -> effective session storage path.
     /// Populated on session create/restore and used to restore evicted sessions
     /// or resolve workspace-bound operations that only receive a session_id.
     /// This cache is intentionally retained across memory eviction, but should
     /// be cleared when a session is explicitly deleted.
-    session_storage_path_index: Arc<DashMap<String, SessionStoragePathBinding>>,
-
-    /// Serializes create, restore, and delete mutations for one session ID.
-    ///
-    /// Storage-path claims prevent cross-workspace identity collisions, while
-    /// this permit prevents a slower restore from replacing a session that a
-    /// concurrent operation has already made active.
-    session_mutation_locks: KeyedAsyncLock,
-
-    /// Cross-process writers for durable Sessions currently loaded by this manager.
-    /// The Session lifecycle remains the only owner of acquisition and release.
-    session_write_locks: Arc<DashMap<String, SessionWriteLock>>,
+    session_storage_path_index: Arc<StorageBindings>,
 
     /// Sub-components
     context_store: Arc<SessionContextStore>,
@@ -496,16 +486,59 @@ struct SessionCleanupCandidate {
     last_activity_at: SystemTime,
 }
 
-#[derive(Clone, Debug)]
-struct SessionStoragePathBinding {
-    path: PathBuf,
-    pending_claims: usize,
-    committed: bool,
+#[async_trait::async_trait]
+impl SessionUnloadEffects for SessionManager {
+    type Error = OpenBitFunError;
+    async fn save_before_unload(&self, session_id: &str, session: Session) -> OpenBitFunResult<()> {
+        if self.is_transient_session(session_id) {
+            return Err(OpenBitFunError::Validation(format!(
+                "Cannot unload a transient session; use the owned discard path: {session_id}"
+            )));
+        }
+        if matches!(session.state, SessionState::Processing { .. }) {
+            return Err(OpenBitFunError::Validation(format!(
+                "Cannot unload a processing session: {session_id}"
+            )));
+        }
+
+        if self.config.enable_persistence && self.should_persist_session(&session) {
+            let storage_path = self
+                .effective_session_storage_path(session_id)
+                .await
+                .ok_or_else(|| {
+                    OpenBitFunError::NotFound(format!(
+                        "Session storage path is unavailable: {session_id}"
+                    ))
+                })?;
+            self.records.save_session(&storage_path, &session).await?;
+        }
+
+        Ok(())
+    }
+
+    fn clear_settlement(&self, session_id: &str) {
+        self.clear_turn_settlement_results(session_id);
+    }
+
+    fn clear_stores(&self, session_id: &str) {
+        self.active_turn_permission_modes.remove(session_id);
+        clear_session_runtime_stores(
+            session_id,
+            self.context_store.as_ref(),
+            self.transient_turns.as_ref(),
+            self.prompt_cache_store.as_ref(),
+            self.token_anchor_store.as_ref(),
+            self.turn_skill_agent_snapshot_store.as_ref(),
+            self.skill_agent_baseline_override_snapshot_store.as_ref(),
+            self.review_read_receipt_store.as_ref(),
+            self.evidence_ledger.as_ref(),
+        );
+    }
 }
 
 impl SessionManager {
     async fn lock_session_mutation(&self, session_id: &str) -> KeyedAsyncLockGuard {
-        self.session_mutation_locks.lock(session_id).await
+        self.residency.lock_mutation(session_id).await
     }
 
     pub(crate) async fn acquire_session_mutation(
@@ -518,26 +551,16 @@ impl SessionManager {
     }
 
     fn reserve_active_session(&self) -> OpenBitFunResult<OwnedSemaphorePermit> {
-        self.active_session_capacity
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                OpenBitFunError::Validation(format!(
-                    "Exceeded maximum session limit: {}",
-                    self.config.max_active_sessions
-                ))
-            })
-    }
-
-    fn commit_active_session_reservation(&self, session_id: &str, permit: OwnedSemaphorePermit) {
-        let previous = self
-            .active_session_permits
-            .insert(session_id.to_string(), permit);
-        debug_assert!(previous.is_none(), "active session permit already existed");
+        self.residency.reserve().map_err(|_| {
+            OpenBitFunError::Validation(format!(
+                "Exceeded maximum session limit: {}",
+                self.config.max_active_sessions
+            ))
+        })
     }
 
     fn release_active_session_reservation(&self, session_id: &str) {
-        self.active_session_permits.remove(session_id);
+        self.residency.release_reservation(session_id);
     }
 
     fn try_acquire_session_write_lock(
@@ -550,18 +573,11 @@ impl SessionManager {
     }
 
     fn commit_session_write_lock(&self, session_id: &str, write_lock: SessionWriteLock) {
-        match self.session_write_locks.entry(session_id.to_string()) {
-            Entry::Vacant(entry) => {
-                entry.insert(write_lock);
-            }
-            Entry::Occupied(_) => {
-                debug_assert!(false, "Session write lock already existed");
-            }
-        }
+        self.residency.commit_writer(session_id, write_lock);
     }
 
     fn release_session_write_lock(&self, session_id: &str) {
-        self.session_write_locks.remove(session_id);
+        self.residency.release_writer(session_id);
     }
 
     #[cfg(test)]
@@ -576,9 +592,7 @@ impl SessionManager {
 
     #[cfg(test)]
     pub(crate) fn storage_path_binding_for_test(&self, session_id: &str) -> Option<PathBuf> {
-        self.session_storage_path_index
-            .get(session_id)
-            .map(|binding| binding.path.clone())
+        self.session_storage_path_index.path(session_id)
     }
 
     fn normalize_session_storage_path(path: &Path) -> PathBuf {
@@ -588,145 +602,34 @@ impl SessionManager {
     fn claim_session_storage_path(
         &self,
         session_id: &str,
-        requested_path: &Path,
-        allow_existing_same_path: bool,
-    ) -> OpenBitFunResult<bool> {
-        openbitfun_core_types::validate_session_id(session_id)
-            .map_err(OpenBitFunError::Validation)?;
-        let requested_path = Self::normalize_session_storage_path(requested_path);
-        match self
-            .session_storage_path_index
-            .entry(session_id.to_string())
-        {
-            Entry::Vacant(entry) => {
-                entry.insert(SessionStoragePathBinding {
-                    path: requested_path,
-                    pending_claims: 1,
-                    committed: false,
-                });
-                Ok(true)
-            }
-            Entry::Occupied(mut entry) => {
-                let existing_path = Self::normalize_session_storage_path(&entry.get().path);
-                if existing_path != requested_path {
-                    return Err(OpenBitFunError::Validation(format!(
-                        "Session ID is already bound to another workspace: session_id={}, existing_storage_path={}, requested_storage_path={}",
-                        session_id,
-                        existing_path.display(),
-                        requested_path.display()
-                    )));
-                }
-                if !allow_existing_same_path {
-                    return Err(OpenBitFunError::Validation(format!(
-                        "Session ID already exists: {session_id}"
-                    )));
-                }
-                if entry.get().committed {
-                    Ok(false)
-                } else {
-                    entry.get_mut().pending_claims += 1;
-                    Ok(true)
-                }
-            }
-        }
-    }
-
-    fn commit_session_storage_path_claim(
-        &self,
-        session_id: &str,
-        requested_path: &Path,
-        claimed: bool,
-    ) {
-        if !claimed {
-            return;
-        }
-        let requested_path = Self::normalize_session_storage_path(requested_path);
-        if let Entry::Occupied(mut entry) = self
-            .session_storage_path_index
-            .entry(session_id.to_string())
-        {
-            if Self::normalize_session_storage_path(&entry.get().path) == requested_path {
-                let binding = entry.get_mut();
-                binding.committed = true;
-                binding.pending_claims = 0;
-            }
-        }
-    }
-
-    fn release_failed_session_storage_path_claim(
-        &self,
-        session_id: &str,
-        requested_path: &Path,
-        claimed: bool,
-    ) {
-        if !claimed {
-            return;
-        }
-        let requested_path = Self::normalize_session_storage_path(requested_path);
-        let session_exists = self.sessions.contains_key(session_id);
-        if let Entry::Occupied(mut entry) = self
-            .session_storage_path_index
-            .entry(session_id.to_string())
-        {
-            if Self::normalize_session_storage_path(&entry.get().path) != requested_path {
-                return;
-            }
-            if session_exists {
-                let binding = entry.get_mut();
-                binding.committed = true;
-                binding.pending_claims = 0;
-                return;
-            }
-            let binding = entry.get_mut();
-            binding.pending_claims = binding.pending_claims.saturating_sub(1);
-            if binding.pending_claims == 0 && !binding.committed {
-                entry.remove();
-            }
-        }
+        path: &Path,
+    ) -> OpenBitFunResult<StorageClaim<'_>> {
+        self.session_storage_path_index
+            .claim(session_id, path)
+            .map_err(OpenBitFunError::Validation)
     }
 
     fn bind_session_storage_path_committed(&self, session_id: &str, path: PathBuf) {
-        self.session_storage_path_index.insert(
-            session_id.to_string(),
-            SessionStoragePathBinding {
-                path,
-                pending_claims: 0,
-                committed: true,
-            },
-        );
+        self.session_storage_path_index.bind(session_id, path);
     }
 
     pub(crate) fn ensure_session_storage_path(
         &self,
         session_id: &str,
-        requested_path: &Path,
+        path: &Path,
     ) -> OpenBitFunResult<()> {
-        let claimed = self.claim_session_storage_path(session_id, requested_path, true)?;
-        self.commit_session_storage_path_claim(session_id, requested_path, claimed);
+        self.claim_session_storage_path(session_id, path)?.commit();
         Ok(())
     }
 
     pub(crate) fn validate_session_storage_path_binding(
         &self,
         session_id: &str,
-        requested_path: &Path,
+        path: &Path,
     ) -> OpenBitFunResult<()> {
-        openbitfun_core_types::validate_session_id(session_id)
-            .map_err(OpenBitFunError::Validation)?;
-        let requested_path = Self::normalize_session_storage_path(requested_path);
-        let Some(binding) = self.session_storage_path_index.get(session_id) else {
-            return Ok(());
-        };
-        let existing_path = Self::normalize_session_storage_path(&binding.path);
-        if existing_path != requested_path {
-            return Err(OpenBitFunError::Validation(format!(
-                "Session ID is already bound to another workspace: session_id={}, existing_storage_path={}, requested_storage_path={}",
-                session_id,
-                existing_path.display(),
-                requested_path.display()
-            )));
-        }
-        Ok(())
+        self.session_storage_path_index
+            .validate(session_id, path)
+            .map_err(OpenBitFunError::Validation)
     }
 
     pub(crate) fn is_session_loaded_from_storage_path(
@@ -1238,20 +1141,10 @@ impl SessionManager {
             .and_then(|session| Self::session_workspace_from_config(&session.config))
     }
 
-    fn committed_session_storage_path(
-        index: &DashMap<String, SessionStoragePathBinding>,
-        session_id: &str,
-    ) -> Option<PathBuf> {
-        index
-            .get(session_id)
-            .filter(|binding| binding.committed)
-            .map(|binding| binding.path.clone())
-    }
-
     /// Storage binding committed by an earlier create/restore admission, kept
     /// after the session is unloaded from memory.
     pub(crate) fn committed_session_storage_path_for(&self, session_id: &str) -> Option<PathBuf> {
-        Self::committed_session_storage_path(&self.session_storage_path_index, session_id)
+        self.session_storage_path_index.committed_path(session_id)
     }
 
     /// Reuse the storage binding admitted when this session was created/restored.
@@ -1268,9 +1161,7 @@ impl SessionManager {
     ) -> OpenBitFunResult<PathBuf> {
         openbitfun_core_types::validate_session_id(session_id)
             .map_err(OpenBitFunError::Validation)?;
-        if let Some(path) =
-            Self::committed_session_storage_path(&self.session_storage_path_index, session_id)
-        {
+        if let Some(path) = self.session_storage_path_index.committed_path(session_id) {
             return Ok(path);
         }
         let config = self
@@ -1519,8 +1410,7 @@ impl SessionManager {
             }
         }
 
-        let indexed_storage_path =
-            Self::committed_session_storage_path(&self.session_storage_path_index, session_id);
+        let indexed_storage_path = self.session_storage_path_index.committed_path(session_id);
         if let Some(session_storage_path) = indexed_storage_path {
             if let Some(binding) = self
                 .resolve_persisted_session_workspace_binding(
@@ -2116,20 +2006,20 @@ impl SessionManager {
             persistence_manager.path_manager().clone(),
         ));
 
+        let residency = Arc::new(SessionResidency::new(config.max_active_sessions));
         let manager = Self {
             storage,
             records,
-            sessions: Arc::new(DashMap::new()),
+            sessions: residency.sessions().clone(),
             active_turn_permission_modes: Arc::new(DashMap::new()),
             transient_session_ids: Arc::new(DashMap::new()),
             transient_turns: Arc::new(DashMap::new()),
             turn_settlement_results: Arc::new(DashMap::new()),
             turn_settlement_result_order: Arc::new(Mutex::new(VecDeque::new())),
-            active_session_capacity: Arc::new(Semaphore::new(config.max_active_sessions)),
-            active_session_permits: Arc::new(DashMap::new()),
-            session_storage_path_index: Arc::new(DashMap::new()),
-            session_mutation_locks: KeyedAsyncLock::default(),
-            session_write_locks: Arc::new(DashMap::new()),
+            residency,
+            session_storage_path_index: Arc::new(StorageBindings::new(
+                Self::normalize_session_storage_path,
+            )),
             context_store,
             prompt_cache_store: Arc::new(SessionPromptCacheStore::new()),
             prompt_cache_operation_locks: KeyedAsyncLock::default(),
@@ -2636,11 +2526,8 @@ impl SessionManager {
         let transient_turns = self.transient_turns.clone();
         let turn_settlement_results = self.turn_settlement_results.clone();
         let turn_settlement_result_order = self.turn_settlement_result_order.clone();
-        let active_session_capacity = self.active_session_capacity.clone();
-        let active_session_permits = self.active_session_permits.clone();
         let session_storage_path_index = self.session_storage_path_index.clone();
-        let session_mutation_locks = self.session_mutation_locks.clone();
-        let session_write_locks = self.session_write_locks.clone();
+        let residency = self.residency.clone();
         let context_store = self.context_store.clone();
         let prompt_cache_store = self.prompt_cache_store.clone();
         let prompt_cache_operation_locks = self.prompt_cache_operation_locks.clone();
@@ -2676,11 +2563,8 @@ impl SessionManager {
                 transient_turns,
                 turn_settlement_results,
                 turn_settlement_result_order,
-                active_session_capacity,
-                active_session_permits,
                 session_storage_path_index,
-                session_mutation_locks,
-                session_write_locks,
+                residency,
                 context_store,
                 prompt_cache_store,
                 prompt_cache_operation_locks,
@@ -2990,55 +2874,34 @@ impl SessionManager {
             )));
         }
         let active_session_permit = self.reserve_active_session()?;
-        let storage_claim =
-            self.claim_session_storage_path(&session_id, &session_storage_path, true)?;
+        let storage_claim = self.claim_session_storage_path(&session_id, &session_storage_path)?;
 
         // Persist before publishing runtime state. Cancellation or timeout while
         // this await is in progress cannot leave a writable in-memory Session.
         if persist {
-            if let Err(error) = self
-                .persistence_manager
+            self.persistence_manager
                 .create_session_if_absent(&session_storage_path, &session)
-                .await
-            {
-                self.release_failed_session_storage_path_claim(
-                    &session_id,
-                    &session_storage_path,
-                    storage_claim,
-                );
-                return Err(error);
-            }
+                .await?;
         }
 
-        // Publication is synchronous after all fallible persistence work.
-        match self.sessions.entry(session_id.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(session.clone());
-            }
-            Entry::Occupied(_) => {
-                self.release_failed_session_storage_path_claim(
-                    &session_id,
-                    &session_storage_path,
-                    storage_claim,
-                );
-                return Err(OpenBitFunError::Validation(format!(
-                    "Session ID already exists: {session_id}"
-                )));
-            }
-        }
-        if transient {
-            self.transient_session_ids.insert(session_id.clone(), ());
-        }
-        self.context_store.create_session(&session_id);
-        self.token_anchor_store.create_session(&session_id);
-        self.turn_skill_agent_snapshot_store
-            .create_session(&session_id);
-        self.review_read_receipt_store.create_session(&session_id);
-        self.commit_session_storage_path_claim(&session_id, &session_storage_path, storage_claim);
-        self.commit_active_session_reservation(&session_id, active_session_permit);
-        if let Some(write_lock) = session_write_lock {
-            self.commit_session_write_lock(&session_id, write_lock);
-        }
+        self.residency
+            .publish_new(
+                &session,
+                active_session_permit,
+                session_write_lock,
+                storage_claim,
+                || {
+                    if transient {
+                        self.transient_session_ids.insert(session_id.clone(), ());
+                    }
+                    self.context_store.create_session(&session_id);
+                    self.token_anchor_store.create_session(&session_id);
+                    self.turn_skill_agent_snapshot_store
+                        .create_session(&session_id);
+                    self.review_read_receipt_store.create_session(&session_id);
+                },
+            )
+            .map_err(OpenBitFunError::Validation)?;
 
         info!("Session created: session_name={}", session.session_name);
 
@@ -4614,9 +4477,9 @@ impl SessionManager {
         validate_binding: impl FnOnce(&Session) -> OpenBitFunResult<()>,
     ) -> OpenBitFunResult<Session> {
         let _mutation_guard = self.acquire_session_mutation(session_id).await?;
-        let storage_path = storage_path.map(Path::to_path_buf).or_else(|| {
-            Self::committed_session_storage_path(&self.session_storage_path_index, session_id)
-        });
+        let storage_path = storage_path
+            .map(Path::to_path_buf)
+            .or_else(|| self.session_storage_path_index.committed_path(session_id));
         if let Some(path) = storage_path.as_deref() {
             self.validate_session_storage_path_binding(session_id, path)?;
         }
@@ -4892,8 +4755,7 @@ impl SessionManager {
         // Permission updates still restore an evicted session before
         // the mutation permit is taken, because restore owns the same keyed lock.
         if !self.sessions.contains_key(session_id) && self.config.enable_persistence {
-            let session_storage_path =
-                Self::committed_session_storage_path(&self.session_storage_path_index, session_id);
+            let session_storage_path = self.session_storage_path_index.committed_path(session_id);
             if let Some(session_storage_path) = session_storage_path {
                 debug!(
                     "Session evicted from memory, restoring for permission mode update: session_id={}",
@@ -5053,8 +4915,7 @@ impl SessionManager {
         // not populate the storage-path index, so use the owning project path as
         // the stable fallback locator.
         if !self.sessions.contains_key(session_id) && self.config.enable_persistence {
-            let session_storage_path =
-                Self::committed_session_storage_path(&self.session_storage_path_index, session_id);
+            let session_storage_path = self.session_storage_path_index.committed_path(session_id);
             let restore_result = if let Some(session_storage_path) = session_storage_path {
                 self.restore_session_from_storage_path(&session_storage_path, session_id)
                     .await
@@ -5458,52 +5319,7 @@ impl SessionManager {
     ) -> OpenBitFunResult<bool> {
         openbitfun_core_types::validate_session_id(session_id)
             .map_err(OpenBitFunError::Validation)?;
-        let _mutation_guard = self.lock_session_mutation(session_id).await;
-        let Some(session) = self.get_session(session_id) else {
-            return Ok(false);
-        };
-        if self.is_transient_session(session_id) {
-            return Err(OpenBitFunError::Validation(format!(
-                "Cannot unload a transient session; use the owned discard path: {session_id}"
-            )));
-        }
-        if matches!(session.state, SessionState::Processing { .. }) {
-            return Err(OpenBitFunError::Validation(format!(
-                "Cannot unload a processing session: {session_id}"
-            )));
-        }
-
-        if self.config.enable_persistence && self.should_persist_session(&session) {
-            let storage_path = self
-                .effective_session_storage_path(session_id)
-                .await
-                .ok_or_else(|| {
-                    OpenBitFunError::NotFound(format!(
-                        "Session storage path is unavailable: {session_id}"
-                    ))
-                })?;
-            self.records.save_session(&storage_path, &session).await?;
-        }
-
-        if self.sessions.remove(session_id).is_none() {
-            return Ok(false);
-        }
-        self.clear_turn_settlement_results(session_id);
-        self.release_active_session_reservation(session_id);
-        self.active_turn_permission_modes.remove(session_id);
-        clear_session_runtime_stores(
-            session_id,
-            self.context_store.as_ref(),
-            self.transient_turns.as_ref(),
-            self.prompt_cache_store.as_ref(),
-            self.token_anchor_store.as_ref(),
-            self.turn_skill_agent_snapshot_store.as_ref(),
-            self.skill_agent_baseline_override_snapshot_store.as_ref(),
-            self.review_read_receipt_store.as_ref(),
-            self.evidence_ledger.as_ref(),
-        );
-        self.release_session_write_lock(session_id);
-        Ok(true)
+        self.residency.unload(session_id, self).await
     }
 
     async fn cleanup_session_owned_resources(
@@ -5603,7 +5419,7 @@ impl SessionManager {
             .and_then(|binding| binding.workspace_id);
         let temporary_write_lock = if self.config.enable_persistence
             && !self.is_transient_session(session_id)
-            && !self.session_write_locks.contains_key(session_id)
+            && !self.residency.has_writer(session_id)
         {
             Some(self.try_acquire_session_write_lock(session_storage_path, session_id)?)
         } else {
@@ -6285,7 +6101,7 @@ impl SessionManager {
         } else {
             None
         };
-        let claimed = self.claim_session_storage_path(session_id, session_storage_path, true)?;
+        let claim = self.claim_session_storage_path(session_id, session_storage_path)?;
         // Runtime restore includes history decoding and context reconstruction.
         // Keep that state on the heap across the nested fork/restore facades.
         let result = Box::pin(
@@ -6296,14 +6112,11 @@ impl SessionManager {
             ),
         )
         .await;
-        if result.is_err() {
-            self.release_failed_session_storage_path_claim(
-                session_id,
-                session_storage_path,
-                claimed,
-            );
-        } else if let Some(write_lock) = session_write_lock {
-            self.commit_session_write_lock(session_id, write_lock);
+        if result.is_ok() {
+            claim.commit();
+            if let Some(write_lock) = session_write_lock {
+                self.commit_session_write_lock(session_id, write_lock);
+            }
         }
         result
     }
@@ -6833,11 +6646,8 @@ impl SessionManager {
         // Unread completion is now written only by runtime completion/persist paths.
 
         // 4. Add to memory (will overwrite if already exists)
-        self.sessions
-            .insert(session_id.to_string(), session.clone());
-        if let Some(permit) = active_session_permit {
-            self.commit_active_session_reservation(session_id, permit);
-        }
+        self.residency
+            .publish_restored(session_id, &session, active_session_permit);
         self.bind_session_storage_path_committed(session_id, session_storage_path.to_path_buf());
 
         if let Some(state) = restored_edit_constraint_state {
@@ -10801,7 +10611,7 @@ impl SessionManager {
         let transient_session_ids = self.transient_session_ids.clone();
         let records = self.records.clone();
         let storage = self.storage.clone();
-        let session_mutation_locks = self.session_mutation_locks.clone();
+        let residency = self.residency.clone();
         let interval = self.config.auto_save_interval;
         let session_storage_path_index = self.session_storage_path_index.clone();
 
@@ -10813,14 +10623,13 @@ impl SessionManager {
 
                 for snapshot in Self::collect_auto_save_snapshots(&sessions, &transient_session_ids)
                 {
-                    let _mutation_guard = session_mutation_locks.lock(&snapshot.session_id).await;
+                    let _mutation_guard = residency.lock_mutation(&snapshot.session_id).await;
                     if !Self::auto_save_snapshot_is_current(&sessions, &snapshot) {
                         continue;
                     }
-                    let storage_path = match Self::committed_session_storage_path(
-                        &session_storage_path_index,
-                        &snapshot.session_id,
-                    ) {
+                    let storage_path = match session_storage_path_index
+                        .committed_path(&snapshot.session_id)
+                    {
                         Some(path) => Some(path),
                         None => {
                             Self::effective_storage_path(&storage, &snapshot.session.config).await
@@ -10852,14 +10661,12 @@ impl SessionManager {
         let sessions = self.sessions.clone();
         let active_turn_permission_modes = self.active_turn_permission_modes.clone();
         let transient_session_ids = self.transient_session_ids.clone();
-        let active_session_permits = self.active_session_permits.clone();
         let timeout = self.config.session_idle_timeout;
         let records = self.records.clone();
         let storage = self.storage.clone();
         let session_storage_path_index = self.session_storage_path_index.clone();
         let enable_persistence = self.config.enable_persistence;
-        let session_mutation_locks = self.session_mutation_locks.clone();
-        let session_write_locks = self.session_write_locks.clone();
+        let residency = self.residency.clone();
         let context_store = self.context_store.clone();
         let transient_turns = self.transient_turns.clone();
         let prompt_cache_store = self.prompt_cache_store.clone();
@@ -10886,7 +10693,7 @@ impl SessionManager {
                 );
 
                 for candidate in candidates {
-                    let _mutation_guard = session_mutation_locks.lock(&candidate.session_id).await;
+                    let _mutation_guard = residency.lock_mutation(&candidate.session_id).await;
                     debug!(
                         "Cleaning up expired session: session_id={}",
                         candidate.session_id
@@ -10909,10 +10716,9 @@ impl SessionManager {
                             &transient_session_ids,
                         )
                     {
-                        let storage_path = match Self::committed_session_storage_path(
-                            &session_storage_path_index,
-                            &session.session_id,
-                        ) {
+                        let storage_path = match session_storage_path_index
+                            .committed_path(&session.session_id)
+                        {
                             Some(path) => Some(path),
                             None => Self::effective_storage_path(&storage, &session.config).await,
                         };
@@ -10956,8 +10762,8 @@ impl SessionManager {
                         })
                         .is_some()
                     {
-                        active_session_permits.remove(&candidate.session_id);
-                        session_write_locks.remove(&candidate.session_id);
+                        residency.release_reservation(&candidate.session_id);
+                        residency.release_writer(&candidate.session_id);
                         active_turn_permission_modes.remove(&candidate.session_id);
                         clear_session_runtime_stores(
                             &candidate.session_id,

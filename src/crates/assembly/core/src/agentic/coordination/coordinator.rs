@@ -5,8 +5,8 @@
 use super::{
     coordination_store::{BackgroundTaskRegistration, CoordinationStore},
     scheduler::{
-        abort_thread_goal_continuation_for_session, clear_thread_goal_continuation_abort,
-        get_global_scheduler, DialogSubmissionPolicy, HiddenSubagentQueueCancelHandle,
+        get_global_scheduler, DialogScheduler, DialogSubmissionPolicy,
+        HiddenSubagentQueueCancelHandle,
     },
     turn_outcome::TurnOutcome,
     turn_settlement::TurnSettlementTracker,
@@ -95,6 +95,9 @@ use openbitfun_agent_runtime::remote_file_delivery::{
     needs_computer_links_for_source, remote_file_delivery_reminder,
     TOOL_CONTEXT_PEER_DEVICE_CONTROL_KEY, TOOL_CONTEXT_REMOTE_FILE_DELIVERY_KEY,
 };
+use openbitfun_agent_runtime::scheduler::session_executions::{
+    SessionExecutionLease, SessionExecutions,
+};
 use openbitfun_agent_runtime::sdk::PermissionReply;
 use openbitfun_agent_runtime::user_questions::USER_INPUT_AVAILABLE_CONTEXT_KEY;
 use openbitfun_agent_tools::{
@@ -124,7 +127,7 @@ use openbitfun_services_core::workspace_text::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, RwLock, Semaphore};
@@ -1067,9 +1070,21 @@ struct CancelTokenGuard {
     dialog_turn_id: String,
 }
 
-#[derive(Debug)]
-struct SessionExecutionLease {
-    active_counter: Arc<AtomicUsize>,
+struct SessionExecutionGuard {
+    session_manager: Arc<SessionManager>,
+    session_id: String,
+    turn_id: String,
+    lease: Option<SessionExecutionLease>,
+}
+
+impl Drop for SessionExecutionGuard {
+    fn drop(&mut self) {
+        drop(self.lease.take());
+        self.session_manager
+            .reset_session_state_if_processing(&self.session_id, &self.turn_id);
+        self.session_manager
+            .clear_active_turn_permission_mode(&self.session_id, &self.turn_id);
+    }
 }
 
 struct ManualCompactionTask {
@@ -1081,12 +1096,6 @@ struct ManualCompactionControlGuard {
     execution_engine: Arc<ExecutionEngine>,
     controls: Arc<DashMap<String, Arc<ManualCompactionCommitGate>>>,
     turn_id: String,
-}
-
-impl Drop for SessionExecutionLease {
-    fn drop(&mut self) {
-        self.active_counter.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 impl Drop for ManualCompactionControlGuard {
@@ -1469,6 +1478,7 @@ pub struct ConversationCoordinator {
     background_subagent_tasks: Arc<DashMap<i64, BackgroundSubagentTaskControl>>,
     /// Parent-owned terminal outcomes consumed only through AgentWait.
     background_subagent_outcomes: Arc<BackgroundSubagentOutcomeStore>,
+    scheduler: OnceLock<std::sync::Weak<DialogScheduler>>,
     /// Notifies DialogScheduler of turn outcomes; injected after construction
     scheduler_notify_tx: OnceLock<mpsc::UnboundedSender<(String, TurnOutcome)>>,
     /// Round-boundary user steering source (mid-turn user message injection); injected after construction
@@ -1476,9 +1486,8 @@ pub struct ConversationCoordinator {
     /// In-flight dialog turn tracker per session, used to serialize cancel→start
     /// transitions so a new turn never starts touching the in-memory message
     /// list while the previous (cancelled) turn's spawn task is still draining.
-    /// Map value is a counter shared between the coordinator and the spawn
-    /// task; spawn task increments on entry and decrements on exit.
-    active_turns_per_session: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// The registering caller transfers its lease to the spawned execution.
+    session_executions: Arc<SessionExecutions>,
     /// Exact `(session_id, turn_id)` completion signals. A registration stays
     /// active through persistence finalization, not merely until session state
     /// changes to Idle.
@@ -2057,7 +2066,7 @@ impl ConversationCoordinator {
         let mut artifacts = Vec::with_capacity(references.len());
         let artifact_stems = Self::session_reference_artifact_stems(&references);
         for (reference, artifact_stem) in references.into_iter().zip(artifact_stems) {
-            if let Some(scheduler) = get_global_scheduler() {
+            if let Some(scheduler) = self.dialog_scheduler() {
                 if scheduler.is_session_busy_or_queued(&reference.session_id) {
                     return Err(OpenBitFunError::Validation(format!(
                         "Referenced session is busy or has queued work: {}",
@@ -2378,9 +2387,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             active_subagent_executions: Arc::new(DashMap::new()),
             background_subagent_tasks: Arc::new(DashMap::new()),
             background_subagent_outcomes,
+            scheduler: OnceLock::new(),
             scheduler_notify_tx: OnceLock::new(),
             round_injection_source: OnceLock::new(),
-            active_turns_per_session: Arc::new(DashMap::new()),
+            session_executions: Default::default(),
             turn_settlements: Arc::new(TurnSettlementTracker::default()),
             manual_compaction_controls: Arc::new(DashMap::new()),
             interrupted_turn_intents: Arc::new(DashMap::new()),
@@ -2727,6 +2737,20 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     ) -> Option<CancellationToken> {
         self.execution_engine
             .cancel_token_for_dialog_turn(dialog_turn_id)
+    }
+
+    pub(in crate::agentic) fn bind_dialog_scheduler(&self, scheduler: &Arc<DialogScheduler>) {
+        let _ = self.scheduler.set(Arc::downgrade(scheduler));
+        self.set_scheduler_notifier(scheduler.outcome_sender());
+        self.set_round_injection_source(scheduler.round_injection_monitor());
+    }
+
+    fn dialog_scheduler(&self) -> Option<Arc<DialogScheduler>> {
+        match self.scheduler.get() {
+            Some(owner) => owner.upgrade(),
+            // Older assembly code publishes the scheduler through the global facade.
+            None => get_global_scheduler().filter(|scheduler| scheduler.owns_coordinator(self)),
+        }
     }
 
     /// Inject the DialogScheduler notification channel after construction.
@@ -5506,7 +5530,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 // until the interrupted turn that paused the goal is abandoned, the
                 // objective steering below is parked and the active goal never moves.
                 self.release_superseded_interrupted_turn(session_id).await;
-                clear_thread_goal_continuation_abort(session_id);
+                if let Some(scheduler) = self.dialog_scheduler() {
+                    scheduler.goal_abort_flags().clear(session_id);
+                }
             }
             // The restart is handed over in the background like resume: an idle
             // session makes this steering admit the goal's next turn, and the user is
@@ -5711,7 +5737,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             // Resuming is explicit too: the interruption that paused the goal must
             // not keep parking the steering that starts its next turn.
             self.release_superseded_interrupted_turn(session_id).await;
-            clear_thread_goal_continuation_abort(session_id);
+            if let Some(scheduler) = self.dialog_scheduler() {
+                scheduler.goal_abort_flags().clear(session_id);
+            }
             self.schedule_thread_goal_steering(
                 session_id,
                 &result.goal,
@@ -7489,32 +7517,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         // Register this turn as in-flight immediately after it becomes visible
         // as Processing. Later await points must not leave a cancel/start
         // window where wait_session_drained observes zero active work.
-        let active_counter = self
-            .active_turns_per_session
-            .entry(session_id.clone())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        active_counter.fetch_add(1, Ordering::SeqCst);
-        struct ActiveTurnRegistration {
-            counter: Arc<AtomicUsize>,
-            armed: bool,
-        }
-        impl ActiveTurnRegistration {
-            fn disarm(&mut self) {
-                self.armed = false;
-            }
-        }
-        impl Drop for ActiveTurnRegistration {
-            fn drop(&mut self) {
-                if self.armed {
-                    self.counter.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-        }
-        let mut active_registration = ActiveTurnRegistration {
-            counter: active_counter.clone(),
-            armed: true,
-        };
+        let execution_lease = self.session_executions.register(&session_id);
         let turn_settlement_registration = self
             .turn_settlements
             .register_accepted(session_id.clone(), turn_id.clone());
@@ -7811,48 +7814,12 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             // Because `Drop` is synchronous we use an in-memory-only state
             // update here; the async persistence of the state change is done
             // explicitly in the spawn body below.
-            struct SessionExecutionGuard {
-                session_manager: Arc<SessionManager>,
-                session_id: String,
-                turn_id: String,
-                active_counter: Arc<AtomicUsize>,
-            }
-            impl SessionExecutionGuard {
-                fn new(
-                    session_manager: Arc<SessionManager>,
-                    session_id: String,
-                    turn_id: String,
-                    active_counter: Arc<AtomicUsize>,
-                ) -> Self {
-                    Self {
-                        session_manager,
-                        session_id,
-                        turn_id,
-                        active_counter,
-                    }
-                }
-            }
-            impl Drop for SessionExecutionGuard {
-                fn drop(&mut self) {
-                    self.active_counter.fetch_sub(1, Ordering::SeqCst);
-                    // If the session is still in Processing (abnormal exit),
-                    // synchronously reset to Idle so the user is never stuck.
-                    self.session_manager
-                        .reset_session_state_if_processing(&self.session_id, &self.turn_id);
-                    // Clear after the state transition. This ordering prevents
-                    // an overlapping API update from validating Processing
-                    // immediately after cleanup and publishing a stale entry.
-                    self.session_manager
-                        .clear_active_turn_permission_mode(&self.session_id, &self.turn_id);
-                }
-            }
-
-            let _guard = SessionExecutionGuard::new(
-                session_manager.clone(),
-                session_id_clone.clone(),
-                turn_id_clone.clone(),
-                active_counter,
-            );
+            let _guard = SessionExecutionGuard {
+                session_manager: session_manager.clone(),
+                session_id: session_id_clone.clone(),
+                turn_id: turn_id_clone.clone(),
+                lease: Some(execution_lease),
+            };
 
             // Note: Don't check cancellation here as cancel token hasn't been created yet
             // Cancel token is created in execute_dialog_turn -> execute_round
@@ -7966,7 +7933,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             )
             .await;
         });
-        active_registration.disarm();
 
         Ok(())
     }
@@ -8266,12 +8232,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             recover_partial_on_cancel: false,
         };
 
-        let active_counter = self
-            .active_turns_per_session
-            .entry(plan.session_id.clone())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        active_counter.fetch_add(1, Ordering::SeqCst);
+        let execution_lease = self.session_executions.register(&plan.session_id);
         let turn_settlement_registration = self
             .turn_settlements
             .register_accepted(plan.session_id.clone(), plan.turn_id.clone());
@@ -8297,26 +8258,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         tokio::spawn(async move {
             let _external_agent_generation_lease = external_agent_generation_lease;
             let _turn_settlement_registration = turn_settlement_registration;
-            struct RecoveredExecutionGuard {
-                session_manager: Arc<SessionManager>,
-                session_id: String,
-                turn_id: String,
-                active_counter: Arc<AtomicUsize>,
-            }
-            impl Drop for RecoveredExecutionGuard {
-                fn drop(&mut self) {
-                    self.active_counter.fetch_sub(1, Ordering::SeqCst);
-                    self.session_manager
-                        .reset_session_state_if_processing(&self.session_id, &self.turn_id);
-                    self.session_manager
-                        .clear_active_turn_permission_mode(&self.session_id, &self.turn_id);
-                }
-            }
-            let _guard = RecoveredExecutionGuard {
+            let _guard = SessionExecutionGuard {
                 session_manager: session_manager.clone(),
                 session_id: session_id.clone(),
                 turn_id: turn_id.clone(),
-                active_counter,
+                lease: Some(execution_lease),
             };
 
             let recovered_dequeue_ack = match event_queue
@@ -8529,35 +8475,16 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     /// in-memory context cache while a cancelled turn's spawn task is still
     /// finishing its tail.
     async fn wait_session_drained(&self, session_id: &str, max_wait: Duration) -> usize {
-        let counter = match self.active_turns_per_session.get(session_id) {
-            Some(entry) => entry.value().clone(),
-            None => return 0,
-        };
-        let deadline = Instant::now() + max_wait;
-        loop {
-            let pending = counter.load(Ordering::SeqCst);
-            if pending == 0 {
-                self.active_turns_per_session
-                    .remove_if(session_id, |_, current| {
-                        Arc::ptr_eq(current, &counter) && current.load(Ordering::SeqCst) == 0
-                    });
-                return 0;
-            }
-            if Instant::now() >= deadline {
-                return pending;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+        self.session_executions
+            .wait_drained(session_id, max_wait)
+            .await
     }
 
-    fn register_session_execution(&self, session_id: &str) -> Arc<SessionExecutionLease> {
-        let active_counter = self
-            .active_turns_per_session
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        active_counter.fetch_add(1, Ordering::SeqCst);
-        Arc::new(SessionExecutionLease { active_counter })
+    pub(super) fn register_session_execution(
+        &self,
+        session_id: &str,
+    ) -> Arc<SessionExecutionLease> {
+        Arc::new(self.session_executions.register(session_id))
     }
 
     pub(crate) async fn wait_for_turn_settlement(
@@ -8613,12 +8540,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     ) -> Option<super::turn_settlement::TurnSettlementRegistration> {
         self.turn_settlements
             .try_register_pending(session_id.to_string(), turn_id.to_string())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_active_turn_count_for_test(&self, session_id: &str, count: usize) {
-        self.active_turns_per_session
-            .insert(session_id.to_string(), Arc::new(AtomicUsize::new(count)));
     }
 
     /// Strict maintenance barrier for callers that must not overlap an older
@@ -8814,7 +8735,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             }
         }
 
-        abort_thread_goal_continuation_for_session(session_id);
+        if let Some(scheduler) = self.dialog_scheduler() {
+            scheduler.goal_abort_flags().mark(session_id);
+        }
 
         let old_state = self
             .session_manager
@@ -8979,7 +8902,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         wait_timeout: Duration,
         cancel_descendants: bool,
     ) -> OpenBitFunResult<Option<String>> {
-        abort_thread_goal_continuation_for_session(session_id);
+        if let Some(scheduler) = self.dialog_scheduler() {
+            scheduler.goal_abort_flags().mark(session_id);
+        }
 
         let Some(session) = self.session_manager.get_session(session_id) else {
             return Ok(None);
@@ -13368,7 +13293,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         let deadline = Instant::now() + Duration::from_secs(30);
         for session_id in session_ids {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if let Some(scheduler) = get_global_scheduler() {
+            if let Some(scheduler) = self.dialog_scheduler() {
                 scheduler
                     .cancel_active_turn_for_session_with_descendant_policy(
                         &session_id,
@@ -13575,7 +13500,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .await?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut maintenance_permits = Vec::new();
-        if let Some(scheduler) = get_global_scheduler() {
+        if let Some(scheduler) = self.dialog_scheduler() {
             for session_id in &subtree {
                 maintenance_permits.push(
                     scheduler
@@ -13739,7 +13664,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             );
             match &control.cancel_target {
                 BackgroundSubagentCancelTarget::Scheduler(handle) => {
-                    if let Some(scheduler) = get_global_scheduler() {
+                    if let Some(scheduler) = self.dialog_scheduler() {
                         scheduler
                             .request_hidden_subagent_cancellation_with_descendant_policy(
                                 handle,
@@ -13769,7 +13694,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         timeout_seconds: Option<u64>,
     ) -> OpenBitFunResult<SubagentResult> {
         let request = self.prepare_subagent_execution_request(request).await?;
-        let Some(scheduler) = get_global_scheduler() else {
+        let Some(scheduler) = self.dialog_scheduler() else {
             return self
                 .execute_prepared_hidden_subagent(request, cancel_token, timeout_seconds)
                 .await;
@@ -14037,7 +13962,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .cancel_token_for_dialog_turn(&subagent_parent_info.dialog_turn_id)
             .map(|token| token.child_token());
 
-        if let Some(scheduler) = get_global_scheduler() {
+        if let Some(scheduler) = self.dialog_scheduler() {
             let submit_result = match scheduler
                 .submit_hidden_subagent(request.clone(), timeout_seconds)
                 .await
@@ -16608,11 +16533,7 @@ impl ConversationCoordinator {
                 } => Some(current_turn_id),
                 _ => None,
             });
-        let in_flight_execution_count = self
-            .active_turns_per_session
-            .get(&request.session_id)
-            .map(|counter| counter.load(Ordering::SeqCst))
-            .unwrap_or(0);
+        let in_flight_execution_count = self.session_executions.count(&request.session_id);
         if candidate_active_turn_id.as_deref().is_some_and(|turn_id| {
             required_settled_turn_ids
                 .iter()

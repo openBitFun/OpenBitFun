@@ -170,6 +170,20 @@ from an empty workspace, approves a real file read, and checks that the next
 model request contains the file's random contents and the matching tool call ID.
 It then starts a fresh Host and resumes the persisted session.
 
+To exercise the same session from an in-process Rust consumer, run the following
+from the repository root after building the TypeScript SDK (POSIX shell).
+
+```sh
+cargo build --locked -p openbitfun-sdk-host-app --bin openbitfun-sdk-host -p openbitfun-core --example embedded_session
+pnpm --dir sdk/typescript stage:host ../../target/debug/openbitfun-sdk-host
+OPENBITFUN_SMOKE_RUST_CONSUMER="$PWD/target/debug/examples/embedded_session" pnpm --dir sdk/typescript smoke:node
+```
+
+In the approved-read case the Rust process first verifies that the live Host
+owns the writer. After the Host exits, a fresh Rust process restores that
+session, verifies its saved tool result, and approves a second file read through
+the Rust SDK. The fixture checks the new random contents in the next request.
+
 The internal TypeScript wire bindings are generated from the Rust SDK Host
 protocol with `ts-rs`. Runtime validators are generated from those same
 bindings, while only JSON-RPC envelope and cross-field semantic checks remain

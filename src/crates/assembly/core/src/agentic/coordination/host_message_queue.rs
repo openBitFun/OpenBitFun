@@ -225,9 +225,10 @@ impl DialogScheduler {
     /// turn IDs, images, metadata, routing and exactly-once queue receipts.
     pub(super) fn release_steering_turns(&self, session: &str, target: &str) -> bool {
         let managed = self.queue_state().pending_steering_ids(session, target);
-        let injections =
-            self.round_injection_buffer
-                .drain_matching_for_turn(session, target, |message| managed.contains(&message.id));
+        let injections = self
+            .execution
+            .round_injection_buffer
+            .drain_matching_for_turn(session, target, |message| managed.contains(&message.id));
         let mut turns = Vec::new();
         {
             let mut state = self.queue_state();
@@ -295,7 +296,7 @@ impl DialogScheduler {
             })
             .unwrap_or_default();
         for id in ids {
-            if let Some(turn) = remove_queued_turn_by_id(&self.queues, session, &id) {
+            if let Some(turn) = remove_queued_turn_by_id(&self.execution.queues, session, &id) {
                 self.queue_state().hold(session, &turn, reason);
             }
         }
@@ -341,8 +342,8 @@ impl DialogScheduler {
             active_turn_id,
             items,
             supports_reorder: Some(true),
-            capacity: self.queues.max_depth(),
-            used: self.queues.depth(session) + held,
+            capacity: self.execution.queues.max_depth(),
+            used: self.execution.queues.depth(session) + held,
             receipt: receipt_id
                 .and_then(|id| s.entries.get(id))
                 .map(|e| e.view.clone()),
@@ -579,8 +580,9 @@ impl DialogScheduler {
         if s.entries.len() + s.operations.len() >= RECEIPT_LIMIT {
             return Err(error("Queue receipt budget exhausted; start a new session"));
         }
-        if self.queues.depth(session) + s.entries.values().filter(|e| e.held.is_some()).count()
-            >= self.queues.max_depth()
+        if self.execution.queues.depth(session)
+            + s.entries.values().filter(|e| e.held.is_some()).count()
+            >= self.execution.queues.max_depth()
         {
             return Err(error("Message queue is full"));
         }
@@ -707,6 +709,7 @@ impl DialogScheduler {
             };
             order.insert(to, id.clone());
             if !self
+                .execution
                 .queues
                 .reorder_subset(session, &order, |turn| turn.turn_id.as_deref())
             {
@@ -743,11 +746,11 @@ impl DialogScheduler {
             }
             if expected_active_turn_id
                 .as_deref()
-                .is_some_and(|target| !self.active_turns.matches_turn(session, target))
+                .is_some_and(|target| !self.execution.active_turns.matches_turn(session, target))
             {
                 return Err(error("queue_conflict: target is no longer active"));
             }
-            if expected_active_turn_id.is_none() && self.active_turns.contains(session) {
+            if expected_active_turn_id.is_none() && self.execution.active_turns.contains(session) {
                 return Err(error("queue_conflict: previous turn is still retiring"));
             }
             if expected_active_turn_id.is_none()
@@ -773,7 +776,7 @@ impl DialogScheduler {
                 .and_then(|e| e.held.take())
         };
         let turn = held
-            .or_else(|| remove_queued_turn_by_id(&self.queues, session, &id))
+            .or_else(|| remove_queued_turn_by_id(&self.execution.queues, session, &id))
             .ok_or_else(|| error("too_late: message has already started"))?;
         match &action {
             DialogQueueAction::Cancel { .. } => {
@@ -854,7 +857,9 @@ impl DialogScheduler {
                             });
                         e.held = Some(turn);
                     }
-                    self.round_injection_buffer.push(session, injection);
+                    self.execution
+                        .round_injection_buffer
+                        .push(session, injection);
                 } else {
                     self.queue_state()
                         .hold(session, &turn, "Unable to steer queued message");

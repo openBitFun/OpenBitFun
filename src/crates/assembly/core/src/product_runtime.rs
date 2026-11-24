@@ -6,6 +6,7 @@
 
 #[cfg(all(feature = "tools-pages", feature = "remote-connect"))]
 pub mod account_pages;
+pub mod embedded;
 mod runtime_services;
 
 use std::path::{Path, PathBuf};
@@ -302,20 +303,7 @@ impl CoreProductAgentEventSource {
 pub fn ensure_product_dialog_scheduler(
     agentic_system: &crate::agentic::system::AgenticSystem,
 ) -> Arc<DialogScheduler> {
-    if let Some(scheduler) = crate::agentic::coordination::get_global_scheduler() {
-        return scheduler;
-    }
-
-    let session_manager = agentic_system.coordinator.get_session_manager().clone();
-    let scheduler = DialogScheduler::new(agentic_system.coordinator.clone(), session_manager);
-    agentic_system
-        .coordinator
-        .set_scheduler_notifier(scheduler.outcome_sender());
-    agentic_system
-        .coordinator
-        .set_round_injection_source(scheduler.round_injection_monitor());
-    crate::agentic::coordination::set_global_scheduler(scheduler.clone());
-    scheduler
+    agentic_system.scheduler.clone()
 }
 
 #[derive(Debug, Clone, Copy, Default)]

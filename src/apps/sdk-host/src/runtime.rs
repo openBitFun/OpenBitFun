@@ -1,28 +1,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use openbitfun_agent_runtime::sdk::{AgentRuntime, PortError, PortErrorKind};
-use openbitfun_core::agentic::system::{self, AgenticSystem};
-use openbitfun_core::product_assembly::{DeliveryProfile, ProductAssembler, ProductAssemblyInput};
-use openbitfun_core::product_runtime::{
-    build_local_runtime_services, ensure_product_dialog_scheduler, CoreProductAgentRuntime,
-    CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
-};
-use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment};
-use openbitfun_core::service::workspace::{
-    set_global_workspace_service, WorkspaceManagerConfig, WorkspaceService,
-};
+use openbitfun_core::product_runtime::embedded::EmbeddedAgentRuntime;
+use openbitfun_core::service::workspace::WorkspaceService;
 use openbitfun_sdk_host::host::{SdkWorkspace, SdkWorkspaces};
 use openbitfun_services_core::workspace_identity::canonicalize_local_workspace_root;
 
-const RUNTIME_EVENT_BUFFER: usize = 256;
-const DELIVERY_PROFILE: DeliveryProfile = DeliveryProfile::Sdk;
-
 pub(crate) struct SdkHostRuntime {
     pub(crate) workspaces: Arc<dyn SdkWorkspaces>,
-    agent_runtime: AgentRuntime,
-    _agent_event_queue_owner: CoreProductEventQueueOwner,
+    embedded: EmbeddedAgentRuntime,
 }
 
 struct LocalSdkWorkspaces {
@@ -62,89 +50,31 @@ impl SdkWorkspaces for LocalSdkWorkspaces {
 
 impl SdkHostRuntime {
     pub(crate) fn select_process_profile() -> Result<()> {
-        system::select_agentic_system_profile(DELIVERY_PROFILE)
-            .context("Failed to select SDK Host delivery profile")
+        EmbeddedAgentRuntime::select_process_profile()
     }
 
     pub(crate) async fn build(workspace_root: impl AsRef<Path>) -> Result<Self> {
-        let (workspace_root, services) =
-            build_local_runtime_services(workspace_root, RUNTIME_EVENT_BUFFER)?;
-        let path_manager = openbitfun_core::infrastructure::try_get_path_manager_arc()
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        let deployment = RuntimeDeployment::Embedded;
-        let runtime_ownership = CoreRuntimeOwnership::fixed_workspace(
-            path_manager.as_ref(),
-            "sdk-host",
-            &workspace_root,
-            deployment,
-        )
-        .map_err(|error| anyhow::anyhow!(error.startup_message(deployment, "sdk-host")))?;
-
-        let service = Arc::new(
-            WorkspaceService::with_config(WorkspaceManagerConfig {
-                add_session_activity_to_recent: false,
-                ..Default::default()
-            })
-            .await?,
-        );
-        let record = service
-            .register_local_workspace_record(workspace_root)
-            .await?;
-        set_global_workspace_service(service.clone());
-        let registry =
-            openbitfun_core::service::workspace::WorkspaceServiceSource::Provided(service.clone());
+        let embedded = EmbeddedAgentRuntime::open(workspace_root, "sdk-host").await?;
         let workspaces = Arc::new(LocalSdkWorkspaces {
-            service,
+            service: embedded.workspaces.clone(),
             default: SdkWorkspace {
-                id: record.id,
-                path: record.root_path.to_string_lossy().into_owned(),
+                id: embedded.default_workspace.id.clone(),
+                path: embedded
+                    .default_workspace
+                    .root_path
+                    .to_string_lossy()
+                    .into_owned(),
             },
         });
-
-        // SDK Host keeps its own delivery profile while sharing the product-wide
-        // workspace ownership identity with every first-party entrypoint.
-        let parts = ProductAssembler::new()
-            .assemble(ProductAssemblyInput::new(DELIVERY_PROFILE, services))
-            .context("Failed to assemble SDK Host product runtime")?;
-        let agentic_system = system::init_agentic_system_with_workspaces(
-            parts.plan().profile(),
-            Arc::new(runtime_ownership),
-            None,
-            registry,
-        )
-        .await
-        .context("Failed to initialize agentic system")?;
-        bind_core_execution_ports(&agentic_system);
-        let scheduler = ensure_product_dialog_scheduler(&agentic_system);
-        let (services, _disabled_plugin_runtime) = parts.into_runtime_parts();
-        let agent_event_queue_owner =
-            CoreProductEventQueueOwner::new(agentic_system.event_queue.clone());
-        let agent_runtime = CoreProductAgentRuntime::build_sdk_host(
-            agentic_system.coordinator,
-            scheduler,
-            agentic_system.token_usage_service,
-            agent_event_queue_owner.runtime_source(),
-            services,
-        )
-        .map_err(anyhow::Error::msg)
-        .context("Failed to build Agent SDK runtime")?;
-
         Ok(Self {
             workspaces,
-            agent_runtime,
-            _agent_event_queue_owner: agent_event_queue_owner,
+            embedded,
         })
     }
 
     pub(crate) fn agent_runtime(&self) -> &AgentRuntime {
-        &self.agent_runtime
+        &self.embedded.runtime
     }
-}
-
-fn bind_core_execution_ports(agentic_system: &AgenticSystem) {
-    agentic_system
-        .coordinator
-        .set_terminal_port(CoreRuntimeServicesProvider::terminal_port());
 }
 
 pub(crate) async fn initialize_terminal_service() {

@@ -493,6 +493,10 @@ openbitfun-runtime-services = { path = "../../execution/runtime-services", featu
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
+[[example]]
+name = "embedded_session"
+required-features = ["agent-runtime"]
+
 [[test]]
 name = "git_contracts"
 required-features = ["git"]

@@ -34,6 +34,7 @@ fn session_manager_config_for_profile(
 #[derive(Clone)]
 pub struct AgenticSystem {
     pub coordinator: Arc<coordination::ConversationCoordinator>,
+    pub scheduler: Arc<coordination::DialogScheduler>,
     pub event_queue: Arc<events::EventQueue>,
     pub token_usage_service: Arc<TokenUsageService>,
 }
@@ -151,7 +152,7 @@ pub async fn init_agentic_system_with_workspaces(
             .with_permission_request_manager(permission_request_manager),
     );
 
-    let coordinator = assemble_agent_execution(
+    let system = assemble_agentic_system(
         session_manager,
         tool_pipeline,
         event_queue.clone(),
@@ -162,7 +163,7 @@ pub async fn init_agentic_system_with_workspaces(
     )
     .await;
 
-    coordination::ConversationCoordinator::set_global(coordinator.clone());
+    coordination::ConversationCoordinator::set_global(system.coordinator.clone());
 
     let mut internal_event_rx = event_queue.subscribe();
     let internal_event_router = event_router.clone();
@@ -184,11 +185,8 @@ pub async fn init_agentic_system_with_workspaces(
 
     info!("Agentic system initialization complete");
 
-    Ok(AgenticSystem {
-        coordinator,
-        event_queue,
-        token_usage_service,
-    })
+    coordination::set_global_scheduler(system.scheduler.clone());
+    Ok(system)
 }
 
 pub(crate) fn product_turn_postprocessor() -> Option<Arc<dyn execution::TurnPostprocessor>> {
@@ -234,6 +232,37 @@ impl execution::TurnPostprocessor for ResearchReportPostprocessor {
                 }
             }
         }
+    }
+}
+
+/// Assemble one execution authority for the host, including its live scheduler
+/// and the exact event queue used by its engine and subscribers.
+pub async fn assemble_agentic_system(
+    session_manager: Arc<session::SessionManager>,
+    tool_pipeline: Arc<tools::pipeline::ToolPipeline>,
+    event_queue: Arc<events::EventQueue>,
+    event_router: Arc<events::EventRouter>,
+    runtime_ownership: Arc<CoreRuntimeOwnership>,
+    models: Arc<dyn execution::model_requests::ModelRequests>,
+    token_usage_service: Arc<TokenUsageService>,
+) -> AgenticSystem {
+    let coordinator = assemble_agent_execution(
+        session_manager.clone(),
+        tool_pipeline,
+        event_queue.clone(),
+        event_router,
+        runtime_ownership,
+        models,
+        token_usage_service.clone(),
+    )
+    .await;
+    let scheduler = coordination::DialogScheduler::new(coordinator.clone(), session_manager);
+    coordinator.bind_dialog_scheduler(&scheduler);
+    AgenticSystem {
+        coordinator,
+        scheduler,
+        event_queue,
+        token_usage_service,
     }
 }
 

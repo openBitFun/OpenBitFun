@@ -45,7 +45,7 @@ async fn session_permission_read_preserves_override_legacy_default_and_live_turn
         // inherit; a query must not resolve or persist a global default.
         assert_eq!(header.config.permission_mode, mode);
         assert!(manager.get_session(&id).is_none());
-        assert!(manager.active_session_permits.is_empty());
+        assert_eq!(manager.residency.resident_count(), 0);
         assert!(!manager.context_store.has_session(&id));
     }
     let state_path = layout.state_path(&id);

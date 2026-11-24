@@ -34,11 +34,7 @@ async fn delete_session_removes_workspace_cache_entry() {
         SessionManager::normalize_session_storage_path(&session_storage_dir);
 
     assert_eq!(
-        manager
-            .session_storage_path_index
-            .get(&session.session_id)
-            .as_deref()
-            .map(|entry| entry.path.clone()),
+        manager.session_storage_path_index.path(&session.session_id),
         Some(expected_storage_path)
     );
 
@@ -49,7 +45,7 @@ async fn delete_session_removes_workspace_cache_entry() {
 
     assert!(manager
         .session_storage_path_index
-        .get(&session.session_id)
+        .path(&session.session_id)
         .is_none());
 }
 
@@ -150,7 +146,8 @@ async fn delete_session_rejects_a_loaded_session_from_another_workspace() {
     assert!(manager.get_session(&session.session_id).is_some());
     assert!(manager
         .session_storage_path_index
-        .contains_key(&session.session_id));
+        .path(&session.session_id)
+        .is_some());
 }
 
 #[tokio::test]
@@ -177,10 +174,8 @@ async fn persistence_delete_failure_preserves_loaded_runtime_context() {
     );
     let storage_path = manager
         .session_storage_path_index
-        .get(&session.session_id)
-        .expect("storage binding")
-        .path
-        .clone();
+        .path(&session.session_id)
+        .expect("storage binding");
     let index_path = storage_path.join("index.json");
     std::fs::remove_file(&index_path).expect("replace index file");
     std::fs::create_dir(&index_path).expect("create invalid index directory");
@@ -200,7 +195,8 @@ async fn persistence_delete_failure_preserves_loaded_runtime_context() {
     );
     assert!(manager
         .session_storage_path_index
-        .contains_key(&session.session_id));
+        .path(&session.session_id)
+        .is_some());
 }
 
 #[tokio::test]

@@ -109,7 +109,9 @@ fn sdk_host_delegates_process_tree_ownership_to_services_core() {
 
 #[test]
 fn sdk_host_injects_core_ownership_before_runtime_initialization() {
-    let runtime = include_str!("../src/runtime.rs");
+    let host = include_str!("../src/runtime.rs");
+    assert!(host.contains("EmbeddedAgentRuntime::open("));
+    let runtime = include_str!("../../../crates/assembly/core/src/product_runtime/embedded.rs");
     let ownership = runtime
         .find("CoreRuntimeOwnership::fixed_workspace")
         .expect("SDK Host Core ownership assembly");

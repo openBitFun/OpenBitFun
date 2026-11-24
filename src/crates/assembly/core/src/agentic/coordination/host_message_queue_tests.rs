@@ -28,7 +28,7 @@ async fn fixture() -> (
 ) {
     let (scheduler, sessions, _, root) = test_scheduler();
     mark_session_processing(&sessions, &root, "host-queue-session", "active-turn").await;
-    scheduler.active_turns.insert(
+    scheduler.execution.active_turns.insert(
         "host-queue-session".into(),
         desktop_active_turn("active-turn"),
     );
@@ -151,6 +151,7 @@ async fn host_queue_mutation_restores_an_idle_session_released_from_memory() {
 
     // Keep the accepted message parked so the test does not execute a model.
     scheduler
+        .execution
         .active_turns
         .insert(session_id.into(), desktop_active_turn("parking-turn"));
     let accepted = scheduler
@@ -205,7 +206,7 @@ async fn host_queue_subagent_conversation_admission_precedes_receipts_and_queue_
             )
             .await
             .unwrap();
-        scheduler.active_turns.insert(
+        scheduler.execution.active_turns.insert(
             "host-queue-session".into(),
             desktop_active_turn("active-turn"),
         );
@@ -257,6 +258,7 @@ async fn host_queue_subagent_conversation_admission_precedes_receipts_and_queue_
             assert_eq!(scheduler.queue_depth("host-queue-session"), 1);
         }
         assert!(scheduler
+            .execution
             .active_turns
             .matches_turn("host-queue-session", "active-turn"));
     }
@@ -320,6 +322,7 @@ async fn host_queue_cancel_is_idempotent_and_never_cancels_active_turn() {
         );
     }
     assert!(scheduler
+        .execution
         .active_turns
         .matches_turn("host-queue-session", "active-turn"));
     assert_eq!(scheduler.queue_depth("host-queue-session"), 0);
@@ -401,7 +404,7 @@ async fn host_queue_steering_retains_payload_until_formal_turn_handoff_and_rejec
     assert_eq!(receipt.status, Status::Queued);
     assert_eq!(receipt.steering_display.unwrap(), display);
     assert_eq!(result.used, 1);
-    assert_eq!(scheduler.queues.depth("host-queue-session"), 1);
+    assert_eq!(scheduler.execution.queues.depth("host-queue-session"), 1);
     assert_eq!(
         scheduler
             .dequeue_next("host-queue-session")
@@ -582,6 +585,7 @@ async fn host_queue_request_survives_disconnected_caller() {
     .await
     .unwrap();
     assert!(scheduler
+        .execution
         .active_turns
         .matches_turn("host-queue-session", "active-turn"));
 }
@@ -639,7 +643,7 @@ async fn host_queue_host_outcomes_start_followups_without_any_client() {
                     }],
                     ..Default::default()
                 },
-                owner.run_outcome_handler(rx),
+                DialogScheduler::run_outcome_handler(Arc::downgrade(&owner), rx),
             )
             .await;
     });
@@ -661,7 +665,7 @@ async fn host_queue_host_outcomes_start_followups_without_any_client() {
         .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if scheduler.active_turns.matches_turn(id, started) {
+                if scheduler.execution.active_turns.matches_turn(id, started) {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -678,7 +682,7 @@ async fn host_queue_host_outcomes_start_followups_without_any_client() {
 #[tokio::test]
 async fn host_queue_capacity_counts_unconsumed_steering() {
     let (scheduler, _, _root, epoch) = fixture().await;
-    for index in 0..scheduler.queues.max_depth() {
+    for index in 0..scheduler.execution.queues.max_depth() {
         scheduler
             .manage_host_queue(request(
                 Some(&epoch),
@@ -713,7 +717,7 @@ async fn host_queue_capacity_counts_unconsumed_steering() {
         .contains("queue is full"));
     assert_eq!(
         scheduler.queue_depth("host-queue-session"),
-        scheduler.queues.max_depth()
+        scheduler.execution.queues.max_depth()
     );
 }
 
@@ -748,6 +752,7 @@ async fn host_queue_concurrent_cancel_and_promote_has_one_winner() {
     );
     assert_ne!(cancel.is_ok(), promote.is_ok());
     assert!(scheduler
+        .execution
         .active_turns
         .matches_turn("host-queue-session", "active-turn"));
 }
@@ -781,6 +786,7 @@ async fn host_queue_cancel_during_terminal_transition_does_not_replace_active_ow
         .await
         .unwrap();
     assert!(scheduler
+        .execution
         .active_turns
         .matches_turn("host-queue-session", "active-turn"));
     assert_eq!(scheduler.queue_depth("host-queue-session"), 1);
@@ -1112,6 +1118,7 @@ async fn stopped_host_queue_fixture(
         .unwrap();
     if retiring {
         scheduler
+            .execution
             .active_turns
             .insert(id.into(), desktop_active_turn("stopped-turn"));
     } else {
@@ -1134,7 +1141,7 @@ async fn process_host_queue_outcome(scheduler: &Arc<DialogScheduler>, outcome: T
     TEST_MODEL_RESOLUTION_AI_CONFIG
         .scope(
             host_queue_lifecycle_model(),
-            scheduler.run_outcome_handler(rx),
+            DialogScheduler::run_outcome_handler(Arc::downgrade(scheduler), rx),
         )
         .await;
 }
@@ -1147,6 +1154,7 @@ fn host_queue_prompt_during_stop_retirement_is_not_parked_by_old_outcome() {
         let mut background = standard_queued_turn("background-result");
         background.policy = DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession);
         scheduler
+            .execution
             .queues
             .enqueue(id, background, DialogQueuePriority::Low)
             .unwrap();
@@ -1218,7 +1226,7 @@ fn host_queue_prompt_during_stop_retirement_is_not_parked_by_old_outcome() {
         .await;
         assert_eq!(sessions.get_turn_count(id), 3);
         assert_eq!(
-            scheduler.queues.depth(id),
+            scheduler.execution.queues.depth(id),
             1,
             "background work must remain parked behind held messages"
         );
@@ -1290,6 +1298,7 @@ fn host_queue_cancel_after_stop_does_not_resume_interrupted_or_background_work()
         let mut background = standard_queued_turn("background-result");
         background.policy = DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession);
         scheduler
+            .execution
             .queues
             .enqueue(id, background, DialogQueuePriority::Low)
             .unwrap();
@@ -1311,7 +1320,7 @@ fn host_queue_cancel_after_stop_does_not_resume_interrupted_or_background_work()
             .await
             .unwrap());
         assert!(scheduler.try_start_next_queued(id).await.unwrap().is_none());
-        assert_eq!(scheduler.queues.depth(id), 1);
+        assert_eq!(scheduler.execution.queues.depth(id), 1);
         assert_eq!(sessions.get_turn_count(id), 1);
     });
 }
@@ -1375,6 +1384,7 @@ async fn thread_goal_host_queue_promote_preserves_one_unmodified_user_turn() {
     let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
     mark_session_processing(&sessions, &root, "host-queue-session", "active-turn").await;
     scheduler
+        .execution
         .active_turns
         .insert("host-queue-session", desktop_active_turn("active-turn"));
     let epoch = scheduler
@@ -1451,6 +1461,7 @@ fn steering_creates_persisted_user_turns_in_order_without_a_connected_caller() {
             .await
             .unwrap();
         scheduler
+            .execution
             .active_turns
             .insert(id, desktop_active_turn("original-turn"));
         TEST_MODEL_RESOLUTION_AI_CONFIG
@@ -1537,7 +1548,7 @@ fn steering_creates_persisted_user_turns_in_order_without_a_connected_caller() {
                 },
             )
             .await;
-            assert!(scheduler.active_turns.matches_turn(id, next));
+            assert!(scheduler.execution.active_turns.matches_turn(id, next));
             let goal = scheduler
                 .coordinator
                 .get_thread_goal(id, &storage)
@@ -1586,7 +1597,7 @@ fn steering_creates_persisted_user_turns_in_order_without_a_connected_caller() {
                 },
             )
             .await;
-            assert!(scheduler.active_turns.matches_turn(id, next));
+            assert!(scheduler.execution.active_turns.matches_turn(id, next));
             assert_eq!(sessions.get_turn_count(id), index + 1);
         }
         assert_eq!(
@@ -1657,7 +1668,7 @@ async fn host_queue_handoff_preserves_turn_scoped_sdk_steering() {
             .as_deref(),
         Some("queued-user")
     );
-    assert!(!scheduler.queues.has_items("host-queue-session"));
+    assert!(!scheduler.execution.queues.has_items("host-queue-session"));
 }
 
 #[tokio::test]
@@ -1718,6 +1729,7 @@ async fn host_queue_reorder_changes_dispatch_order_and_retries_exactly_once() {
     for expected in ["third", "first", "second"] {
         assert_eq!(
             scheduler
+                .execution
                 .queues
                 .dequeue_next("host-queue-session")
                 .unwrap()
@@ -1757,6 +1769,7 @@ async fn host_queue_reorder_rejects_invalid_targets_without_losing_work() {
     }
     assert_eq!(
         scheduler
+            .execution
             .queues
             .dequeue_next("host-queue-session")
             .unwrap()
@@ -1849,6 +1862,7 @@ async fn user_message_queue_policy_lands_in_the_host_queue_for_every_source() {
         .collect();
     assert_eq!(ids, ["desktop-queued", "relay-queued", "bot-queued"]);
     assert!(scheduler
+        .execution
         .active_turns
         .matches_turn("host-queue-session", "active-turn"));
     let cancelled = scheduler
