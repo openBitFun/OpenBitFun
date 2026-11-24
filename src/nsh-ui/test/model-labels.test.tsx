@@ -55,6 +55,8 @@ test("Settings > Models leads each row with the model and follows with its provi
   expect(app.shows("text:gemini-2.5-pro")).toBe(true);
   expect(app.shows("text:Google Gemini")).toBe(true);
   expect(app.texts().filter(text => text === "gpt-5").length).toBeGreaterThanOrEqual(2);
-  // The configuration's name alone no longer stands for the model.
-  expect(app.texts()).not.toContain("OpenAI");
+  // The configuration's name alone no longer stands for the model: "OpenAI" appears once,
+  // as the heading of the provider group (named from the provider, not the configuration).
+  expect(app.shows("provider-group-toggle-openai-default")).toBe(true);
+  expect(app.texts().filter(text => text === "OpenAI").length).toBe(1);
 });

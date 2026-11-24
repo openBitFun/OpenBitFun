@@ -78,6 +78,7 @@ test("a persisted language change from the executor is applied and acknowledged"
     event: "agentic://openbitfun-control-effect",
     payload: { requestId: "e-1", phase: "commit", changedPaths: ["app.language"], value: "zh-CN" },
   });
-  await app.waitFor("收件箱");
+  // The shell repaints in the new language (the sidebar's Library row).
+  await app.waitFor("资源库");
   expect(backend.controlReports?.[0]).toMatchObject({ requestId: "e-1", success: true, result: { status: "applied" } });
 });

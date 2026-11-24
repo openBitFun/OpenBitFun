@@ -312,7 +312,7 @@ test("sign in with the email code; the device opens by itself and runs in place 
   expect(host.calls[0]).toBe("ui_bundle_manifest");
   expect(host.prepared).toEqual([{ manifest: MANIFEST, deviceId: "desk-1" }]);
   expect(host.launched).toEqual([]);
-  await until(app, "All sessions");
+  await until(app, "label:nav-library");
   expect(host.calls.length).toBeGreaterThan(1);
   // The account row names the page's own account, never "Sign in".
   await app.waitFor("label:account-row >> text:me@example.com");
@@ -443,7 +443,7 @@ test("a device's own UI page: the handoff names the device and it runs in place"
   expect(host.opened.map(entry => entry.target)).toEqual(["desk-1"]);
   expect(host.launched).toEqual([]);
   // A restored session is signed in on the account row too.
-  await until(app, "All sessions");
+  await until(app, "label:nav-library");
   await app.waitFor("label:account-row >> text:me@example.com");
   // No device bar to leave from (visual spec §4.13).
   expect(app.shows("label:controller-switch-device")).toBe(false);

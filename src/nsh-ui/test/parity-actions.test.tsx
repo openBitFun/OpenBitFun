@@ -226,9 +226,8 @@ test("without the fleet layer the Inbox lists this backend's approvals, answerab
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("nav-library");
-  // The approval waiting in session-1 shows on the sidebar pill.
-  await app.waitFor("sidebar-inbox-count");
-  await app.press("nav-inbox");
+  // The desktop sidebar carries no Inbox row; ⌘I opens the Inbox sheet.
+  await app.keyboard.press("mod+i");
   await app.waitFor("inbox-group-needs_you");
   expect(app.shows("text:NSH skeleton")).toBe(true);
 
@@ -244,8 +243,9 @@ test("without the fleet layer the Inbox lists this backend's approvals, answerab
   await app.press("inbox-clear");
   await app.waitFor("inbox-group-done", { state: "gone" });
 
-  // Allow once answers the backend's own request and the item leaves.
-  await app.press("Allow once");
+  // Allow once (in the Inbox sheet; the open session shows the same prompt) answers the
+  // backend's own request and the item leaves.
+  await app.press("id:inbox-sheet >> Allow once");
   await app.waitUntil(() => callsOf(backend, "respond_permission").length === 1);
   expect(callsOf(backend, "respond_permission")[0]?.request).toMatchObject({ requestId: "perm-1", reply: "once" });
 });

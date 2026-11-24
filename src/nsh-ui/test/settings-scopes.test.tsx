@@ -238,6 +238,9 @@ test("switching device scope guards unsaved drafts, masks secrets, and Default m
   // Unset default model slots show the Choose a model placeholder, never raw "Not set".
   expect(app.texts()).not.toContain("Not set");
 
+  // The proxy fields live on the Models page's Network tab.
+  await app.press("models-tab-network");
+  await app.waitFor("proxy-password");
   await app.type("proxy-password", "super-secret-value");
   await app.press("settings-scope-chip");
   await app.press("settings-scope-device-dev-b");
