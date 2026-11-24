@@ -216,6 +216,46 @@ fn notify_digests() {
     }
 }
 
+/// Synchronously refreshes this host's fleet digest and local index partition
+/// so subsequent `fleet_navigator` reads observe workspace mutations (open,
+/// close, rename, alias sync) immediately without waiting for the debounce window.
+pub(crate) async fn refresh_local_now() {
+    let digests: Vec<Arc<FleetDigestProducer>> = {
+        let account = DIGEST
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let local = LOCAL
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|(_, digest)| Arc::clone(digest));
+        account.into_iter().chain(local).collect()
+    };
+    for digest in digests {
+        if let Err(error) = digest.refresh_and_announce().await {
+            log::debug!("Immediate fleet digest refresh failed: {error}");
+        }
+    }
+    let hosts: Vec<Arc<FleetHost>> = {
+        let account = CURRENT
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let local = LOCAL
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|(host, _)| Arc::clone(host));
+        account.into_iter().chain(local).collect()
+    };
+    for host in hosts {
+        if let Err(error) = host.sync().refresh_local().await {
+            log::debug!("Immediate fleet local index sync failed: {error}");
+        }
+    }
+}
+
 /// Remembers what the in-process UI follows (`fleet_subscribe`).
 pub(crate) fn remember_follow(request: &openbitfun_product_domains::fleet::FleetSubscribeRequest) {
     *LOCAL_FOLLOW

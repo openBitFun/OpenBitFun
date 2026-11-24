@@ -420,6 +420,17 @@ impl FleetDigestProducer {
         Ok(journal.absorb(snapshot).then(|| journal.revision()))
     }
 
+    /// Re-read the owners now and immediately announce `fleet://digest-changed`
+    /// when the revision moved (used after explicit local mutations such as
+    /// closing or renaming a workspace).
+    pub async fn refresh_and_announce(&self) -> Result<Option<u64>, String> {
+        let moved = self.refresh().await?;
+        if let Some(revision) = moved {
+            self.announce(revision).await;
+        }
+        Ok(moved)
+    }
+
     /// An owner changed (a workspace, session, turn state or prompt). The
     /// change is read after the coalescing window and announced once.
     pub fn notify_changed(self: &Arc<Self>) {
@@ -524,6 +535,25 @@ use openbitfun_services_core::workspace_records::{WorkspaceInfo, WorkspaceKind};
 /// A path as the fleet carries it: POSIX separators on every client OS.
 fn posix(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// Selects workspaces published in this host's fleet digest: all opened
+/// workspaces plus any non-opened recent workspaces explicitly tracked for
+/// Detached Dispatch jobs (`dispatchTracked == true`). User-closed workspaces
+/// stay in `recent_workspaces` for quick reopen and are excluded here.
+pub(crate) fn collect_fleet_digest_workspaces(
+    mut opened: Vec<WorkspaceInfo>,
+    recent: Vec<WorkspaceInfo>,
+) -> Vec<WorkspaceInfo> {
+    opened.extend(recent.into_iter().filter(|info| {
+        info.metadata
+            .get("dispatchTracked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }));
+    let mut seen = std::collections::HashSet::new();
+    opened.retain(|info| !info.id.trim().is_empty() && seen.insert(info.id.clone()));
+    opened
 }
 
 /// A workspace record as a fleet workspace summary.
@@ -782,10 +812,10 @@ impl CoreFleetDigestSource {
 
         let service = &self.workspace_service;
         let current = service.get_current_workspace().await.map(|info| info.id);
-        let mut records = service.get_opened_workspaces().await;
-        records.extend(service.get_recent_workspaces().await);
-        let mut seen = std::collections::HashSet::new();
-        records.retain(|info| !info.id.trim().is_empty() && seen.insert(info.id.clone()));
+        let mut records = collect_fleet_digest_workspaces(
+            service.get_opened_workspaces().await,
+            service.get_recent_workspaces().await,
+        );
         let mut snapshot = FleetDigestSnapshot {
             models: Some(super::models::local_catalog().await),
             ..FleetDigestSnapshot::default()

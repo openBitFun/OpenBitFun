@@ -1391,6 +1391,8 @@ pub async fn open_workspace(
                 );
             }
 
+            crate::fleet::refresh_local_now().await;
+
             info!(
                 "Workspace opened: name={}, path={}",
                 workspace_info.name,
@@ -1522,13 +1524,20 @@ pub async fn open_remote_workspace(
         .await
     {
         Ok(mut workspace_info) => {
+            let connection_name = if !saved.name.trim().is_empty() {
+                saved.name.trim().to_string()
+            } else if !request.connection_name.trim().is_empty() {
+                request.connection_name.trim().to_string()
+            } else {
+                ssh_host.clone()
+            };
             workspace_info.metadata.insert(
                 "connectionId".to_string(),
                 serde_json::Value::String(request.connection_id.clone()),
             );
             workspace_info.metadata.insert(
                 "connectionName".to_string(),
-                serde_json::Value::String(request.connection_name.clone()),
+                serde_json::Value::String(connection_name.clone()),
             );
             workspace_info.metadata.insert(
                 "sshHost".to_string(),
@@ -1553,7 +1562,7 @@ pub async fn open_remote_workspace(
             // resolution (`get_effective_session_path`) and related setup see this connection.
             let remote_workspace = crate::api::RemoteWorkspace {
                 connection_id: request.connection_id.clone(),
-                connection_name: request.connection_name.clone(),
+                connection_name,
                 remote_path: remote_path.clone(),
                 ssh_host: ssh_host.clone(),
             };
@@ -1562,6 +1571,7 @@ pub async fn open_remote_workspace(
             }
 
             apply_active_workspace_context(&state, &app, &workspace_info, None).await;
+            crate::fleet::refresh_local_now().await;
 
             info!(
                 "Remote workspace opened: name={}, remote_path={}, connection_id={}",
@@ -1627,6 +1637,8 @@ pub async fn create_assistant_workspace(
                     e
                 );
             }
+
+            crate::fleet::refresh_local_now().await;
 
             info!(
                 "Assistant workspace created: workspace_id={}, path={}",
@@ -1822,6 +1834,8 @@ pub async fn delete_assistant_workspace(
             e
         );
     }
+
+    crate::fleet::refresh_local_now().await;
 
     info!(
         "Assistant workspace deleted: workspace_id={}, assistant_id={:?}, path={}",
@@ -2045,6 +2059,8 @@ pub async fn close_workspace(
                 clear_active_workspace_context(&state, &app, None).await;
             }
 
+            crate::fleet::refresh_local_now().await;
+
             info!("Workspace closed: workspace_id={}", request.workspace_id);
             Ok(())
         }
@@ -2074,6 +2090,7 @@ pub async fn set_active_workspace(
                 .ok_or_else(|| "Active workspace not found after switching".to_string())?;
 
             apply_active_workspace_context(&state, &app, &workspace_info, None).await;
+            crate::fleet::refresh_local_now().await;
 
             info!(
                 "Active workspace changed: workspace_id={}, path={}",
@@ -2101,6 +2118,7 @@ pub async fn reorder_opened_workspaces(
         .await
     {
         Ok(_) => {
+            crate::fleet::refresh_local_now().await;
             info!(
                 "Opened workspaces reordered: count={}",
                 request.workspace_ids.len()
@@ -2143,6 +2161,8 @@ pub async fn update_workspace_info(
             if is_active_workspace {
                 apply_active_workspace_context(&state, &app, &workspace_info, None).await;
             }
+
+            crate::fleet::refresh_local_now().await;
 
             info!(
                 "Workspace info updated: workspace_id={}, path={}",

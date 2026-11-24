@@ -108,7 +108,25 @@ pub async fn ssh_save_connection(
     manager
         .save_connection(&config)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    match state
+        .workspace_service
+        .update_remote_connection_name(&config.id, &config.name)
+        .await
+    {
+        Ok(updated) if updated > 0 => {
+            crate::fleet::refresh_local_now().await;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            log::warn!(
+                "Failed to sync remote workspace alias after ssh_save_connection: connection_id={}, error={}",
+                config.id,
+                error
+            );
+        }
+    }
+    Ok(())
 }
 
 // @backend-command
@@ -171,6 +189,15 @@ pub async fn ssh_connect(
             );
         } else {
             log::info!("ssh_connect: Connection config saved successfully");
+            if let Ok(updated) = state
+                .workspace_service
+                .update_remote_connection_name(&config_to_save.id, &config_to_save.name)
+                .await
+            {
+                if updated > 0 {
+                    crate::fleet::refresh_local_now().await;
+                }
+            }
         }
     }
     log::info!("ssh_connect result: {:?}", result);

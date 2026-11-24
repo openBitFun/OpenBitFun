@@ -450,12 +450,84 @@ impl WorkspaceService {
     /// the host's catalog, its fleet digest and every client's index miss the
     /// job's workspace and session until the host restarts.
     pub async fn track_dispatch_workspace(&self, path: PathBuf) -> OpenBitFunResult<WorkspaceInfo> {
-        self.track_workspace_activity(
-            path,
-            WorkspaceCreateOptions::default(),
-            WorkspaceActivityMode::TouchOnly,
-        )
-        .await
+        let mut info = self
+            .track_workspace_activity(
+                path,
+                WorkspaceCreateOptions::default(),
+                WorkspaceActivityMode::TouchOnly,
+            )
+            .await?;
+        let mut changed = false;
+        {
+            let mut manager = self.manager.write().await;
+            if let Some(ws) = manager.get_workspaces_mut().get_mut(&info.id) {
+                if ws.metadata.get("dispatchTracked").and_then(|v| v.as_bool()) != Some(true) {
+                    ws.metadata
+                        .insert("dispatchTracked".to_string(), serde_json::Value::Bool(true));
+                    info.metadata = ws.metadata.clone();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Err(e) = self.save_workspace_data().await {
+                warn!("Failed to persist dispatchTracked workspace flag: {}", e);
+            }
+        }
+        Ok(info)
+    }
+
+    /// Updates cached `connectionName` (alias) metadata on every remote workspace
+    /// bound to `connection_id` so renaming an SSH connection updates all of its
+    /// workspaces immediately.
+    pub async fn update_remote_connection_name(
+        &self,
+        connection_id: &str,
+        connection_name: &str,
+    ) -> OpenBitFunResult<usize> {
+        let cid = connection_id.trim();
+        let alias = connection_name.trim();
+        if cid.is_empty() || alias.is_empty() {
+            return Ok(0);
+        }
+        let mut updated = 0usize;
+        {
+            let mut manager = self.manager.write().await;
+            for ws in manager.get_workspaces_mut().values_mut() {
+                if ws.workspace_kind != WorkspaceKind::Remote {
+                    continue;
+                }
+                let matches = ws
+                    .metadata
+                    .get("connectionId")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| id == cid);
+                if !matches {
+                    continue;
+                }
+                let unchanged = ws
+                    .metadata
+                    .get("connectionName")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|existing| existing == alias);
+                if !unchanged {
+                    ws.metadata.insert(
+                        "connectionName".to_string(),
+                        serde_json::Value::String(alias.to_string()),
+                    );
+                    updated += 1;
+                }
+            }
+        }
+        if updated > 0 {
+            if let Err(e) = self.save_workspace_data().await {
+                warn!(
+                    "Failed to save workspace data after updating remote connection alias: {}",
+                    e
+                );
+            }
+        }
+        Ok(updated)
     }
 
     async fn register_worktree_project(
@@ -3603,6 +3675,81 @@ mod tests {
         // Tracking it again (every job of the worktree) keeps one record.
         let again = service.track_dispatch_workspace(job_root).await.unwrap();
         assert_eq!(again.id, job.id);
+        assert_eq!(
+            again
+                .metadata
+                .get("dispatchTracked")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // Closing it explicitly clears `dispatchTracked` so it leaves the fleet navigator.
+        service.close_workspace(&job.id).await.unwrap();
+        let closed = service.get_workspace(&job.id).await.unwrap();
+        assert!(closed.metadata.get("dispatchTracked").is_none());
+    }
+
+    #[cfg(feature = "remote-workspace")]
+    #[tokio::test]
+    async fn update_remote_connection_name_updates_only_matching_remote_workspaces() {
+        let env = TestEnvironment::new();
+        let service = build_test_workspace_service(env.path_manager.clone()).await;
+        let local_root = env.create_workspace_dir("local-proj");
+        let local = service.open_workspace(local_root).await.unwrap();
+
+        let remote_a = service
+            .open_workspace_with_options(
+                PathBuf::from("/root/repos"),
+                WorkspaceCreateOptions {
+                    workspace_kind: WorkspaceKind::Remote,
+                    remote_connection_id: Some("conn-a".to_string()),
+                    remote_ssh_host: Some("10.0.0.1".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let remote_b = service
+            .open_workspace_with_options(
+                PathBuf::from("/root/other"),
+                WorkspaceCreateOptions {
+                    workspace_kind: WorkspaceKind::Remote,
+                    remote_connection_id: Some("conn-b".to_string()),
+                    remote_ssh_host: Some("10.0.0.2".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated = service
+            .update_remote_connection_name("conn-a", "prod-gpu")
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+        assert_eq!(
+            service
+                .get_workspace(&remote_a.id)
+                .await
+                .unwrap()
+                .metadata
+                .get("connectionName")
+                .and_then(|v| v.as_str()),
+            Some("prod-gpu")
+        );
+        assert!(service
+            .get_workspace(&remote_b.id)
+            .await
+            .unwrap()
+            .metadata
+            .get("connectionName")
+            .is_none());
+        assert!(service
+            .get_workspace(&local.id)
+            .await
+            .unwrap()
+            .metadata
+            .get("connectionName")
+            .is_none());
     }
 
     #[tokio::test]

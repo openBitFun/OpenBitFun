@@ -455,4 +455,27 @@ fn workspace_summary_preserves_remote_connection_metadata() {
     assert_eq!(projected_local.kind, FleetWorkspaceKind::Local);
     assert_eq!(projected_local.connection_id, None);
     assert_eq!(projected_local.connection_name, None);
+
+    // Closed workspaces in `recent_workspaces` (without `dispatchTracked`) must
+    // not reappear in the fleet digest, while Detached Dispatch worktrees do.
+    let closed_recent = make(
+        "closed_1",
+        "/Users/dev/Closed",
+        WorkspaceKind::Normal,
+        HashMap::new(),
+    );
+    let mut dispatch_meta = HashMap::new();
+    dispatch_meta.insert("dispatchTracked".to_string(), serde_json::Value::Bool(true));
+    let dispatch_recent = make(
+        "dispatch_1",
+        "/Users/dev/Worktree",
+        WorkspaceKind::Normal,
+        dispatch_meta,
+    );
+    let selected = collect_fleet_digest_workspaces(
+        vec![local.clone(), remote.clone()],
+        vec![local, closed_recent, dispatch_recent],
+    );
+    let ids: Vec<&str> = selected.iter().map(|ws| ws.id.as_str()).collect();
+    assert_eq!(ids, vec!["local_1", "remote_1", "dispatch_1"]);
 }

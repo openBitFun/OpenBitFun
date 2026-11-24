@@ -1162,6 +1162,7 @@ impl WorkspaceManager {
 
         if let Some(workspace) = self.workspaces.get_mut(workspace_id) {
             workspace.status = WorkspaceStatus::Inactive;
+            workspace.metadata.remove("dispatchTracked");
         }
 
         if self.current_workspace_id.as_deref() == Some(workspace_id) {
