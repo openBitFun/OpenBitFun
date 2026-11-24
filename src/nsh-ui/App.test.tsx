@@ -1896,6 +1896,7 @@ test("settings creates a model pool the host keeps, and deletes it", async () =>
   await app.press("Settings");
   await app.press("nav-settings-page-models");
   await app.waitFor("Model pools");
+  await app.press("models-tab-pools");
   await app.waitFor("No pool yet.");
 
   await app.press("add-pool");

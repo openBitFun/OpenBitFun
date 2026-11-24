@@ -1046,6 +1046,7 @@ export interface SplitHandleProps {
   surface?: ControlSurface;
   seam?: boolean;
   accessibilityLabel?: string;
+  style?: ViewStyle;
 }
 
 const activeSplitDragCount = signal(0);
@@ -1104,16 +1105,19 @@ export function SplitHandle(props: SplitHandleProps) {
       }}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      style={{
-        position: "relative",
-        ...(isHorizontal() ? { height: 9, width: "100%" } : { width: 9 }),
-        flexShrink: 0,
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: isHorizontal() ? "ns-resize" : "ew-resize",
-        userSelect: "none",
-        backgroundColor: "transparent",
-      }}
+      style={[
+        {
+          position: "relative",
+          ...(isHorizontal() ? { height: 9, width: "100%" } : { width: 9 }),
+          flexShrink: 0,
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: isHorizontal() ? "ns-resize" : "ew-resize",
+          userSelect: "none",
+          backgroundColor: "transparent",
+        },
+        props.style,
+      ]}
     >
       <If when={props.seam !== false}>
         <View

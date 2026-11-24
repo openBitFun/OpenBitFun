@@ -283,7 +283,6 @@ import {
   chooseCatalogProvider,
   closeModelForm,
   closeModelLimits,
-  DEFAULT_MODEL_SLOTS,
   chooseDefaultModel,
   defaultModelReferences,
   defaultModelSaving,
@@ -313,6 +312,7 @@ import {
   modelLimitsDraft,
   modelSettingsLoaded,
   modelSettingsNotice,
+  normalizeModelFormat,
   openModelForm,
   openModelLimits,
   saveModelDraft,
@@ -502,6 +502,7 @@ import {
   MOTION_DURATION,
   paintTransition,
   pressTransition,
+  rotatingChevronStyle,
   Spinner,
   subtleCrossfadeMotion,
   tactileActiveStyle,
@@ -561,6 +562,7 @@ import {
   InputBox,
   SearchInput,
   SegmentedTabs,
+  StatusDot,
   ToggleSwitch,
   focusRingStyle,
 } from "../ui/primitives";
@@ -993,8 +995,20 @@ function registerSectionAnchor(id: string, ref: ViewRef | null): void {
   }
 }
 
+/** Sub-tab active inside `Settings › Models` so providers, subscriptions, pools and network stay compact. */
+type ModelsPageTab = "models" | "subscriptions" | "pools" | "network";
+const modelsPageTab = signal<ModelsPageTab>("models");
+
+function syncModelsTabForAnchor(id: string): void {
+  if (id === "models" || id === "default-models") modelsPageTab.set("models");
+  else if (id === "subscriptions") modelsPageTab.set("subscriptions");
+  else if (id === "pools") modelsPageTab.set("pools");
+  else if (id === "network") modelsPageTab.set("network");
+}
+
 /** Scrolls the open page to one of its sections. */
 export function revealSettingsSection(id: string): void {
+  syncModelsTabForAnchor(id);
   const ref = sectionAnchorRefs[id];
   if (ref) {
     ref.reveal({ vertical: "start" });
@@ -5855,8 +5869,26 @@ function SubscriptionLoginPanel() {
   );
 }
 
+const subscriptionSearchQuery = signal("");
+const expandedSubscriptionMeters = signal<Record<string, boolean>>({});
+
 function SubscriptionsSection() {
   useDeviceScopedLoad("subscriptions", () => void loadSubscriptions(), () => void loadSubscriptions(true));
+  const filteredAccounts = () => {
+    const query = subscriptionSearchQuery().trim().toLowerCase();
+    const list = subscriptionAccounts();
+    if (!query) return list;
+    return list.filter(
+      item =>
+        (item.display_label || "").toLowerCase().includes(query) ||
+        (item.provider || "").toLowerCase().includes(query) ||
+        (item.account || "").toLowerCase().includes(query),
+    );
+  };
+  const connectedAccounts = () => filteredAccounts().filter(item => item.connected);
+  const availableAccounts = () => filteredAccounts().filter(item => !item.connected);
+  const totalConnected = () => subscriptionAccounts().filter(item => item.connected).length;
+
   return (
     <If when={true}>
       <SettingsSection
@@ -5865,6 +5897,11 @@ function SubscriptionsSection() {
         subtitle={tr("settings.subscriptions.subtitle")}
         extra={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <If when={subscriptionAccounts().length > 0}>
+              <Text style={textStyle("caption", { color: palette().textMuted, tabular: true })}>
+                {`${totalConnected()} / ${subscriptionAccounts().length}`}
+              </Text>
+            </If>
             <If when={subscriptionsLoading()}>
               <Spinner size={13} color={palette().accent} />
             </If>
@@ -5878,45 +5915,258 @@ function SubscriptionsSection() {
           </View>
         }
       >
-        <View>
+        <View style={{ padding: SETTINGS_ROW_INSET, gap: space.md }}>
+          <If when={subscriptionAccounts().length > 4}>
+            <SearchInput
+              value={subscriptionSearchQuery()}
+              placeholder={tr("settings.subscriptions.searchPlaceholder")}
+              accessibilityLabel="subscriptions-filter-search"
+              onChange={value => subscriptionSearchQuery.set(value)}
+            />
+          </If>
+
+          <If when={Boolean(subscriptionLogin())}>
+            <SubscriptionLoginPanel />
+          </If>
+
           <If when={!subscriptionsLoading() && subscriptionAccounts().length === 0}>
-            <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
+            <View style={{ paddingVertical: space.sm, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
               <Text style={textStyle("caption")}>{tr("settings.subscriptions.none")}</Text>
             </View>
           </If>
-          <Each of={subscriptionAccounts()} key={item => item.account_id}>
-            {(item, index) => {
-              const quota = () => subscriptionQuotas()[item().account_id] ?? null;
-              return (
-                <View
-                  style={{
-                    gap: space.md,
-                    paddingHorizontal: SETTINGS_ROW_INSET,
-                    paddingVertical: space.md,
-                    minHeight: SETTINGS_ROW_MIN,
-                    position: "relative",
-                    ...paintTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-                >
-                  <If when={index() !== 0}>
-                    <RowSeparator edge="top" />
-                  </If>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.md }}>
-                    <If when={Boolean(item().reauthentication_required)}>
-                      <StateMark state="needs_you" size={12} />
-                    </If>
-                    <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
-                      <Text
+
+          <If when={subscriptionAccounts().length > 0 && filteredAccounts().length === 0}>
+            <View style={{ paddingVertical: space.md }}>
+              <Text style={textStyle("caption")}>{tr("settings.subscriptions.noFilterMatches")}</Text>
+            </View>
+          </If>
+
+          {/* Connected subscriptions: compact cards with 2-column quota meters */}
+          <If when={connectedAccounts().length > 0}>
+            <View style={{ gap: space.sm }}>
+              <Text style={{ ...textStyle("micro", { color: palette().textMuted }), fontWeight: "600" }}>
+                {tr("settings.subscriptions.connectedGroup", { count: connectedAccounts().length })}
+              </Text>
+              <View style={{ gap: space.sm }}>
+                <Each of={connectedAccounts()} key={item => item.account_id}>
+                  {item => {
+                    const quota = () => subscriptionQuotas()[item().account_id] ?? null;
+                    const meters = () => quotaMeters(quota());
+                    const showAllMeters = () => expandedSubscriptionMeters()[item().account_id] === true;
+                    const visibleMeters = () => (showAllMeters() ? meters() : meters().slice(0, 2));
+                    const hiddenMeterCount = () => Math.max(0, meters().length - 2);
+                    return (
+                      <View
                         style={{
-                          ...textStyle("body"),
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis",
+                          gap: space.sm,
+                          paddingHorizontal: space.md,
+                          paddingVertical: space.md,
+                          borderRadius: radii.md,
+                          borderCurve: "continuous",
+                          borderWidth: 1,
+                          borderColor: item().reauthentication_required
+                            ? palette().borderStrong
+                            : palette().borderSubtle,
+                          backgroundColor: palette().surfaceTertiary,
+                          ...paintTransition(MOTION_DURATION.fast),
                         }}
                       >
-                        {item().display_label || item().provider}
-                      </Text>
-                      <If when={item().account || quota()?.plan || !item().connected}>
+                        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                          <If
+                            when={Boolean(item().reauthentication_required)}
+                            else={<StatusDot kind="success" />}
+                          >
+                            <StateMark state="needs_you" size={12} />
+                          </If>
+                          <View style={{ flex: 1, minWidth: 140, gap: space.hair }}>
+                            <Text
+                              style={{
+                                ...textStyle("body"),
+                                fontWeight: "500",
+                                numberOfLines: 1,
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {item().display_label || item().provider}
+                            </Text>
+                            <If when={item().account || quota()?.plan}>
+                              <Text
+                                style={{
+                                  ...textStyle("caption"),
+                                  numberOfLines: 1,
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {[item().account, quota()?.plan].filter(Boolean).join(" · ")}
+                              </Text>
+                            </If>
+                          </View>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+                            <If when={Boolean(item().reauthentication_required)}>
+                              <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
+                                {tr("settings.subscriptions.reauthNeeded")}
+                              </Text>
+                              <Button
+                                label={tr("settings.subscriptions.signInAgain")}
+                                variant="secondary"
+                                size="xs"
+                                leadingIcon="log-in"
+                                disabled={
+                                  (subscriptionLogin()?.accountId === (item().account_id || item().provider)) &&
+                                  (subscriptionLogin()?.status === "pending" || subscriptionLogin()?.status === "starting")
+                                }
+                                accessibilityLabel={`subscription-connect-${item().account_id || item().provider}`}
+                                onPress={() =>
+                                  void startSubscriptionSignIn(
+                                    item().provider,
+                                    isRemotePeerContext(),
+                                    item().login_methods ?? [],
+                                    item().account_id || item().provider,
+                                  )
+                                }
+                              />
+                            </If>
+                            <Button
+                              label={tr("devices.signOut")}
+                              variant="ghost"
+                              size="xs"
+                              loading={subscriptionSigningOut() === (item().account_id || item().provider)}
+                              disabled={subscriptionSigningOut() === (item().account_id || item().provider)}
+                              accessibilityLabel={`subscription-signout-${item().account_id || item().provider}`}
+                              onPress={() =>
+                                void signOutSubscriptionAccount(item().provider, item().account_id || undefined)
+                              }
+                            />
+                          </View>
+                        </View>
+
+                        <If when={visibleMeters().length > 0}>
+                          <View
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns:
+                                settingsCompact() || visibleMeters().length === 1
+                                  ? "minmax(0, 1fr)"
+                                  : "repeat(2, minmax(0, 1fr))",
+                              gap: space.md,
+                              paddingTop: space.xs,
+                            }}
+                          >
+                            <Each of={visibleMeters()} key={meter => meter.id}>
+                              {meter => (
+                                <View style={{ gap: space.xs, minWidth: 0 }}>
+                                  <Text
+                                    style={{
+                                      ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
+                                      fontWeight: "500",
+                                      numberOfLines: 1,
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {formatQuotaMeter(meter())}
+                                  </Text>
+                                  <If when={meter().remainingPercent !== null}>
+                                    <View
+                                      style={{
+                                        height: 4,
+                                        borderRadius: radii.pill,
+                                        backgroundColor: palette().segmentedTrackBg,
+                                        overflow: "hidden",
+                                      }}
+                                    >
+                                      <View
+                                        style={{
+                                          height: "100%",
+                                          width: `${meter().remainingPercent ?? 0}%`,
+                                          borderRadius: radii.pill,
+                                          backgroundColor: quotaBarColor(meter().remainingPercent ?? 0),
+                                        }}
+                                      />
+                                    </View>
+                                  </If>
+                                </View>
+                              )}
+                            </Each>
+                          </View>
+                        </If>
+
+                        <If when={hiddenMeterCount() > 0}>
+                          <View style={{ flexDirection: "row" }}>
+                            <Button
+                              label={
+                                showAllMeters()
+                                  ? tr("settings.subscriptions.fewerMeters")
+                                  : tr("settings.subscriptions.moreMeters", { count: hiddenMeterCount() })
+                              }
+                              variant="ghost"
+                              size="xs"
+                              onPress={() =>
+                                expandedSubscriptionMeters.update(curr => ({
+                                  ...curr,
+                                  [item().account_id]: !showAllMeters(),
+                                }))
+                              }
+                            />
+                          </View>
+                        </If>
+
+                        <If when={quota() && meters().length === 0 ? quotaUnknownText(quota()) : ""}>
+                          {text => <Text style={textStyle("caption")}>{text()}</Text>}
+                        </If>
+                      </View>
+                    );
+                  }}
+                </Each>
+              </View>
+            </View>
+          </If>
+
+          {/* Disconnected / available providers: compact 2-column card grid so 10+ providers stay scannable */}
+          <If when={availableAccounts().length > 0}>
+            <View style={{ gap: space.sm }}>
+              <Text style={{ ...textStyle("micro", { color: palette().textMuted }), fontWeight: "600" }}>
+                {tr("settings.subscriptions.availableGroup", { count: availableAccounts().length })}
+              </Text>
+              <View
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: settingsCompact() ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))",
+                  gap: space.sm,
+                }}
+              >
+                <Each of={availableAccounts()} key={item => item.account_id}>
+                  {item => (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.sm,
+                        paddingHorizontal: space.md,
+                        paddingVertical: space.sm,
+                        minHeight: 54,
+                        borderRadius: radii.md,
+                        borderCurve: "continuous",
+                        borderWidth: 1,
+                        borderColor: palette().borderSubtle,
+                        backgroundColor: palette().surfaceTertiary,
+                        ...paintTransition(MOTION_DURATION.fast),
+                      }}
+                      hoverStyle={{
+                        backgroundColor: palette().surfaceSubtle,
+                        borderColor: palette().borderStrong,
+                      }}
+                    >
+                      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                        <Text
+                          style={{
+                            ...textStyle("body"),
+                            fontWeight: "500",
+                            numberOfLines: 1,
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {item().display_label || item().provider}
+                        </Text>
                         <Text
                           style={{
                             ...textStyle("caption"),
@@ -5924,26 +6174,13 @@ function SubscriptionsSection() {
                             textOverflow: "ellipsis",
                           }}
                         >
-                          {item().connected
-                            ? [item().account, quota()?.plan].filter(Boolean).join(" · ")
-                            : tr("common.disconnected")}
+                          {tr("common.disconnected")}
                         </Text>
-                      </If>
-                    </View>
-                    <If when={Boolean(item().reauthentication_required)}>
-                      <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
-                        {tr("settings.subscriptions.reauthNeeded")}
-                      </Text>
-                    </If>
-                    <If when={!item().connected || Boolean(item().reauthentication_required)}>
+                      </View>
                       <Button
-                        label={
-                          item().reauthentication_required
-                            ? tr("settings.subscriptions.signInAgain")
-                            : tr("settings.subscriptions.signIn")
-                        }
+                        label={tr("settings.subscriptions.signIn")}
                         variant="secondary"
-                        size="sm"
+                        size="xs"
                         leadingIcon="log-in"
                         disabled={
                           (subscriptionLogin()?.accountId === (item().account_id || item().provider)) &&
@@ -5959,76 +6196,118 @@ function SubscriptionsSection() {
                           )
                         }
                       />
-                    </If>
-                    <If when={Boolean(item().connected)}>
-                      <Button
-                        label={tr("devices.signOut")}
-                        variant="ghost"
-                        size="sm"
-                        loading={subscriptionSigningOut() === (item().account_id || item().provider)}
-                        disabled={subscriptionSigningOut() === (item().account_id || item().provider)}
-                        accessibilityLabel={`subscription-signout-${item().account_id || item().provider}`}
-                        onPress={() =>
-                          void signOutSubscriptionAccount(item().provider, item().account_id || undefined)
-                        }
-                      />
-                    </If>
-                  </View>
-
-                  <If when={subscriptionLogin()?.accountId === (item().account_id || item().provider)}>
-                    <SubscriptionLoginPanel />
-                  </If>
-
-                  <If when={quotaMeters(quota()).length > 0}>
-                    <View style={{ gap: space.md, paddingTop: space.hair, paddingLeft: space.lg }}>
-                      <Each of={quotaMeters(quota())} key={meter => meter.id}>
-                        {meter => (
-                          <View style={{ gap: space.sm }}>
-                            <Text
-                              style={{
-                                ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
-                                fontWeight: "500",
-                                numberOfLines: 1,
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {formatQuotaMeter(meter())}
-                            </Text>
-                            <If when={meter().remainingPercent !== null}>
-                              <View
-                                style={{
-                                  height: 4,
-                                  borderRadius: radii.pill,
-                                  backgroundColor: palette().segmentedTrackBg,
-                                  overflow: "hidden",
-                                }}
-                              >
-                                <View
-                                  style={{
-                                    height: "100%",
-                                    width: `${meter().remainingPercent ?? 0}%`,
-                                    borderRadius: radii.pill,
-                                    backgroundColor: quotaBarColor(meter().remainingPercent ?? 0),
-                                  }}
-                                />
-                              </View>
-                            </If>
-                          </View>
-                        )}
-                      </Each>
                     </View>
-                  </If>
-                  <If when={quota() && quotaMeters(quota()).length === 0 ? quotaUnknownText(quota()) : ""}>
-                    {text => <Text style={textStyle("caption")}>{text()}</Text>}
-                  </If>
-                </View>
-              );
-            }}
-          </Each>
+                  )}
+                </Each>
+              </View>
+            </View>
+          </If>
         </View>
       </SettingsSection>
     </If>
   );
+}
+
+interface ModelProviderGroup {
+  key: string;
+  label: string;
+  host: string;
+  format: string;
+  baseUrl: string;
+  models: ReturnType<typeof storedModels>;
+  enabledCount: number;
+  hasPrimary: boolean;
+}
+
+const KNOWN_PROVIDER_HOST_LABELS: Record<string, string> = {
+  "api.openai.com": "OpenAI",
+  "api.anthropic.com": "Anthropic",
+  "generativelanguage.googleapis.com": "Google Gemini",
+  "api.deepseek.com": "DeepSeek",
+  "openrouter.ai": "OpenRouter",
+  "api.groq.com": "Groq",
+  "api.mistral.ai": "Mistral",
+  "api.x.ai": "xAI",
+  "dashscope.aliyuncs.com": "Alibaba Qwen",
+  "ark.cn-beijing.volces.com": "Volcengine Ark",
+  "open.bigmodel.cn": "Zhipu GLM",
+  "api.moonshot.cn": "Moonshot Kimi",
+  "api.minimax.chat": "MiniMax",
+  "api.siliconflow.cn": "SiliconFlow",
+};
+
+const FORMAT_DISPLAY_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  responses: "OpenAI Responses",
+  anthropic: "Anthropic",
+  gemini: "Google Gemini",
+};
+
+function endpointHostOf(rawUrl: string | undefined): string {
+  const trimmed = (rawUrl ?? "").trim().replace(/#$/, "");
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    return parsed.host.toLowerCase();
+  } catch {
+    return trimmed.replace(/^https?:\/\//i, "").split("/")[0]?.toLowerCase() ?? "";
+  }
+}
+
+function providerLabelFor(format: string, host: string): string {
+  if (host) {
+    const known = KNOWN_PROVIDER_HOST_LABELS[host];
+    if (known) return known;
+    if (host.startsWith("localhost") || host.startsWith("127.0.0.1")) return `Local (${host})`;
+    const catalogMatch = catalogProviders().find(provider =>
+      provider.endpoints.some(ep => endpointHostOf(ep.baseUrl) === host),
+    );
+    if (catalogMatch?.name) return catalogMatch.name;
+    return host;
+  }
+  return FORMAT_DISPLAY_LABELS[format] ?? (format || tr("settings.models.customProvider"));
+}
+
+const modelSearchQuery = signal("");
+const modelStatusFilter = signal<"all" | "enabled">("all");
+const providerGroupExpanded = signal<Record<string, boolean>>({});
+
+function groupModelsByProvider(
+  models: ReturnType<typeof storedModels>,
+  primaryId: string | null | undefined,
+): ModelProviderGroup[] {
+  const byKey = new Map<string, ModelProviderGroup>();
+  const order: string[] = [];
+  for (const model of models) {
+    const format = normalizeModelFormat(model.provider);
+    const host = endpointHostOf(model.base_url);
+    const key = `${format}-${host || "default"}`.replace(/[^a-z0-9.-]+/g, "-");
+    let group = byKey.get(key);
+    if (!group) {
+      group = {
+        key,
+        label: providerLabelFor(format, host),
+        host,
+        format,
+        baseUrl: (model.base_url ?? "").trim(),
+        models: [],
+        enabledCount: 0,
+        hasPrimary: false,
+      };
+      byKey.set(key, group);
+      order.push(key);
+    }
+    group.models.push(model);
+    if (model.enabled !== false) group.enabledCount += 1;
+    if (primaryId && model.id === primaryId) group.hasPrimary = true;
+  }
+  return order
+    .map(key => byKey.get(key)!)
+    .sort((a, b) => {
+      if (a.hasPrimary !== b.hasPrimary) return a.hasPrimary ? -1 : 1;
+      if ((a.enabledCount > 0) !== (b.enabledCount > 0)) return a.enabledCount > 0 ? -1 : 1;
+      return 0;
+    });
 }
 
 function ModelSection() {
@@ -6055,6 +6334,50 @@ function ModelSection() {
     previewRequestUrl(modelDraft().baseUrl, modelDraft().provider, modelDraft().modelName);
   const testStatus = () => draftTestOutcome();
 
+  const filteredModels = () => {
+    const query = modelSearchQuery().trim().toLowerCase();
+    const status = modelStatusFilter();
+    return storedModels().filter(model => {
+      if (status === "enabled" && model.enabled === false) return false;
+      if (!query) return true;
+      const host = endpointHostOf(model.base_url);
+      const format = normalizeModelFormat(model.provider);
+      const label = modelOptionLabel(model).toLowerCase();
+      return (
+        label.includes(query) ||
+        (model.name ?? "").toLowerCase().includes(query) ||
+        (model.model_name ?? "").toLowerCase().includes(query) ||
+        format.includes(query) ||
+        host.includes(query) ||
+        providerLabelFor(format, host).toLowerCase().includes(query)
+      );
+    });
+  };
+
+  const groups = () => groupModelsByProvider(filteredModels(), defaultModels().primary);
+  const hasActiveSearch = () => modelSearchQuery().trim().length > 0;
+
+  const isGroupExpanded = (group: ModelProviderGroup, index: number, total: number): boolean => {
+    if (hasActiveSearch()) return true;
+    const override = providerGroupExpanded()[group.key];
+    if (override !== undefined) return override;
+    return total <= 3 || index === 0;
+  };
+
+  const allGroupsExpanded = () => {
+    const list = groups();
+    return list.length > 0 && list.every((group, index) => isGroupExpanded(group, index, list.length));
+  };
+
+  const toggleAllGroups = () => {
+    const next = !allGroupsExpanded();
+    const patch: Record<string, boolean> = { ...providerGroupExpanded() };
+    for (const group of groups()) patch[group.key] = next;
+    providerGroupExpanded.set(patch);
+  };
+
+  const totalEnabled = () => storedModels().filter(m => m.enabled !== false).length;
+
   return (
     <SettingsSection
       flush={true}
@@ -6064,6 +6387,14 @@ function ModelSection() {
       onDismissNotice={() => modelSettingsNotice.set("")}
       extra={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <If when={storedModels().length > 0}>
+            <Text style={textStyle("caption", { color: palette().textMuted, tabular: true })}>
+              {tr("settings.models.providerSummary", {
+                enabled: totalEnabled(),
+                total: storedModels().length,
+              })}
+            </Text>
+          </If>
           <Button
             label={tr("settings.models.addModel")}
             leadingIcon="plus"
@@ -6098,8 +6429,152 @@ function ModelSection() {
             <Text style={textStyle("caption")}>{tr("settings.models.empty")}</Text>
           </View>
         </If>
-        <Each of={storedModels()} key={model => model.id}>
-          {(model, index) => <ModelRow model={model} index={index} />}
+
+        <If when={storedModels().length > 0}>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: space.sm,
+              paddingHorizontal: SETTINGS_ROW_INSET,
+              paddingVertical: space.sm,
+              position: "relative",
+            }}
+          >
+            <SearchInput
+              value={modelSearchQuery()}
+              placeholder={tr("settings.models.searchPlaceholder")}
+              accessibilityLabel="models-filter-search"
+              style={{ flex: 1, minWidth: 160 }}
+              onChange={value => modelSearchQuery.set(value)}
+            />
+            <SegmentedTabs
+              size="sm"
+              value={modelStatusFilter()}
+              options={[
+                { value: "all", label: tr("settings.models.filterAll"), accessibilityLabel: "models-filter-all" },
+                { value: "enabled", label: tr("settings.models.filterEnabled"), accessibilityLabel: "models-filter-enabled" },
+              ]}
+              onChange={value => modelStatusFilter.set(value)}
+            />
+            <If when={groups().length > 1 && !hasActiveSearch()}>
+              <Button
+                label={allGroupsExpanded() ? tr("settings.models.collapseAll") : tr("settings.models.expandAll")}
+                variant="ghost"
+                size="xs"
+                accessibilityLabel="models-toggle-all-groups"
+                onPress={toggleAllGroups}
+              />
+            </If>
+            <RowSeparator edge="bottom" />
+          </View>
+        </If>
+
+        <If when={storedModels().length > 0 && groups().length === 0}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.lg }}>
+            <Text style={textStyle("caption")}>{tr("settings.models.noFilterMatches")}</Text>
+          </View>
+        </If>
+
+        <Each of={groups()} key={group => group.key}>
+          {(group, groupIndex) => {
+            const expanded = () => isGroupExpanded(group(), groupIndex(), groups().length);
+            return (
+              <View style={{ position: "relative" }}>
+                <If when={groupIndex() !== 0}>
+                  <RowSeparator edge="top" />
+                </If>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.sm,
+                    paddingHorizontal: SETTINGS_ROW_INSET,
+                    paddingVertical: space.sm,
+                    minHeight: 42,
+                    backgroundColor: palette().surfaceTertiary,
+                  }}
+                >
+                  <View
+                    role="button"
+                    accessibilityLabel={`provider-group-toggle-${group().key}`}
+                    accessibilityState={{ expanded: expanded() }}
+                    onPress={() => {
+                      const current = expanded();
+                      providerGroupExpanded.update(prev => ({ ...prev, [group().key]: !current }));
+                    }}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: space.sm,
+                      paddingVertical: 2,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...pressTransition(MOTION_DURATION.fast),
+                    }}
+                    activeStyle={tactileActiveStyle(0.99)}
+                    focusVisibleStyle={focusRingStyle()}
+                  >
+                    <View style={{ flexShrink: 0, ...rotatingChevronStyle(expanded()) }}>
+                      <Icon name="chevron-right" size={13} color={palette().textMuted} />
+                    </View>
+                    <Text
+                      style={{
+                        ...textStyle("label"),
+                        fontWeight: "600",
+                        flexShrink: 1,
+                        minWidth: 0,
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {group().label}
+                    </Text>
+                    <If when={Boolean(group().host) && group().host !== group().label}>
+                      <Text
+                        style={{
+                          ...textStyle("mono", { color: palette().textMuted }),
+                          flexShrink: 2,
+                          minWidth: 0,
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {group().host}
+                      </Text>
+                    </If>
+                  </View>
+                  <Text style={textStyle("caption", { color: palette().textMuted, tabular: true })}>
+                    {`${group().enabledCount}/${group().models.length}`}
+                  </Text>
+                  <IconButton
+                    icon="plus"
+                    size="xs"
+                    tooltip={tr("settings.models.addInProvider", { provider: group().label })}
+                    accessibilityLabel={`provider-add-model-${group().key}`}
+                    onPress={() => {
+                      resetRemoteDiscovery();
+                      openModelForm({
+                        provider: group().format,
+                        baseUrl: group().baseUrl,
+                      });
+                    }}
+                  />
+                </View>
+                <If when={expanded()}>
+                  <View style={{ position: "relative" }}>
+                    <RowSeparator edge="top" />
+                    <Each of={group().models} key={model => model.id}>
+                      {(model, index) => <ModelRow model={model} index={index} />}
+                    </Each>
+                  </View>
+                </If>
+              </View>
+            );
+          }}
         </Each>
 
         {/* Add Model Modal */}
@@ -7644,10 +8119,18 @@ const DEFAULT_MODEL_SLOT_KEYS: Record<DefaultModelSlot, { labelKey: MessageKey; 
   },
 };
 
+const PRIMARY_DEFAULT_SLOTS: ReadonlyArray<DefaultModelSlot> = ["primary", "fast"];
+const SECONDARY_DEFAULT_SLOTS: ReadonlyArray<DefaultModelSlot> = [
+  "economy",
+  "image_understanding",
+  "speech_recognition",
+];
+const defaultModelMoreSlotsOpen = signal(false);
+
 /**
- * `ai.default_models`: which configured model each role resolves to. Each slot
- * offers only the enabled models that have its capability, as the desktop's
- * `DefaultModelConfig` does; the primary slot cannot be cleared.
+ * `ai.default_models`: compact 2-column routing card showing Primary & Fast
+ * directly, with specialized capability slots tucked cleanly below a disclosure
+ * toggle so the Models page stays scannable at any scale.
  */
 function DefaultModelsSection() {
   useDeviceScopedLoad("default-models", () => void loadDefaultModels(), () => void loadDefaultModels());
@@ -7675,6 +8158,40 @@ function DefaultModelsSection() {
     }
     return rows;
   };
+  const configuredSecondaryCount = () =>
+    SECONDARY_DEFAULT_SLOTS.filter(slot => Boolean(defaultModels()[slot])).length;
+
+  const renderSlotCell = (slot: () => DefaultModelSlot) => (
+    <View style={{ gap: space.xs, minWidth: 0 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+        <Text style={textStyle("label")}>{tr(DEFAULT_MODEL_SLOT_KEYS[slot()].labelKey)}</Text>
+        <If when={defaultModelSaving() === slot()}>
+          <Spinner size={11} color={palette().accent} />
+        </If>
+      </View>
+      <Text
+        style={{
+          ...textStyle("caption"),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {tr(DEFAULT_MODEL_SLOT_KEYS[slot()].descriptionKey)}
+      </Text>
+      <SelectDropdown
+        size="sm"
+        value={defaultModels()[slot()] || (slot() === "fast" ? "" : null)}
+        options={optionsFor(slot())}
+        placeholder={tr("settings.defaultModels.choose")}
+        searchable={optionsFor(slot()).length > 8}
+        accessibilityLabel={`default-model-${slot()}`}
+        disabled={defaultModelSaving() !== null || (slot() === "primary" && optionsFor(slot()).length === 0)}
+        minWidth={140}
+        onChange={value => void chooseDefaultModel(slot(), value || null)}
+      />
+    </View>
+  );
+
   return (
     <SettingsGroup
       id="default-models"
@@ -7683,32 +8200,81 @@ function DefaultModelsSection() {
       notice={defaultModelsNotice()}
       onDismissNotice={() => defaultModelsNotice.set("")}
     >
-      <Each of={[...DEFAULT_MODEL_SLOTS]} key={slot => slot}>
-        {(slot, index) => (
-          <SettingsRow
-            label={tr(DEFAULT_MODEL_SLOT_KEYS[slot()].labelKey)}
-            description={tr(DEFAULT_MODEL_SLOT_KEYS[slot()].descriptionKey)}
-            first={index() === 0}
+      <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md }}>
+        <View
+          style={{
+            display: "grid",
+            gridTemplateColumns: settingsCompact() ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))",
+            gap: space.md,
+          }}
+        >
+          <Each of={[...PRIMARY_DEFAULT_SLOTS]} key={slot => slot}>
+            {slot => renderSlotCell(slot)}
+          </Each>
+        </View>
+      </View>
+      <View style={{ position: "relative" }}>
+        <RowSeparator edge="top" />
+        <View
+          role="button"
+          accessibilityLabel="default-models-more-slots"
+          accessibilityState={{ expanded: defaultModelMoreSlotsOpen() }}
+          onPress={() => defaultModelMoreSlotsOpen.update(v => !v)}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: space.sm,
+            paddingHorizontal: SETTINGS_ROW_INSET,
+            paddingVertical: space.sm,
+            minHeight: 38,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+          activeStyle={tactileActiveStyle(0.99)}
+          focusVisibleStyle={focusRingStyle()}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+            <View style={{ flexShrink: 0, ...rotatingChevronStyle(defaultModelMoreSlotsOpen()) }}>
+              <Icon name="chevron-right" size={12} color={palette().textMuted} />
+            </View>
+            <Text style={textStyle("caption", { color: palette().textSecondary })}>
+              {tr("settings.defaultModels.moreSlots", { count: SECONDARY_DEFAULT_SLOTS.length })}
+            </Text>
+          </View>
+          <If when={configuredSecondaryCount() > 0}>
+            <Text style={textStyle("caption", { color: palette().textMuted, tabular: true })}>
+              {tr("settings.defaultModels.moreSlotsConfigured", { count: configuredSecondaryCount() })}
+            </Text>
+          </If>
+        </View>
+        <If when={defaultModelMoreSlotsOpen()}>
+          <View
+            style={{
+              position: "relative",
+              paddingHorizontal: SETTINGS_ROW_INSET,
+              paddingBottom: space.md,
+              paddingTop: space.sm,
+            }}
           >
-            <If when={defaultModelSaving() === slot()}>
-              <Spinner size={12} color={palette().accent} />
-            </If>
-            <SelectDropdown
-              size="sm"
-              value={defaultModels()[slot()] || (slot() === "fast" ? "" : null)}
-              options={optionsFor(slot())}
-              placeholder={tr("settings.defaultModels.choose")}
-              searchable={optionsFor(slot()).length > 8}
-              accessibilityLabel={`default-model-${slot()}`}
-              disabled={defaultModelSaving() !== null || (slot() === "primary" && optionsFor(slot()).length === 0)}
-              minWidth={settingsCompact() ? 160 : 220}
-              maxWidth={settingsCompact() ? undefined : 300}
-              align="end"
-              onChange={value => void chooseDefaultModel(slot(), value || null)}
-            />
-          </SettingsRow>
-        )}
-      </Each>
+            <RowSeparator edge="top" />
+            <View
+              style={{
+                display: "grid",
+                gridTemplateColumns: settingsCompact() ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))",
+                gap: space.md,
+                paddingTop: space.sm,
+              }}
+            >
+              <Each of={[...SECONDARY_DEFAULT_SLOTS]} key={slot => slot}>
+                {slot => renderSlotCell(slot)}
+              </Each>
+            </View>
+          </View>
+        </If>
+      </View>
     </SettingsGroup>
   );
 }
@@ -9349,6 +9915,114 @@ function Anchor(props: { id: string; children?: JSX.Element }) {
   return <View ref={el => registerSectionAnchor(props.id, el)}>{props.children}</View>;
 }
 
+function ModelsPage() {
+  useDeviceScopedLoad("models-subscriptions-preload", () => void loadSubscriptions(), () => void loadSubscriptions(true));
+  useDeviceScopedLoad("models-pools-preload", ensurePools, () => void loadPools());
+
+  let tabMounts = 0;
+  const activeTab = (): ModelsPageTab => {
+    const current = modelsPageTab();
+    if (current === "pools" && poolsSupported() === false) return "models";
+    return current;
+  };
+
+  const tabOptions = () => {
+    const connectedSubs = subscriptionAccounts().filter(item => item.connected).length;
+    const totalSubs = subscriptionAccounts().length;
+    const subBadge =
+      totalSubs > 0 ? (connectedSubs > 0 ? `${connectedSubs}/${totalSubs}` : totalSubs) : undefined;
+    const options: Array<{
+      value: ModelsPageTab;
+      label: string;
+      icon: IconName;
+      badge?: string | number;
+      accessibilityLabel: string;
+    }> = [
+      {
+        value: "models",
+        label: tr("settings.models.tabModels"),
+        icon: "cpu",
+        badge: storedModels().length > 0 ? storedModels().length : undefined,
+        accessibilityLabel: "models-tab-models",
+      },
+      {
+        value: "subscriptions",
+        label: tr("settings.subscriptions.tabLabel"),
+        icon: "key",
+        badge: subBadge,
+        accessibilityLabel: "models-tab-subscriptions",
+      },
+    ];
+    if (poolsSupported() !== false) {
+      options.push({
+        value: "pools",
+        label: tr("settings.pools.title"),
+        icon: "layers",
+        badge: pools().length > 0 ? pools().length : undefined,
+        accessibilityLabel: "models-tab-pools",
+      });
+    }
+    options.push({
+      value: "network",
+      label: tr("settings.models.tabNetwork"),
+      icon: "globe",
+      accessibilityLabel: "models-tab-network",
+    });
+    return options;
+  };
+
+  const tabBar = () => (
+    <SegmentedTabs
+      size="md"
+      value={activeTab()}
+      scrollable={settingsCompact()}
+      options={tabOptions()}
+      onChange={tab => modelsPageTab.set(tab)}
+    />
+  );
+
+  return (
+    <View style={{ gap: layout.sectionGap }}>
+      <If when={settingsCompact()} else={tabBar()}>
+        <Scroll horizontal={true} scrollbar={false}>
+          {tabBar()}
+        </Scroll>
+      </If>
+
+      <Each of={[activeTab()]} key={tab => tab}>
+        {tab => {
+          const shouldAnimate = tabMounts > 0;
+          tabMounts += 1;
+          const motion = shouldAnimate ? subtleCrossfadeMotion() : null;
+          return (
+            <View style={[{ gap: layout.sectionGap }, motion?.style]}>
+              <If when={tab() === "models"}>
+                <DefaultModelsSection />
+                <Anchor id="models">
+                  <ModelSection />
+                </Anchor>
+              </If>
+              <If when={tab() === "subscriptions"}>
+                <Anchor id="subscriptions">
+                  <SubscriptionsSection />
+                </Anchor>
+              </If>
+              <If when={tab() === "pools"}>
+                <Anchor id="pools">
+                  <PoolsSection />
+                </Anchor>
+              </If>
+              <If when={tab() === "network"}>
+                <FieldSection sectionId="network" />
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+    </View>
+  );
+}
+
 /** The sections of one page, in the desktop's order. */
 function SettingsPageBody(props: { pageId: SettingsPageId }) {
   const page = props.pageId;
@@ -9397,23 +10071,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   if (page === "openbitfun") return <OpenBitFunSection />;
   if (page === "activity") return <ActivityPage />;
   if (page === "archived") return <ArchivedSessionsSection />;
-  if (page === "models") {
-    return (
-      <View style={{ gap: layout.sectionGap }}>
-        <DefaultModelsSection />
-        <Anchor id="models">
-          <ModelSection />
-        </Anchor>
-        <Anchor id="subscriptions">
-          <SubscriptionsSection />
-        </Anchor>
-        <Anchor id="pools">
-          <PoolsSection />
-        </Anchor>
-        <FieldSection sectionId="network" />
-      </View>
-    );
-  }
+  if (page === "models") return <ModelsPage />;
   if (page === "session-memory") {
     return (
       <View style={{ gap: layout.sectionGap }}>

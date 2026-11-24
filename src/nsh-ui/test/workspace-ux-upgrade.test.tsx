@@ -480,3 +480,35 @@ test("split pane focus switches on clicking anywhere in either pane, and bottom-
   expect(app.shows("files-stack-back")).toBe(false);
   expect(app.shows("explorer-row-README.md")).toBe(true);
 });
+
+test("centered split divider swap button exchanges left and right sessions and zh-CN uses 分栏 copy", async () => {
+  const { zhCNMessages } = await import("../src/locales/zh-CN");
+  expect(zhCNMessages["sessions.splitOpen"]).toContain("分栏");
+  expect(zhCNMessages["sessions.splitClose"]).toContain("分栏");
+  expect(zhCNMessages["sessions.openInSplit"]).toContain("分栏");
+  expect(zhCNMessages["sessions.splitSwap"]).toContain("分栏");
+  expect(Object.values(zhCNMessages).some(value => value.includes("分屏"))).toBe(false);
+
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Port the session list.");
+
+  // Open split pane: divider swap button sits centered between both sessions.
+  await app.press("thread-actions-trigger");
+  await app.press("session-split-open");
+  await app.waitFor("id:secondary-session-pane");
+  await app.waitFor("Port the terminal.");
+  await app.waitFor("split-divider-swap");
+
+  // Pressing the divider swap button exchanges Primary and Secondary sessions cleanly.
+  await app.press("split-divider-swap");
+  await app.waitUntil(() => {
+    const calls = backend.calls.filter(c => c.action === "get_session_transcript_view");
+    return calls.length >= 4;
+  });
+  await app.waitFor("Port the terminal.");
+  await app.waitFor("Port the session list.");
+  expect(app.shows("split-divider-swap")).toBe(true);
+});

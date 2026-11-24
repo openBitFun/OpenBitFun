@@ -409,6 +409,7 @@ import {
   StatusDot,
   TooltipBubble,
   focusRingStyle as baseFocusRingStyle,
+  splitDragging,
 } from "../ui/primitives";
 
 const renaming = signal(false);
@@ -8638,7 +8639,7 @@ function SecondaryHeader() {
       items.push({
         id: "secondary-swap-panes",
         label: tr("sessions.splitSwap"),
-        icon: "columns",
+        icon: "arrow-left-right",
         accessibilityLabel: "secondary-swap-panes",
         onSelect: () => swapSplitPanes(),
       });
@@ -10049,26 +10050,71 @@ export function SessionsScene() {
       </View>
 
       <If when={showSplit()}>
-        <SplitHandle
-          surface="canvas"
-          accessibilityLabel="session-split-handle"
-          onDragStateChange={dragging => {
-            if (dragging) {
-              splitDragStartRatio = sessionSplitRatio();
-              splitDragAccumPx = 0;
-            } else {
-              splitDragStartRatio = null;
-              splitDragAccumPx = 0;
-            }
+        <View
+          style={{
+            position: "relative",
+            width: 9,
+            flexShrink: 0,
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 4,
           }}
-          onDelta={delta => {
-            splitDragAccumPx += delta;
-            const total = Math.max(400, sessionsPaneWidth());
-            const base = splitDragStartRatio ?? sessionSplitRatio();
-            setSessionSplitRatio(base + splitDragAccumPx / total);
-          }}
-          onReset={() => setSessionSplitRatio(SESSION_SPLIT_DEFAULT_RATIO)}
-        />
+        >
+          <SplitHandle
+            surface="canvas"
+            accessibilityLabel="session-split-handle"
+            style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0 }}
+            onDragStateChange={dragging => {
+              if (dragging) {
+                splitDragStartRatio = sessionSplitRatio();
+                splitDragAccumPx = 0;
+              } else {
+                splitDragStartRatio = null;
+                splitDragAccumPx = 0;
+              }
+            }}
+            onDelta={delta => {
+              splitDragAccumPx += delta;
+              const total = Math.max(400, sessionsPaneWidth());
+              const base = splitDragStartRatio ?? sessionSplitRatio();
+              setSessionSplitRatio(base + splitDragAccumPx / total);
+            }}
+            onReset={() => setSessionSplitRatio(SESSION_SPLIT_DEFAULT_RATIO)}
+          />
+          <If when={showSecondarySplit() && Boolean(activeSessionId()) && Boolean(secondarySessionId()) && !splitDragging()}>
+            <View
+              role="button"
+              tooltip={tr("sessions.splitSwap")}
+              accessibilityLabel="split-divider-swap"
+              onPress={() => swapSplitPanes()}
+              style={{
+                position: "absolute",
+                left: -8,
+                width: 24,
+                height: 24,
+                borderRadius: radii.pill,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                borderColor: palette().borderSubtle,
+                backgroundColor: palette().surfaceElevated,
+                boxShadow: elevationShadow(1),
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
+              }}
+              hoverStyle={{
+                backgroundColor: palette().panelHover,
+                borderColor: palette().borderStrong,
+              }}
+              activeStyle={tactileActiveStyle(0.94)}
+              focusVisibleStyle={baseFocusRingStyle()}
+            >
+              <Icon name="arrow-left-right" size={12} color={palette().textSecondary} />
+            </View>
+          </If>
+        </View>
         <If when={showSecondarySplit()} else={<BtwSessionPane />}>
           <SecondarySessionPane />
         </If>

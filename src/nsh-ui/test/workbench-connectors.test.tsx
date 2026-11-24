@@ -800,6 +800,8 @@ test("subscription quotas are read per account slot and drawn from the host's me
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
+  await app.waitFor("models-tab-subscriptions");
+  await app.press("models-tab-subscriptions");
   await app.waitFor("Codex");
   // The quota is asked for by the account slot id, never by the email.
   expect(backend.quotaCalls.at(-1)).toMatchObject({
@@ -916,6 +918,8 @@ test("settings scene renders subscription quotas and switches OpenBitFun appeara
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
+  await app.waitFor("models-tab-subscriptions");
+  await app.press("models-tab-subscriptions");
   await app.waitFor("AI subscriptions");
   await app.waitFor("OpenAI Codex");
   await app.waitFor("5h window · 72% left · resets 2h");
@@ -1069,6 +1073,8 @@ test("a subscription provider signs in through the host's login session", async 
 
   await app.press("Settings");
   await app.press("nav-settings-page-models");
+  await app.waitFor("models-tab-subscriptions");
+  await app.press("models-tab-subscriptions");
   await app.waitFor("Codex");
   await app.press("subscription-connect-codex");
   await app.waitFor("Code: ABCD-1234");
@@ -1090,4 +1096,118 @@ test("a subscription provider signs in through the host's login session", async 
         call.action === "logout_subscription_account",
     ),
   );
+});
+
+test("settings models page uses segmented sub-tabs, provider accordions, and compact subscription cards", async () => {
+  const models = [
+    {
+      id: "m-openai",
+      name: "GPT-5",
+      provider: "openai",
+      model_name: "gpt-5",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-1",
+      enabled: true,
+      category: "general_chat",
+      capabilities: ["text_chat"],
+    },
+    {
+      id: "m-anthropic",
+      name: "Claude Sonnet",
+      provider: "anthropic",
+      model_name: "claude-sonnet-4",
+      base_url: "https://api.anthropic.com",
+      api_key: "sk-2",
+      enabled: true,
+      category: "general_chat",
+      capabilities: ["text_chat"],
+    },
+    {
+      id: "m-deepseek",
+      name: "DeepSeek R1",
+      provider: "openai",
+      model_name: "deepseek-reasoner",
+      base_url: "https://api.deepseek.com/v1",
+      api_key: "sk-3",
+      enabled: false,
+      category: "general_chat",
+      capabilities: ["text_chat"],
+    },
+    {
+      id: "m-gemini",
+      name: "Gemini Pro",
+      provider: "gemini",
+      model_name: "gemini-2.5-pro",
+      base_url: "https://generativelanguage.googleapis.com/v1beta",
+      api_key: "sk-4",
+      enabled: true,
+      category: "general_chat",
+      capabilities: ["text_chat"],
+    },
+  ];
+  const backend = createWorkbenchBackend();
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const { action, request } = data as { action?: string; request?: Record<string, unknown> };
+      if (action === "get_config" && request?.path === "ai.models") {
+        return { ok: true, value: models, transport: "dev" };
+      }
+      if (action === "get_config" && request?.path === "ai.default_models") {
+        return { ok: true, value: { primary: "m-openai" }, transport: "dev" };
+      }
+      if (action === "list_subscription_accounts" || action === "list_subscription_account_instances") {
+        return {
+          ok: true,
+          value: [
+            { account_id: "codex", provider: "codex", display_label: "Codex", account: "dev@example.com", connected: true },
+            { account_id: "claude", provider: "claude", display_label: "Claude", connected: false },
+            { account_id: "gemini", provider: "gemini", display_label: "Gemini", connected: false },
+          ],
+          transport: "dev",
+        };
+      }
+      return baseInvoke(data);
+    },
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.waitFor("models-tab-models");
+  await app.waitFor("models-tab-subscriptions");
+  await app.waitFor("models-tab-pools");
+  await app.waitFor("models-tab-network");
+
+  // Default models hides secondary capability slots behind a disclosure row.
+  await app.waitFor("default-model-primary");
+  await app.waitFor("default-model-fast");
+  expect(app.shows("default-model-economy")).toBe(false);
+  await app.press("default-models-more-slots");
+  await app.waitFor("default-model-economy");
+
+  // With 4 provider groups (>3), only the primary provider group expands by default.
+  await app.waitFor("GPT-5");
+  expect(app.shows("model-enabled-m-openai")).toBe(true);
+  expect(app.shows("model-enabled-m-gemini")).toBe(false);
+
+  // Searching auto-expands matching provider groups.
+  await app.type("models-filter-search", "Gemini");
+  await app.waitFor("model-enabled-m-gemini");
+  expect(app.shows("model-enabled-m-openai")).toBe(false);
+  await app.clear("models-filter-search");
+
+  // Per-provider quick-add pre-fills format and baseUrl for that group.
+  await app.press("provider-add-model-anthropic-api.anthropic.com");
+  await app.waitFor("model-editor-modal");
+  expect(app.value("model-base-url")).toBe("https://api.anthropic.com");
+  await app.press("model-editor-cancel");
+
+  // Switching to Subscriptions isolates connected accounts and available providers cleanly.
+  await app.press("models-tab-subscriptions");
+  await app.waitFor("subscription-signout-codex");
+  await app.waitFor("subscription-connect-claude");
+  await app.waitFor("subscription-connect-gemini");
+  expect(app.shows("add-model")).toBe(false);
 });

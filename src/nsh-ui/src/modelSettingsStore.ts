@@ -472,8 +472,14 @@ export function updateDraft(patch: Partial<ModelDraft>): void {
   modelDraft.update(current => ({ ...current, ...patch }));
 }
 
-export function openModelForm(): void {
-  modelDraft.set({ ...EMPTY_DRAFT });
+export function openModelForm(
+  initial?: Partial<Pick<ModelDraft, "provider" | "baseUrl">>,
+): void {
+  modelDraft.set({
+    ...EMPTY_DRAFT,
+    ...(initial?.provider ? { provider: normalizeModelFormat(initial.provider) } : {}),
+    ...(initial?.baseUrl ? { baseUrl: initial.baseUrl } : {}),
+  });
   modelFormOpen.set(true);
   modelSettingsNotice.set("");
   // The picker reads this machine's own catalog once; a host without the command
