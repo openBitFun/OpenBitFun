@@ -78,6 +78,10 @@ layout/checkpoint probe. Logs contain normal test output; never log credentials.
 - `install-nsh.mjs` installs the pinned NSH CLI release (SHA-256 digests pinned
   in the script; bump it together with the `nsh-*` crates of
   `src/apps/desktop-nsh/native/Cargo.toml`) and adds it to `GITHUB_PATH`.
+  `pnpm install` runs it with `--postinstall` to reuse an existing matching
+  install or download it into `~/.nsh` and link `node_modules/.bin/nsh`
+  (skipping downloads in CI postinstall or when `OPENBITFUN_SKIP_NSH_INSTALL=1`);
+  `pnpm run nsh:install` runs `--ensure`.
 - `desktop-release-env.mjs` compiles the release channel's updater endpoints and
   the minisign release key into the native backend (`GITHUB_ENV`); publishing
   builds fail without both release keys.

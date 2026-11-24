@@ -14,8 +14,9 @@ Be respectful, kind, and constructive. We welcome contributors of all background
 
 - Node.js 22.12+ (LTS recommended)
 - pnpm 10.15.0 via Corepack
-- Rust toolchain (install via [rustup](https://rustup.rs/))
-- The [NSH CLI](docs/architecture/nsh-frontend.md) (`nsh` 0.6) and Rust 1.98.1 for the native desktop app (`RUSTUP_TOOLCHAIN=1.98.1`)
+- Rust toolchain (install via [rustup](https://rustup.rs/)); the native desktop app requires Rust 1.97+ (install `rustup toolchain install 1.98.1` if your default `rustc` is older)
+- Linux desktop builds also require GTK4, libadwaita, and WebKitGTK 6.0 development packages
+- The pinned [NSH CLI](docs/architecture/nsh-frontend.md) (`v0.6.1`) is installed automatically during `pnpm install` into `~/.nsh/bin` and linked into `node_modules/.bin/nsh` (run `pnpm run nsh:install` manually if needed, or set `OPENBITFUN_SKIP_NSH_INSTALL=1` to opt out)
 
 OpenBitFun standardizes local JavaScript builds and CI on Node.js 22.12+. The GitHub
 Actions upgrades in this repository use Node.js 24-compatible action runtimes,
@@ -37,7 +38,9 @@ pnpm run check:build-prereqs -- --fix  # attempt to fix missing prerequisites
 
 The check detects:
 
-- Missing `node_modules` (fix: `pnpm install`)
+- Missing `node_modules` or broken pnpm virtual store entries (fix: `pnpm install`)
+- Missing `src/apps/extension-host/dist` Bun Host entry (fix: `pnpm run plugin-host:prepare`)
+- Missing or mismatched pinned NSH CLI (`v0.6.1`, fix: `pnpm run nsh:install`)
 - Missing sherpa-onnx prebuilt libs (the sherpa-onnx-sys build script
   downloads from GitHub at build time; if the download fails on poor
   connectivity, set `SHERPA_ONNX_LIB_DIR` to the prebuilt lib directory
@@ -48,6 +51,8 @@ The check detects:
 ```bash
 pnpm install
 ```
+
+`pnpm install` also verifies/installs the pinned NSH CLI (`v0.6.1`, SHA-256 verified) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` so all `pnpm run ...` scripts and `pnpm exec nsh ...` work without modifying `PATH` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip). To invoke bare `nsh` directly in your shell, add `~/.nsh/bin` to `PATH`.
 
 The pnpm workspace uses the root `pnpm-lock.yaml` as its dependency lockfile;
 do not commit `package-lock.json` files for workspace packages. The standalone
@@ -72,7 +77,7 @@ pnpm run e2e:ui                     # headless NSH UI suites (cd src/nsh-ui && n
 pnpm run e2e:smoke                  # launches the built app on a scratch profile and drives it over OBP
 ```
 
-> The NSH CLI (`nsh`) and `RUSTUP_TOOLCHAIN=1.98.1` are required for the native app; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md). `desktop:dev` rebuilds before every launch; UI-only iteration can use `nsh run src/nsh-ui --target web` with hot reload.
+> `pnpm install` provisions the pinned NSH CLI (`v0.6.1`), and `desktop:dev` / `desktop:build` automatically select `RUSTUP_TOOLCHAIN=1.98.1` when the default `rustc` is older than 1.97; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md). `desktop:dev` rebuilds before every launch; UI-only iteration can use `pnpm exec nsh run src/nsh-ui --target web` with hot reload.
 
 Both launchers use the installed app's data by default, including existing model
 settings, workspaces, and sessions. Use `--isolated-data` for persistent test data
@@ -181,7 +186,7 @@ Common local checks:
 | Change type | Typical verification |
 | --- | --- |
 | Repository metadata or GitHub config | `pnpm run check:repo-hygiene && pnpm run check:github-config && git diff --check` |
-| Frontend runtime or UI | `pnpm run check:web`, plus the nearest focused test when behavior changed |
+| Frontend runtime or UI | `pnpm exec nsh check src/nsh-ui`, plus the nearest focused `nsh test` suite when behavior changed |
 | Rust shared runtime or services | Follow the nearest module `AGENTS.md`: one package/test target and the minimum required features |
 | Desktop backend / native host integration | `cargo check -p openbitfun-desktop` |
 | i18n resources | `pnpm run i18n:audit` |

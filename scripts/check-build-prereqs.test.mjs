@@ -19,8 +19,31 @@ const repoRoot = path.resolve(
 );
 const scriptPath = path.join(repoRoot, 'scripts/check-build-prereqs.mjs');
 
+function createFakeNsh(binDir, version = '0.6.1') {
+  mkdirSync(binDir, { recursive: true });
+  const fakeScript = path.join(binDir, 'fake-nsh.cjs');
+  writeFileSync(
+    fakeScript,
+    `console.log('nsh ${version} (test)');\n`,
+  );
+  if (process.platform === 'win32') {
+    writeFileSync(
+      path.join(binDir, 'nsh.cmd'),
+      `@echo off\r\n"${process.execPath}" "%~dp0fake-nsh.cjs" %*\r\n`,
+    );
+  } else {
+    const nshPath = path.join(binDir, 'nsh');
+    writeFileSync(
+      nshPath,
+      `#!/usr/bin/env node\nrequire('./fake-nsh.cjs');\n`,
+    );
+    chmodSync(nshPath, 0o755);
+  }
+}
+
 function createTestRoot({
   nodeModules = false,
+  nsh = nodeModules,
   pluginHostDist = false,
   sherpaOnnx = null,
   virtualStoreEntries = null,
@@ -29,6 +52,10 @@ function createTestRoot({
 
   if (nodeModules) {
     mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+  }
+
+  if (nsh) {
+    createFakeNsh(path.join(root, 'node_modules', '.bin'));
   }
 
   // Maps a virtual store package path, relative to the root, to the files it
@@ -78,11 +105,27 @@ function createFakePnpm() {
   writeFileSync(
     fakePnpmPath,
     `
-const { existsSync, mkdirSync, writeFileSync } = require('fs');
+const { chmodSync, existsSync, mkdirSync, writeFileSync } = require('fs');
 const path = require('path');
 const args = process.argv.slice(2);
+function writeFakeNsh() {
+  const binDir = path.join('node_modules', '.bin');
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(path.join(binDir, 'fake-nsh.cjs'), "console.log('nsh 0.6.1 (test)');\\n");
+  if (process.platform === 'win32') {
+    writeFileSync(
+      path.join(binDir, 'nsh.cmd'),
+      '@echo off\\r\\n"' + process.execPath + '" "%~dp0fake-nsh.cjs" %*\\r\\n',
+    );
+  } else {
+    const nshPath = path.join(binDir, 'nsh');
+    writeFileSync(nshPath, "#!/usr/bin/env node\\nrequire('./fake-nsh.cjs');\\n");
+    chmodSync(nshPath, 0o755);
+  }
+}
 if (args[0] === 'install') {
   mkdirSync('node_modules', { recursive: true });
+  writeFakeNsh();
   const restorePath = process.env.FAKE_PNPM_RESTORE_PATH;
   if (restorePath) {
     // Records whether the broken package was still present when install ran,
@@ -99,6 +142,8 @@ if (args[0] === 'install') {
 } else if (args[0] === 'run' && args[1] === 'plugin-host:prepare') {
   mkdirSync('src/apps/extension-host/dist', { recursive: true });
   writeFileSync('src/apps/extension-host/dist/extension-host.js', '');
+} else if (args[0] === 'run' && args[1] === 'nsh:install') {
+  writeFakeNsh();
 }
 `,
   );
@@ -318,4 +363,33 @@ test('--fix runs fix commands, re-verifies, and exits 0 when errors resolved', (
   assert.doesNotMatch(result.stdout, /prepare:dsh-profile/);
   assert.match(result.stdout, /Re-checking prerequisites/);
   assert.match(result.stdout, /All errors resolved/);
+});
+
+test('fails when pinned NSH CLI is missing and --fix runs pnpm run nsh:install', (t) => {
+  const binDir = createFakePnpm();
+  const root = createTestRoot({
+    nodeModules: true,
+    nsh: false,
+    pluginHostDist: true,
+    sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
+  });
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  const isolatedEnv = {
+    OPENBITFUN_NSH_DIR: path.join(root, 'missing-nsh'),
+    PATH: [binDir, path.dirname(process.execPath)].join(path.delimiter),
+  };
+
+  const failed = runCheck(root, { sherpaEnv: '', extraEnv: isolatedEnv });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /\[FAIL\] NSH CLI/);
+  assert.match(failed.stderr, /Fix: pnpm run nsh:install/);
+
+  const fixed = runCheck(root, { fix: true, sherpaEnv: '', extraEnv: isolatedEnv });
+  assert.equal(fixed.status, 0, `${fixed.stdout}\n${fixed.stderr}`);
+  assert.match(fixed.stdout, /\$ pnpm run nsh:install/);
+  assert.match(fixed.stdout, /All errors resolved/);
 });

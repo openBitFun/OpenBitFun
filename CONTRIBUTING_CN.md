@@ -14,8 +14,9 @@
 
 - Node.js 22.12+（建议 LTS 版本）
 - pnpm 10.15.0（建议通过 Corepack 使用）
-- Rust toolchain（通过 rustup 安装）
-- 原生桌面应用需准备 [NSH CLI](docs/architecture/nsh-frontend.md)（`nsh` 0.6）和 Rust 1.98.1（`RUSTUP_TOOLCHAIN=1.98.1`）
+- Rust toolchain（通过 rustup 安装）；原生桌面应用需 Rust 1.97+（若默认 `rustc` 更低，请执行 `rustup toolchain install 1.98.1`）
+- Linux 构建原生桌面另需 GTK4、libadwaita 和 WebKitGTK 6.0 开发包
+- 锁定版本的 [NSH CLI](docs/architecture/nsh-frontend.md)（`v0.6.1`）会在 `pnpm install` 时自动安装到 `~/.nsh/bin` 并链接至 `node_modules/.bin/nsh`（也可手动执行 `pnpm run nsh:install`，或设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过）
 
 OpenBitFun 将本地 JavaScript 构建和 CI 统一到 Node.js 22.12+。仓库里的
 GitHub Actions 升级使用的是兼容 Node.js 24 的 action runtime，但项目脚本
@@ -35,7 +36,9 @@ pnpm run check:build-prereqs -- --fix  # 尝试自动修复缺失的前置依赖
 
 检查项包括：
 
-- 缺少 `node_modules`（修复：`pnpm install`）
+- 缺少 `node_modules` 或 pnpm virtual store 损坏（修复：`pnpm install`）
+- 缺少 `src/apps/extension-host/dist` Bun 宿主入口（修复：`pnpm run plugin-host:prepare`）
+- 缺少或版本不匹配的锁定版 NSH CLI（`v0.6.1`，修复：`pnpm run nsh:install`）
 - 缺少 sherpa-onnx 预编译库（sherpa-onnx-sys 构建脚本会在构建时从
   GitHub 下载；若网络连通性差导致下载失败，设置
   `SHERPA_ONNX_LIB_DIR` 指向 `target/sherpa-onnx-prebuilt/` 下的预编译
@@ -46,6 +49,8 @@ pnpm run check:build-prereqs -- --fix  # 尝试自动修复缺失的前置依赖
 ```bash
 pnpm install
 ```
+
+`pnpm install` 还会自动校验并安装锁定版本的 NSH CLI（`v0.6.1`，SHA-256 校验）到 `~/.nsh/bin`，同时链接到 `node_modules/.bin/nsh`，因此所有 `pnpm run ...` 脚本与 `pnpm exec nsh ...` 无需额外配置 `PATH` 即可运行（离线或非 NSH 开发可设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过）。如需在终端中直接执行裸 `nsh` 命令，可将 `~/.nsh/bin` 加入 `PATH`。
 
 pnpm 工作区统一使用根目录的 `pnpm-lock.yaml`，不要为工作区包提交
 `package-lock.json`。独立的 `packages/dsh-acp` npm 包与
@@ -69,7 +74,7 @@ pnpm run e2e:ui                     # 无界面 NSH UI 测试（cd src/nsh-ui &&
 pnpm run e2e:smoke                  # 在临时配置下启动已构建的应用，并通过 OBP 驱动
 ```
 
-> 原生应用需要 NSH CLI（`nsh`）和 `RUSTUP_TOOLCHAIN=1.98.1`，详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)。`desktop:dev` 每次启动前都会重新构建；只迭代界面时可用 `nsh run src/nsh-ui --target web` 获得热更新。
+> `pnpm install` 会自动准备锁定版本的 NSH CLI（`v0.6.1`），默认 `rustc` 低于 1.97 时 `desktop:dev` / `desktop:build` 会自动选用 `RUSTUP_TOOLCHAIN=1.98.1`，详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)。`desktop:dev` 每次启动前都会重新构建；只迭代界面时可用 `pnpm exec nsh run src/nsh-ui --target web` 获得热更新。
 
 两种启动器默认使用安装版的日常数据，包括已有模型设置、工作区和会话。
 需要独立测试数据时，显式添加 `--isolated-data`，数据保存在当前仓库的
@@ -167,7 +172,7 @@ Repository Object Sizes 检查会拒绝超过 5 MiB 的 Git 文件对象，包�
 | 改动类型 | 常用验证 |
 | --- | --- |
 | 仓库元信息或 GitHub 配置 | `pnpm run check:repo-hygiene && pnpm run check:github-config && git diff --check` |
-| 前端运行时或 UI | `pnpm run check:web`；行为变化时再加最近的 focused test |
+| 前端运行时或 UI | `pnpm exec nsh check src/nsh-ui`；行为变化时再加最近的 focused `nsh test` 用例 |
 | Rust 共享 runtime 或 services | 遵循最近模块的 `AGENTS.md`，选择单个包/测试目标和最小所需 feature |
 | 桌面后端 / 原生宿主集成 | `cargo check -p openbitfun-desktop` |
 | i18n 资源 | `pnpm run i18n:audit` |

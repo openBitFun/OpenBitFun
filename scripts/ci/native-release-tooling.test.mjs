@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { desktopReleaseEnvironment, formatGithubEnv } from './desktop-release-env.mjs';
-import { NSH_ASSETS, NSH_VERSION, nshAsset } from './install-nsh.mjs';
+import {
+  ensureNsh,
+  findMatchingNsh,
+  linkNshIntoNodeModulesBin,
+  NSH_ASSETS,
+  NSH_VERSION,
+  nshAsset,
+  parseNshVersion,
+} from './install-nsh.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -95,5 +104,148 @@ test('desktop:dev keeps the installed data by default and isolates it on request
   const scripts = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).scripts;
   assert.equal(scripts['desktop:dev'], 'node scripts/desktop-nsh-dev.mjs');
   assert.equal(scripts['desktop:preview:debug'], 'node scripts/desktop-nsh-dev.mjs --no-build');
+  assert.equal(scripts['nsh:install'], 'node scripts/ci/install-nsh.mjs --ensure');
+  assert.match(scripts.postinstall, /node scripts\/ci\/install-nsh\.mjs --postinstall/);
   assert.doesNotMatch(Object.values(scripts).join('\n'), /desktop-tauri-build|scripts\/dev\.cjs|tauri dev/);
+});
+
+test('install-nsh ensure/postinstall reuses existing versions, skips in CI/opt-out, and links node_modules/.bin', async (t) => {
+  assert.equal(parseNshVersion('nsh 0.6.1 (2f51d86)'), 'v0.6.1');
+  assert.equal(parseNshVersion('nsh v0.6.1'), 'v0.6.1');
+  assert.equal(parseNshVersion('unrelated 1.0.0'), null);
+
+  const work = mkdtempSync(path.join(tmpdir(), 'openbitfun-nsh-ensure-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  mkdirSync(path.join(work, 'node_modules'), { recursive: true });
+
+  const skipEnv = await ensureNsh({
+    repoRoot: work,
+    env: { OPENBITFUN_SKIP_NSH_INSTALL: '1' },
+    postinstall: true,
+    install: async () => { throw new Error('must not download when skipped'); },
+  });
+  assert.deepEqual(skipEnv, { skipped: true, reason: 'env' });
+
+  const skipCi = await ensureNsh({
+    repoRoot: work,
+    env: { CI: 'true', PATH: '' },
+    dir: path.join(work, 'empty-nsh'),
+    postinstall: true,
+    find: () => null,
+    install: async () => { throw new Error('must not download in CI postinstall'); },
+  });
+  assert.deepEqual(skipCi, { skipped: true, reason: 'ci' });
+
+  const skipArch = await ensureNsh({
+    repoRoot: work,
+    env: { PATH: '' },
+    dir: path.join(work, 'empty-nsh'),
+    platform: 'win32',
+    arch: 'ia32',
+    postinstall: true,
+    find: () => null,
+    install: async () => { throw new Error('must not download on unsupported arch'); },
+  });
+  assert.deepEqual(skipArch, { skipped: true, reason: 'unsupported-platform' });
+
+  const fakeBin = path.join(work, 'nsh-home', 'bin', 'nsh');
+  mkdirSync(path.dirname(fakeBin), { recursive: true });
+  writeFileSync(fakeBin, '#!/bin/sh\n');
+  const reused = await ensureNsh({
+    repoRoot: work,
+    dir: path.join(work, 'nsh-home'),
+    env: { PATH: '' },
+    platform: 'darwin',
+    postinstall: true,
+    find: () => ({ binary: fakeBin, bin: path.dirname(fakeBin), version: `nsh ${NSH_VERSION.slice(1)}`, source: 'dir' }),
+    install: async () => { throw new Error('must not re-download when matching version exists'); },
+  });
+  assert.equal(reused.installed, false);
+  const unixLink = path.join(work, 'node_modules', '.bin', 'nsh');
+  assert.equal(lstatSync(unixLink).isSymbolicLink(), true);
+  assert.equal(readlinkSync(unixLink), fakeBin);
+
+  let downloadCalls = 0;
+  const freshDir = path.join(work, 'fresh-nsh');
+  const freshBin = path.join(freshDir, 'bin', 'nsh');
+  const installed = await ensureNsh({
+    repoRoot: work,
+    dir: freshDir,
+    env: { PATH: '' },
+    platform: 'darwin',
+    arch: 'arm64',
+    postinstall: true,
+    find: () => null,
+    install: async ({ dir }) => {
+      downloadCalls += 1;
+      mkdirSync(path.join(dir, 'bin'), { recursive: true });
+      writeFileSync(path.join(dir, 'bin', 'nsh'), '#!/bin/sh\n');
+      return { bin: path.join(dir, 'bin'), version: `nsh ${NSH_VERSION.slice(1)}` };
+    },
+  });
+  assert.equal(downloadCalls, 1);
+  assert.equal(installed.installed, true);
+  assert.equal(readlinkSync(unixLink), freshBin);
+
+  const winWork = mkdtempSync(path.join(tmpdir(), 'openbitfun-nsh-win-'));
+  t.after(() => rmSync(winWork, { recursive: true, force: true }));
+  mkdirSync(path.join(winWork, 'node_modules'), { recursive: true });
+  const winShim = linkNshIntoNodeModulesBin('C:\\Users\\dev\\.nsh\\bin\\nsh.exe', {
+    repoRoot: winWork,
+    platform: 'win32',
+  });
+  assert.equal(existsSync(winShim), true);
+  assert.match(readFileSync(winShim, 'utf8'), /"C:\\Users\\dev\\\.nsh\\bin\\nsh\.exe" %\*/);
+  assert.match(readFileSync(path.join(winWork, 'node_modules', '.bin', 'nsh.ps1'), 'utf8'), /nsh\.exe/);
+  assert.match(readFileSync(path.join(winWork, 'node_modules', '.bin', 'nsh'), 'utf8'), /C:\/Users\/dev\/\.nsh\/bin\/nsh\.exe/);
+
+  const skippedSelf = findMatchingNsh({
+    dir: path.join(work, 'missing'),
+    repoRoot: work,
+    env: { PATH: path.join(work, 'node_modules', '.bin') },
+    platform: 'darwin',
+    readVersion: (candidate) => (existsSync(candidate) ? { raw: `nsh ${NSH_VERSION.slice(1)}`, version: NSH_VERSION } : null),
+  });
+  assert.equal(skippedSelf, null, 'must ignore repo node_modules/.bin when probing existing nsh');
+});
+
+test('desktop:dev resolves RUSTUP_TOOLCHAIN=1.98.1 automatically when default rustc < 1.97', async () => {
+  const {
+    meetsMinRustVersion,
+    parseRustcVersion,
+    resolveDesktopDevRustEnvironment,
+  } = await import('../desktop-nsh-dev.mjs');
+
+  assert.deepEqual(parseRustcVersion('rustc 1.98.1 (abc 2026-01-01)'), [1, 98, 1]);
+  assert.equal(meetsMinRustVersion([1, 96, 0]), false);
+  assert.equal(meetsMinRustVersion([1, 97, 0]), true);
+  assert.equal(meetsMinRustVersion([2, 0, 0]), true);
+
+  assert.deepEqual(
+    resolveDesktopDevRustEnvironment({ RUSTUP_TOOLCHAIN: 'nightly' }, {
+      readRustcVersion: () => { throw new Error('must not probe rustc when RUSTUP_TOOLCHAIN is set'); },
+    }),
+    {},
+  );
+  assert.deepEqual(
+    resolveDesktopDevRustEnvironment({}, {
+      readRustcVersion: () => 'rustc 1.98.1 (abc)',
+      readRustupToolchains: () => '',
+    }),
+    {},
+  );
+  assert.deepEqual(
+    resolveDesktopDevRustEnvironment({}, {
+      readRustcVersion: () => 'rustc 1.93.0 (abc)',
+      readRustupToolchains: () => '1.93.0-aarch64-apple-darwin (default)\n1.98.1-aarch64-apple-darwin\n',
+    }),
+    { RUSTUP_TOOLCHAIN: '1.98.1' },
+  );
+  assert.throws(
+    () => resolveDesktopDevRustEnvironment({}, {
+      readRustcVersion: () => 'rustc 1.93.0 (abc)',
+      readRustupToolchains: () => '1.93.0-aarch64-apple-darwin (default)\n',
+    }),
+    /rustup toolchain install 1\.98\.1/,
+  );
 });

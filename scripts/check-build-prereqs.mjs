@@ -29,6 +29,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  findMatchingNsh,
+  NSH_VERSION,
+  parseNshVersion,
+  readNshVersion,
+} from './ci/install-nsh.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = __dirname;
@@ -101,6 +107,26 @@ function findBrokenVirtualStorePackages(rootDir) {
   return broken;
 }
 
+function hasMatchingLocalNshShim(rootDir) {
+  const binDir = join(rootDir, 'node_modules', '.bin');
+  if (process.platform === 'win32') {
+    const cmdShim = join(binDir, 'nsh.cmd');
+    if (!existsSync(cmdShim)) return false;
+    try {
+      const raw = execFileSync(
+        process.env.ComSpec || 'cmd.exe',
+        ['/d', '/s', '/c', `"${cmdShim}" --version`],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
+      ).trim();
+      return parseNshVersion(raw) === NSH_VERSION;
+    } catch {
+      return false;
+    }
+  }
+  const unixShim = join(binDir, 'nsh');
+  return readNshVersion(unixShim)?.version === NSH_VERSION;
+}
+
 function runChecks(rootDir) {
   const errors = [];
   const warnings = [];
@@ -155,7 +181,18 @@ function runChecks(rootDir) {
     });
   }
 
-  // --- Check 4: sherpa-onnx prebuilt libs ---
+  // --- Check 4: Pinned NSH CLI ---
+  const hasNsh = hasMatchingLocalNshShim(rootDir) || Boolean(findMatchingNsh({ repoRoot: rootDir }));
+  if (!hasNsh) {
+    errors.push({
+      name: 'NSH CLI',
+      message:
+        `Pinned NSH CLI (${NSH_VERSION}) is missing or mismatched. Native desktop and UI builds require nsh ${NSH_VERSION}.`,
+      fix: ['pnpm', 'run', 'nsh:install'],
+    });
+  }
+
+  // --- Check 5: sherpa-onnx prebuilt libs ---
   // sherpa-onnx-sys build.rs auto-detects target/sherpa-onnx-prebuilt/<version>/lib/
   // and returns immediately without downloading. Only warn for the first-build
   // scenario where no prebuilt cache exists yet.

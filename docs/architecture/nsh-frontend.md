@@ -400,17 +400,43 @@ not offer, and how it says so:
 | `ecosystem-compatibility` account capture, pets and per-application pages | Discovery snapshot, MCP import and removed-session restore are in `Settings → External import`; account capture and pet handling use desktop-only adapters |
 | In-place updates on Windows/Linux | The updater reports that in-place install is not available yet; macOS installs in place |
 
+## Toolchain & setup
+
+The native desktop runner (`src/apps/desktop-nsh/native/Cargo.toml`) pins the
+`nsh-*` crates to `=0.6.1` and declares `rust-version = "1.97"`. The matching
+pinned NSH CLI (`v0.6.1`, SHA-256 verified against `scripts/ci/install-nsh.mjs`)
+is installed automatically by `pnpm install`:
+
+- `pnpm install` runs `node scripts/ci/install-nsh.mjs --postinstall`, which
+  reuses an existing matching `v0.6.1` installation if present or downloads the
+  pinned release archive into `~/.nsh/bin`, then links/shims it into
+  `node_modules/.bin/nsh`.
+- All `pnpm run ...` scripts (`desktop:dev`, `desktop:build`, `e2e:ui`,
+  `desktop-nsh:*`, `mobile-nsh:check`) and `pnpm exec nsh ...` resolve
+  `node_modules/.bin/nsh` automatically without editing your shell `PATH`. To
+  run bare `nsh` commands directly inside `src/nsh-ui`, add `~/.nsh/bin` to
+  `PATH` (`export PATH="$HOME/.nsh/bin:$PATH"`).
+- To install or repair the pinned CLI manually, run `pnpm run nsh:install` (or
+  `node scripts/ci/install-nsh.mjs`). Set `OPENBITFUN_SKIP_NSH_INSTALL=1` to
+  opt out during `pnpm install` (for offline or non-NSH work); CI postinstall
+  skips downloading automatically because CI jobs that need NSH invoke
+  `node scripts/ci/install-nsh.mjs` in their own step.
+- If your default `rustc` is older than `1.97`, install the matching toolchain
+  once with `rustup toolchain install 1.98.1`. Both `pnpm run desktop:dev` and
+  `pnpm run desktop:build` automatically select `RUSTUP_TOOLCHAIN=1.98.1` when
+  needed (an explicit `RUSTUP_TOOLCHAIN` env var always takes precedence).
+
 ## Verification
 
 Two headless layers plus the desktop-window smoke path are runnable from a
 checkout:
 
 ```bash
-export PATH="$HOME/.nsh/bin:$PATH"
-cd src/nsh-ui && nsh check
-cd src/nsh-ui && nsh test App.test.tsx
-cd src/nsh-ui && nsh test .                 # runs App.test.tsx + all test/*.test.tsx suites
-cd src/nsh-ui && nsh package . --target web
+# Using the repo-linked nsh binary installed by `pnpm install` (or export PATH="$HOME/.nsh/bin:$PATH" to invoke `nsh` directly)
+pnpm exec nsh check src/nsh-ui
+(cd src/nsh-ui && pnpm exec nsh test App.test.tsx)
+pnpm run e2e:ui                             # runs App.test.tsx + all test/*.test.tsx suites
+(cd src/nsh-ui && pnpm exec nsh package . --target web)
 ```
 
 The headless suites play the embedding host (`test/support.ts` and local

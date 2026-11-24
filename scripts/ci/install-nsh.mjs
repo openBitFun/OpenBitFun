@@ -8,14 +8,37 @@
 // Archives are verified against the SHA-256 digests pinned below, not against a
 // checksum downloaded from the same place.
 //
-// Usage: node scripts/ci/install-nsh.mjs [--dir <install dir>]
+// Usage:
+//   node scripts/ci/install-nsh.mjs [--dir <install dir>]
+//   node scripts/ci/install-nsh.mjs --ensure [--dir <install dir>]
+//   node scripts/ci/install-nsh.mjs --postinstall [--dir <install dir>]
+//
+// `--ensure` skips downloading when the pinned version is already present and
+// links/shims it into `<repo>/node_modules/.bin/nsh` so `pnpm run ...` works
+// without shell PATH changes. `--postinstall` adds CI and opt-out guards
+// (`OPENBITFUN_SKIP_NSH_INSTALL=1`) for `pnpm install`.
 // Appends `<dir>/bin` to GITHUB_PATH when set; prints the installed version.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const NSH_VERSION = 'v0.6.1';
 
@@ -52,7 +75,141 @@ async function download(url, attempts = 3) {
   throw new Error(`Could not download ${url}: ${lastError?.message}`);
 }
 
-export async function installNsh({ dir = path.join(homedir(), '.nsh') } = {}) {
+export function nshBinaryName(platform = process.platform) {
+  return platform === 'win32' ? 'nsh.exe' : 'nsh';
+}
+
+export function parseNshVersion(output) {
+  const match = String(output ?? '').match(/\bnsh\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/i);
+  return match ? `v${match[1]}` : null;
+}
+
+export function readNshVersion(binary) {
+  if (!binary || !existsSync(binary)) return null;
+  try {
+    const raw = execFileSync(binary, ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    }).trim();
+    const version = parseNshVersion(raw);
+    return version ? { raw, version } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isDirOnPath(dir, env = process.env, platform = process.platform) {
+  const sep = platform === 'win32' ? ';' : ':';
+  const normalize = (value) => {
+    const resolved = path.resolve(value);
+    return platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  const target = normalize(dir);
+  return String(env.PATH ?? '')
+    .split(sep)
+    .filter(Boolean)
+    .some((entry) => {
+      try {
+        return normalize(entry) === target;
+      } catch {
+        return false;
+      }
+    });
+}
+
+export function findMatchingNsh({
+  dir,
+  env = process.env,
+  platform = process.platform,
+  repoRoot = REPO_ROOT,
+  readVersion = readNshVersion,
+} = {}) {
+  const installDir = dir ?? env.OPENBITFUN_NSH_DIR ?? path.join(homedir(), '.nsh');
+  const binName = nshBinaryName(platform);
+  const normalize = (value) => {
+    const resolved = path.resolve(value);
+    return platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  const skipDirs = new Set([normalize(path.join(repoRoot, 'node_modules', '.bin'))]);
+  const candidates = [path.join(installDir, 'bin', binName)];
+  const sep = platform === 'win32' ? ';' : ':';
+  for (const entry of String(env.PATH ?? '').split(sep).filter(Boolean)) {
+    let normalized;
+    try {
+      normalized = normalize(entry);
+    } catch {
+      continue;
+    }
+    if (skipDirs.has(normalized)) continue;
+    skipDirs.add(normalized);
+    candidates.push(path.join(entry, binName));
+  }
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const key = normalize(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const info = readVersion(candidate);
+    if (info?.version === NSH_VERSION) {
+      return {
+        binary: candidate,
+        bin: path.dirname(candidate),
+        version: info.raw,
+        source: key === normalize(path.join(installDir, 'bin', binName)) ? 'dir' : 'path',
+      };
+    }
+  }
+  return null;
+}
+
+export function linkNshIntoNodeModulesBin(
+  binary,
+  { repoRoot = REPO_ROOT, platform = process.platform } = {},
+) {
+  const nodeModules = path.join(repoRoot, 'node_modules');
+  if (!existsSync(nodeModules)) return null;
+  const binDir = path.join(nodeModules, '.bin');
+  mkdirSync(binDir, { recursive: true });
+  if (platform === 'win32') {
+    const cmdPath = path.join(binDir, 'nsh.cmd');
+    const ps1Path = path.join(binDir, 'nsh.ps1');
+    const shPath = path.join(binDir, 'nsh');
+    const escapedPs1 = binary.replace(/"/g, '`"');
+    const posixBinary = binary.replace(/\\/g, '/').replace(/'/g, `'\\''`);
+    writeFileSync(cmdPath, `@ECHO off\r\n"${binary}" %*\r\n`);
+    writeFileSync(ps1Path, `& "${escapedPs1}" @args\r\nexit $LASTEXITCODE\r\n`);
+    writeFileSync(shPath, `#!/bin/sh\nexec '${posixBinary}' "$@"\n`);
+    return cmdPath;
+  }
+  const linkPath = path.join(binDir, 'nsh');
+  try {
+    if (lstatSync(linkPath).isSymbolicLink() && readlinkSync(linkPath) === binary) {
+      return linkPath;
+    }
+  } catch {
+    // Link does not exist yet or is not a symlink; replace it below.
+  }
+  rmSync(linkPath, { force: true });
+  symlinkSync(binary, linkPath);
+  try {
+    chmodSync(binary, 0o755);
+  } catch {
+    // Ignore when the target binary is owned by another user / read-only store.
+  }
+  return linkPath;
+}
+
+function moveDirectory(from, to) {
+  try {
+    renameSync(from, to);
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error;
+    cpSync(from, to, { recursive: true });
+  }
+}
+
+export async function installNsh({ dir = process.env.OPENBITFUN_NSH_DIR || path.join(homedir(), '.nsh') } = {}) {
   const { asset, sha256, url } = nshAsset();
   console.log(`[install-nsh] Installing NSH ${NSH_VERSION} (${asset}) into ${dir}`);
   const bytes = await download(url);
@@ -68,17 +225,17 @@ export async function installNsh({ dir = path.join(homedir(), '.nsh') } = {}) {
     // Windows' tar.exe also unpacks the zip.
     execFileSync('tar', ['-xf', archive, '-C', work], { stdio: 'inherit', windowsHide: true });
     const extracted = path.join(work, 'nsh');
-    const binary = path.join(extracted, 'bin', process.platform === 'win32' ? 'nsh.exe' : 'nsh');
+    const binary = path.join(extracted, 'bin', nshBinaryName());
     if (!existsSync(binary)) throw new Error(`${asset} holds no nsh/bin/nsh`);
     // Replace the whole directory: runtimes of another release must not stay.
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(path.dirname(dir), { recursive: true });
-    renameSync(extracted, dir);
+    moveDirectory(extracted, dir);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   const bin = path.join(dir, 'bin');
-  const version = execFileSync(path.join(bin, process.platform === 'win32' ? 'nsh.exe' : 'nsh'), ['--version'], {
+  const version = execFileSync(path.join(bin, nshBinaryName()), ['--version'], {
     encoding: 'utf8', windowsHide: true,
   }).trim();
   console.log(`[install-nsh] Installed ${version}`);
@@ -86,11 +243,77 @@ export async function installNsh({ dir = path.join(homedir(), '.nsh') } = {}) {
   return { bin, version };
 }
 
+export async function ensureNsh({
+  dir,
+  repoRoot = REPO_ROOT,
+  env = process.env,
+  platform = process.platform,
+  arch = process.arch,
+  postinstall = false,
+  install = installNsh,
+  find = findMatchingNsh,
+  link = linkNshIntoNodeModulesBin,
+} = {}) {
+  const installDir = dir ?? env.OPENBITFUN_NSH_DIR ?? path.join(homedir(), '.nsh');
+  if (env.OPENBITFUN_SKIP_NSH_INSTALL === '1') {
+    console.log('[install-nsh] Skipping NSH CLI installation (OPENBITFUN_SKIP_NSH_INSTALL=1).');
+    return { skipped: true, reason: 'env' };
+  }
+  const existing = find({ dir: installDir, env, platform, repoRoot });
+  if (existing) {
+    const linked = link(existing.binary, { repoRoot, platform });
+    console.log(`[install-nsh] Using existing ${existing.version} (${existing.binary})`);
+    return { ...existing, linked, installed: false };
+  }
+  if (postinstall && env.CI) {
+    console.log('[install-nsh] Skipping NSH CLI download in CI postinstall (run "node scripts/ci/install-nsh.mjs" when NSH is needed).');
+    return { skipped: true, reason: 'ci' };
+  }
+  if (postinstall && !NSH_ASSETS[`${platform}-${arch}`]) {
+    console.warn(`[install-nsh] No pinned NSH ${NSH_VERSION} build for ${platform}-${arch}; skipping.`);
+    return { skipped: true, reason: 'unsupported-platform' };
+  }
+  let installed;
+  try {
+    installed = await install({ dir: installDir });
+  } catch (error) {
+    if (postinstall) {
+      throw new Error(
+        `${error.message}\nSet OPENBITFUN_SKIP_NSH_INSTALL=1 to skip NSH CLI installation during pnpm install.`,
+      );
+    }
+    throw error;
+  }
+  const binary = path.join(installed.bin, nshBinaryName(platform));
+  const linked = link(binary, { repoRoot, platform });
+  if (!env.GITHUB_PATH && !isDirOnPath(installed.bin, env, platform)) {
+    console.log(
+      `[install-nsh] Linked into node_modules/.bin/nsh for pnpm scripts. To run "nsh" directly in your shell, add ${installed.bin} to PATH.`,
+    );
+  }
+  return { ...installed, binary, linked, installed: true };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const dirIndex = args.indexOf('--dir');
   const dir = dirIndex >= 0 ? path.resolve(args[dirIndex + 1]) : undefined;
-  installNsh(dir ? { dir } : {}).catch((error) => {
+  const postinstall = args.includes('--postinstall');
+  const ensure = postinstall || args.includes('--ensure');
+  const run = ensure
+    ? () => ensureNsh({ ...(dir ? { dir } : {}), postinstall })
+    : async () => {
+        const result = await installNsh(dir ? { dir } : {});
+        const binary = path.join(result.bin, nshBinaryName());
+        linkNshIntoNodeModulesBin(binary);
+        if (!process.env.GITHUB_PATH && !isDirOnPath(result.bin)) {
+          console.log(
+            `[install-nsh] To run "nsh" directly in your shell, add ${result.bin} to PATH (or use "pnpm exec nsh").`,
+          );
+        }
+        return result;
+      };
+  run().catch((error) => {
     console.error(`[install-nsh] ${error.message}`);
     process.exitCode = 1;
   });

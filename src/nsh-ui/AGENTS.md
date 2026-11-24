@@ -626,7 +626,9 @@ switcher in the main flow.
 ## Commands
 
 ```bash
-export PATH="$HOME/.nsh/bin:$PATH"        # nsh is installed outside PATH here
+# `pnpm install` installs pinned nsh (v0.6.1) to ~/.nsh/bin and links node_modules/.bin/nsh.
+# Use `pnpm exec nsh ...` directly, or export PATH="$HOME/.nsh/bin:$PATH" for bare `nsh`:
+export PATH="$HOME/.nsh/bin:$PATH"
 
 cd src/nsh-ui
 nsh check                                 # type check (generated .nsh/types)
