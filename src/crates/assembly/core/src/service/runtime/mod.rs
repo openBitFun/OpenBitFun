@@ -9,7 +9,7 @@ use openbitfun_services_core::managed_runtime::ManagedRuntimeResolver;
 use std::path::{Path, PathBuf};
 
 pub use openbitfun_services_core::managed_runtime::{
-    ResolvedCommand, RuntimeCommandCapability, RuntimeSource,
+    ResolvedCommand, RuntimeCommandCapability, RuntimeSource, TerminalPathEntries,
 };
 
 #[derive(Debug, Clone)]
@@ -63,6 +63,11 @@ impl RuntimeManager {
         self.inner.managed_path_entries()
     }
 
+    /// PATH priority anchors for newly created terminal sessions.
+    pub fn terminal_path_entries(&self) -> TerminalPathEntries {
+        self.inner.terminal_path_entries()
+    }
+
     pub fn merged_path_env(&self, existing_path: Option<&str>) -> Option<String> {
         self.inner.merged_path_env(existing_path)
     }
@@ -100,6 +105,10 @@ mod tests {
             .managed_path_entries()
             .iter()
             .any(|p| p == &node_bin));
+        assert_eq!(
+            manager.terminal_path_entries().managed_prefix,
+            manager.managed_path_entries()
+        );
 
         let _ = fs::remove_dir_all(root);
     }
