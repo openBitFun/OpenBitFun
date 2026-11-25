@@ -61,9 +61,9 @@ pnpm 工作区统一使用根目录的 `pnpm-lock.yaml`，不要为工作区包�
 
 ```bash
 # Desktop：原生 NSH 应用（src/apps/desktop-nsh + src/nsh-ui + 后端库）
-pnpm run desktop:dev                # 构建 UI 包、后端和运行器（debug）后启动
+pnpm run desktop:dev                # 构建 UI 包、后端和运行器（cargo profile `desktop-dev`）后启动
 pnpm run desktop:dev -- --isolated-data # 显式使用当前仓库的独立测试数据
-pnpm run desktop:preview:debug      # 不重新构建，直接运行上次的 debug 构建
+pnpm run desktop:preview:debug      # 不重新构建，直接运行上次的开发构建
 pnpm run prepare:dsh-profile        # 可选：编译 DeepSeek Harness 桥，供本地会话使用
 
 # Desktop（当前系统的打包应用：target/desktop-nsh/）

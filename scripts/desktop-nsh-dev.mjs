@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Development loop of the native desktop app: builds the UI bundle, the backend
-// library and the runner (`pnpm run desktop-nsh:build`, debug profile), then runs
-// `target/debug/openbitfun-nsh` with `NSH_APP_DIR=target/desktop-nsh/nsh`.
+// library and the runner (`pnpm run desktop-nsh:build:dev`, the `desktop-dev` cargo
+// profile: debug assertions and line tables, optimized dependencies), then runs
+// `target/desktop-dev/openbitfun-nsh` with `NSH_APP_DIR=target/desktop-nsh/nsh`.
 //
 // Usage: node scripts/desktop-nsh-dev.mjs [--no-build] [--isolated-data | --shared-data]
 //   --no-build       reuse the last build (`pnpm run desktop:preview:debug`)
@@ -130,7 +131,7 @@ function main(args) {
         `[desktop-dev] Using RUSTUP_TOOLCHAIN=${rustEnv.RUSTUP_TOOLCHAIN} (native desktop requires Rust >= ${MIN_DESKTOP_RUST_VERSION.join('.')})`,
       );
     }
-    const build = spawnSync('pnpm', ['run', 'desktop-nsh:build'], {
+    const build = spawnSync('pnpm', ['run', 'desktop-nsh:build:dev'], {
       cwd: ROOT,
       stdio: 'inherit',
       shell: process.platform === 'win32',
@@ -139,8 +140,8 @@ function main(args) {
     });
     if (build.status !== 0) process.exit(build.status ?? 1);
   }
-  const runner = path.join(ROOT, 'target', 'debug', process.platform === 'win32' ? 'openbitfun-nsh.exe' : 'openbitfun-nsh');
-  for (const [file, hint] of [[runner, 'pnpm run desktop-nsh:build'], [appDir, 'pnpm run desktop-nsh:bundle']]) {
+  const runner = path.join(ROOT, 'target', 'desktop-dev', process.platform === 'win32' ? 'openbitfun-nsh.exe' : 'openbitfun-nsh');
+  for (const [file, hint] of [[runner, 'pnpm run desktop-nsh:build:dev'], [appDir, 'pnpm run desktop-nsh:bundle']]) {
     if (!existsSync(file)) {
       console.error(`[desktop-dev] Missing ${path.relative(ROOT, file)}; run ${hint} first.`);
       process.exit(1);

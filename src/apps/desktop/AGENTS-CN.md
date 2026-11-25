@@ -67,8 +67,8 @@ crate；`src/crates/assembly/core` 只保留产品装配与兼容桥接。
 ## 命令
 
 ```bash
-pnpm run desktop:dev              # 构建（debug）并运行原生应用（scripts/desktop-nsh-dev.mjs）
-pnpm run desktop:preview:debug    # 不重新构建，运行上一次 debug 构建
+pnpm run desktop:dev              # 构建（profile desktop-dev）并运行原生应用（scripts/desktop-nsh-dev.mjs）
+pnpm run desktop:preview:debug    # 不重新构建，运行上一次开发构建
 pnpm run desktop-nsh:build        # UI bundle + 后端库 + runner
 pnpm run desktop-nsh:package:mac  # target/desktop-nsh/OpenBitFun.app（另有 :windows、:linux）
 pnpm run prepare:dsh-profile      # 可选：本地 DeepSeek Harness 会话

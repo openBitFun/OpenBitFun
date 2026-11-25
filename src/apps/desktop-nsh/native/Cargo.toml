@@ -144,6 +144,20 @@ undocumented_unsafe_blocks = "warn"
 [profile.dev]
 debug = "line-tables-only"
 
+# The native desktop's development loop (`pnpm run desktop:dev`): dependencies
+# (NSH, QuickJS, tokio, serde...) optimized, because every frame runs through
+# them; the workspace's own crates stay unoptimized so rebuilds stay incremental.
+# `scripts/desktop-nsh-dev.mjs` runs `target/desktop-dev/openbitfun-nsh`.
+[profile.desktop-dev]
+inherits = "dev"
+
+# objc2 verifies every AppKit call's encoding under debug assertions, on the
+# main thread, on every frame; the workspace's own assertions stay on.
+[profile.desktop-dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
 # Same release profiles as the root workspace, so the runner and the backend
 # library it loads are built alike (`scripts/package-desktop-nsh-macos.mjs`).
 [profile.release]

@@ -82,8 +82,8 @@ product wiring and compatibility bridges in `src/crates/assembly/core`.
 ## Commands
 
 ```bash
-pnpm run desktop:dev              # build (debug) and run the native app (scripts/desktop-nsh-dev.mjs)
-pnpm run desktop:preview:debug    # run the last debug build without rebuilding
+pnpm run desktop:dev              # build (profile desktop-dev) and run the native app (scripts/desktop-nsh-dev.mjs)
+pnpm run desktop:preview:debug    # run the last development build without rebuilding
 pnpm run desktop-nsh:build        # UI bundle + backend library + runner
 pnpm run desktop-nsh:package:mac  # target/desktop-nsh/OpenBitFun.app (also :windows, :linux)
 pnpm run prepare:dsh-profile      # optional: local DeepSeek Harness sessions

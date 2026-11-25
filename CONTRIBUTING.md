@@ -64,9 +64,9 @@ and local implementation-process notes out of Git.
 
 ```bash
 # Desktop: the native NSH app (src/apps/desktop-nsh + src/nsh-ui + the backend library)
-pnpm run desktop:dev                # build the UI bundle, backend and runner (debug), then run it
+pnpm run desktop:dev                # build the UI bundle, backend and runner (cargo profile `desktop-dev`), then run it
 pnpm run desktop:dev -- --isolated-data # opt into checkout-local test data
-pnpm run desktop:preview:debug      # run the last debug build without rebuilding
+pnpm run desktop:preview:debug      # run the last development build without rebuilding
 pnpm run prepare:dsh-profile        # optional: compile the DeepSeek Harness bridge for local sessions
 
 # Desktop (packaged app for this OS: target/desktop-nsh/)
