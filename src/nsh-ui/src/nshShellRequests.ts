@@ -14,6 +14,9 @@
 import { Buffer } from "buffer";
 import { Clipboard } from "nsh";
 import { Application } from "nsh/desktop";
+import { entryDeviceId, fleetActive } from "./bridge";
+import { openWorkspaceById } from "./api";
+import { focusPane, loadWorkspaces, navigateScene, selectSession, selectWorkspace, workspaces } from "./state";
 import { mainWindow } from "./nshDesktopShell";
 import { BROWSER_SHELL_OPERATIONS, markBrowserActuatorInstalled } from "./browserStore";
 import { PET_SHELL_OPERATIONS } from "./desktopPresence"; // wave22-p3
@@ -60,12 +63,35 @@ export function fileUrlToPath(url: string): string {
   return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
 }
 
+function showMainWindow(): void {
+  const win = mainWindow();
+  if (!win) throw new Error("The main window is not available");
+  win.show();
+  win.focus();
+}
+
 const OPERATIONS: Record<string, Operation> = {
   "window.show": async () => {
-    const win = mainWindow();
-    if (!win) throw new Error("The main window is not available");
-    win.show();
-    win.focus();
+    showMainWindow();
+    return null;
+  },
+  "session.openLocal": async args => {
+    const { sessionId, workspaceId } = args;
+    if (typeof sessionId !== "string" || !sessionId || typeof workspaceId !== "string" || !workspaceId) {
+      throw new Error("A local session and workspace are required");
+    }
+    const deviceId = entryDeviceId() ?? "";
+    if (fleetActive() && !deviceId) throw new Error("The local desktop identity is unavailable");
+    if (!fleetActive() && !workspaces().some(ws => ws.id === workspaceId)) {
+      await openWorkspaceById({ id: workspaceId });
+      await loadWorkspaces();
+      if (!workspaces().some(ws => ws.id === workspaceId)) throw new Error("Failed to open the local workspace");
+    }
+    showMainWindow();
+    selectWorkspace(workspaceId, { deviceId, loadSessions: false });
+    selectSession(sessionId, deviceId, workspaceId);
+    focusPane(0);
+    navigateScene("sessions");
     return null;
   },
   "window.hide": async (_args, deps) => {

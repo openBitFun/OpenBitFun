@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:254a331c124a4510",
+  "digest": "fnv1a64:0ee9d4ac58a406ac",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -1875,15 +1875,14 @@
     },
     {
       "id": "desktop_external_control",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "local HTTP task control was retired with the Tauri desktop shell"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "local HTTP task control was retired with the Tauri desktop shell"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -10760,6 +10759,12 @@
       "id": "desktop_card_set_visible",
       "route": {
         "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_external_control",
+      "route": {
+        "kind": "entry_local"
       }
     },
     {

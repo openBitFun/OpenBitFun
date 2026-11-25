@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "0819b4d1d5c0c8eb7c3435284f56a677cc8d6ec3bd13c6875204e25763b3b508",
-  "count": 222,
+  "catalogDigest": "db8892a2546bfc5814c1a52085f61548b07a938704dafba6146274870ca4bd34",
+  "count": 223,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
     "unstructuredInteraction": 186,
-    "visualSelection": 26
+    "visualSelection": 27
   },
   "entries": [
     {
@@ -2576,18 +2576,18 @@
     {
       "capabilityId": "setting.application.input",
       "itemId": "microphone-test",
-      "titleZh": "选择输入麦克风设备并现场测试语音转写效果与耗时",
-      "titleEn": "Select a microphone device and run a live speech-recognition test",
+      "titleZh": "在支持麦克风输入的客户端测试转写",
+      "titleEn": "Test transcription on a client with microphone input",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“选择输入麦克风设备并现场测试语音转写效果与耗时”需要枚举当前在线音频硬件并由你亲自说话试音；智能体会直达语音诊断测试入口。",
-      "reasonEn": "“Select a microphone device and run a live speech-recognition test” requires enumerating live audio input hardware and speaking a test phrase; the Agent opens the microphone diagnostic section directly.",
+      "reasonZh": "“在支持麦克风输入的客户端测试转写”需要用户选择输入设备并录制一段用于测试的音频。",
+      "reasonEn": "Test transcription on a client with microphone input by choosing a device and recording a short sample in that client.",
       "presentationTarget": {
         "kind": "settings",
         "pageId": "application.voice"
       },
       "evidence": [
-        "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.voice_input.microphone_device_id\"",
-        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#recognition"
+        "command:speech_start_input_session",
+        "command:speech_finish_input_session"
       ]
     },
     {
@@ -3248,6 +3248,22 @@
       "evidence": [
         "command:browser_control_list_browsers",
         "command:browser_control_enable_default_cdp"
+      ]
+    },
+    {
+      "capabilityId": "setting.tools.desktop-control",
+      "itemId": "external-control",
+      "titleZh": "为本机集成授权工作区",
+      "titleEn": "Authorize workspaces for local integrations",
+      "reasonCode": "visualSelection",
+      "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
+      "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.desktop-control"
+      },
+      "evidence": [
+        "command:desktop_external_control"
       ]
     },
     {

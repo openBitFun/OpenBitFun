@@ -72,6 +72,13 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     let data_dir = path_manager.user_data_dir();
 
     // Managed state every command handler can borrow (`host::State`).
+    let mut controller_dir = data_dir.join("external-control");
+    if !crate::miniapp_desktop::host_channel().is_default() {
+        controller_dir.push("development");
+    }
+    host.manage(crate::external_control::DesktopController::new(
+        controller_dir,
+    ));
     host.manage(app_state);
     host.manage(crate::sleep_prevention::SleepPreventionState::default());
     host.manage(desktop_runtime);
@@ -163,6 +170,7 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     crate::api::account_records_api::start(settings_sync_handle.clone());
     // Preferences and permission configuration follow the signed-in account.
     crate::api::account_settings_sync_api::start(settings_sync_handle);
+    crate::external_control::restore(service.host_handle()).await;
     Ok(service)
 }
 
@@ -172,6 +180,9 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
 pub async fn shutdown_native_backend(service: &BackendService, reason: &'static str) {
     crate::api::html_preview_api::release_all_previews();
     let host = service.host();
+    if let Some(controller) = host.try_state::<Arc<crate::external_control::DesktopController>>() {
+        controller.stop().await;
+    }
     if let Some(terminal_state) = host.try_state::<crate::api::terminal_api::TerminalState>() {
         if tokio::time::timeout(
             std::time::Duration::from_secs(3),

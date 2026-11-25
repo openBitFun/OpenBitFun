@@ -157,6 +157,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("desktop_card_set_bounds", NativeCommandSupport::Native),
     ("desktop_card_set_checklist_item", NativeCommandSupport::Native),
     ("desktop_card_set_visible", NativeCommandSupport::Native),
+    ("desktop_external_control", NativeCommandSupport::Native),
     ("device_records_overview", NativeCommandSupport::Native),
     ("dispatch_answer", NativeCommandSupport::Native),
     ("dispatch_append", NativeCommandSupport::Native),
@@ -896,6 +897,7 @@ pub(super) fn dispatch<'a>(
         "desktop_card_set_bounds" => command_desktop_card_set_bounds(host, args),
         "desktop_card_set_checklist_item" => command_desktop_card_set_checklist_item(host, args),
         "desktop_card_set_visible" => command_desktop_card_set_visible(host, args),
+        "desktop_external_control" => command_desktop_external_control(host, args),
         "device_records_overview" => command_device_records_overview(host, args),
         "dispatch_answer" => command_dispatch_answer(host, args),
         "dispatch_append" => command_dispatch_append(host, args),
@@ -2792,6 +2794,17 @@ fn command_desktop_card_set_visible(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::desktop_cards::desktop_card_api::desktop_card_set_visible(
             host.command_state("desktop_card_set_visible")?,
             arg(&args, "request", "desktop_card_set_visible")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_external_control(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::external_control::desktop_external_control(
+            HostHandle::new(Arc::clone(host)),
+            arg(&args, "request", "desktop_external_control")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
