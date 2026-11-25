@@ -105,6 +105,7 @@ export type SettingsPageId =
   | "devices"
   | "openbitfun"
   | "activity"
+  | "storage"
   | "archived"
   | "models"
   | "session-memory"

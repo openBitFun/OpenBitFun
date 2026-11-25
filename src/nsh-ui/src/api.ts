@@ -938,3 +938,46 @@ export const markSessionSeenOnHost = (request: {
   workspaceId?: string;
   seenThroughMs?: number;
 }) => invokeCommand<{ changed: boolean }>("mark_session_seen", request);
+
+export type SnapshotPeriod = "thirtyDays" | "sevenDays" | "all";
+
+interface SnapshotCandidate {
+  sessionId: string;
+  name: string;
+  activeAt: number;
+  revision: string;
+  removed?: boolean;
+}
+
+export interface SnapshotStorageOverview {
+  totalBytes: number;
+  unidentifiedBytes: number;
+  scanErrors: string[];
+  workspaces: {
+    workspaceId: string;
+    name: string;
+    location: string;
+    bytes: number;
+    sharedBytes: number;
+    estimatedBytes: number;
+    skippedSessions: number;
+    candidates: SnapshotCandidate[];
+    warning: string | null;
+    unverifiedReferences: boolean;
+  }[];
+}
+
+interface SnapshotCleanupResult {
+  removedSessions: number;
+  skippedSessions: number;
+  freedBytes: number;
+  errors: string[];
+}
+
+export function inspectSnapshotStorage(period: SnapshotPeriod) {
+  return invokeCommand<SnapshotStorageOverview>("inspect_snapshot_storage", { period });
+}
+
+export function cleanSnapshotStorage(workspaceId: string, period: SnapshotPeriod, candidates: SnapshotCandidate[]) {
+  return invokeCommand<SnapshotCleanupResult>("clean_snapshot_storage", { workspaceId, period, candidates });
+}

@@ -105,3 +105,13 @@ test("a persisted appearance change to system is applied and acknowledged withou
   expect(app.shows("appearance-swatch-openbitfun-light")).toBe(false);
   expect(backend.controlReports?.[1]).toMatchObject({ requestId: "e-system", success: true, result: { status: "applied" } });
 });
+
+test("the storage destination opens settings without scanning a non-native controller", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await showAllSessions(app, "NSH skeleton");
+  await request(app, { requestId: "storage", action: "open", destination: { kind: "settings", pageId: "data.storage" } });
+  await app.waitFor("Open Storage in the desktop app to manage snapshots on this device.");
+  expect(backend.controlReports?.[0]).toMatchObject({ success: true, result: { target: "settings:storage" } });
+  expect(backend.actions()).not.toContain("inspect_snapshot_storage");
+});

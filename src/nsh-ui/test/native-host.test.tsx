@@ -350,3 +350,52 @@ test("local HTTP task control issues a scoped token, revokes it, and opens its s
   const reply = wire.invokes.find(call => call.command === "host_shell_respond" && (call.args.request as { id: number }).id === 51);
   expect(reply?.args.request).toEqual({ id: 51, ok: true, value: null });
 });
+
+test("snapshot storage cleans only confirmed preview revisions and refreshes actual usage", async () => {
+  const backend = createBackend();
+  const base = backend.handlers["openbitfun.invoke"];
+  const candidate = { sessionId: "s1", name: "Deleted chat", activeAt: 0, removed: true, revision: "old" };
+  const workspace = { workspaceId: "w1", name: "Project", location: "/project", bytes: 2048,
+    sharedBytes: 256, estimatedBytes: 1024, candidates: [candidate], skippedSessions: 1,
+    warning: null, unverifiedReferences: true };
+  let cleaned = false;
+  backend.handlers["openbitfun.invoke"] = data => {
+    const { action, request } = data as { action: string; request: { period: string } };
+    if (action === "inspect_snapshot_storage") {
+      const candidates = cleaned ? [] : [{ ...candidate, revision: request.period }];
+      return { ok: true, value: { totalBytes: cleaned ? 3072 : 4096, unidentifiedBytes: 128,
+        scanErrors: ["Read error"], workspaces: [{ ...workspace, candidates },
+          { ...workspace, workspaceId: "w2", name: "Other project", location: "/other" }] } };
+    }
+    if (action === "clean_snapshot_storage") {
+      cleaned = true;
+      return { ok: true, value: { removedSessions: 1, freedBytes: 1024, skippedSessions: 0, errors: [] } };
+    }
+    return base(data);
+  };
+  const wire = wireHost(backend);
+  const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-storage");
+  await app.waitFor("Unidentified workspace");
+  expect(wire.invokes).toContainEqual({ command: "inspect_snapshot_storage", args: { request: { period: "thirtyDays" } } });
+  await app.press("snapshot-storage-workspace");
+  await app.press("snapshot-scope-w1");
+  await app.press("snapshot-storage-period");
+  await app.press("Inactive for over 7 days");
+  await app.press("snapshot-candidates-w1");
+  await app.waitFor("Deleted chat");
+  await app.waitFor("Session removed");
+  await app.press("snapshot-storage-clean");
+  await app.waitFor("Permanently delete these file snapshots?");
+  await app.press("Cancel");
+  expect(cleaned).toBe(false);
+  await app.press("snapshot-storage-clean");
+  await app.press("snapshot-storage-confirm");
+  await app.waitFor("No sessions match this cleanup scope");
+  expect(wire.invokes.filter(call => call.command === "clean_snapshot_storage")).toEqual([{
+    command: "clean_snapshot_storage",
+    args: { request: { workspaceId: "w1", period: "sevenDays", candidates: [{ ...candidate, revision: "sevenDays" }] } },
+  }]);
+  await app.waitFor("Freed 1.0 KB. Sessions cleaned: 1. Skipped: 0.");
+});

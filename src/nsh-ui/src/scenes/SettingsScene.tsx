@@ -31,7 +31,7 @@ import {
 } from "../companionStore";
 import { PetCharacterGrid } from "../ui/companion";
 import { STATIC_MARKDOWN_OPTIONS, createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
-import { fleetActive, invokeCommand, windowShellId } from "../bridge";
+import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { fleetDeviceById, fleetDevices, refreshFleetNavigator } from "../fleetStore";
 import { isCommandUnavailable } from "../hostCommands";
 import { isRemotePeerContext } from "../shared/deviceScope";
@@ -153,6 +153,7 @@ import {
 } from "../fontPreferenceStore";
 import {
   formatBytes,
+  formatDate,
   formatBucket,
   formatCount,
   formatDuration,
@@ -444,7 +445,10 @@ import {
   type SettingsPageId,
 } from "../settingsStore";
 import { loadTerminalShells, terminalShells } from "../terminalStore";
-import { setConfig, type SessionSummary } from "../api";
+import {
+  cleanSnapshotStorage, inspectSnapshotStorage, setConfig,
+  type SessionSummary, type SnapshotPeriod, type SnapshotStorageOverview,
+} from "../api";
 import {
   TASK_MODEL_ROWS,
   chooseTaskModel,
@@ -866,6 +870,16 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         icon: "bar-chart",
         keywords: ["usage", "tokens", "cost", "statistics"],
         anchors: [],
+      },
+      {
+        id: "storage",
+        labelKey: "settings.page.storage",
+        descriptionKey: "settings.page.storageDesc",
+        icon: "hard-drive",
+        keywords: ["storage", "disk", "snapshot", "cleanup", "space"],
+        anchors: [
+          { id: "snapshot-cleanup", labelKey: "storage.cleanup" },
+        ],
       },
       {
         id: "archived",
@@ -9254,6 +9268,179 @@ async function deleteAllArchived(): Promise<void> {
   }
 }
 
+/** These commands operate on the desktop's snapshot store, including its local SSH mirrors. */
+function localSnapshotStorageAvailable(): boolean {
+  return windowShellId() === "nsh-desktop" && !isRemotePeerContext()
+    && (!fleetActive() || !deviceContext() || deviceContext() === entryDeviceId());
+}
+
+function SnapshotStorageSection() {
+  const period = signal<SnapshotPeriod>("thirtyDays");
+  const workspace = signal("");
+  const data = signal<SnapshotStorageOverview | null>(null);
+  const scanning = signal(false);
+  const cleaning = signal(false);
+  const confirming = signal(false);
+  const error = signal("");
+  const outcome = signal<{ message: string; warning: boolean } | null>(null);
+  const expanded = signal<string[]>([]);
+  let mounted = true;
+  cleanup(() => { mounted = false; });
+
+  const busy = () => scanning() || cleaning() || confirming();
+  const rows = () => (data()?.workspaces ?? []).filter(row => !workspace() || row.workspaceId === workspace());
+  const count = () => rows().reduce((sum, row) => sum + row.candidates.length, 0);
+  const excluded = () => rows().reduce((sum, row) => sum + row.skippedSessions, 0);
+  const preview = () => tr("storage.preview", {
+    sessions: formatCount(count()),
+    size: formatBytes(rows().reduce((sum, row) => sum + row.estimatedBytes, 0)),
+  });
+  const describeError = (cause: unknown, command: string) => isCommandUnavailable(cause, command)
+    ? tr("storage.hostUnsupported") : localizeHostError(errorMessageOf(cause));
+
+  async function scan() {
+    if (!mounted || scanning() || !localSnapshotStorageAvailable()) return;
+    scanning.set(true);
+    error.set("");
+    try {
+      const result = await inspectSnapshotStorage(period());
+      if (!mounted) return;
+      data.set(result);
+      if (!result.workspaces.some(row => row.workspaceId === workspace())) workspace.set("");
+    } catch (cause) {
+      if (mounted) {
+        data.set(null);
+        error.set(describeError(cause, "inspect_snapshot_storage"));
+      }
+    } finally {
+      if (mounted) scanning.set(false);
+    }
+  }
+  untracked(() => void scan());
+
+  async function clean() {
+    if (!confirming() || cleaning() || scanning() || !localSnapshotStorageAvailable()) return;
+    const selected = rows().filter(row => row.candidates.length);
+    const reviewedPeriod = period();
+    cleaning.set(true);
+    confirming.set(false);
+    outcome.set(null);
+    let removed = 0;
+    let skipped = 0;
+    let freed = 0;
+    const errors: string[] = [];
+    for (const row of selected) {
+      try {
+        const result = await cleanSnapshotStorage(row.workspaceId, reviewedPeriod, row.candidates);
+        removed += result.removedSessions;
+        skipped += result.skippedSessions;
+        freed += result.freedBytes;
+        errors.push(...result.errors);
+      } catch (cause) {
+        skipped += row.candidates.length;
+        errors.push(row.name + " · " + describeError(cause, "clean_snapshot_storage"));
+      }
+    }
+    if (!mounted) return;
+    const summary = tr("storage.result", { sessions: formatCount(removed), skipped: formatCount(skipped), size: formatBytes(freed) });
+    outcome.set({ message: [summary, ...errors].join("\n"), warning: skipped > 0 || errors.length > 0 });
+    await scan();
+    if (mounted) cleaning.set(false);
+  }
+
+  return (
+    <View style={{ gap: layout.sectionGap }}>
+      <SettingsGroup id="snapshot-usage" title={tr("storage.snapshots")} description={tr("storage.device")}
+        extra={<IconButton icon="refresh" size="xs" tooltip={tr("storage.refresh")} disabled={busy()}
+          accessibilityLabel="snapshot-storage-refresh" onPress={() => void scan()} />}>
+        <If when={scanning()}><SettingsRow first label={tr("storage.scanning")} /></If>
+        <If when={error()}>{msg => <InlineBanner tone="danger" message={msg()} />}</If>
+        <If when={data()}>{overview => <>
+          <SettingsRow first label={tr("storage.total")}>
+            <Text style={textStyle("sectionTitle")}>{formatBytes(overview().totalBytes)}</Text>
+          </SettingsRow>
+          <If when={overview().scanErrors.length > 0}>
+            <InlineBanner tone="warning" message={[tr("storage.incomplete"), ...overview().scanErrors].join("\n")} />
+          </If>
+          <Each of={overview().workspaces} key={row => row.workspaceId}>{row =>
+            <SettingsRow label={row().name} description={row().location}>
+              <View style={{ alignItems: "flex-end", gap: space.xs }}>
+                <Text style={textStyle("label")}>{formatBytes(row().bytes)}</Text>
+                <Text style={textStyle("caption")}>{tr("storage.sharedColumn")} · {row().warning ? "—" : formatBytes(row().sharedBytes)}</Text>
+              </View>
+            </SettingsRow>
+          }</Each>
+          <If when={overview().unidentifiedBytes > 0}>
+            <SettingsRow label={tr("storage.unidentified")} description={tr("storage.unidentifiedHint")}>
+              <Text style={textStyle("label")}>{formatBytes(overview().unidentifiedBytes)}</Text>
+            </SettingsRow>
+          </If>
+        </>}</If>
+      </SettingsGroup>
+      <If when={data()}>{overview =>
+        <SettingsGroup id="snapshot-cleanup" title={tr("storage.cleanup")}>
+          <SettingsRow first label={tr("storage.scope")}>
+            <SelectDropdown value={workspace()} size="sm" disabled={busy()} accessibilityLabel="snapshot-storage-workspace"
+              options={[{ value: "", label: tr("storage.allWorkspaces") }, ...overview().workspaces.map(row => ({
+                value: row.workspaceId, label: row.name, description: row.location, accessibilityLabel: "snapshot-scope-" + row.workspaceId,
+              }))]} onChange={value => { workspace.set(value); outcome.set(null); }} />
+          </SettingsRow>
+          <SettingsRow label={tr("storage.period")}>
+            <SelectDropdown<SnapshotPeriod> value={period()} size="sm" disabled={busy()} accessibilityLabel="snapshot-storage-period"
+              options={[
+                { value: "thirtyDays", label: tr("storage.thirtyDays") },
+                { value: "sevenDays", label: tr("storage.sevenDays") },
+                { value: "all", label: tr("storage.all") },
+              ]} onChange={value => {
+                if (value === period()) return;
+                period.set(value);
+                outcome.set(null);
+                void scan();
+              }} />
+          </SettingsRow>
+          <If when={!scanning()}>
+            <Each of={rows()} key={row => row.workspaceId}>{row => <>
+              <If when={row().warning || row().unverifiedReferences}>
+                <InlineBanner tone="warning" message={row().name + " · " + (row().warning ?? tr("storage.unverified"))} />
+              </If>
+              <If when={row().candidates.length > 0}>
+                <SettingsRow label={row().name} description={row().location}>
+                  <Button variant="ghost" size="sm" label={tr("storage.sessionCount", { sessions: formatCount(row().candidates.length) })}
+                    trailingIcon={expanded().includes(row().workspaceId) ? "chevron-up" : "chevron-down"}
+                    accessibilityLabel={"snapshot-candidates-" + row().workspaceId}
+                    onPress={() => expanded.update(ids => ids.includes(row().workspaceId)
+                      ? ids.filter(id => id !== row().workspaceId) : [...ids, row().workspaceId])} />
+                </SettingsRow>
+                <If when={expanded().includes(row().workspaceId)}>
+                  <Each of={row().candidates} key={item => item.sessionId}>{item =>
+                    <SettingsRow label={item().name || item().sessionId}>
+                      <Text style={textStyle("caption")}>{item().removed ? tr("storage.removedSession") :
+                        tr("storage.lastActive") + " · " + formatDate(item().activeAt)}</Text>
+                    </SettingsRow>
+                  }</Each>
+                </If>
+              </If>
+            </>}</Each>
+            <SettingsRow label={count() ? preview() : tr("storage.noCandidates")}
+              description={tr("storage.skipped", { sessions: formatCount(excluded()) })}>
+              <Button label={tr("storage.cleanup")} variant="secondary" size="sm" disabled={busy() || !count()}
+                accessibilityLabel="snapshot-storage-clean" onPress={() => confirming.set(true)} />
+            </SettingsRow>
+          </If>
+        </SettingsGroup>
+      }</If>
+      <If when={outcome()}>{result => <InlineBanner tone={result().warning ? "warning" : "success"} message={result().message} />}</If>
+      <ModalDialog open={confirming()} title={tr("storage.confirmTitle")} size="sm"
+        subtitle={tr("storage.confirm", { preview: preview() })} onClose={() => confirming.set(false)}
+        footer={<View style={{ flex: 1, flexDirection: "row", justifyContent: "flex-end", gap: space.sm }}>
+          <Button label={tr("common.cancel")} variant="secondary" onPress={() => confirming.set(false)} />
+          <Button label={tr("storage.cleanup")} variant="danger" accessibilityLabel="snapshot-storage-confirm"
+            onPress={() => void clean()} />
+        </View>} />
+    </View>
+  );
+}
+
 function ArchivedSessionsSection() {
   effect(() => {
     const _device = deviceContext();
@@ -9990,6 +10177,13 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   if (page === "devices") return <AccountDevicesPage />;
   if (page === "openbitfun") return <OpenBitFunSection />;
   if (page === "activity") return <ActivityPage />;
+  if (page === "storage") return (
+    <If when={localSnapshotStorageAvailable()} else={
+      <UnsupportedNote title={tr("settings.page.storage")} message={tr("storage.desktopOnly")} />
+    }>
+      <SnapshotStorageSection />
+    </If>
+  );
   if (page === "archived") return <ArchivedSessionsSection />;
   if (page === "models") return <ModelsPage />;
   if (page === "session-memory") {

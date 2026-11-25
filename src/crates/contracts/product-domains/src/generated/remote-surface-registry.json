@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:0ee9d4ac58a406ac",
+  "digest": "fnv1a64:5fa315dded153ec3",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -10328,6 +10328,12 @@
       }
     },
     {
+      "id": "clean_snapshot_storage",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
       "id": "cleanup_invalid_workspaces",
       "route": {
         "kind": "by_target"
@@ -12174,6 +12180,12 @@
       "id": "initialize_workspace_startup_state",
       "route": {
         "kind": "by_target"
+      }
+    },
+    {
+      "id": "inspect_snapshot_storage",
+      "route": {
+        "kind": "entry_local"
       }
     },
     {
