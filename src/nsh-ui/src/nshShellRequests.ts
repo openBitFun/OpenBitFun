@@ -13,7 +13,8 @@
 
 import { Buffer } from "buffer";
 import { Clipboard } from "nsh";
-import { Application, Window } from "nsh/desktop";
+import { Application } from "nsh/desktop";
+import { mainWindow } from "./nshDesktopShell";
 import { BROWSER_SHELL_OPERATIONS, markBrowserActuatorInstalled } from "./browserStore";
 import { PET_SHELL_OPERATIONS } from "./desktopPresence"; // wave22-p3
 import type { WindowShell } from "./windowShell";
@@ -37,7 +38,7 @@ type Operation = (args: Record<string, unknown>, deps: NshShellRequestDeps) => P
 function mainWindowFacts(): { isFullscreen: boolean; isMaximized: boolean } {
   let mode: string | undefined;
   try {
-    mode = Window.get("main")?.state()?.mode;
+    mode = mainWindow()?.state()?.mode;
   } catch {
     mode = undefined;
   }
@@ -61,7 +62,7 @@ export function fileUrlToPath(url: string): string {
 
 const OPERATIONS: Record<string, Operation> = {
   "window.show": async () => {
-    const win = Window.get("main");
+    const win = mainWindow();
     if (!win) throw new Error("The main window is not available");
     win.show();
     win.focus();

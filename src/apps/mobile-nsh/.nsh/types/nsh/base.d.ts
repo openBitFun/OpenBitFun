@@ -4,7 +4,7 @@ import type { Accessor } from "./index";
 import type { AndroidDialogHostProps, AndroidNavPageHostProps, Bounds, ColorValue, CommonProps, ComponentHostProps, DialogHostProps, Edges, IOSDialogHostProps, IOSInputHostProps, IOSNavPageHostProps, IOSProps, ImageAsset, InputHostProps, InputRef, InputStyle, JSX, Modifiers, NavPageHostProps, Point, Size, StyleProp, TextStyle, ViewRef, ViewStyle } from "./types";
 
 /** What an element is, for assistive technologies (`role`). */
-export type AccessibilityRole = "none" | "button" | "link" | "search" | "image" | "imagebutton" | "keyboardkey" | "text" | "adjustable" | "header" | "summary" | "alert" | "checkbox" | "combobox" | "menu" | "menubar" | "menuitem" | "progressbar" | "radio" | "radiogroup" | "scrollbar" | "spinbutton" | "switch" | "tab" | "tablist" | "timer" | "toolbar" | "list" | "grid" | "table" | "row" | "cell" | "columnheader" | "rowgroup" | "listbox" | "option" | "group" | "region" | "navigation" | "tree" | "treeitem" | "menuitemcheckbox" | "menuitemradio" | "dialog" | "alertdialog";
+export type AccessibilityRole = "none" | "button" | "link" | "search" | "textbox" | "image" | "imagebutton" | "keyboardkey" | "text" | "adjustable" | "header" | "summary" | "alert" | "checkbox" | "combobox" | "menu" | "menubar" | "menuitem" | "progressbar" | "radio" | "radiogroup" | "scrollbar" | "spinbutton" | "switch" | "tab" | "tablist" | "timer" | "toolbar" | "list" | "grid" | "table" | "row" | "cell" | "columnheader" | "rowgroup" | "listbox" | "option" | "group" | "region" | "navigation" | "tree" | "treeitem" | "menuitemcheckbox" | "menuitemradio" | "dialog" | "alertdialog" | "tabpanel";
 
 /** One action of an `AlertDialog`. */
 export interface AlertDialogAction {
@@ -14,6 +14,18 @@ export interface AlertDialogAction {
   role?: AlertDialogRole;
   /** What `show` reports when it is chosen (`{ action: id }`): the app's name for it, never the label, which changes with the app's language. */
   id: string;
+}
+
+/** The text field of an `AlertDialog` (`input`), focused when it shows. */
+export interface AlertDialogInput {
+  /** The text it starts with (default: empty). */
+  defaultValue?: string;
+  /** Shown while it is empty. */
+  placeholder?: string | null;
+  /** The starting text is selected as the field takes the focus, so typing replaces it (default: false, the caret after it). */
+  selectTextOnFocus?: boolean;
+  /** While it is empty, every action but the `"cancel"` ones is disabled and return chooses none (default: false). */
+  required?: boolean;
 }
 
 /** What an `AlertDialog` shows and how it closes. */
@@ -30,6 +42,8 @@ export interface AlertDialogOptions {
   closeOnEscape?: boolean | null;
   /** A press outside it closes it without an action (default: false for an alert, true for an action sheet). */
   closeOnBackdropPress?: boolean | null;
+  /** A text field in the alert, its text reported as `value` (an alert only: `show` rejects it in an action sheet). Return chooses the last `"default"` action. Where the platform's alert has no text field (Windows, Linux, the terminal, GPUI), the alert shows without one and `value` is `null`. */
+  input?: AlertDialogInput | null;
 }
 
 /** The native form of an `AlertDialog`. */
@@ -39,6 +53,8 @@ export type AlertDialogPresentation = "alert" | "actionSheet";
 export interface AlertDialogResult {
   /** The chosen action's `id`, or `null` when it closed without one. */
   action?: string | null;
+  /** The text of its `input` as it closed, `null` without one (or where the platform's alert has no text field, or when the app closed it). */
+  value?: string | null;
 }
 
 /** What an `AlertDialogAction` means. */
@@ -56,7 +72,7 @@ export type AvatarStatus = "idle" | "loading" | "loaded" | "error";
 /** A direction in two dimensions (`"vertical"` or `"horizontal"` in JS: a prop that names one, a split's or a resizable group's). */
 export type Axis = "vertical" | "horizontal";
 
-/** An item as `renderItem` draws it: what it is (`gpui-base`'s `CalendarItemState` without its states), so the drawing is made once and kept while the item's state changes. The states are the item's classes: `selected:` (the date, every day of a range, the shown month or year, the open view's toggle), `disabled:` (a day, an arrow that takes no press; the weekdays and the months' titles are labels, never disabled), `focus-visible:` (the day with the keyboard), and on the days the `data-*` attributes `data-range-start`, `data-range-end`, `data-range-middle`, `data-today` and `data-outside` (`group-selected:`, `group-data-range-start:`, ... inside, under `group` in `itemClass`). */
+/** An item as `renderItem` draws it: what it is (`gpui-base`'s `CalendarItemState` without its states), so the drawing is made once and kept while the item's state changes. The states are the item's classes: `selected:` (the date, every day of a range, the shown month or year, the open view's toggle), `disabled:` (a day, an arrow that takes no press; the weekdays and the months' titles are labels, never disabled), `focus-visible:` (the day with the keyboard), and on the days the `data-*` attributes `data-range-start`, `data-range-end`, `data-range-middle`, `data-range-preview-start`, `data-range-preview-end`, `data-range-preview-middle`, `data-today` and `data-outside` (`group-selected:`, `group-data-range-start:`, ... inside, under `group` in `itemClass`). */
 export interface CalendarEntry {
   /** What it is. */
   kind: CalendarItemKind;
@@ -240,6 +256,10 @@ export interface DataTableColumn {
   sortable?: boolean;
   /** Where it stays while the other columns scroll under it: at the left (`true` or `"left"`), leading the others, or at the right (`"right"`), after them; fixed columns keep their order. */
   fixed?: boolean | "left" | "right";
+  /** Its share of the width the columns leave free while they are narrower than the table, added to its width, as CSS's `flex-grow` (default none: it keeps its width). Shares follow the table's width; a column the user or the app resizes keeps that width instead. */
+  grow?: number | null;
+  /** Fits it to its widest text and title, as the ref's `fitColumn` does, once the table first holds rows with text in it (default false). Later data leaves the width as it is; it grows from the fitted width. */
+  autoFit?: boolean;
   /** Whether a drag of its edge resizes it (default the table's `resizableColumns`). */
   resizable?: boolean | null;
   /** Whether a drag of its title moves it (default the table's `movableColumns`). */
@@ -737,7 +757,7 @@ export interface DockRegion {
   collapsible?: boolean | null;
 }
 
-/** A tab, as `renderTab` and `renderDragPreview` render it. */
+/** A tab, as `renderTab`, `renderDragPreview` and `renderToolbar` render it. */
 export interface DockTab {
   /** The panel's key. */
   panel: string;
@@ -1342,6 +1362,10 @@ export interface MarkdownOptions {
   html?: boolean;
   /** GitHub's alerts: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` (default true). */
   alerts?: boolean;
+  /** Links: `[text](url)`, bare URLs and `<a href>` (default true); false shows their text, not a link. */
+  links?: boolean;
+  /** Images: `![alt](src)` and `<img>` (default true); false shows their `alt` text. */
+  images?: boolean;
   /** YAML front matter (`---` … `---` first) is a custom node `frontmatter` whose text is the YAML (default false: a rule and text). */
   frontmatter?: boolean;
   /** MDX: JSX elements and `{expressions}` (default false). Elements are custom nodes named by their tag (their attributes, their content), expressions custom nodes `expression` (their text); raw HTML is then not read. */
@@ -1358,16 +1382,20 @@ export interface MenuButtonItem {
   label: string;
   /** Its icon, an SF Symbol's name (`"gearshape"`), on iOS; the desktops show none. */
   icon?: string | null;
+  /** Its icon as an SVG document, on Android, which has no symbol set of its own: drawn as a template (only its alpha counts) in the item's text color, before the label. iOS draws `icon` and ignores it; the desktops show neither. */
+  svg?: string | null;
   /** A check mark: `Some` makes it a checkable item, checked or not; the app owns the value and changes it from `onSelect`. */
   checked?: boolean | null;
   /** It cannot be chosen (or opened): the system dims it. */
   disabled?: boolean;
-  /** It destroys or removes something: iOS draws it in red; the desktops show it as any item. */
+  /** It destroys or removes something: iOS draws it in red, Android in the theme's error color; the desktops show it as any item. */
   destructive?: boolean;
   /** The items under it, in order: with any, it is a submenu (or a section, with `inline`). */
   items?: (MenuButtonItem)[];
   /** With `items`, a section shown in place of a submenu: on iOS `UIMenuOptions.displayInline`, titled by its `label`; on the desktops its items between separators. */
   inline?: boolean;
+  /** With `items`, its own actions are one choice (a sort order, a repeat interval): the app checks one at a time with `checked`. On iOS `UIMenuOptions.singleSelection`, a check mark on the chosen one; on Android an exclusive checkable group, radio buttons; on the desktops check marks. Without it, `checked` items are independent checks. Its sections' and submenus' actions are not part of the choice: they set their own. A whole menu of one choice is an untitled section with it. */
+  singleSelection?: boolean;
 }
 
 /** Why a popup opened or closed (`onOpenChange`'s `reason`). */
@@ -2176,6 +2204,8 @@ export interface TextViewClasses {
   underline?: string | null;
   /** Highlighted text (`<mark>`; on the document's color when it gives one). */
   highlight?: string | null;
+  /** Text in styles the document gives it (`<span style="color: …">`, `<font color>`; in the document's color when it gives one). */
+  textStyle?: string | null;
   /** Superscript (smaller). */
   superscript?: string | null;
   /** Subscript (smaller). */
@@ -2194,6 +2224,8 @@ export interface TextViewClasses {
   table?: string | null;
   /** The horizontal scroll view of a table's cells: they scroll when the columns cannot shrink further. */
   tableScroll?: string | null;
+  /** The grid of a table's cells, in its scroll view. It draws the table's top and left lines, each cell its right and bottom ones. */
+  tableGrid?: string | null;
   /** The header row of a table, after `tableRow`. */
   tableHead?: string | null;
   /** Every row of a table: a view behind its cells, for backgrounds and borders (text styles go on the cells). */
@@ -2307,6 +2339,7 @@ export type TextViewInline =
   | { type: "text"; text: string }
   | { type: "strong" | "emphasis" | "strikethrough" | "underline" | "superscript" | "subscript" | "small"; content: TextViewInline[] }
   | { type: "highlight"; content: TextViewInline[]; color?: string }
+  | { type: "textStyle"; content: TextViewInline[]; color?: string }
   | { type: "code"; code: string }
   | { type: "keyboard"; text: string }
   | { type: "link"; url: string; title?: string; content: TextViewInline[] }
@@ -2429,6 +2462,8 @@ export interface TextViewStyles {
   underline?: StyleProp<TextStyle> | null;
   /** Highlighted text (`<mark>`; on the document's color when it gives one). */
   highlight?: StyleProp<TextStyle> | null;
+  /** Text in styles the document gives it (`<span style="color: …">`, `<font color>`; in the document's color when it gives one). */
+  textStyle?: StyleProp<TextStyle> | null;
   /** Superscript (smaller). */
   superscript?: StyleProp<TextStyle> | null;
   /** Subscript (smaller). */
@@ -2447,6 +2482,8 @@ export interface TextViewStyles {
   table?: StyleProp<TextStyle> | null;
   /** The horizontal scroll view of a table's cells: they scroll when the columns cannot shrink further. */
   tableScroll?: StyleProp<TextStyle> | null;
+  /** The grid of a table's cells, in its scroll view. It draws the table's top and left lines, each cell its right and bottom ones. */
+  tableGrid?: StyleProp<TextStyle> | null;
   /** The header row of a table, after `tableRow`. */
   tableHead?: StyleProp<TextStyle> | null;
   /** Every row of a table: a view behind its cells, for backgrounds and borders (text styles go on the cells). */
@@ -2705,8 +2742,12 @@ export interface ButtonProps extends ComponentHostProps {
   selected?: boolean;
   /** The style while `selected` (and not disabled), as `selected:` classes. */
   selectedStyle?: StyleProp<ViewStyle>;
+  /** Busy: its action is running (a "Saving…" button), and screen readers say so. Presses still count; the app sets `disabled` as well to refuse them. */
+  busy?: boolean;
   /** What screen readers say, when its content is not enough (an icon). */
   accessibilityLabel?: string | null;
+  /** What activating the button does, for screen readers, as a view's `accessibilityHint`. */
+  accessibilityHint?: string | null;
   /** What it is for screen readers (default `"button"`: a link, a tab, a menu item, ...). */
   role?: AccessibilityRole | null;
   /** How far outside its bounds presses still count, as a view's `hitSlop`: one number for every side, or the sides named (each left out 0). A small target (an icon) takes presses a finger lands near it, with no change to its layout or look. */
@@ -2721,7 +2762,7 @@ export interface ButtonProps extends ComponentHostProps {
   onPressUp?: () => void;
 }
 
-/** A press target that owns its behavior (presses, the disabled and selected states, its role for screen readers) and leaves its look to the app: no colors, sizes or label of its own. The app's `class` and `style` style it, its states with `active:`, `hover:`, `focus-visible:` (the keyboard's ring), `selected:` and `disabled:` classes or `activeStyle`, `hoverStyle`, `focusVisibleStyle`, `selectedStyle` and `disabledStyle`, and its children are its content. `hitSlop` widens where presses count past its bounds, as a view's does. In a `Toolbar` (or a `ToggleGroup`), it is one of the toolbar's items: a stop of the keyboard focus only while it is the item Tab enters the toolbar at, disabled with the toolbar too. */
+/** A press target that owns its behavior (presses, the disabled, selected and busy states, its role for screen readers) and leaves its look to the app: no colors, sizes or label of its own. The app's `class` and `style` style it, its states with `active:`, `hover:`, `focus-visible:` (the keyboard's ring), `selected:` and `disabled:` classes or `activeStyle`, `hoverStyle`, `focusVisibleStyle`, `selectedStyle` and `disabledStyle`, and its children are its content. `hitSlop` widens where presses count past its bounds, as a view's does. In a `Toolbar` (or a `ToggleGroup`), it is one of the toolbar's items: a stop of the keyboard focus only while it is the item Tab enters the toolbar at, disabled with the toolbar too. */
 export declare const Button: ((props: ButtonProps) => JSX.Element);
 
 export interface CalendarProps extends ComponentHostProps {
@@ -2759,7 +2800,7 @@ export interface CalendarProps extends ComponentHostProps {
   rowClass?: string | null;
   /** The inline style of each row, over its classes. */
   rowStyle?: StyleProp<ViewStyle>;
-  /** The classes of each item: `selected:` while selected (the date, every day of a range, the shown month or year, the open view's toggle), `disabled:` while a day or an arrow takes no press (the weekdays and the months' titles are labels, never disabled), `focus-visible:` with the keyboard on it; on the days `data-range-start:`, `data-range-end:`, `data-range-middle:` (a range's days), `data-today:` and `data-outside:` (a day of the months around); with `group`, the content follows them (`group-selected:`, `group-data-today:`, ...). */
+  /** The classes of each item: `selected:` while selected (the date, every day of a range, the shown month or year, the open view's toggle), `disabled:` while a day or an arrow takes no press (the weekdays and the months' titles are labels, never disabled), `focus-visible:` with the keyboard on it; on the days `data-range-start:`, `data-range-end:`, `data-range-middle:` (a range's days), `data-range-preview-start:`, `data-range-preview-end:`, `data-range-preview-middle:` (while a range is half picked, the days from its start to the day the mouse or the keyboard is on), `data-today:` and `data-outside:` (a day of the months around); with `group`, the content follows them (`group-selected:`, `group-data-today:`, ...). */
   itemClass?: string | null;
   /** The inline style of each item, over its classes: its text styles too, which its number inherits. */
   itemStyle?: StyleProp<TextStyle>;
@@ -2879,6 +2920,12 @@ export interface CheckboxProps extends ComponentHostProps {
   indeterminateStyle?: StyleProp<ViewStyle>;
   /** What screen readers say: what the checkbox selects, when its children have no text that says it. */
   accessibilityLabel?: string | null;
+  /** What activating the checkbox does, for screen readers, as a view's `accessibilityHint`. */
+  accessibilityHint?: string | null;
+  /** The value does not pass the app's checks (a required box left unchecked): screen readers say it is invalid each time they reach it. No look of its own; the app styles the error. */
+  invalid?: boolean;
+  /** The element whose text describes it for screen readers (its error or help line), read after its name each time it is focused, as a view's `accessibilityDescribedBy`. */
+  accessibilityDescribedBy?: ViewRef | null;
   /** What it is for screen readers (default `"checkbox"`; a menu item that is checked, ...). */
   role?: AccessibilityRole | null;
   /** How far outside its bounds presses still count, as a view's `hitSlop`: one number for every side, or the sides named (each left out 0). A small checkbox (a box with no label) takes presses a finger lands near it, with no change to its layout or look. */
@@ -3264,9 +3311,9 @@ export interface ContextMenuProps extends ComponentHostProps {
   backdropStyle?: StyleProp<ViewStyle>;
   /** What it is about: the secondary button on it (desktops), a finger held on it (touch screens), Shift+F10 or the Menu key while it has the focus (the web, Linux) or a screen reader's "show menu" action (macOS, Windows) opens the menu. */
   trigger?: JSX.Element;
-  /** iOS only: the menu as data, for the system's own context menu. On iOS (and Mac Catalyst) any items make the menu the system's (`UIContextMenuInteraction`: the trigger lifts as its preview over the blurred screen, with the system's haptics, placement and motion), in place of the children; a chosen item comes back as `onSelect({ id })`. `MenuButton`'s items: ids, labels, SF Symbols, checks, disabled and destructive items, submenus and sections. On every other platform `items`, `title` and `onSelect` are not used: the children are the menu, drawn as without `items`. */
+  /** iOS and Android: the menu as data, for the system's own context menu. On iOS (and Mac Catalyst) any items make the menu the system's (`UIContextMenuInteraction`: the trigger lifts as its preview over the blurred screen, with the system's haptics, placement and motion), on Android the system's popup menu by the trigger, in place of the children; a chosen item comes back as `onSelect({ id })`. `MenuButton`'s items: ids, labels, SF Symbols (SVG icons on Android), checks, single choices, disabled and destructive items, submenus and sections. On every other platform `items`, `title` and `onSelect` are not used: the children are the menu, drawn as without `items`. */
   items?: (MenuButtonItem)[];
-  /** iOS only: the system's menu's title, above its items (`items`); none when unset. Not used on the other platforms. */
+  /** iOS and Android: the system's menu's title, above its items (`items`); none when unset. Not used on the other platforms. */
   title?: string | null;
   /** iOS only, with `items`: what the system lifts beside the menu in place of the trigger (a message's or a document's content, a conversation's last lines). Made when a finger goes down on the trigger and laid out at its own size out of sight, then shown as a picture of how it looked when the menu opened; gone once the menu closed. A press on it closes the menu and reports `onPreviewPress`. Without it, or when it is not laid out yet, the trigger lifts. Not used on the other platforms, nor for the secondary click's compact menu, which has no preview. */
   preview?: JSX.Element;
@@ -3288,7 +3335,7 @@ export interface ContextMenuProps extends ComponentHostProps {
   onPreviewPress?: () => void;
 }
 
-/** A menu about its trigger: the secondary button (a right click, a two-finger click) opens it where the pointer is on the desktops; a finger held on the trigger opens it on touch screens, as a popup where the finger is on an iPad in a regular width, as a sheet at the bottom of the screen on phones, the other tablets and an iPad in a compact width (`Menu`'s presentations). While it is open, a secondary click on the trigger opens it again where the pointer is (it reports closing, then opening); one elsewhere closes it. Shift+F10 or the Menu key on the focused trigger (the web, Linux) and a screen reader's "show menu" action (VoiceOver's VO-Shift-M on macOS, UI Automation's `ShowContextMenu` on Windows) open it below the trigger with the keyboard focus on its first enabled item, as WAI-ARIA has it, and closing it gives the focus back to the trigger. So does an opening by the app (`open` set true with no request from the trigger). Opened by the pointer with no item focused, Down or Home focus the first enabled item and Up or End the last, as `Menu`'s keys do. Its items are those of `Menu`, and so is how it closes and how it is styled. Given `items`, iOS shows the system's context menu instead (`UIContextMenuInteraction`, on the native component `CONTEXT_MENU_COMPONENT`): a held finger lifts the trigger over the blurred screen and shows the items below it, a secondary click (an iPad's pointer, Mac Catalyst) shows them at the pointer, all answered natively without waiting for JS. It reports `onOpenChange`, `onOpen`, `onSelect({ id })`, `onCancel` and `onClose` as the drawn menu does; the app cannot open it (`open` set true shows nothing), and `open` set false closes it. */
+/** A menu about its trigger: the secondary button (a right click, a two-finger click) opens it where the pointer is on the desktops; a finger held on the trigger opens it on touch screens, as a popup where the finger is on an iPad in a regular width, as a sheet at the bottom of the screen on phones, the other tablets and an iPad in a compact width (`Menu`'s presentations). While it is open, a secondary click on the trigger opens it again where the pointer is (it reports closing, then opening); one elsewhere closes it. Shift+F10 or the Menu key on the focused trigger (the web, Linux) and a screen reader's "show menu" action (VoiceOver's VO-Shift-M on macOS, UI Automation's `ShowContextMenu` on Windows) open it below the trigger with the keyboard focus on its first enabled item, as WAI-ARIA has it, and closing it gives the focus back to the trigger. So does an opening by the app (`open` set true with no request from the trigger). Opened by the pointer with no item focused, Down or Home focus the first enabled item and Up or End the last, as `Menu`'s keys do. Its items are those of `Menu`, and so is how it closes and how it is styled. Given `items`, iOS shows the system's context menu instead (`UIContextMenuInteraction`, on the native component `CONTEXT_MENU_COMPONENT`): a held finger lifts the trigger over the blurred screen and shows the items below it, a secondary click (an iPad's pointer, Mac Catalyst) shows them at the pointer, all answered natively without waiting for JS. It reports `onOpenChange`, `onOpen`, `onSelect({ id })`, `onCancel` and `onClose` as the drawn menu does; the app cannot open it (`open` set true shows nothing), and `open` set false closes it. Android shows the system's popup menu instead, on the same component: a held finger (as for the drawn menu) opens it below the trigger, lined up with its end, or below the held point when the trigger's bottom is out of sight, with the system's long-press haptic. It reports the same events, and the app can open it there (`open` set true: below the trigger). */
 export declare const ContextMenu: ((props: ContextMenuProps) => JSX.Element);
 
 /** The ref of `DataTable`: its methods. */
@@ -3409,6 +3456,8 @@ export interface DataTableProps<T = any> extends Omit<ComponentHostProps, "ref" 
   onColumnPress?: (event: DataTableColumnPress) => void;
   /** A row, cell or title was pressed twice. */
   onDoublePress?: (event: { target: DataTableTarget }) => void;
+  /** The focused row was activated (Enter / Return): the row, the number `onRowPress` reports. It fires only when no text input or control inside the table takes the key, and not at all while nothing selects a row. */
+  onRowActivate?: (event: { row: number }) => void;
   /** A context menu was asked for (a secondary press, a long press) at a cell, a row's number or a title: the app opens its `Menu` at the point. */
   onContextMenu?: (event: DataTableContextMenu) => void;
   /** The user pressed a sortable title: what to sort by next (ascending, descending, then unsorted again), `null` to clear. Sort the data and set `sort`. */
@@ -3523,7 +3572,7 @@ export interface DatePickerProps extends ComponentHostProps {
   rowClass?: string | null;
   /** The style of each row. */
   rowStyle?: StyleProp<ViewStyle>;
-  /** The classes of each item of the calendar (`selected:`, `disabled:`, `focus-visible:` and the days' `data-range-start:`, `data-range-end:`, `data-range-middle:`, `data-today:`, `data-outside:` as `Calendar`'s). */
+  /** The classes of each item of the calendar (`selected:`, `disabled:`, `focus-visible:` and the days' `data-range-start:`, `data-range-end:`, `data-range-middle:`, `data-range-preview-start:`, `data-range-preview-end:`, `data-range-preview-middle:`, `data-today:`, `data-outside:` as `Calendar`'s). */
   itemClass?: string | null;
   /** The style of each item, its text styles too. */
   itemStyle?: StyleProp<TextStyle>;
@@ -3743,6 +3792,8 @@ export interface DockAreaProps extends Omit<ComponentHostProps, "ref"> {
   renderPanel?: (value: DockPanel) => JSX.Element;
   /** What a tab shows (the panel's key without one); the area makes it the tab: a press selects it, a drag moves it. It is one view inside the tab, so a row of a title and a close button is a `flex-row` view of them. */
   renderTab?: (value: DockTab) => JSX.Element;
+  /** The toolbar at the end of a tab group's tab bar, given its displayed tab: that panel's actions (as a GPUI dock panel's toolbar buttons). */
+  renderToolbar?: (value: DockTab) => JSX.Element;
   /** What shows where a drag would land, placed over the part of the group it would take. */
   renderDropIndicator?: (value: DockDropIndicator) => JSX.Element;
   /** A dock's own chrome (a title strip, a collapse button), before its layout. */
@@ -3755,7 +3806,7 @@ export interface DockAreaProps extends Omit<ComponentHostProps, "ref"> {
   groupClass?: string | null;
   /** The style of each tab group's frame. */
   groupStyle?: StyleProp<ViewStyle>;
-  /** The classes of each tab bar (`flex-row` for a row). */
+  /** The classes of each tab bar: its height, surface and border. Its tabs are a row in a horizontal scroll view inside it, so tabs that do not fit scroll; space them with `tab_class`. */
   tabBarClass?: string | null;
   /** The style of each tab bar. */
   tabBarStyle?: StyleProp<ViewStyle>;
@@ -3779,6 +3830,8 @@ export interface DockAreaProps extends Omit<ComponentHostProps, "ref"> {
   handleThumbClass?: string | null;
   /** The style of the thumb of each handle. */
   handleThumbStyle?: StyleProp<ViewStyle>;
+  /** What is inside the indicator of each handle between the groups of a split, drawn again when the handle's state changes: a grip, an icon (`ResizablePanelGroup`'s `renderHandle`). The handles at the docks' edges keep the indicator the classes style. */
+  renderHandle?: (value: ResizeHandleContext) => JSX.Element;
   /** What screen readers say for each handle (an `adjustable` element): what dragging it resizes. */
   handleAccessibilityLabel?: string | null;
   /** The classes of each dock's frame. */
@@ -4169,6 +4222,8 @@ export interface LinkProps extends ComponentHostProps {
   current?: boolean;
   /** What screen readers say, when its content is not enough (an icon). */
   accessibilityLabel?: string | null;
+  /** What activating the link does, for screen readers, as a view's `accessibilityHint`. */
+  accessibilityHint?: string | null;
   /** How far outside its bounds presses still count, as a view's `hitSlop`: one number for every side, or the sides named (each left out 0). A small link (an icon, a short word) takes presses a finger lands near it, with no change to its layout or look. */
   hitSlop?: number | Partial<Edges>;
   /** The content: a label, an icon, anything the app shows. */
@@ -4233,19 +4288,21 @@ export declare const Menu: ((props: MenuProps) => JSX.Element);
 export interface MenuButtonProps extends ComponentHostProps {
   /** The menu's items, in order. New items change the menu the next time it opens; one open keeps the items it opened with. */
   items?: (MenuButtonItem)[];
-  /** The menu's title, above its items on iOS (an account's address, a file's name); the desktops show none. */
+  /** The menu's title, above its items on iOS and Android (an account's address, a file's name); the desktops show none. */
   title?: string | null;
   /** It cannot be pressed and opens nothing; `disabled:` styles apply and screen readers say it is dimmed. */
   disabled?: boolean;
   /** What screen readers say for the button: on iOS the content is covered by the system's button, which only this names. */
   accessibilityLabel?: string | null;
+  /** What activating the button does, for screen readers, as a view's `accessibilityHint`. */
+  accessibilityHint?: string | null;
   /** The content: what the button shows, laid out by its `class` and `style` as a view's children. */
   children?: JSX.Element;
   /** The user chose an item: its `id`. The menu has closed. */
   onSelect?: (event: { id: string }) => void;
 }
 
-/** Content that opens the system's own menu: on iOS a `UIMenu` (the system's pull-down menu, Liquid Glass on iOS 26 and later), shown by a tap, VoiceOver's activation or the keyboard's, with the system's placement, motion, checks, submenus, sections and destructive items; on a desktop OS the platform's context menu (`Menu.popup`'s) at the pointer. The app gives the items as data (`items`, each with an `id` of its own), hears the choice (`onSelect({ id })`) and draws the content with its children, `class` and `style`, which stay the app's on every platform. The system's menus show no app content: rows of the app's own look are `Menu`'s. Android and the web have no system menu for a view: there the content shows and opens nothing, and the app uses `Menu`. */
+/** Content that opens the system's own menu: on iOS a `UIMenu` (the system's pull-down menu, Liquid Glass on iOS 26 and later), shown by a tap, VoiceOver's activation or the keyboard's, with the system's placement, motion, checks, single choices, submenus, sections and destructive items; on Android the system's popup menu, anchored below the content (at its end in the window's end half), shown by a tap or TalkBack's activation; on a desktop OS the platform's context menu (`Menu.popup`'s) at the pointer. The app gives the items as data (`items`, each with an `id` of its own), hears the choice (`onSelect({ id })`) and draws the content with its children, `class` and `style`, which stay the app's on every platform. The system's menus show no app content: rows of the app's own look are `Menu`'s. The web has no system menu for a view: there the content shows and opens nothing, and the app uses `Menu`. */
 export declare const MenuButton: ((props: MenuButtonProps) => JSX.Element);
 
 export interface MenuItemProps extends ComponentHostProps {
@@ -4284,7 +4341,16 @@ export interface MenuSeparatorProps extends ComponentHostProps {
 /** A line between groups of a menu's items: a view the app styles (`class`, `style`), shown with its level's items. In a terminal it is a row of `─` across the menu (`crate::terminal`). */
 export declare const MenuSeparator: ((props: MenuSeparatorProps) => JSX.Element);
 
-export interface NumberInputProps extends ComponentHostProps {
+/** The ref of `NumberInput`: its methods. */
+export interface NumberInputRef {
+  /** The component's host node. */
+  readonly node: ViewRef;
+  /** Takes the keyboard focus into the field (showing the software keyboard), as focusing an `Input` does: a form moving the focus to a field it found invalid. A disabled input stays unfocused. */
+  focus(): void;
+}
+
+export interface NumberInputProps extends Omit<ComponentHostProps, "ref"> {
+  ref?: NumberInputRef | ((ref: NumberInputRef) => void);
   /** The value (controlled): a number, or `null` for an empty field. The app owns it and sets the one `onChange` reports; whenever it sets one the input did not report, the field shows it. Without it the input keeps its own, from `defaultValue`. */
   value?: number | null;
   /** The value at first while `value` is not set (default none: an empty field). */
@@ -4510,7 +4576,7 @@ export interface RadioProps extends ComponentHostProps {
   onChange?: (event: { checked: boolean }) => void;
 }
 
-/** One option of a set the user picks exactly one of (a plan, a sort order), in a `RadioGroup` with the others. It owns its behavior (presses, keyboard activation, the disabled state, the radio role and its checked state for screen readers) and leaves its look to the app: no circle, dot, colors, sizes or label of its own. The app's `class` and `style` style it, `checked:` and `disabled:` classes (or `checkedStyle` and `disabledStyle`) its states, and its children are the app's indicator and label, whose `group-checked:` classes follow the radio under `group` in its `class`. `hitSlop` widens where presses count past its bounds, as a view's does. In a `RadioGroup`, it is a stop of the keyboard focus only while it is the radio Tab enters the group at (see `RadioGroup`). In a terminal it shows the terminal's radio, `(•)` or `( )` and a space, before its children, in a row (`crate::terminal`); an app that draws a dot of its own among its children leaves it out there (`platform.idiom === "terminal"`). */
+/** One option of a set the user picks exactly one of (a plan, a sort order), in a `RadioGroup` with the others. It owns its behavior (presses, keyboard activation, the disabled state, the radio role and its checked state for screen readers) and leaves its look to the app: no circle, dot, colors, sizes or label of its own. The app's `class` and `style` style it, `checked:` and `disabled:` classes (or `checkedStyle` and `disabledStyle`) its states, and its children are the app's indicator and label, whose `group-checked:` classes follow the radio under `group` in its `class`. `hitSlop` widens where presses count past its bounds, as a view's does. In a `RadioGroup`, it is a stop of the keyboard focus only while it is the radio Tab enters the group at (see `RadioGroup`). In a terminal it shows the terminal's radio, `[●]` or `[ ]` and a space, before its children, in a row (`crate::terminal`); an app that draws a dot of its own among its children leaves it out there (`platform.idiom === "terminal"`). */
 export declare const Radio: ((props: RadioProps) => JSX.Element);
 
 export interface RadioGroupProps extends ComponentHostProps {
@@ -4623,6 +4689,8 @@ export interface RichEditorProps extends Omit<ComponentHostProps, "ref"> {
   styles?: RichEditorStyles;
   /** What screen readers call the editor. */
   accessibilityLabel?: string | null;
+  /** Shows the input accessory with this `nativeID` over the keyboard while the editor has the focus (`input_accessory_view`, TS `InputAccessoryView` of `nsh/mobile`; iOS), as `Input`'s `input_accessory` (TS `ios={{ inputAccessoryViewID }}`) does. The platforms without one show nothing. */
+  inputAccessoryViewID?: string | null;
   /** Tiptap's bubble menu: shown next to the selection while the app fills it (the app decides when, from the session's state: a link under the caret, a selection of text), above it, below it where there is no room, in an overlay that follows the text as it scrolls. It looks like nothing: the app's content is the menu. */
   bubbleMenu?: JSX.Element;
   /** Where the bubble menu goes against the selection (default `"top"`; it flips to the other side without room). */
@@ -4633,6 +4701,8 @@ export interface RichEditorProps extends Omit<ComponentHostProps, "ref"> {
   contentLayer?: JSX.Element;
   /** The laid-out document's size changed (as `Input`'s `onContentSizeChange`): its full flow extent in points, offscreen blocks included, the `content` part's padding excluded. */
   onContentSizeChange?: (event: { contentSize: Size }) => void;
+  /** A table moved inside its horizontal viewport. Content overlays may need to reposition. */
+  onTableScroll?: () => void;
   /** The document changed. */
   onChange?: (event: { change: RichEditorChange }) => void;
   /** The selection changed. */
@@ -4896,7 +4966,7 @@ export interface SplitViewProps extends ComponentHostProps {
   onColumnVisibilityChange?: (event: { columnVisibility: ColumnVisibility }) => void;
 }
 
-/** Two or three columns side by side (a sidebar, an optional content column, the detail), each a `NavStack` of the app's, with no look of their own: on iOS and Mac Catalyst a `UISplitViewController` whose columns are those stacks (its sidebar floats on iPadOS 26, comes in with a swipe from the edge and the system's button, and follows the window as it turns or is resized), elsewhere columns at fixed widths. Where the window is horizontally compact (a phone, a narrow window: its horizontal size class, `horizontalSizeClass()`) one column shows: on iOS one navigation stack of the columns' pages, which goes back from a column's first page to the column before; elsewhere the column alone, the app showing the way back. Which columns show is `columnVisibility`, controlled, with `onColumnVisibilityChange`. */
+/** Two or three columns side by side (a sidebar, an optional content column, the detail), each a `NavStack` of the app's, with no look of their own: on iOS and Mac Catalyst a `UISplitViewController` whose columns are those stacks (its sidebar floats on iPadOS 26, comes in with a swipe from the edge and the system's button, and follows the window as it turns or is resized), elsewhere columns the user resizes. Where the window is horizontally compact (a phone, a narrow window: its horizontal size class, `horizontalSizeClass()`) one column shows: on iOS one navigation stack of the columns' pages, which goes back from a column's first page to the column before; elsewhere the column alone, the app showing the way back. Which columns show is `columnVisibility`, controlled, with `onColumnVisibilityChange`. */
 export declare const SplitView: ((props: SplitViewProps) => JSX.Element);
 
 export interface SubmenuProps extends ComponentHostProps {
@@ -4928,6 +4998,8 @@ export interface SwitchProps extends ComponentHostProps {
   checkedStyle?: StyleProp<ViewStyle>;
   /** What screen readers say: what the switch turns on, when its children have no text that says it. */
   accessibilityLabel?: string | null;
+  /** What activating the switch does, for screen readers, as a view's `accessibilityHint`. */
+  accessibilityHint?: string | null;
   /** How far outside its bounds presses still count, as a view's `hitSlop`: one number for every side, or the sides named (each left out 0). A small switch (a track with no label) takes presses a finger lands near it, with no change to its layout or look. */
   hitSlop?: number | Partial<Edges>;
   /** The Tailwind classes of the track, the part the thumb moves along; `checked:`, `disabled:` and `active:` (while the switch is held) follow the switch. */
@@ -5034,6 +5106,8 @@ export interface TableRowProps extends ComponentHostProps {
 export declare const TableRow: ((props: TableRowProps) => JSX.Element);
 
 export interface TabsProps extends ComponentHostProps {
+  /** The direction the list runs, which picks the arrow keys that move between its tabs: `"horizontal"` Left and Right, `"vertical"` Up and Down; the other pair is left to the page (a scroll view around the list). Without one both pairs move, as a list laid out either way, and screen readers hear no orientation. It does not lay the list out: the app's `class` does (`flex-row` for a row). Read when the list is made. */
+  orientation?: Axis | null;
   /** The Tailwind classes of the indicator, the view on the selected tab (an underline, a pill behind it): its look and its place across the list (`bottom-0 h-[2px]` for an underline in a row, `inset-y-1` for a pill). Along the list it spans the selected tab, inside its own margins on that axis (`mx-2` for a shorter underline), and travels to the next one natively. With neither this nor `indicatorStyle`, the list has no indicator. */
   indicatorClass?: string | null;
   /** The style of the indicator, over `indicatorClass`. */
@@ -5044,7 +5118,7 @@ export interface TabsProps extends ComponentHostProps {
   children?: JSX.Element;
 }
 
-/** The tab list around a set of `Tab`s: screen readers hear the tabs inside it as one list, named by its `accessibilityLabel`, each still an element of its own. It holds no value and no content: each tab is told whether it is selected and reports a press with `onPress`, and the app keeps which one is and shows that tab's content next to the list. Its layout and look are the app's `class` and `style` (`flex-row` for a row). The keyboard, as WAI-ARIA's tab list pattern has it, where views that take presses are stops of the keyboard focus (macOS, the web): the list is one stop of Tab, at the selected tab (else the first that is not disabled); Left and Right, and Up and Down, move the focus to the previous and next tab, around the ends, Home and End to the first and last, past disabled tabs. The tab the focus moves to reports `onPress`, so the app selects it as the focus moves (automatic activation); Space and Return press the focused tab. Its tabs are its children, or inside the app's views among them (a tab with a hover frame or a badge). Its indicator (`gpui-component`'s tab bar's: an underline, a pill or a segmented highlight) is a part the app styles with `indicatorClass` and `indicatorStyle`: a view drawn behind the tabs, absolutely positioned in the list, which the core places on the selected tab after each layout. Along the list's main axis (a row's: horizontal, a column's: vertical) it spans the selected tab, inside the indicator's own margins on that axis; across it, the app's classes place it. A change of the selected tab moves it there natively with a spring (`gpui-component`'s `spring_move`), and with reduced motion at once; a layout that moves or resizes the tab moves it in the same frame. No JS runs and no layout event is sent for it. While no tab is selected it is hidden; while several are, it is on the first. It is hidden from screen readers and takes no focus: the arrows, Home and End move between the tabs only. The tabs it follows are in the list, or in views inside it; a list that scrolls is in a scroll view around the `Tabs`. In a terminal the list has no indicator and its tabs are in a row, two Cells apart: the terminal draws the selected tab bold on a band (its underline alone when the app underlines its label) and the others muted, from the selected state each tab reports (`crate::terminal`). */
+/** The tab list around a set of `Tab`s: screen readers hear the tabs inside it as one list, named by its `accessibilityLabel`, each still an element of its own. It holds no value and no content: each tab is told whether it is selected and reports a press with `onPress`, and the app keeps which one is and shows that tab's content next to the list. Its layout and look are the app's `class` and `style` (`flex-row` for a row). The keyboard, as WAI-ARIA's tab list pattern has it, where views that take presses are stops of the keyboard focus (macOS, the web): the list is one stop of Tab, at the selected tab (else the first that is not disabled); with an `orientation` its arrows move the focus to the previous and next tab (Left and Right in a row, Up and Down in a column), around the ends, and the other pair is left to the page (a scroll view around the list); without one both pairs move, as a list laid out either way; Home and End go to the first and last, past disabled tabs. The tab the focus moves to reports `onPress`, so the app selects it as the focus moves (automatic activation); Space and Return press the focused tab. Its tabs are its children, or inside the app's views among them (a tab with a hover frame or a badge). Its indicator (`gpui-component`'s tab bar's: an underline, a pill or a segmented highlight) is a part the app styles with `indicatorClass` and `indicatorStyle`: a view drawn behind the tabs, absolutely positioned in the list, which the core places on the selected tab after each layout. Along the list's main axis (a row's: horizontal, a column's: vertical) it spans the selected tab, inside the indicator's own margins on that axis; across it, the app's classes place it. A change of the selected tab moves it there natively with a spring (`gpui-component`'s `spring_move`), and with reduced motion at once; a layout that moves or resizes the tab moves it in the same frame. No JS runs and no layout event is sent for it. While no tab is selected it is hidden; while several are, it is on the first. It is hidden from screen readers and takes no focus: the arrows, Home and End move between the tabs only. The tabs it follows are in the list, or in views inside it; a list that scrolls is in a scroll view around the `Tabs`. In a terminal the list has no indicator and its tabs are in a row, two Cells apart: the terminal draws the selected tab bold on a band (its underline alone when the app underlines its label) and the others muted, from the selected state each tab reports (`crate::terminal`). */
 export declare const Tabs: ((props: TabsProps) => JSX.Element);
 
 /** The ref of `Terminal`: its methods. */
@@ -5134,7 +5208,7 @@ export interface TextViewProps extends Omit<ComponentHostProps, "ref"> {
   codeBlockActions?: (TextViewCodeAction)[];
   /** Content of the app's above each table (a copy or export button). */
   renderTableActions?: (value: TextViewTable) => JSX.Element;
-  /** Shows a formula (`$…$` in text, `$$…$$` blocks); without it, its TeX shows as code. */
+  /** Shows a formula (`$…$` in text, `$$…$$` blocks); without it, its TeX shows as code. Give a formula in text a `copyText` (its `$…$` source) so that a copy of the text keeps it in place, as the built-in formulas do. */
   renderMath?: (value: TextViewMath) => JSX.Element;
   /** Shows an image in place of the default: alone in a paragraph, the image at the size it asks for (`width` / `height`) or its natural size, at most as wide as the text; in a line of text, the size it asks for, else three quarters of a line tall. A press on an image in a link reports the link (`onLinkPress`), on another the image (`onImagePress`). */
   renderImage?: (value: TextViewImage) => JSX.Element;
@@ -5165,6 +5239,10 @@ export interface TimeFieldProps extends ComponentHostProps {
   value?: string | null;
   /** The time at first, while `value` is not set (default `00:00`). */
   defaultValue?: string;
+  /** The earliest time (default none), as `value` writes one. A step that would go before it lands on it, and a typed time before it is held to it. Ignored with a `max` earlier than it. */
+  min?: string | null;
+  /** The latest time (default none). As `min`, from above. */
+  max?: string | null;
   /** The smallest unit it edits (default `"minute"`). */
   precision?: TimePrecision;
   /** How it counts the hours (default `"h23"`). */
@@ -5187,8 +5265,16 @@ export interface TimeFieldProps extends ComponentHostProps {
   onChange?: (event: { value: string }) => void;
 }
 
-/** A time of day edited a segment at a time (`gpui-base`'s `TimeField`): the hour, the minute, with `precision="second"` the second, with `hourCycle="h12"` AM / PM, separated by `:`. The keys edit the selected segment (digits, Up / Down, `a` / `p`, Backspace) and move between them (Left / Right, Tab); a press selects one. The time is `value` and `onChange` (or the field's own, from `defaultValue`). It looks like nothing: the app's `class` and `style` lay out the field (`flex-row`), the parts style the segments and separators, or `renderSegment` draws them. */
+/** A time of day edited a segment at a time (`gpui-base`'s `TimeField`): the hour, the minute, with `precision="second"` the second, with `hourCycle="h12"` AM / PM, separated by `:`. The keys edit the selected segment (digits, Up / Down, `a` / `p`, Backspace) and move between them (Left / Right, Tab); a press selects one. The time is `value` and `onChange` (or the field's own, from `defaultValue`), within the optional `min` and `max`. It looks like nothing: the app's `class` and `style` lay out the field (`flex-row`), the parts style the segments and separators, or `renderSegment` draws them. */
 export declare const TimeField: ((props: TimeFieldProps) => JSX.Element);
+
+export interface TitleBarProps extends ComponentHostProps {
+  /** What the bar holds (a title, a sidebar toggle, the app's buttons). */
+  children?: JSX.Element;
+}
+
+/** The row of a window's own title bar (with `titleBar: { style: "hidden" }`). Pressing and dragging it moves the window, double clicking it does what the system's title bar does; the controls inside it still take their presses. It is as tall as the window's title bar area (`titleBar().height`) at least and lays its children out in a row; it adds padding at the left and right edges only where it overlaps the system's window controls, in the current window (`<Window>`), including after entering or leaving full screen (where there are none). Colors, borders, gaps and any further padding are the app's `class` and `style`. */
+export declare const TitleBar: ((props: TitleBarProps) => JSX.Element);
 
 export interface ToastProps extends ComponentHostProps {
   /** Its lifecycle phase (a `ToastManager`'s), which the state classes follow (default `"starting"`). */
@@ -5211,7 +5297,7 @@ export interface ToastProps extends ComponentHostProps {
   onDismissRequest?: () => void;
 }
 
-/** An unstyled semantic toast root (`role` alert), as `gpui-base`'s `Toast`: the app owns its presentation and motion, by its `transitionStatus` and the state classes (`startingClass`, `endingClass`, `swipingClass`) its `class` and `style` add to. A pointer dragged toward `swipeDirection` moves it, and a release past `swipeThreshold` or a flick asks to dismiss it (`onDismissRequest`); short of it, it goes back. The screen reader reads its `accessibilityLabel` as it shows. Placed in a `ToastStack`, which lays toasts out. In a terminal it shows and goes in one frame: its state classes do not apply. */
+/** An unstyled semantic toast root (`role` alert), as `gpui-base`'s `Toast`: the app owns its presentation and motion, by its `transitionStatus` and the state classes (`startingClass`, `endingClass`, `swipingClass`) its `class` and `style` add to. A pointer dragged toward `swipeDirection` moves it, and a release past `swipeThreshold` or a flick asks to dismiss it (`onDismissRequest`); short of it, it goes back. The screen reader reads its `accessibilityLabel` as it shows, once: rebuilt under another parent (moved), it is not read again. Placed in a `ToastStack`, which lays toasts out. In a terminal it shows and goes in one frame: its state classes do not apply. */
 export declare const Toast: ((props: ToastProps) => JSX.Element);
 
 export interface ToastStackProps extends ComponentHostProps {
@@ -5374,6 +5460,10 @@ export interface TreeProps extends Omit<ComponentHostProps, "ref"> {
   itemStyle?: StyleProp<TextStyle>;
   /** An item's row drawn by the app (its icon, its label indented by `depth`, a chevron, a badge), for the rows in view; without it a row shows the item's label. */
   renderItem?: (value: TreeEntry) => JSX.Element;
+  /** What shows above the rows, inside the tree's scroll view: it scrolls with them, as a `List`'s `header` does (pinned items, a heading). */
+  header?: JSX.Element;
+  /** What shows instead of the rows while no item shows (no items, a filter that left none), as a `List`'s `empty` does. */
+  empty?: JSX.Element;
   /** The user expanded or collapsed an item (a press, Return or Space, Right or Left, a ref's `revealItem`): the expanded items' ids as they would be. Set `expanded` to follow it. */
   onExpandedChange?: (event: { expanded: (string)[] }) => void;
   /** The user selected another item (a press, the arrows, Home or End, typeahead): its id. Set `selected` to follow it. */
@@ -5391,7 +5481,7 @@ export declare const Tree: ((props: TreeProps) => JSX.Element);
 
 /** The system's alert dialog (UIAlertController, AlertDialog). */
 export interface AlertDialogModule {
-  /** Shows the dialog and resolves with `{ action }`: the chosen action's `id`, or `null` when it closed without an action. Rejects with a `TypeError` without actions (a bug of the app's). */
+  /** Shows the dialog and resolves with `{ action, value }`: the chosen action's `id`, or `null` when it closed without an action, and the text of its `input`. Rejects with a `TypeError` without actions, or with an `input` in an action sheet (bugs of the app's). */
   show(options: AlertDialogOptions): Promise<AlertDialogResult>;
 }
 

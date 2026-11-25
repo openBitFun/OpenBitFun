@@ -28,7 +28,12 @@ export interface NshDesktopShellDeps {
 /** The shell shortcuts the application menu carries (ids of `SHELL_SHORTCUTS` in `App.tsx`). */
 const MENU_SHORTCUT_IDS = new Set<string>(["chat.newSession", "scene.openSettings", "panel.toggleLeft"]);
 
-function mainWindow(): WindowRef | null {
+/**
+ * The app's main window: the one `mount` opens for the root (id `"main"`).
+ * Reactive, and `null` until that window has opened (NSH 0.7 opens it after
+ * the root renders).
+ */
+export function mainWindow(): WindowRef | null {
   try {
     return Window.get("main");
   } catch {
@@ -167,10 +172,12 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
     async probe(sink: WindowChromeSink) {
       sink.setNative(isAvailable);
       sink.setPlatform(isAvailable ? os : "");
-      const win = mainWindow();
-      if (!win) return;
-      attachCloseListener(win);
+      // The root's window registers after the app mounts (NSH 0.7): the shell
+      // attaches to it when it appears instead of giving up on the first look.
       effect(() => {
+        const win = mainWindow();
+        if (!win) return;
+        attachCloseListener(win);
         const bar = win.titleBar();
         const state = win.state();
         // The title bar is hidden (nsh.json `window.titleBar`): the system's

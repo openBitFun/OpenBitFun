@@ -183,6 +183,9 @@ export interface ClipboardItem {
   html?: string | null;
 }
 
+/** What became of a clipboard write (`set_clipboard`, `set_clipboard_item`; TS: what `Clipboard.writeText` and `Clipboard.write` resolve to). The clipboard is never read back to find out: a platform that cannot tell answers `Self::Requested`. */
+export type ClipboardWrite = "written" | "failed" | "requested";
+
 /** How the performance monitor shows (`Command::PerfMonitorMode`, TS: `setFpsMode`'s argument: `"expanded"`, `"collapsed"`, `"hidden"`). */
 export type FpsMode = "expanded" | "collapsed" | "hidden";
 
@@ -261,7 +264,7 @@ export interface PickedFile {
   status: "read" | "tooLarge";
 }
 
-/** An image the user picked (`Picker.pickImages`). */
+/** An image the user picked (`Picker.pickImages`) or took. */
 export interface PickedImage {
   /** The image's file: its name, type (`image/jpeg`), size in bytes and bytes. */
   file: File;
@@ -331,44 +334,16 @@ export interface ShowNotificationOptions {
   sound?: string | null;
 }
 
-/** How a session ended (the `end` event). */
-export interface SpeechEnd {
-  /** The transcript of the session (`""` when nothing was recognized). */
-  text: string;
-  /** Why it failed; absent when it did not (stopped, aborted, finished). */
-  error?: SpeechErrorCode | null;
+/** An entry changed elsewhere (the `change` event). */
+export interface StorageChangeEvent {
+  /** The key changed; `null` when every entry was removed. */
+  key?: string | null;
+  /** The value the key holds now; `null` when it was removed. */
+  value?: string | null;
 }
 
-/** The event a session ends with (`on`'s third overload). */
-export type SpeechEndEvent = "end";
-
-/** Why a session failed (the `end` event's `error`). */
-export type SpeechErrorCode = "not-allowed" | "no-speech" | "audio-capture" | "network" | "language-not-supported" | "unavailable" | "failed";
-
-/** How `Speech.start` listens. */
-export interface SpeechOptions {
-  /** The language spoken, a BCP 47 tag (`"en-US"`, `"zh-CN"`); the user's language when not given. */
-  lang?: string | null;
-  /** Whether `result` comes while the user speaks, with the transcript so far (true when not given), or only once, final. */
-  interim?: boolean | null;
-}
-
-/** The transcript so far (the `result` event). */
-export interface SpeechResult {
-  /** The whole transcript of the session so far. */
-  text: string;
-  /** The recognizer will not change it any more. */
-  isFinal: boolean;
-}
-
-/** The event the transcript comes with (`on`'s second overload). */
-export type SpeechResultEvent = "result";
-
-/** A session's events. */
-export type SpeechSessionEvent = "start" | "result" | "end";
-
-/** The event the recognizer starts listening with (`on`'s first overload). */
-export type SpeechStartEvent = "start";
+/** `Storage.on`'s events. */
+export type StorageEvent = "change";
 
 /** An address the app moved to without moving it (the `change` event). */
 export interface UrlSchemeChange {
@@ -404,10 +379,10 @@ export declare function setAccessibilityFocus(node: ViewRef): void;
 
 /** The system clipboard's text, image and files. */
 export interface ClipboardModule {
-  /** Puts `text` on the clipboard, replacing what it holds. */
-  writeText(text: string): Promise<void>;
-  /** Puts `item` on the clipboard, replacing what it holds: its `text` as plain text and its `html`, when given, as the platform's HTML type, which apps that read formatting (mail, documents, rich text editors) paste. Where the platform has no HTML on the clipboard (a terminal) the text only. */
-  write(item: ClipboardItem): Promise<void>;
+  /** Puts `text` on the clipboard, replacing what it holds. Resolves to `"written"` when the system clipboard took it, `"failed"` when it refused it, `"requested"` where the platform does not say (iOS, Android, Linux, a terminal); the clipboard is never read back. */
+  writeText(text: string): Promise<ClipboardWrite>;
+  /** Puts `item` on the clipboard, replacing what it holds: its `text` as plain text and its `html`, when given, as the platform's HTML type, which apps that read formatting (mail, documents, rich text editors) paste. Where the platform has no HTML on the clipboard (a terminal) the text only. Resolves as `writeText` does. */
+  write(item: ClipboardItem): Promise<ClipboardWrite>;
   /** The clipboard's text, `""` when it holds none. On iOS, reading it may show the system's paste prompt; when the person refuses, it rejects with `ERR_ACCESS_DENIED`. */
   readText(): Promise<string>;
   /** Whether the clipboard holds text, without reading it (no paste notice). */
@@ -439,9 +414,9 @@ export declare function setFpsMode(mode: FpsMode): void;
 
 /** Image information and loading ahead. */
 export interface ImageModule {
-  /** The image's size in pixels; its bytes stay loaded for the views that show it next. An imported image with variants loads the variant the views load and resolves with the imported file's size. Without dimensions, it falls back to the variant's pixels over its scale. Rejects when the image cannot load, with `ERR_ACCESS_DENIED` when the `network` capability does not grant its URL and `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` in a terminal. */
+  /** The image's size in pixels; its bytes stay loaded for the views that show it next. An imported image with variants loads the variant the views load and resolves with the imported file's size. Without dimensions, it falls back to the variant's pixels over its scale. Rejects when the image cannot load, with `ERR_ACCESS_DENIED` when the `network` capability does not grant its URL. */
   getSize(src: string | ImageAsset): Promise<PixelSize>;
-  /** Loads the image ahead of showing it: resolves once its bytes are in memory, rejects with the error when it cannot load (`ERR_ACCESS_DENIED` when the `network` capability does not grant its URL, `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` in a terminal). An imported image with variants loads the variant the views load at the screen's pixel ratio. */
+  /** Loads the image ahead of showing it: resolves once its bytes are in memory, rejects with the error when it cannot load (`ERR_ACCESS_DENIED` when the `network` capability does not grant its URL). An imported image with variants loads the variant the views load at the screen's pixel ratio. */
   prefetch(src: string | ImageAsset): Promise<void>;
 }
 
@@ -497,22 +472,11 @@ export interface ShareModule {
 /** The system's share sheet. */
 export declare const Share: ShareModule;
 
-/** Speech recognition. */
-export interface SpeechModule {
-  /** Resolves with whether speech can be recognized here: on macOS and iOS (the system's recognizer), or where the embedding app gave its own; `false` on the other platforms, where a session ends at once with `error: "unavailable"`. Whether the user allows the microphone is asked when a session starts. */
-  available(): Promise<boolean>;
-  /** Starts recognizing what the user says and returns the session: its `start`, `result` and `end` events report it. The system asks the user for the microphone and speech recognition the first time. One session runs at a time: starting one ends the one running (its `end`, without an error). Throws `ERR_ACCESS_DENIED` (`permission` `"speech"`) when the `speech` capability is not granted, a `TypeError` for options of the wrong type, and a `RangeError` for a `lang` that is no language tag. */
-  start(options?: SpeechOptions | null): SpeechSession;
-}
-
-/** Speech recognition. */
-export declare const Speech: SpeechModule;
-
 /** The app's key-value storage: strings by string key, kept on the device across launches (up to 5 MB). Calls run in order, so a read after a write sees it. */
 export interface StorageModule {
   /** The value of `key`, `null` when it has none. */
   getItem(key: string): Promise<string | null>;
-  /** Sets `key` to `value`; rejects with `ERR_NSH_QUOTA_EXCEEDED` when the storage would be full (the value is not set). */
+  /** Sets `key` to `value`; rejects with `ERR_NSH_QUOTA_EXCEEDED` when the storage would be full or the device refuses the value (the browser's own quota, storage the user blocked): the value is not set. */
   setItem(key: string, value: string): Promise<void>;
   /** Removes `key`. */
   removeItem(key: string): Promise<void>;
@@ -520,6 +484,8 @@ export interface StorageModule {
   keys(): Promise<(string)[]>;
   /** Removes every key. */
   clear(): Promise<void>;
+  /** Listens to `event`. `change`: the entries were changed elsewhere, by another window or view of the app sharing its storage, or on the web by another tab of the app; `getItem` reads the change already. The app's own changes here do not come, nor one that leaves an entry as it was; changes made while nothing listened are not kept. Returns a function that stops listening. */
+  on(event: StorageEvent, listener: (change: StorageChangeEvent) => void): () => void;
 }
 
 /** The app's key-value storage: strings by string key, kept on the device across launches (up to 5 MB). Calls run in order, so a read after a write sees it. */
@@ -552,7 +518,7 @@ export interface WebViewModule {
 
 /** The app embedding NSH: `host.call(name, args)` calls one of its functions and `host.post(name, args)` hands it data (granted by `capabilities.host` in nsh.json). */
 export interface hostModule {
-  /** Calls the host's function `name` with `args`: what it returns, or a rejection with its error (`code` `ERR_NSH_HOST_ERROR`), or once `options.timeout` passed (`ETIMEDOUT`). A name `capabilities.host` does not grant rejects with `ERR_ACCESS_DENIED`, any call on a platform without a host with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. */
+  /** Calls the host's function `name` with `args`: what it returns, or a rejection with its error (`code` `ERR_NSH_HOST_ERROR`), or once `options.timeout` passed (`ETIMEDOUT`). A name that is not valid rejects with a `TypeError`, then one `capabilities.host` does not grant with `ERR_ACCESS_DENIED`, then a call where nothing hosts the app with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. */
   call(name: string, args?: unknown | null, options?: HostCallOptions | null): Promise<unknown>;
   /** Hands `args` to the host's function `name`, without an answer, where the platform has a host (elsewhere the post is dropped): a wrong name throws a `TypeError`, one `capabilities.host` does not grant `ERR_ACCESS_DENIED`. */
   post(name: string, args?: unknown | null): void;
@@ -616,29 +582,6 @@ export declare class Sound {
   stop(): void;
   /** How long it plays, in seconds (0 once freed). */
   get duration(): number;
-  /** Frees the Rust value now (else when the object is collected); the object throws after. */
-  dispose(): void;
-  [Symbol.dispose](): void;
-}
-
-/** A speech recognition session `Speech.start` started. */
-export declare class SpeechSession {
-  /** Made by the class's members only. */
-  private constructor();
-  /** Calls `listener` in JS's next turn: `start` once the microphone is on and the recognizer listens; `result` with the whole transcript so far each time it changes (`isFinal` on the last one of a session that ends normally); `end` once, last, with the transcript and, when it failed, the `error` (`not-allowed`, `no-speech`, `audio-capture`, `network`, `language-not-supported`, `unavailable`, `failed`). An `end` listener added after the end gets it too. Returns a function that stops it; it also stops when what called `on` goes (a component), and every listener goes with the end. */
-  on(event: SpeechStartEvent, listener: () => void): () => void;
-  /** Calls `listener` in JS's next turn: `start` once the microphone is on and the recognizer listens; `result` with the whole transcript so far each time it changes (`isFinal` on the last one of a session that ends normally); `end` once, last, with the transcript and, when it failed, the `error` (`not-allowed`, `no-speech`, `audio-capture`, `network`, `language-not-supported`, `unavailable`, `failed`). An `end` listener added after the end gets it too. Returns a function that stops it; it also stops when what called `on` goes (a component), and every listener goes with the end. */
-  on(event: SpeechResultEvent, listener: (result: SpeechResult) => void): () => void;
-  /** Calls `listener` in JS's next turn: `start` once the microphone is on and the recognizer listens; `result` with the whole transcript so far each time it changes (`isFinal` on the last one of a session that ends normally); `end` once, last, with the transcript and, when it failed, the `error` (`not-allowed`, `no-speech`, `audio-capture`, `network`, `language-not-supported`, `unavailable`, `failed`). An `end` listener added after the end gets it too. Returns a function that stops it; it also stops when what called `on` goes (a component), and every listener goes with the end. */
-  on(event: SpeechEndEvent, listener: (end: SpeechEnd) => void): () => void;
-  /** The transcript so far (`""` before the first result). */
-  get text(): string;
-  /** Whether the session ended (its `end` came or is coming). */
-  get ended(): boolean;
-  /** Stops listening: the recognizer finishes what it heard, then the session ends (a last, final `result`, then `end`). Nothing once it ended. */
-  stop(): void;
-  /** Ends the session at once, without an error: `end` comes next with the transcript so far, and what was not recognized yet is dropped. Nothing once it ended. */
-  abort(): void;
   /** Frees the Rust value now (else when the object is collected); the object throws after. */
   dispose(): void;
   [Symbol.dispose](): void;
@@ -731,7 +674,11 @@ export declare function resource<S, T>(source: ResourceSource<S>, fetcher: (sour
 /** A context with a default value. */
 export declare function context<T>(defaultValue: T): Context<T>;
 
-/** Renders `app` into the surface; returns a function that removes it. */
+/**
+ * Renders `app` as the app root. On the desktops `app` declares its windows with
+ * `<Window>` (a plain root or no window is an error); off them it renders the app's one
+ * surface. Returns a function that removes it.
+ */
 export declare function mount<P extends object>(app: Component<P>, props?: P): () => void;
 
 /**
@@ -921,6 +868,10 @@ export interface CanvasPath extends CanvasPathMethods {
 export interface TextMetrics {
   /** The advance width in points. */
   width: number;
+  /** The font's extent above the baseline on this line, in points (the platform text engine's line ascent). */
+  fontBoundingBoxAscent: number;
+  /** The font's extent below the baseline on this line, in points (the platform text engine's line descent). */
+  fontBoundingBoxDescent: number;
 }
 
 export interface CanvasSize {
@@ -1220,6 +1171,35 @@ export interface PerfStats {
   readonly dropped: number;
 }
 
+/** The kind of link the device's default route takes (`network().kind`):
+ * `"none"` offline, `"unknown"` where the platform does not say. */
+export type NetworkKind = "unknown" | "none" | "wifi" | "cellular" | "wired" | "other";
+
+/** Whether the user lets the app use cellular data
+ * (`network().cellularData`): iOS's `CTCellularData`. `"unknown"` until the
+ * user decides (the first launch on a device that asks for wireless data)
+ * and on every platform but iOS; `"restricted"` while the user keeps
+ * cellular data (or, where the system asks for wireless data, all data)
+ * from the app, which only the system's settings change. */
+export type CellularDataState = "unknown" | "restricted" | "notRestricted";
+
+/** How the device reaches the network (`network()`). */
+export interface NetworkState {
+  /** A route to the network exists: false only when the platform knows
+   * there is none (`kind` `"none"`). */
+  readonly online: boolean;
+  /** The kind of link the default route takes. */
+  readonly kind: NetworkKind;
+  /** The link costs the user: cellular data, a phone's hotspot, a metered
+   * network. */
+  readonly expensive: boolean;
+  /** The user asked to use less data on this link: Low Data Mode (iOS,
+   * macOS), Data Saver (Android), the browser's `saveData`. */
+  readonly constrained: boolean;
+  /** Whether the user lets the app use cellular data (iOS). */
+  readonly cellularData: CellularDataState;
+}
+
 /** The user's locale settings beside the locale (`localeSettings()`). */
 export interface LocaleSettings {
   /** The preferred languages as BCP 47 tags, most preferred first: the
@@ -1377,6 +1357,20 @@ export declare const lifecycle: Accessor<"active" | "inactive" | "background">;
  * app to the background, which `lifecycle()` reports.
  */
 export declare const wakeCount: Accessor<number>;
+
+/**
+ * How the device reaches the network now (reactive): whether it is
+ * `online`, the `kind` of link its default route takes, whether that link
+ * is `expensive` or `constrained` (Low Data Mode, Data Saver), and on iOS
+ * whether the user lets the app use cellular data (`cellularData`). An
+ * effect that reads it runs again when the route changes: a request that
+ * failed offline waits for `online` and tries again at once, one refused
+ * while `cellularData` is `"restricted"` points the user to the system's
+ * settings. iOS and macOS follow the system's path monitor, Android its
+ * default network, the web `navigator.onLine` and `navigator.connection`;
+ * elsewhere `kind` stays `"unknown"`, which counts as online.
+ */
+export declare const network: Accessor<NetworkState>;
 
 /** The platform the app runs on, constant while it runs. */
 export declare const platform: PlatformInfo;
@@ -2100,6 +2094,19 @@ export interface KeyBindingOptions {
    * focus (`onFocus`) and remove it as the focus leaves (`onBlur`): a tile
    * whose Space flips its switch and whose Return opens it. */
   forFocus?: boolean;
+  /** Come before the bindings of the views (default false: a focused
+   * component's own binding of the keystroke wins over the app's). Take a
+   * key a focused component binds itself, as a query editor's mod+enter
+   * over the editor's insert-line-below: bind it while that view has the
+   * focus (`onFocus`) and remove it as the focus leaves (`onBlur`), so the
+   * component keeps the key elsewhere. */
+  overFocused?: boolean;
+  /** Where the binding fires. By default it fires in the window it is bound
+   * in (a component inside `<Window>`), and in every window when it is bound
+   * in the app root. `"app"`: every window, even when bound inside one.
+   * `"window"`: only the window it is bound in; binding it in the app root
+   * is an error. */
+  scope?: "app" | "window";
 }
 
 /** The app's keyboard shortcuts: on the desktops, the web, and iOS and

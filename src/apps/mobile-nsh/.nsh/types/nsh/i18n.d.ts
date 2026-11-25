@@ -3,13 +3,14 @@
 /**
  * The text of `key` in the language the app shows: the first of the user's
  * preferred languages (`localeSettings().languages`) the app has
- * translations in, else `locale()`'s. From the app's `locales/` files (rust-i18n's formats): `t("hello")`,
+ * translations in, else `locale()`'s. From the app's `locales/` files (rust-i18n's formats) and any
+ * added with `addTranslations`: `t("hello")`,
  * `t("messages.hello", { name: "Jason" })` fills `%{name}`, and
  * `{ locale: "zh-CN" }` asks for another language. A key a language lacks
  * comes from the language without its last subtag (`zh-Hant`, then `zh`),
  * then from English; where none has it, the text is `<locale>.<key>`.
- * Reading it follows the language, so a view that shows it changes with
- * `setLocale`.
+ * Reading it follows the language and translations, so a view that shows
+ * it changes with `setLocale` and `addTranslations`.
  */
 export declare function t(key: string, options?: { locale?: string; [name: string]: unknown }): string;
 
@@ -20,6 +21,17 @@ export declare function t(key: string, options?: { locale?: string; [name: strin
  */
 export declare function setLocale(locale: string | null): void;
 
-/** The languages the app has translations in, sorted. */
+/**
+ * The languages the app has translations in, sorted. Reading it follows
+ * changes to translations (such as `addTranslations`).
+ */
 export declare function availableLocales(): string[];
+
+/**
+ * Merges `translations` (keys and their text by language) into this
+ * surface's dictionary at run time: keys of an existing language overwrite
+ * those keys and leave the rest, and new languages are added. Views
+ * reading `t` and `availableLocales` update in place.
+ */
+export declare function addTranslations(translations: Record<string, Record<string, string>>): void;
 

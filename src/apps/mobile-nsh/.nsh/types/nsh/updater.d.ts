@@ -68,10 +68,20 @@ export interface UpdateProgress {
   total?: number | null;
 }
 
+/** Options of `promptForUpdate` (`prompt_for_update`). */
+export interface UpdatePromptOptions {
+  /** As `checkForUpdate`'s: the channel in `nsh.json`'s `"updater": { "channels" }` to check instead of the default source. */
+  channel?: string | null;
+  /** As `checkForUpdate`'s: the language of the notes, when the manifest has them in it. */
+  locale?: string | null;
+  /** A check the user did not ask for (at startup, in the background): nothing shows when the app is up to date, the check fails or the user skipped the version, and an update installs as the app quits without asking once the user chose automatic updates. Default false: the user asked ("Check for Updates…") and hears every outcome. */
+  quiet?: boolean | null;
+}
+
 /** Asks the source in `nsh.json`'s `"updater"` for a newer version: its `url` or `github`, or with `channel`, the manifest of that name in its `"channels"`. Resolves with the update, or `null` when the app is up to date, has no `"updater"`, or runs where apps do not update (the web, a development run). Rejects when the package declares no channel of that name, and when the source cannot be reached or its manifest is not acceptable: a bad signature, another app's id, a URL that is not HTTPS. `downloadUpdate`, `installAndRestart` and `installOnQuit` use what the last check found, whichever source. */
 export declare function checkForUpdate(options?: UpdateCheckOptions | null): Promise<AppUpdate | null>;
 
-/** Downloads the update the last `checkForUpdate` found and checks it against the manifest, calling `onProgress` as bytes arrive. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when it found none or `canInstall` is false, and when the download fails or does not match. */
+/** Downloads the update the last `checkForUpdate` found and checks it against the manifest, calling `onProgress` as bytes arrive. An interrupted transfer keeps its partial file keyed to the asset and resumes on the next call when the host supports HTTP `Range` requests, starting over when the server ignores the range or the file does not match. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when it found none or `canInstall` is false, and when the download fails or does not match. */
 export declare function downloadUpdate(onProgress?: ((progress: UpdateProgress) => void) | null): Promise<void>;
 
 /** Replaces the installed app with the downloaded update and restarts it as `Application.restart()` does: this run quits, and the new version starts once it has exited, so the promise settles only on failure. Rejects when nothing was downloaded, or when the app cannot be replaced, which leaves it as it was. */
@@ -80,10 +90,13 @@ export declare function installAndRestart(): Promise<void>;
 /** Replaces the installed app with the downloaded update when the app quits, without starting it again: the user's next start opens the new version. The update is unpacked and checked now, as `installAndRestart` checks it, and the promise resolves once it waits; quitting then only moves it into place. Rejects when nothing was downloaded or the update is refused, which leaves the app as it was. Calling it again replaces what waits, and `installAndRestart` installs at once instead. Only a quit of the app installs it: if the app ends otherwise (a crash, being killed), it is gone, and the next `checkForUpdate` offers the update again. When moving it into place fails as the app quits (the app was moved meanwhile, say), the app stays as it was and quits all the same, the failure logged. */
 export declare function installOnQuit(): Promise<void>;
 
+/** Checks for a newer version as `checkForUpdate` does and asks the user about it in NSH's built-in prompt, as macOS apps' Sparkle does: the version, its notes and Skip This Version, Remind Me Later and Install Update, then the download's progress and Install and Relaunch or Install on Quit. Where the app cannot install itself (`canInstall` false: iOS, Android) Install Update opens the update's `url`. The user's Skip This Version and "Automatically download and install updates" are kept in the app's data directory: a `quiet` check (at startup, in the background) shows nothing for a skipped version, and installs an update as the app quits without asking once the user chose to; it shows nothing either when the app is up to date or the check fails. Without `quiet` (a "Check for Updates…" menu item) the user hears that too. Resolves once the prompt shows, or there is nothing to show; never rejects. */
+export declare function promptForUpdate(options?: UpdatePromptOptions | null): Promise<void>;
+
 /** Asks the source in `nsh.json`'s `"updater"` for a newer build of the app's code: a signed package newer than the running build (the running package's, else the one the app shipped with) that this runtime runs. Resolves with it, or `null` when there is none, the app trusts no package roots (`"updater": { "packages": { "roots" } }`) or runs where apps do not update (the web, a development run). Rejects as `checkForUpdate` does. */
 export declare function checkForPackage(options?: PackageCheckOptions | null): Promise<PackageUpdate | null>;
 
-/** Downloads the package the last `checkForPackage` found, checks it against the manifest and verifies it as the app's next start will: signed by a release key a trusted root certifies, for this app, newer than the running build, for this runtime. It then runs from the app's next start (`restartToPackage`). Calls `onProgress` as bytes arrive. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and with an error saying why when the download fails or the package is refused, which leaves nothing behind. */
+/** Downloads the package the last `checkForPackage` found, checks it against the manifest and verifies it as the app's next start will: signed by a release key a trusted root certifies, for this app, newer than the running build, for this runtime. It then runs from the app's next start (`restartToPackage`). Calls `onProgress` as bytes arrive. An interrupted transfer keeps its partial file keyed to the package and resumes on the next call when the host supports HTTP `Range` requests, starting over when the server ignores the range or the file does not match. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and with an error saying why when the download fails or the package is refused (a refused package leaves nothing behind). */
 export declare function downloadPackage(onProgress?: ((progress: UpdateProgress) => void) | null): Promise<void>;
 
 /** Restarts the app into the downloaded package as `Application.restart()` does: this run quits and the app starts again, so the promise settles only on failure. Rejects when nothing was downloaded, and with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where an app cannot restart itself (iOS, Android): the package runs from the app's next start there. */

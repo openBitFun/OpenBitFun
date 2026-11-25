@@ -28,7 +28,7 @@ updater = ["nsh-platform-android/updater"]
 svg = ["nsh-platform-android/svg"]
 
 [dependencies]
-nsh-core = { version = "=0.6.1" }
-nsh-platform-android = { version = "=0.6.1", default-features = false }
-nsh-base = { version = "=0.6.1", default-features = false }
+nsh-core = { version = "=0.7.0" }
+nsh-platform-android = { version = "=0.7.0", default-features = false }
+nsh-base = { version = "=0.7.0", default-features = false }
 app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }

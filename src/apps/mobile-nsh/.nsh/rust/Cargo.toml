@@ -31,6 +31,10 @@ opt-level = "s"
 [profile.web-dev.package."openbitfun-mobile-native"]
 opt-level = 1
 
+[profile.dev.package."*"]
+opt-level = 3
+debug = "line-tables-only"
+
 [profile.dev.package.quickjs-jit-sys]
 opt-level = 3
 
@@ -42,3 +46,7 @@ opt-level = 3
 
 [profile.dev.package.objc2-encode]
 opt-level = 3
+
+[profile.dev.package."openbitfun-mobile-native"]
+opt-level = 0
+debug = true

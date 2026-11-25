@@ -9,10 +9,10 @@ name = "nsh-app-openbitfun-mobile-native-linux-host"
 path = "main.rs"
 
 [dependencies]
-nsh-linux-host = { version = "=0.6.1" }
-nsh-core = { version = "=0.6.1" }
-nsh-base = { version = "=0.6.1", features = ["highlight"] }
+nsh-linux-host = { version = "=0.7.0" }
+nsh-core = { version = "=0.7.0" }
+nsh-base = { version = "=0.7.0", features = ["highlight"] }
 app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
 workspace-hack = { package = "nsh-app-openbitfun-mobile-native-hack", path = "../hack" }
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-platform-linux = { version = "=0.6.1" }
+nsh-platform-linux = { version = "=0.7.0" }

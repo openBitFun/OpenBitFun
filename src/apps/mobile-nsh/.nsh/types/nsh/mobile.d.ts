@@ -2,6 +2,12 @@
 
 import type { ComponentHostProps, JSX, StyleProp, ViewStyle } from "./types";
 
+/** What `AppSettings.open` did. */
+export interface AppSettingsResult {
+  /** Whether the system opened the app's page in its settings. */
+  opened: boolean;
+}
+
 /** What a `DateTimePicker` picks. */
 export type DateTimePickerMode = "date" | "time" | "dateTime";
 
@@ -78,7 +84,7 @@ export interface SwitchProps extends ComponentHostProps {
   onChange?: (event: { checked: boolean }) => void;
 }
 
-/** The system's switch, in the system's look, motion, haptics and accessibility: a `UISwitch` on iOS (Liquid Glass on iOS 26 and later), Material 3's switch on Android. The app says whether it is on (`checked`), hears the user's flip (`onChange`), names it for screen readers (`accessibilityLabel`) and places it with its `class` and `style`; its size is the system's where the style leaves it open. It is on in the theme's `primary` (the system's color without one). The desktops and the web have no such control: there it takes no room and shows nothing, and the app shows the setting with `nsh/base`'s `Switch`. */
+/** The system's switch, in the system's look, motion, haptics and accessibility: a `UISwitch` on iOS (Liquid Glass on iOS 26 and later), Material 3's switch on Android. The app says whether it is on (`checked`), hears the user's flip (`onChange`), names it for screen readers (`accessibilityLabel`) and places it with its `class` and `style`; its size is the system's where the style leaves it open. It is on in its style's `accentColor` (`accent-*`), else in the theme's `primary` (the system's color without either). The desktops and the web have no such control: there it takes no room and shows nothing, and the app shows the setting with `nsh/base`'s `Switch`. */
 export declare const Switch: ((props: SwitchProps) => JSX.Element);
 
 export interface TabBarProps extends ComponentHostProps {
@@ -94,6 +100,17 @@ export interface TabBarProps extends ComponentHostProps {
 
 /** The system's tab bar: `UITabBar` on iOS (Liquid Glass on iOS 26), a Material 3 navigation bar on Android, each in the system's look. The app gives the tabs (`items`), says which is selected (`selectedIndex`), hears the user's choice (`onChange`), places the bar with its `class` and `style` and shows the selected tab's content; the bar's height is the system's where the style leaves it open. The selected tab takes the theme's `primary` (the other tabs keep the system's). The desktops and the web have no system tab bar: there it takes no room and shows nothing, and the app shows its tabs with `nsh/base`'s `Tabs`. */
 export declare const TabBar: ((props: TabBarProps) => JSX.Element);
+
+/** The app's page in the system's settings. */
+export interface AppSettingsModule {
+  /** Resolves with whether `open` opens the app's page in the system's settings here: on iOS and Android (not on a Mac, Mac Catalyst included), when the `application` capability is granted; `false` elsewhere, where `open` rejects. Ask it before showing an "Open Settings" button. */
+  available(): Promise<boolean>;
+  /** Opens the app's own page in the system's settings, where the user turns back on a permission they denied (the camera, photos, notifications): iOS's Settings app at the app, Android's App info; the embedding app's page for an embedded view. Resolves with `{ opened }`: whether the system opened it. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the platform has no such page (`available()` is false), and with `ERR_ACCESS_DENIED` (`permission` `"application"`) for an app that declares capabilities without `application`. */
+  open(): Promise<AppSettingsResult>;
+}
+
+/** The app's page in the system's settings. */
+export declare const AppSettings: AppSettingsModule;
 
 /** The Android back button: its listeners run after modals and before stacks. */
 export interface BackHandlerModule {
@@ -146,6 +163,27 @@ export interface BackListeners {
    * stack pops, else the app exits. The returned function stops listening;
    * a listener added while a component renders stops with the component. */
   on(event: "press", listener: () => boolean | void): () => void;
+  /** Follows the system's back gesture (predictive back, Android 14 and
+   * later): `listener` hears each step of a gesture no modal takes, from
+   * `"start"` to `"end"` (the `press` follows) or `"cancel"`, the most
+   * recently added listener first. While one listens, the stacks leave the
+   * gesture to the app and do not preview their pop. The returned function
+   * stops listening; a listener added while a component renders stops with
+   * the component. */
+  on(event: "progress", listener: (event: BackProgressEvent) => void): () => void;
+}
+
+/** A step of the system's back gesture (`BackHandler.on("progress", ..)`). */
+export interface BackProgressEvent {
+  /** Where it is in the gesture: the finger started it, moved, let go to
+   * go back (the `press` follows), or let go without going back (or the
+   * system cancelled it). */
+  phase: "start" | "move" | "end" | "cancel";
+  /** How far the gesture went, from 0 to 1, as the system reports it. */
+  progress: number;
+  /** The screen edge the swipe started at; absent when the system names
+   * none. */
+  edge?: "left" | "right";
 }
 
 /**

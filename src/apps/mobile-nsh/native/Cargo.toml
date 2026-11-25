@@ -25,7 +25,7 @@ name = "openbitfun_mobile_native"
 path = "src/lib.rs"
 
 [dependencies]
-nsh-core = { version = "=0.6.1", default-features = false }
+nsh-core = { version = "=0.7.0", default-features = false }
 # OpenBitFun Link (the EasyTier fork), joined as a controller node.
 openbitfun-link = { path = "../../../crates/services/link" }
 # The OBP client (handshake, `hello`/`call`/`ack`, events), shared with the

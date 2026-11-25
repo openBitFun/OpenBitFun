@@ -13,13 +13,14 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { NSH_VERSION } from './ci/install-nsh.mjs';
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
 );
 const scriptPath = path.join(repoRoot, 'scripts/check-build-prereqs.mjs');
 
-function createFakeNsh(binDir, version = '0.6.1') {
+function createFakeNsh(binDir, version = NSH_VERSION.replace(/^v/, '')) {
   mkdirSync(binDir, { recursive: true });
   const fakeScript = path.join(binDir, 'fake-nsh.cjs');
   writeFileSync(
@@ -111,7 +112,7 @@ const args = process.argv.slice(2);
 function writeFakeNsh() {
   const binDir = path.join('node_modules', '.bin');
   mkdirSync(binDir, { recursive: true });
-  writeFileSync(path.join(binDir, 'fake-nsh.cjs'), "console.log('nsh 0.6.1 (test)');\\n");
+  writeFileSync(path.join(binDir, 'fake-nsh.cjs'), "console.log('nsh ${NSH_VERSION.replace(/^v/, '')} (test)');\\n");
   if (process.platform === 'win32') {
     writeFileSync(
       path.join(binDir, 'nsh.cmd'),

@@ -87,7 +87,6 @@ export interface MacOSProps extends MacOSHostProps {}
 
 /** Windows-only props of every element (`windows={{…}}`). */
 export interface WindowsProps extends WindowsHostProps {}
-
 /** `<View>` */
 export interface ViewProps extends CommonProps, ViewHostProps {
   style?: StyleProp<ViewStyle>;
@@ -360,6 +359,8 @@ export interface ViewStyle extends LayoutStyle {
   backdropFilter?: string;
   /** A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included, whose blur then draws without the system material's tint. Not drawn on Windows and GPUI. */
   maskImage?: string;
+  /** CSS's `clip-path` with an `inset()` shape: `"inset(8px 0 0 50% round 12px)"` moves each edge in (one to four lengths or percentages of the width or height, as `margin`) and rounds the corners (`round`, one to four radii in points), or `"none"`. Everything the view draws, the views in it included, shows only inside the shape, and only there does a press reach the view or the views in it. It transitions (`transitionProperty: "clip-path"`, or `all`), each edge and radius on its own, so a panel can open out of a corner; to or from `none` it changes at once, as in CSS. */
+  clipPath?: string;
   /** A glass material behind the view's content (Apple's Liquid Glass). Drawn on iOS 26 and macOS 26 and later; elsewhere the view's `backdropFilter` is drawn as before, so give a glass view a blur to fall back to. */
   glassEffect?: "none" | "regular" | "clear";
   /** A tint of the glass material (`glassEffect`; iOS 26 and macOS 26 and later): the color the native glass takes on, or `null` for the system default. A transparent color is an explicit tint, not a reset. Has no effect without glass; the blur fallback on earlier systems stays unchanged. */
@@ -414,6 +415,8 @@ export interface ViewStyle extends LayoutStyle {
   borderStyle?: "solid" | "dashed" | "dotted" | "none" | "hidden";
   /** `continuous`: corners whose curvature eases into the edges (iOS app icons). */
   borderCurve?: "circular" | "continuous";
+  /** CSS's `accent-color`: the color a system control shows its state in (`accent-*`), a switch's track when on; the control's own color when unset. Set on the control itself (not inherited). */
+  accentColor?: ColorValue;
   /** CSS's `object-fit`: how an image or a video fits its box. Images cover it by default, videos are contained in it. */
   objectFit?: "fill" | "contain" | "cover" | "none" | "scale-down";
   /** `"hidden"`: invisible while turned away (3D rotations). */
@@ -540,6 +543,8 @@ export interface Modifiers {
   shift: boolean;
   /** Command on Apple platforms, the Windows / Super key elsewhere. */
   platform: boolean;
+  /** AltGr (the DOM's `getModifierState("AltGraph")`): the key's character came from the layout's AltGr level, so `control` and `alt` are held to type text, not for a shortcut. Set by key events on Windows; `false` elsewhere. */
+  altGraph: boolean;
 }
 
 /** A hardware key transition on the focused view: the payload of `onKeyDown` and `onKeyUp` (`nsh_core::KeyEvent`). */
@@ -565,10 +570,12 @@ export interface OverlayPosition {
   available: Size;
 }
 
-/** A drag: translation since the start and velocity (points / second). */
+/** A drag: where it started, translation since then and velocity (points / second). */
 export interface PanEvent {
   /** The system cancelled the drag rather than releasing it. */
   cancelled: boolean;
+  /** Where the finger (or the pointer) went down, in the surface (as a touch's `pageX` / `pageY`). */
+  origin: Point;
   /** How far the finger moved since the drag started. */
   translation: Point;
   /** How fast it moves, in points per second. */
@@ -584,7 +591,7 @@ export interface PressEvent {
   /** Position in the root view the view is in (the surface or its modal), as touches' `pageX` / `pageY`. */
   pagePosition: Point;
   modifiers: Modifiers;
-  /** Consecutive clicks at the same place: 1 for a click, 2 for a double click. */
+  /** Consecutive clicks at the same place: 1 for a click, 2 for a double click; 0 when not from a pointer (keyboard Enter / Space or an assistive technology's default action), as the DOM's `detail`. */
   clickCount: number;
 }
 
@@ -679,8 +686,20 @@ export interface PasteEvent {
   html: string;
   /** Files with their bytes: images (a screenshot, an image copied from a page or an app), as `File`s an app can upload. */
   files: File[];
+  /** Files larger than the input's `pasteMaxSize`, whose bytes were not read: their names, types and sizes, so the app can tell the user. */
+  tooLarge: UnreadFile[];
   /** `file:` URLs of local files copied in a file manager (as `onFileDrop`'s). */
   uris: string[];
+}
+
+/** A pasted file whose bytes were not read (`PasteEvent.tooLarge`). */
+export interface UnreadFile {
+  /** Its name. */
+  name: string;
+  /** Its media type (`application/pdf`; `application/octet-stream` when unknown). */
+  type: string;
+  /** Its size in bytes. */
+  size: number;
 }
 
 /** A line of a laid-out text (in the text's content box). */
@@ -722,7 +741,7 @@ export interface WebViewDownload {
 }
 
 /** What an element is, for assistive technologies (`role`). */
-export type AccessibilityRole = "none" | "button" | "link" | "search" | "image" | "imagebutton" | "keyboardkey" | "text" | "adjustable" | "header" | "summary" | "alert" | "checkbox" | "combobox" | "menu" | "menubar" | "menuitem" | "progressbar" | "radio" | "radiogroup" | "scrollbar" | "spinbutton" | "switch" | "tab" | "tablist" | "timer" | "toolbar" | "list" | "grid" | "table" | "row" | "cell" | "columnheader" | "rowgroup" | "listbox" | "option" | "group" | "region" | "navigation" | "tree" | "treeitem" | "menuitemcheckbox" | "menuitemradio" | "dialog" | "alertdialog";
+export type AccessibilityRole = "none" | "button" | "link" | "search" | "textbox" | "image" | "imagebutton" | "keyboardkey" | "text" | "adjustable" | "header" | "summary" | "alert" | "checkbox" | "combobox" | "menu" | "menubar" | "menuitem" | "progressbar" | "radio" | "radiogroup" | "scrollbar" | "spinbutton" | "switch" | "tab" | "tablist" | "timer" | "toolbar" | "list" | "grid" | "table" | "row" | "cell" | "columnheader" | "rowgroup" | "listbox" | "option" | "group" | "region" | "navigation" | "tree" | "treeitem" | "menuitemcheckbox" | "menuitemradio" | "dialog" | "alertdialog" | "tabpanel";
 
 /** The state assistive technologies report (`accessibilityState`). */
 export interface AccessibilityState {
@@ -772,6 +791,9 @@ export type HeaderItem = {
 /** A bar button UIKit draws itself, with the system's look, symbol or label (`ios={{ headerLeftSystemItem }}`, `ios={{ headerRightSystemItem }}`). */
 export type HeaderSystemItem = "add" | "done" | "close" | "edit" | "compose" | "search" | "share" | "trash" | "save" | "cancel";
 
+/** Where a page's title sits in the native header (`headerTitleAlign`). Android's toolbar honors it. iOS's system bar always centers the title and ignores the value; the desktops and the web draw no native header. */
+export type HeaderTitleAlign = "left" | "center";
+
 /** The keyboard's look (`keyboardAppearance`, iOS). */
 export type KeyboardAppearance = "default" | "light" | "dark";
 
@@ -784,7 +806,7 @@ export type KeyboardType = "default" | "number-pad" | "decimal-pad" | "numeric" 
 /** Where a list rests (`alignment`), as GPUI's `ListAlignment`. */
 export type ListAlignment = "top" | "bottom";
 
-/** Padding and gaps of a list's content (`contentStyle`). */
+/** Padding, gaps and cell alignment of a list's content (`contentStyle`). */
 export interface ListContentStyle {
   padding?: number;
   paddingHorizontal?: number;
@@ -796,13 +818,11 @@ export interface ListContentStyle {
   gap?: number;
   rowGap?: number;
   columnGap?: number;
+  alignItems?: "stretch" | "flex-start" | "center" | "flex-end";
 }
 
 /** What a list scrolls in (`viewport`), fixed when the list is made. */
 export type ListViewport = "own" | "parent";
-
-/** How changes of an element are announced (Android `accessibilityLiveRegion`). */
-export type LiveRegion = "none" | "polite" | "assertive";
 
 /** The material a view draws with on macOS (`macos={{ backdrop }}`). */
 export interface MacOsBackdrop {
@@ -822,6 +842,30 @@ export type MacOsBackdropState = "followsWindowActiveState" | "active" | "inacti
 
 /** How a modal covers the screen (`presentation`). */
 export type ModalPresentation = "fullScreen" | "pageSheet" | "formSheet";
+
+/** When a view's pans activate (`panActivation`; react-native-gesture-handler's
+ * `activeOffsetX` / `failOffsetY`), decided natively on the main thread as the
+ * finger moves: past an active offset the view becomes the responder, its `pan`
+ * starts and the scroll views around it can no longer take the touches; past a
+ * fail offset first it never does, and they keep them. Distances in points along
+ * one axis, either direction; without active offsets it activates after 10 points. */
+export interface PanActivation {
+  activeOffsetX?: number;
+  activeOffsetY?: number;
+  failOffsetX?: number;
+  failOffsetY?: number;
+  /** The one way it activates in: a drag the other way, or mostly across it, fails it. */
+  direction?: PanDirection;
+  /** Only a finger that goes down within 20 points of this edge of the screen (the
+   * window on desktops, the page on the web) starts it, moving away from the edge. */
+  edge?: PanEdge;
+}
+
+/** The way a finger moves (`PanActivation::direction`): toward the left edge, the right edge, the top or the bottom. */
+export type PanDirection = "left" | "right" | "up" | "down";
+
+/** An edge of the screen, or of the window on desktops and the page on the web, that a pan starts at (`PanActivation::edge`). */
+export type PanEdge = "left" | "right" | "top" | "bottom";
 
 /** What an input does with what the user pastes (`pasteBehavior`); it reports it either way (`onPaste`). */
 export type PasteBehavior = "insert" | "report";
@@ -850,6 +894,15 @@ export type ScreenAnimation = "default" | "slide" | "fade" | "none";
 
 /** Where `reveal` puts a view along the axis of a scroll view around it (GPUI's `ScrollStrategy`, with the DOM's `ScrollLogicalPosition` names, as `SnapAlignment`). Physical: start and end are top and bottom along a vertical scroll view, left and right along a horizontal one, in either writing direction. */
 export type ScrollAlignment = "start" | "center" | "end" | "nearest";
+
+/** The edge of a scroll view a view floating over it sits at (`ios={{ scrollEdgeElement }}`). */
+export type ScrollEdge = "top" | "bottom";
+
+/** The scroll view a view floats over and the edge of it the view sits at (`ios={{ scrollEdgeElement }}`). */
+export interface ScrollEdgeElement {
+  scrollView: ViewRef;
+  edge?: ScrollEdge;
+}
 
 /** A value of a shader's uniform: a number (`f32`, `i32`, `u32`), a color
  * (`vec3f` / `vec4f`, sRGB 0..1), an animated value, or a list of them (a
@@ -919,6 +972,8 @@ export interface HostProps {
   accessibilityElementsHidden?: boolean;
   /** `"auto"`, `"yes"`, `"no"` or `"no-hide-descendants"`. */
   importantForAccessibility?: "auto" | "yes" | "no" | "no-hide-descendants";
+  /** How changes of the view are announced by the screen reader — TalkBack on Android, VoiceOver on macOS, UIA's live setting and notification on Windows (`"polite"` when the user is idle, `"assertive"` right away). */
+  accessibilityLiveRegion?: "none" | "polite" | "assertive";
   /** Custom actions offered to assistive technologies (`onAccessibilityAction` reports them). */
   accessibilityActions?: { name: string; label?: string }[];
   /** The level of a heading (`role="header"`, 1 the top) or the depth of a tree item (`role="treeitem"`, 1 at the top); others than whole numbers from 1 are none. */
@@ -931,12 +986,14 @@ export interface HostProps {
   accessibilityDescribedBy?: ViewRef | null;
   /** An identifier for UI tests. */
   testID?: string;
+  /** What a copy of the text around the view gives in its place, when the view (or image) is inside a text (an inline formula's source, an emoji image's character): selecting across it and copying puts this there. Unset, the view adds nothing to the copy. A view outside a text and a nested text span ignore it. */
+  copyText?: string;
   /** A hint about the view, shown above it on the desktops while the pointer rests on it (after half a second) until the pointer leaves or presses it, never on touch screens; it never takes the pointer. The element is shown as it is; a `Tooltip` of `nsh/base` is the tooltip itself, with its placement, delay and events. */
   tooltip?: JSX.Element;
   /** Whether the view is a stop of the keyboard focus (Tab, on the platforms that move it between views): `true` makes any view one, whether or not it takes presses (a chart or a slider in a pressable card, which takes its keys while focused); `false` leaves a view that takes presses to the pointer (a backdrop that closes a popover). Unset, the views that take presses are stops. */
   focusable?: boolean;
   /** The hardware keys this view or a focused descendant consumes before native defaults run: `"none"`, `"all"`, or the canonical keystrokes (`"mod+k"`, `"shift+tab"`) it takes. Decided from mounted props; eligible app shortcuts and focused native inputs keep their keys. Omitting it restores `"none"`. */
-  captureKeys?: "none" | "all" | readonly string[];
+  captureKeys?: "none" | "all" | "text" | readonly string[];
   /** Two-finger pinches drive `scale` natively. */
   pinch?: { scale?: AnimatedValue };
   /** Two-finger rotations drive `angle` (degrees) natively. */
@@ -957,7 +1014,7 @@ export interface HostProps {
   onMouseLeave?: (e: MouseEvent) => void;
   /** The mouse moved over the view (or a view inside it), with or without a button down (`e.pressedButton`), or a modifier key changed while it rests there with none down; at most once per frame. */
   onMouseMove?: (e: MouseEvent) => void;
-  /** A mouse wheel or touchpad scrolled over the view (or a view inside it); desktops and the web. The nearest listener hears it. A listener nearer than any scroll view under the pointer takes the wheel: nothing scrolls or zooms natively (a canvas zooms on `e.modifiers.ctrl` and pans otherwise); a scroll view listening, or a view around one, only observes it. */
+  /** A mouse wheel or touchpad scrolled over the view (or a view inside it); desktops and the web. The nearest listener hears it. A listener nearer than any scroll view under the pointer takes the wheel: nothing scrolls or zooms natively (a canvas zooms on `e.modifiers.control` and pans otherwise); a scroll view listening, or a view around one, only observes it. */
   onWheel?: (e: WheelEvent) => void;
   /** A touchpad pinch over the view (or a view inside it); macOS, Linux, the GPUI backend and Safari (Windows and the other browsers report a touchpad pinch as Control + wheel: `onWheel`). The nearest listener hears it; a listener nearer than any view that pinches natively takes it, and nothing zooms natively. A pinch stays on the view its start went to. Fingers pinching a touchscreen are `onPinchStart`'s. */
   onPinch?: (e: PinchEvent) => void;
@@ -965,12 +1022,12 @@ export interface HostProps {
   onMouseUp?: (e: MouseEvent) => void;
   /** The secondary button (a right click, Control-click on Apple platforms) was pressed over the view: open a menu with `Menu.popup(items, e.pagePosition)`. The nearest listener hears it; a text input or selectable text nearer shows its own menu instead. */
   onContextMenu?: (e: ContextMenuEvent) => void;
-  /** A local file drag entered this desktop destination with its offered file URLs and each one's MIME type by its name (`""` when the name says none); no file is read. GTK waits for its file-list preload. */
+  /** A local file drag entered this destination (desktops, iOS and Android) with its offered file URLs and each one's MIME type by its name (`""` when the name says none); no file is read. GTK waits for its file-list preload; iOS and Android read files only on drop, so they offer no URLs; the Web offers no URLs, only the types the browser shows. */
   onFileDragEnter?: (e: { uris: string[]; mimeTypes: string[] }) => void;
-  /** A local file drag left this desktop destination. */
+  /** A local file drag left this destination (desktops, iOS, Android and the Web). */
   onFileDragLeave?: () => void;
-  /** Local file URLs dropped on this desktop destination, with each one's MIME type by its name (`""` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux). */
-  onFileDrop?: (e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number } }) => void;
+  /** Local file URLs dropped on this destination (desktops, iOS, Android and the Web), with each one's MIME type by its name (`""` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux, iOS, Android, Web). On the Web `uris` is empty and `files` holds the dropped regular files with their contents (`status` `"tooLarge"` past 512 MiB a drop; at most 100); elsewhere `files` is empty. */
+  onFileDrop?: (e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number }; files: { file: File | null; name: string; type: string; size: number; status: "read" | "tooLarge" }[] }) => void;
   /** The frame changed: its bounds in the parent. */
   onLayout?: (e: { bounds: Bounds }) => void;
   onPanStart?: (e: PanEvent) => void;
@@ -985,6 +1042,10 @@ export interface HostProps {
   onFocus?: () => void;
   /** It lost the keyboard focus. */
   onBlur?: () => void;
+  /** The keyboard focus came into it: onto it or a view inside it, from outside (it entered `focus-within`). Moving between the views inside it is no new coming in; the content of an overlay is inside the view the overlay is in. A panel notes where its focus is with it, to put it back later with `ref.focus()`. */
+  onFocusIn?: () => void;
+  /** The keyboard focus left it: from it or a view inside it to one outside, or to none (it left `focus-within`). A view removed with the focus inside it hears nothing. */
+  onFocusOut?: () => void;
   /** A hardware key went down on the focused view or a view inside it on desktop and Web. It bubbles to enabled listening ancestors within the same native window. `defaultPrevented` is the mounted `captureKeys` decision for this transition. */
   onKeyDown?: (e: KeyEvent) => void;
   /** A hardware key came up on the focused view, with this transition's `defaultPrevented` decision; it bubbles as `onKeyDown` does. A window that loses the focus invents no releases. */
@@ -995,6 +1056,8 @@ export interface HostProps {
 export interface IOSHostProps {
   /** The system material of a backdrop blur (iOS, default `ultraThin`). */
   backdropMaterial?: BackdropMaterial;
+  /** The scroll view the view floats over and the edge of it the view sits at (iOS 26: that scroll view's edge effect takes its shape from the view); `None`: none. */
+  scrollEdgeElement?: ScrollEdgeElement;
 }
 
 /** The props of every element inside `android={{…}}`. */
@@ -1003,8 +1066,8 @@ export interface AndroidHostProps {
   ripple?: { color?: ColorValue; borderless?: boolean; radius?: number; foreground?: boolean };
   /** The material shadow (points), from the view's shape. */
   elevation?: number;
-  /** How changes of the view are announced to TalkBack. */
-  accessibilityLiveRegion?: LiveRegion;
+  /** How changes of the view are announced by the screen reader — TalkBack on Android, VoiceOver on macOS, UIA's live setting and notification on Windows (`"polite"` when the user is idle, `"assertive"` right away). */
+  accessibilityLiveRegion?: "none" | "polite" | "assertive";
 }
 
 /** The props of every element inside `macos={{…}}`. */
@@ -1096,8 +1159,14 @@ export interface ScrollingHostProps {
   bounces?: boolean;
   /** A tap at the top of the window (the status bar's) scrolls it to its top (default true; iOS and Mac Catalyst, where UIKit does it: elsewhere ignored). */
   scrollsToTop?: boolean;
+  /** A mouse wheel's notches glide to where they point, eased in and out over 100–200 ms as Chromium's do, a run of notches one motion (default false: the platform's own, which lands at once on macOS and Linux and glides briefly on Windows). The desktops (macOS, Windows, Linux, GPUI); iOS and Android scroll with the system's views, the web with the browser's (both ignore it), as they do when the system reduces motion. */
+  smoothWheel?: boolean;
+  /** How far a mouse wheel's line scrolls, in points (0, the default: the platform's own, 10 on macOS, 16 on Windows, a notch's length after the view's on Linux). A line is the platform's: a notch on Linux, a third of one on Windows (the system's default), about one per notch on macOS, which accelerates quick runs. The desktops; ignored where `smoothWheel` is. */
+  wheelLineHeight?: number;
   /** Room around the content. */
   contentInset?: Partial<Edges>;
+  /** How far the scroll indicator keeps from each edge of the view, for bars that float over it (React Native's `scrollIndicatorInsets`); the content still scrolls under them. */
+  scrollbarInset?: Partial<Edges>;
   /** Where it starts. */
   contentOffset?: Partial<Point>;
   /** Whether a tap dismisses the keyboard: `"never"` (default: the tap only dismisses it), `"always"` (never dismisses), `"handled"` (unless something handles the tap). */
@@ -1218,8 +1287,12 @@ export interface InputHostProps {
   submitBehavior?: SubmitBehavior;
   /** What a paste does: `"insert"` (default) inserts its text, `"report"` inserts nothing; `onPaste` reports what was pasted either way. Decided natively when the user pastes. */
   pasteBehavior?: PasteBehavior;
+  /** The largest pasted file read, in bytes; a larger one reaches `onPaste` in `tooLarge`, its name, type and size only, so the app can tell the user. Decided natively when the user pastes, before the file is read where the platform says its size. Default: every file is read. */
+  pasteMaxSize?: number;
   /** Focused when it appears. */
   autoFocus?: boolean;
+  /** The whole text is selected when the input takes the focus (a click, Tab, `focus()`, `autoFocus`). Decided natively as the focus arrives; a click that drags, extends (Shift) or selects words (double click) keeps the user's selection. */
+  selectTextOnFocus?: boolean;
   /** The caret is drawn (default true; `false` hides it). */
   caret?: boolean;
   /** Also `textContentType`): what an input holds, for autofill (React Native's values, e.g. "username", "current-password", "new-password", "one-time-code", "email", "tel", "postal-code", "cc-number", "off"). */
@@ -1234,7 +1307,7 @@ export interface InputHostProps {
   onChange?: (e: { value: string }) => void;
   onSubmit?: (e: { text: string }) => void;
   onSelectionChange?: (e: { start: number; end: number }) => void;
-  /** The user pasted (the keyboard's shortcut, a menu's Paste, a keyboard's image): the text, images as `File`s, local files' `file:` URLs. It comes before the `onChange` of the text it inserts; `pasteBehavior` decides whether the input inserts the text (images and files never are). */
+  /** The user pasted (the keyboard's shortcut, a menu's Paste, a keyboard's image): the text, images as `File`s (files larger than `pasteMaxSize` in `tooLarge`, unread), local files' `file:` URLs. It comes before the `onChange` of the text it inserts; `pasteBehavior` decides whether the input inserts the text (images and files never are). */
   onPaste?: (e: PasteEvent) => void;
   /** The caret moved: with the selection, or as the text scrolled or wrapped again. `bounds` is where it is in the input, `pageBounds` in the root view (an `Overlay`'s `anchor`): an `@` mention's suggestions open there. */
   onCaretMove?: (e: CaretEvent) => void;
@@ -1270,6 +1343,12 @@ export interface NavPageHostProps {
   headerLargeTitle?: boolean;
   /** The content extends under the system header (iOS and Android). */
   headerTransparent?: boolean;
+  /** The system header; Android's has none): the hairline under the header. Off, the bar has no shadow line, as iOS 26's own bars. */
+  headerShadowVisible?: boolean;
+  /** The system header): where the title sits, `"left"` (the default) or `"center"`. iOS's system bar always centers the title and ignores the value; the desktops and the web draw no native header. */
+  headerTitleAlign?: HeaderTitleAlign;
+  /** The system header; ignored elsewhere): with `headerTransparent`, the header stays clear while the content rests at its top and shows its background once the content scrolls under it, as UIKit's own bars do. */
+  headerBackgroundOnScroll?: boolean;
   /** The system header; ignored elsewhere): the label of the back button leading back to this page. */
   headerBackTitle?: string;
   /** The system header's back button shows (default true; iOS and Android). */
@@ -1354,6 +1433,8 @@ export interface WebViewHostProps {
   html?: string;
   /** The URL the relative links of `html` resolve against. */
   baseUrl?: string;
+  /** One more origin this web view may show and navigate to besides `webview.hosts`, for an origin known only while the app runs: `scheme://host[:port]`, `http` or `https`, matched exactly (`crate::access::WebOrigin`). It needs `"runtimeOrigin": true` in `capabilities.webview`; another value or no grant is refused with a message and the web view has none. Set with `src` in the same render, it applies to that `src`; changed later, it applies from the next navigation. Other web views and the windows a page opens do not have it. */
+  allowOrigin?: string;
   /** Runs after each page loads. */
   injectedJavaScript?: string;
   /** Runs before each page's own scripts. */
@@ -1366,6 +1447,8 @@ export interface WebViewHostProps {
   javaScriptEnabled?: boolean;
   /** The page's website data (cookies, storage, the cache) lives only as long as the web view, apart from the app's other web views; on Android, where every web view shares the app's cookies and storage, it loads without the HTTP cache and saves no form data. Read when the web view is made; a later change is ignored (with a warning): render a new element to change it. */
   incognito?: boolean;
+  /** The person can pinch to zoom the page, also past the scale limits of its viewport (Android's built-in zoom with no on-screen buttons, WebKit ignoring the viewport's scale limits on iOS, magnification on macOS). False keeps each platform's own behavior: Android and macOS do not zoom, iOS zooms as far as the page's viewport allows, WebView2 (Windows) zooms by default. Read when the web view is made, as `incognito`. */
+  zoomable?: boolean;
   onLoadStart?: (e: WebViewNavigation) => void;
   onLoad?: (e: WebViewNavigation) => void;
   /** The source failed to load. `code` is `"ERR_ACCESS_DENIED"` when the app's capabilities do not grant it (an image's or video's URL: `network`; a web view's page or `html`: `webview`), `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` for a web view where the platform shows none (`WebView.available()`), and `"ERR_NSH_WEBVIEW_TERMINATED"` when a web view's web content process ended (it shows no page until `reload()`, `load()` or a new source). */
@@ -1528,19 +1611,6 @@ export interface ResponderGestureState {
   numberActiveTouches: number;
 }
 
-/** When a view's pan activates (`panActivation`; react-native-gesture-handler's
- * `activeOffsetX` / `failOffsetY`), decided natively on the main thread as the
- * finger moves: past an active offset the view becomes the responder and the
- * scroll views around it can no longer take the touches; past a fail offset
- * first it never does, and they keep them. Distances in points along one axis,
- * either direction; without active offsets it activates after 10 points. */
-export interface PanActivation {
-  activeOffsetX?: number;
-  activeOffsetY?: number;
-  failOffsetX?: number;
-  failOffsetY?: number;
-}
-
 /** Raw touches and the gesture responder system (React Native semantics). */
 export interface TouchProps {
   onTouchStart?: (e: GestureResponderEvent) => void;
@@ -1582,6 +1652,8 @@ export interface ViewRef {
   focus(): void;
   /** Unfocuses an `<Input>`, or takes the keyboard focus off a view that takes presses. */
   blur(): void;
+  /** Clears the selection of a `selectable` view, or of the selectable texts inside the view: the highlight goes and the selectable view hears `onSelectionChange` with `""`. */
+  clearSelection(): void;
   /** Where the view is once this turn's changes are laid out: `bounds` its frame in its parent (as `onLayout`), `pagePosition` its top left corner in the root view it is in (the surface, or its modal), the coordinates of touches' `pageX` / `pageY`: `event.pageX - m.pagePosition.x` is a touch's position in the view. Scroll offsets and zoom scales of the scroll views and lists around it are applied, transforms (animations included) are not. `null` when the view is not in the tree. */
   measure(): Promise<{ bounds: Bounds; pagePosition: Point } | null>;
   /** Scrolls the `<Scroll>`s around the view, innermost first, so it shows, once this turn's changes are laid out: `vertical` places it along vertical scroll views (`"start"` by default), `horizontal` along horizontal ones (`"nearest"` by default), `"nearest"` moving only what it must; `animated` defaults to `true`. `"start"` and `"end"` are physical (top / bottom, left / right). Each scroll view stops at its content's ends, past them by its `contentInset`. An unknown alignment throws a `TypeError`. A `List` keeps its own: use its `scrollToIndex`. */

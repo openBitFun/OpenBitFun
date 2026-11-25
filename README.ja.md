@@ -151,7 +151,7 @@ pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` は固定バージョンの NSH CLI（`v0.6.1`）を自動的にダウンロード・SHA-256 検証して `~/.nsh/bin` に配置し、`node_modules/.bin/nsh` にリンクします（スキップする場合は `OPENBITFUN_SKIP_NSH_INSTALL=1` を設定。詳細は [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）。`desktop:dev` はデフォルトの `rustc` が 1.97 未満の場合に自動的に `RUSTUP_TOOLCHAIN=1.98.1` を選択して起動前にビルドします。再ビルドせずに前回のデバッグビルドを起動するには `pnpm run desktop:preview:debug`、UI のみのホットリロードには `pnpm exec nsh run src/nsh-ui --target web` を使用してください。コマンドラインでの作業の流れについては [CLI のガイド](./src/apps/cli/README.md)を参照してください。
+`pnpm install` は固定バージョンの NSH CLI（`v0.7.0`）を自動的にダウンロード・SHA-256 検証して `~/.nsh/bin` に配置し、`node_modules/.bin/nsh` にリンクします（スキップする場合は `OPENBITFUN_SKIP_NSH_INSTALL=1` を設定。詳細は [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）。`desktop:dev` はデフォルトの `rustc` が 1.97 未満の場合に自動的に `RUSTUP_TOOLCHAIN=1.98.1` を選択して起動前にビルドします。再ビルドせずに前回のデバッグビルドを起動するには `pnpm run desktop:preview:debug`、UI のみのホットリロードには `pnpm exec nsh run src/nsh-ui --target web` を使用してください。コマンドラインでの作業の流れについては [CLI のガイド](./src/apps/cli/README.md)を参照してください。
 
 </details>
 
