@@ -2493,6 +2493,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "shell.menu.zoom": "縮放",
   "shell.menu.closeWindow": "關閉視窗",
   "shell.tray.show": "顯示主介面",
+  "shell.tray.hide": "隱藏主介面",
   "shell.tray.restart": "重新啟動應用程式",
   "shell.tray.markAllRead": "全部標為已讀",
   "shell.tray.markAllReadCount": "全部標為已讀（{{count}}）",

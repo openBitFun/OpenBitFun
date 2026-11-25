@@ -4,7 +4,7 @@
 // shell unchanged. The desktop presence windows (cards, the pet) are started
 // from here and talk to this device's backend themselves (`desktopPresence.tsx`).
 
-import { effect, Notifications, platform, signal } from "nsh";
+import { computed, effect, Notifications, platform, signal } from "nsh";
 import { Application, isAvailable, Menu, Tray, Window, type MenuItem, type WindowRef } from "nsh/desktop";
 import { startDesktopPresence } from "./desktopPresence";
 import { tr } from "./i18n";
@@ -52,7 +52,6 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
   const os = platform.os;
   const closeHandlers = new Set<() => void>();
   const trayUnread = signal(0);
-  let closeListenerAttached = false;
   let notificationPermissionAsked = false;
   let stopNotificationPress: (() => void) | null = null;
 
@@ -63,15 +62,6 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
       return;
     }
     for (const handler of [...closeHandlers]) handler();
-  }
-
-  function attachCloseListener(win: WindowRef): void {
-    if (closeListenerAttached) return;
-    closeListenerAttached = true;
-    // The page answers the close button (tray, quit, ask), as the desktop asks
-    // `AppLayout.tsx`; the window therefore stays open until it decides.
-    win.set({ closeOnPress: false });
-    win.on("closePress", () => requestClose());
   }
 
   function menuShortcut(id: string, fallback: string): string {
@@ -138,7 +128,7 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
     ];
   }
 
-  function buildTrayMenu(actions: ShellActions): MenuItem[] {
+  function buildTrayMenu(actions: ShellActions, windowVisible: boolean): MenuItem[] {
     const unread = trayUnread();
     return [
       {
@@ -148,7 +138,9 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
         onSelect: () => actions.markAllRead(),
       },
       { type: "separator" },
-      { label: tr("shell.tray.show"), onSelect: () => showMainWindow() },
+      windowVisible
+        ? { label: tr("shell.tray.hide"), onSelect: () => mainWindow()?.hide() }
+        : { label: tr("shell.tray.show"), onSelect: showMainWindow },
       {
         label: tr("nav.newSession"),
         onSelect: () => {
@@ -177,7 +169,14 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
       effect(() => {
         const win = mainWindow();
         if (!win) return;
-        attachCloseListener(win);
+        // NSH removes listeners when their owning effect reruns. Keep this
+        // subscription independent of focus, bounds and title bar updates.
+        win.set({ closeOnPress: false });
+        win.on("closePress", requestClose);
+      });
+      effect(() => {
+        const win = mainWindow();
+        if (!win) return;
         const bar = win.titleBar();
         const state = win.state();
         // The title bar is hidden (nsh.json `window.titleBar`): the system's
@@ -249,12 +248,13 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
         },
       });
       effect(() => Menu.setApplicationMenu(buildApplicationMenu(actions)));
+      const windowVisible = computed(() => mainWindow()?.state()?.visible ?? false);
       effect(() => {
         if (!deps.trayIcon) return;
         Tray.set({
           icon: deps.trayIcon,
           tooltip: tr("product.name"),
-          menu: buildTrayMenu(actions),
+          menu: buildTrayMenu(actions, windowVisible()),
           // macOS opens the menu on a click, as menu bar extras do; elsewhere a
           // click brings the window back and the secondary click opens the menu.
           onClick: os === "macos" ? undefined : () => showMainWindow(),

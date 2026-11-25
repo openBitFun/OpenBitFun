@@ -2493,6 +2493,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "shell.menu.zoom": "缩放",
   "shell.menu.closeWindow": "关闭窗口",
   "shell.tray.show": "显示主界面",
+  "shell.tray.hide": "隐藏主界面",
   "shell.tray.restart": "重启应用",
   "shell.tray.markAllRead": "全部标为已读",
   "shell.tray.markAllReadCount": "全部标为已读（{{count}}）",

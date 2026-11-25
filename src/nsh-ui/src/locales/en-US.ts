@@ -2494,6 +2494,7 @@ export const enUSMessages = {
   "shell.menu.zoom": "Zoom",
   "shell.menu.closeWindow": "Close Window",
   "shell.tray.show": "Show main window",
+  "shell.tray.hide": "Hide main window",
   "shell.tray.restart": "Restart application",
   "shell.tray.markAllRead": "Mark all as read",
   "shell.tray.markAllReadCount": "Mark all as read ({{count}})",
