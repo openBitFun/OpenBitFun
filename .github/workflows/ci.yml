@@ -181,6 +181,25 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test --locked -p openbitfun-sdk-host -p openbitfun-sdk-host-app
 
+      - name: Setup pnpm for the SDK smoke test
+        if: runner.os == 'Linux'
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js for the SDK smoke test
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      - name: Run the standalone SDK with a local model fixture
+        if: runner.os == 'Linux'
+        run: |
+          pnpm --filter @openbitfun/agent-sdk install --frozen-lockfile --ignore-scripts
+          pnpm --dir sdk/typescript build
+          node sdk/typescript/scripts/stage-host.mjs target/debug/openbitfun-sdk-host
+          pnpm --dir sdk/typescript smoke:node
+
       - name: Run SDK Host terminal cleanup regressions
         if: runner.os == 'Linux'
         run: |

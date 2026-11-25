@@ -9,7 +9,9 @@ use openbitfun_agent_runtime::sdk::{
     AgentSessionWorkspaceRequest, AgentSubmissionPort, AgentSubmissionRequest,
     AgentSubmissionResult, AgentTransientSessionDiscardRequest, PortResult,
 };
-use openbitfun_sdk_host::host::{TemporaryModelInstallError, TemporaryModelInstaller};
+use openbitfun_sdk_host::host::{
+    SdkWorkspace, SdkWorkspaces, TemporaryModelInstallError, TemporaryModelInstaller,
+};
 use openbitfun_sdk_host::protocol::TemporaryModelConfig;
 use openbitfun_sdk_host_app::transport::{serve_streams, SdkHostTransportConfig};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -17,6 +19,27 @@ use tokio::sync::Notify;
 use tokio::time::{timeout, Duration};
 
 struct MinimalOwner;
+
+struct FixtureWorkspaces(SdkWorkspace);
+
+fn fixture_workspaces() -> Arc<FixtureWorkspaces> {
+    Arc::new(FixtureWorkspaces(SdkWorkspace {
+        id: "workspace-fixture".into(),
+        path: "D:/workspace/project".into(),
+    }))
+}
+
+#[async_trait]
+impl SdkWorkspaces for FixtureWorkspaces {
+    fn default_workspace(&self) -> &SdkWorkspace {
+        &self.0
+    }
+
+    async fn workspace_for_cwd(&self, cwd: &str) -> PortResult<SdkWorkspace> {
+        assert_eq!(cwd, self.0.path);
+        Ok(self.0.clone())
+    }
+}
 
 #[derive(Default)]
 struct FakeTemporaryModelInstaller {
@@ -227,7 +250,7 @@ async fn stdio_transport_serves_initialize_and_shutdown_without_non_protocol_std
     let installer = Arc::new(FakeTemporaryModelInstaller::default());
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         installer.clone(),
         server_read,
         server_write,
@@ -277,7 +300,7 @@ async fn stdio_transport_executes_json_rpc_notifications_without_replying() {
     let (server_read, server_write) = tokio::io::split(server);
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -320,7 +343,7 @@ async fn malformed_and_oversized_lines_fail_closed_with_standard_parse_errors() 
     let (server_read, server_write) = tokio::io::split(server);
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -371,7 +394,7 @@ async fn transport_accepts_input_while_an_owner_call_is_pending_and_bounds_reque
     let (server_read, server_write) = tokio::io::split(server);
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -443,7 +466,7 @@ async fn shutdown_remains_available_when_the_data_request_budget_is_exhausted() 
     let (server_read, server_write) = tokio::io::split(server);
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -529,7 +552,7 @@ async fn duplicate_initialize_does_not_abort_an_in_flight_request() {
     let (server_read, server_write) = tokio::io::split(server);
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -586,7 +609,7 @@ async fn connection_eof_cleans_a_session_created_after_its_request_is_aborted() 
     let installer = Arc::new(FakeTemporaryModelInstaller::default());
     let mut task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         installer.clone(),
         server_read,
         server_write,
@@ -645,7 +668,7 @@ async fn explicit_shutdown_bounds_request_drain_and_session_cleanup_together() {
     let (server_read, server_write) = tokio::io::split(server);
     let mut task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -704,7 +727,7 @@ async fn requests_before_a_successful_initialize_cannot_cross_the_handshake() {
     let (server_read, server_write) = tokio::io::split(server);
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         fake_installer(),
         server_read,
         server_write,
@@ -764,7 +787,7 @@ async fn blocked_output_times_out_and_ends_the_connection() {
     let installer = Arc::new(FakeTemporaryModelInstaller::default());
     let task = tokio::spawn(serve_streams(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         installer.clone(),
         server_read,
         server_write,

@@ -1454,13 +1454,18 @@ export const requiredContentRules = [
   },
   {
     path: 'src/apps/sdk-host/src/runtime.rs',
+    reason: 'the stdio Host must use the production embedded assembly',
+    patterns: [{ regex: /EmbeddedAgentRuntime::open\(/, message: 'SDK Host must share the embedded Rust executor' }],
+  },
+  {
+    path: 'src/crates/assembly/core/src/product_runtime/embedded.rs',
     reason:
       'the standalone SDK Host must inject its selected delivery profile into the Core tool owner before agentic system construction',
     patterns: [
       {
-        regex: /\binit_agentic_system_for_profile_with_runtime_ownership\b/,
+        regex: /\binit_agentic_system_with_workspaces\s*\(\s*parts\.plan\(\)\.profile\(\),\s*Arc::new\(runtime_ownership\),/,
         message:
-          'SDK Host runtime must initialize Core with its selected delivery profile and Runtime ownership owner',
+          'SDK Host runtime must pass its selected delivery profile, Runtime ownership and workspace registration to Core',
       },
       {
         regex: /\bselect_agentic_system_profile\b/,
@@ -2687,13 +2692,22 @@ export const requiredContentRules = [
         message: 'missing tool cancellation token owner delegation',
       },
       {
-        regex: /\bshould_retry_tool_attempt\b/,
-        message: 'missing tool-runtime retry decision delegation',
+        regex: /\brun_tool_attempts\s*\(/,
+        message: 'missing tool-runtime retry execution delegation',
       },
       {
-        regex: /\bretry_delay_ms\b/,
-        message: 'missing tool-runtime retry backoff delegation',
+        regex: /\bexecute_segments\s*\(/,
+        message: 'missing tool-runtime batch execution delegation',
       },
+    ],
+  },
+  {
+    path: 'src/crates/execution/tool-execution/src/pipeline/execution.rs',
+    reason: 'portable tool execution must apply the existing retry and batch policies',
+    patterns: [
+      { regex: /\bshould_retry_tool_attempt\s*\(/, message: 'missing tool retry policy' },
+      { regex: /\bretry_delay_ms\s*\(/, message: 'missing tool retry backoff' },
+      { regex: /\bpartition_tool_batches\s*\(/, message: 'missing ordered batch planning' },
     ],
   },
   {
@@ -5797,8 +5811,12 @@ export const requiredContentRules = [
       },
       {
         regex:
-          /use openbitfun_agent_runtime::scheduler::\{(?=[\s\S]*ActiveDialogTurn)(?=[\s\S]*ActiveDialogTurnStore)(?=[\s\S]*AgentSessionReplyAction)(?=[\s\S]*AgentSessionReplyPlan)(?=[\s\S]*BackgroundDeliveryAction)(?=[\s\S]*BackgroundDeliveryFacts)(?=[\s\S]*BackgroundInjectionKind)(?=[\s\S]*DialogReplySuppressionSet)(?=[\s\S]*DialogSteeringAction)(?=[\s\S]*DialogTurnQueue)(?=[\s\S]*SessionAbortFlags)(?=[\s\S]*resolve_agent_session_reply_action)(?=[\s\S]*resolve_background_delivery_action)(?=[\s\S]*resolve_background_delivery_injection)(?=[\s\S]*resolve_dialog_steering_action)[\s\S]*\};/,
+          /use openbitfun_agent_runtime::scheduler::\{(?=[\s\S]*ActiveDialogTurn)(?=[\s\S]*AgentSessionReplyAction)(?=[\s\S]*AgentSessionReplyPlan)(?=[\s\S]*BackgroundDeliveryAction)(?=[\s\S]*BackgroundDeliveryFacts)(?=[\s\S]*BackgroundInjectionKind)(?=[\s\S]*DialogSteeringAction)(?=[\s\S]*DialogTurnQueue)(?=[\s\S]*resolve_agent_session_reply_action)(?=[\s\S]*resolve_background_delivery_action)(?=[\s\S]*resolve_background_delivery_injection)(?=[\s\S]*resolve_dialog_steering_action)[\s\S]*\};/,
         message: 'missing agent-runtime scheduler owner imports',
+      },
+      {
+        regex: /use openbitfun_agent_runtime::scheduler::execution::\{CancellationEffects, DialogExecution\}/,
+        message: 'the Core facade must use the live scheduler and cancellation owner',
       },
       {
         regex: /\bBackgroundResult\b/,
@@ -5841,7 +5859,7 @@ export const requiredContentRules = [
     ],
   },
   {
-    path: 'src/crates/assembly/core/src/agentic/core/message.rs',
+    path: 'src/crates/execution/agent-runtime/src/message.rs',
     reason:
       'core message model must preserve legacy compression contract import path while runtime-ports owns portable compaction facts',
     patterns: [
@@ -7685,7 +7703,7 @@ export const requiredContentRules = [
   {
     path: 'src/crates/assembly/core/src/agentic/execution/execution_engine.rs',
     reason:
-      'core execution must pass deferred-tool loaded-spec state through product runtime owner and keep DeepResearch post-turn hooks',
+      'core execution must use the product tool catalog and invoke the assembled turn completion hook',
     patterns: [
       {
         regex: /\bcollect_product_loaded_deferred_tool_specs\b/,
@@ -7703,6 +7721,16 @@ export const requiredContentRules = [
         regex: /\bGetToolSpec\b/,
         message: 'missing GetToolSpec execution contract',
       },
+      {
+        regex: /\.on_completion\s*\(/,
+        message: 'missing assembled turn completion hook',
+      },
+    ],
+  },
+  {
+    path: 'src/crates/assembly/core/src/agentic/system.rs',
+    reason: 'product assembly supplies the gated DeepResearch report postprocessor',
+    patterns: [
       {
         regex: /\bshould_post_process_research_report\b/,
         message: 'missing DeepResearch post-process runtime gate',

@@ -1,6 +1,6 @@
 //! Runtime-owned model pool coordination. Network IO remains in AI adapters.
 
-use super::context_budget::CompressionTriggerBudget;
+use super::context_budget::model_budget;
 use crate::agentic::image_analysis::image_processing::ImageInputRequirement;
 use crate::service::config::{
     get_global_config_service,
@@ -175,10 +175,7 @@ impl ModelPoolRuntime {
         // size and validation/fallback of the configured output limit. No auth or
         // network access is needed to resolve these limits.
         let resolved = crate::util::types::AIConfig::try_from(model.clone()).ok()?;
-        let budget = CompressionTriggerBudget::for_model(
-            resolved.context_window as usize,
-            resolved.max_tokens,
-        );
+        let budget = model_budget(resolved.context_window as usize, resolved.max_tokens);
         Some(ModelPoolContextBudget {
             context_window: resolved.context_window,
             input_limit: budget.input_limit as u32,
@@ -426,6 +423,7 @@ impl ModelPoolRuntime {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn prepare(
         &self,
+        models: &dyn super::model_requests::ModelRequests,
         session_id: &str,
         selection_revision: u64,
         pool_id: &str,
@@ -433,7 +431,8 @@ impl ModelPoolRuntime {
         require_tools: bool,
         image_requirement: ImageInputRequirement,
     ) -> OpenBitFunResult<(PoolAttempt, Arc<crate::infrastructure::ai::AIClient>)> {
-        let factory = crate::infrastructure::ai::get_global_ai_client_factory()
+        let factory = models
+            .client_factory()
             .await
             .map_err(|error| OpenBitFunError::AIClient(error.to_string()))?;
         // Each failed preparation is excluded, so traverse all configured
@@ -646,6 +645,7 @@ pub(super) fn replay_safe_messages<'a>(
 mod tests {
     use super::*;
     use crate::agentic::core::{Message, MessageContent, ToolCall};
+    use crate::agentic::execution::context_budget::CompressionTriggerBudget;
     use crate::service::config::types::{AIModelConfig, ModelCapability};
 
     fn budget_model(id: &str, context: Option<u32>, output: Option<u32>) -> AIModelConfig {

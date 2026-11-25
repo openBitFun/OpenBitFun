@@ -2712,7 +2712,7 @@ export const forbiddenContentRules = [
     ],
   },
   {
-    path: 'src/crates/assembly/core/src/agentic/core/message.rs',
+    path: 'src/crates/execution/agent-runtime/src/message.rs',
     patterns: [
       {
         regex: /\bstruct\s+CompressionContract\b/,

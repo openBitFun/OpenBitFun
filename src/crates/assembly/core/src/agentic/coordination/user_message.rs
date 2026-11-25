@@ -179,7 +179,11 @@ impl DialogScheduler {
         {
             Some(SessionState::Processing {
                 current_turn_id, ..
-            }) if self.active_turns.matches_turn(session_id, &current_turn_id) => {
+            }) if self
+                .execution
+                .active_turns
+                .matches_turn(session_id, &current_turn_id) =>
+            {
                 Some(current_turn_id)
             }
             _ => None,

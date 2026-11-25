@@ -100,6 +100,8 @@ pub mod workspace;
 pub mod workspace_identity;
 #[cfg(feature = "workspace-instructions")]
 pub mod workspace_instructions;
+#[cfg(feature = "workspace-reader")]
+pub mod workspace_reader;
 pub mod workspace_text;
 #[cfg(feature = "workspace-transfer")]
 pub mod workspace_transfer;

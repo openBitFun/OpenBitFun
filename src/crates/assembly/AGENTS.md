@@ -12,6 +12,7 @@ integration, or stable product-domain contracts.
 | Crate | Responsibility | Local doc |
 |---|---|---|
 | `agent-content` | Dependency-free owner of immutable, release-bound built-in Agent prompt bytes and stable legacy prompt keys | [AGENTS.md](agent-content/AGENTS.md) |
+| `agent` | Embeddable Rust assembly and production session record projections | [Cargo.toml](agent/Cargo.toml) |
 | `core` | `openbitfun-core` compatibility facade and product-full assembly | [AGENTS.md](core/AGENTS.md) |
 | `external-sources` | Ecosystem-neutral lifecycle owner: capability-specific coordinators plus shared bounded discovery lanes | inherited |
 | `product-capabilities` | Product capability profiles, tool group facts, service requirements, and harness selections | [AGENTS.md](product-capabilities/AGENTS.md) |

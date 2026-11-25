@@ -1,6 +1,4 @@
 use super::super::test_support::test_coordinator;
-#[cfg(feature = "remote-workspace")]
-use super::super::ConversationCoordinator;
 use super::super::SubagentExecutionRequest;
 use crate::agentic::core::{
     Message, MessageContent, SessionConfig, SessionContinuationPolicy, SessionKind,
@@ -23,12 +21,11 @@ async fn subagent_session_config_preserves_registered_remote_workspace_identity(
         "remote-host",
     )
     .await;
-    let config = ConversationCoordinator::build_session_config_for_workspace(
-        workspace.id,
-        Some("model-fast".to_string()),
-    )
-    .await
-    .unwrap();
+    let (coordinator, _) = test_coordinator();
+    let config = coordinator
+        .build_session_config_for_workspace(workspace.id, Some("model-fast".to_string()))
+        .await
+        .unwrap();
 
     assert_eq!(
         config.workspace_path.as_deref(),

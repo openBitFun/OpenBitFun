@@ -38,11 +38,11 @@ pub use local_workspace_snapshot::{
     LocalWorkspaceSnapshotTurnRequest,
 };
 #[cfg(feature = "product-search")]
-pub use openbitfun_product_domains::product_search::{
+pub use openbitfun_core_types::product_search::{
     SessionContentSearchRequest, SessionContentSearchResponse,
 };
 #[cfg(feature = "permission")]
-pub use openbitfun_product_domains::tool_permissions::{
+pub use openbitfun_permission_contracts::{
     deserialize_optional_permission_mode, resolve_child_permission_policy, resolve_permission_mode,
     resolve_permission_policy, wildcard_matches, ChildPermissionPolicyLayers,
     PermissionApprovalConfig, PermissionApprovalModelKind, PermissionApprovalOnAsk,

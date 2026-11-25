@@ -37,6 +37,8 @@ export const agentRuntimeRootPublicModules = [
   'events',
   'evidence_ledger',
   'model_pool',
+  'message',
+  'model_round',
   'review_read_receipt',
   'native_hooks',
   'permission',
@@ -65,6 +67,7 @@ export const agentRuntimeRootPublicModules = [
   'thread_goal',
   'thread_goal_tools',
   'turn_cancellation',
+  'turn_execution',
   'user_questions',
 ];
 

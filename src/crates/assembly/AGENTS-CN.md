@@ -9,6 +9,7 @@
 | Crate | 职责 | 本地文档 |
 |---|---|---|
 | `agent-content` | 不依赖第三方库，归属不可变、随版本发布的内置 Agent prompt 字节及稳定兼容 key | [AGENTS.md](agent-content/AGENTS.md) |
+| `agent` | 可嵌入 Rust 装配与生产会话记录投影 | [Cargo.toml](agent/Cargo.toml) |
 | `core` | `openbitfun-core` 兼容门面与 product-full 组装 | [AGENTS.md](core/AGENTS.md) |
 | `external-sources` | 基于能力专属 provider 契约的生态中立来源生命周期协调 | 继承本指南 |
 | `product-capabilities` | 产品能力 profile、tool group facts、service requirements 与 harness selection | [AGENTS.md](product-capabilities/AGENTS.md) |

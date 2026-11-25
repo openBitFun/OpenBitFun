@@ -1,5 +1,6 @@
 use super::*;
 use crate::agentic::events::EventQueueConfig;
+use crate::agentic::execution::context_budget::model_budget;
 use crate::agentic::execution::round_executor::tests::{
     retry_test_success, test_round_executor, RetryTestServer,
 };
@@ -125,7 +126,7 @@ async fn apply_prefetch(
     let pressure = ExecutionEngine::estimate_auto_compression_pressure(
         messages,
         None,
-        CompressionTriggerBudget::for_model(128_000, None),
+        model_budget(128_000, None),
         0,
     );
     engine
@@ -170,12 +171,12 @@ async fn compression_skips_retained_history_and_reconsiders_after_large_tool_res
     );
     assert!(server.requests.lock().unwrap().is_empty());
 
-    let budget = CompressionTriggerBudget::for_model(128_000, None);
+    let budget = model_budget(128_000, None);
     let pressure = ExecutionEngine::estimate_auto_compression_pressure(&messages, None, budget, 0);
     let rejected = NoGainHistory::new(&messages, "model", pressure);
     assert!(rejected.matches(&messages, "model", pressure));
     assert!(!rejected.matches(&messages, "other-model", pressure));
-    let smaller_budget = CompressionTriggerBudget::for_model(32_000, None);
+    let smaller_budget = model_budget(32_000, None);
     let changed =
         ExecutionEngine::estimate_auto_compression_pressure(&messages, None, smaller_budget, 0);
     assert!(!rejected.matches(&messages, "model", changed));
@@ -274,7 +275,7 @@ async fn compression_discards_oversized_summary_without_changing_session() {
 
 #[test]
 fn compression_fixed_cost_diagnostic_allows_the_safety_margin() {
-    let budget = CompressionTriggerBudget::for_model(128_000, Some(32_000));
+    let budget = model_budget(128_000, Some(32_000));
     let pressure =
         |fixed| ExecutionEngine::estimate_auto_compression_pressure(&[], None, budget, fixed);
     assert!(pressure(95_999).check_fixed_input_fits().is_ok());
@@ -727,7 +728,7 @@ async fn compression_failure_preserves_context_and_success_count() {
     let pressure = ExecutionEngine::estimate_auto_compression_pressure(
         &messages,
         None,
-        CompressionTriggerBudget::for_model(128_000, None),
+        model_budget(128_000, None),
         0,
     );
     let error = engine

@@ -26,12 +26,33 @@ use openbitfun_runtime_ports::{
     PermissionReplyStorePort, RuntimeServiceCapability, RuntimeServicePort,
 };
 use openbitfun_sdk_host::host::{
-    ConnectionControl, HostOutput, SdkHostConfig, SdkHostConnection, TemporaryModelInstallError,
-    TemporaryModelInstaller,
+    ConnectionControl, HostOutput, SdkHostConfig, SdkHostConnection, SdkWorkspace, SdkWorkspaces,
+    TemporaryModelInstallError, TemporaryModelInstaller,
 };
 use openbitfun_sdk_host::protocol::{JsonRpcRequest, TemporaryModelConfig, PROTOCOL_VERSION};
 use tokio::sync::{mpsc, Notify};
 use tokio::time::timeout;
+
+struct FixtureWorkspaces(SdkWorkspace);
+
+fn fixture_workspaces() -> Arc<FixtureWorkspaces> {
+    Arc::new(FixtureWorkspaces(SdkWorkspace {
+        id: "workspace-fixture".into(),
+        path: "D:/workspace/project".into(),
+    }))
+}
+
+#[async_trait]
+impl SdkWorkspaces for FixtureWorkspaces {
+    fn default_workspace(&self) -> &SdkWorkspace {
+        &self.0
+    }
+
+    async fn workspace_for_cwd(&self, cwd: &str) -> PortResult<SdkWorkspace> {
+        assert_eq!(cwd, self.0.path);
+        Ok(self.0.clone())
+    }
+}
 
 #[derive(Default)]
 struct FakeOwner {
@@ -357,6 +378,11 @@ impl AgentSubmissionPort for FakeOwner {
         session_id: String,
         request: AgentSessionCreateRequest,
     ) -> PortResult<AgentSessionCreateResult> {
+        assert_eq!(request.workspace_id.as_deref(), Some("workspace-fixture"));
+        assert_eq!(
+            request.workspace_path.as_deref(),
+            Some("D:/workspace/project")
+        );
         if self.block_session_create {
             self.session_create_started.notify_one();
             self.release_session_create.notified().await;
@@ -640,6 +666,8 @@ impl AgentSessionRestorePort for FakeOwner {
         &self,
         request: AgentSessionRestoreRequest,
     ) -> PortResult<AgentSessionRestoreResult> {
+        assert_eq!(request.workspace_id.as_deref(), Some("workspace-fixture"));
+        assert_eq!(request.workspace_path, "D:/workspace/project");
         if self
             .block_first_session_restore
             .swap(false, Ordering::AcqRel)
@@ -857,7 +885,7 @@ async fn host_with_query_limit(
     (
         SdkHostConnection::new(
             runtime,
-            "D:/workspace/project",
+            fixture_workspaces(),
             output,
             SdkHostConfig {
                 max_active_queries,
@@ -899,7 +927,7 @@ async fn host_with_output(
     (
         SdkHostConnection::new(
             runtime,
-            "D:/workspace/project",
+            fixture_workspaces(),
             output,
             SdkHostConfig::default(),
             fake_installer(),
@@ -1040,7 +1068,7 @@ async fn host_with_temporary_model_installer(
     (
         SdkHostConnection::new(
             runtime,
-            "D:/workspace/project",
+            fixture_workspaces(),
             output,
             SdkHostConfig::default(),
             installer,
@@ -1072,7 +1100,7 @@ async fn host_with_tool_events() -> (
     (
         SdkHostConnection::new(
             runtime,
-            "D:/workspace/project",
+            fixture_workspaces(),
             output,
             SdkHostConfig::default(),
             fake_installer(),
@@ -1145,7 +1173,7 @@ async fn temporary_model_is_connection_scoped_and_cannot_be_overridden() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         installer.clone(),
@@ -1663,7 +1691,7 @@ async fn escaped_query_output_fails_before_exceeding_the_wire_budget() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -1711,7 +1739,7 @@ async fn host_output_failure_wins_when_runtime_completed_before_cancellation() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -1794,7 +1822,7 @@ async fn cancellation_timeout_reports_unknown_outcome_for_the_exact_operation() 
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -1943,7 +1971,7 @@ async fn concurrent_resume_of_the_same_session_is_rejected_while_attach_is_in_fl
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2007,7 +2035,7 @@ async fn failed_resume_compensation_blocks_new_work_and_retries_unload_on_shutdo
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2058,7 +2086,7 @@ async fn dialog_session_identity_mismatch_releases_the_requested_session_reserva
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2178,7 +2206,7 @@ async fn uncertain_session_close_cleanup_requires_host_restart() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2269,7 +2297,7 @@ async fn cancellation_remains_available_when_data_request_capacity_is_exhausted(
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig {
             max_in_flight_requests: 1,
@@ -2383,7 +2411,7 @@ async fn visible_session_create_response_commits_before_immediate_close() {
     let release_response = Arc::new(Notify::new());
     let host = SdkHostConnection::with_output(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         Arc::new(BlockingSessionCreateOutput {
             output: sender,
             response_visible: response_visible.clone(),
@@ -2457,7 +2485,7 @@ async fn shutdown_waits_for_in_flight_session_creation_then_cleans_it() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2512,7 +2540,7 @@ async fn shutdown_compensates_a_session_creation_task_that_panics_after_creation
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2555,7 +2583,7 @@ async fn shutdown_reports_failure_when_post_panic_session_compensation_fails() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2597,7 +2625,7 @@ async fn a_later_request_registers_panicked_session_cleanup_for_shutdown() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2655,7 +2683,7 @@ async fn shutdown_does_not_forget_cleanup_registered_by_a_later_request() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2758,7 +2786,7 @@ async fn failed_implicit_query_submission_deletes_the_unexposed_session() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2798,7 +2826,7 @@ async fn shutdown_takes_over_failed_query_start_cleanup_within_its_total_budget(
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::with_output(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         Arc::new(FailQueryStartOutput { output: sender }),
         SdkHostConfig::default(),
         fake_installer(),
@@ -2851,7 +2879,7 @@ async fn failed_unexposed_session_cleanup_poison_connection_and_allows_shutdown(
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2963,7 +2991,7 @@ async fn uncertain_turn_settlement_fails_the_connection_without_a_result() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -2999,26 +3027,35 @@ async fn uncertain_turn_settlement_fails_the_connection_without_a_result() {
 }
 
 #[tokio::test]
-async fn query_submission_disables_unavailable_interactive_callbacks() {
-    let (host, owner, mut output) = host_with_query_limit(1).await;
-    initialize(&host, &mut output).await;
-    host.handle_request(request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": "noninteractive-query",
-        "method": "query/start",
-        "params": { "prompt": "hello" }
-    })))
-    .await;
-    assert_eq!(output.recv().await.unwrap()["result"]["accepted"], true);
+async fn query_submission_advertises_negotiated_permission_replies() {
+    for enabled in [true, false] {
+        let (host, owner, mut output) = host_with_query_limit(1).await;
+        let mut init = temporary_model_initialize_request("init");
+        init.params["capabilities"]["permissionResponses"] = enabled.into();
+        host.handle_request(init).await;
+        assert_eq!(
+            output.recv().await.unwrap()["result"]["capabilities"]["permissionResponses"],
+            enabled
+        );
+        host.handle_request(request(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "noninteractive-query",
+            "method": "query/start",
+            "params": { "prompt": "hello" }
+        })))
+        .await;
+        assert_eq!(output.recv().await.unwrap()["result"]["accepted"], true);
 
-    // Scoped so the guard is provably released before the await below.
-    {
-        let metadata = owner.dialog_metadata.lock().unwrap();
-        assert_eq!(metadata.len(), 1);
-        assert_eq!(metadata[0]["user_input_available"], false);
-        assert_eq!(metadata[0]["auto_approve_ask"], false);
+        // Scoped so the guard is provably released before the await below.
+        {
+            let metadata = owner.dialog_metadata.lock().unwrap();
+            assert_eq!(metadata.len(), 1);
+            assert_eq!(metadata[0]["permission_replies_available"], enabled);
+            assert_eq!(metadata[0]["user_input_available"], false);
+            assert_eq!(metadata[0]["auto_approve_ask"], false);
+        }
+        host.shutdown_connection().await;
     }
-    host.shutdown_connection().await;
 }
 
 #[tokio::test]
@@ -3089,7 +3126,7 @@ async fn queued_query_is_accepted_and_tracked_by_its_exact_turn() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -3191,7 +3228,7 @@ async fn session_close_rejects_while_query_start_is_in_flight() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -3261,7 +3298,7 @@ async fn query_start_rejects_if_session_close_finishes_before_reservation() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),
@@ -3332,7 +3369,7 @@ async fn permission_request_is_streamed_and_can_be_allowed_once() {
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig {
             permission_response_timeout: Duration::from_millis(250),
@@ -3569,7 +3606,7 @@ async fn stalled_user_permission_response_is_bounded_and_cancels_the_exact_turn(
     let (sender, mut output) = mpsc::channel(16);
     let host = SdkHostConnection::new(
         runtime,
-        "D:/workspace/project",
+        fixture_workspaces(),
         sender,
         SdkHostConfig::default(),
         fake_installer(),

@@ -5,8 +5,8 @@
 use super::{
     coordination_store::{BackgroundTaskRegistration, CoordinationStore},
     scheduler::{
-        abort_thread_goal_continuation_for_session, clear_thread_goal_continuation_abort,
-        get_global_scheduler, DialogSubmissionPolicy, HiddenSubagentQueueCancelHandle,
+        get_global_scheduler, DialogScheduler, DialogSubmissionPolicy,
+        HiddenSubagentQueueCancelHandle,
     },
     turn_outcome::TurnOutcome,
     turn_settlement::TurnSettlementTracker,
@@ -78,8 +78,7 @@ use crate::service::session::{
     ToolItemIdentityExt, TurnStatus,
 };
 use crate::service::workspace::{
-    get_global_workspace_service, RemoteConnectionRebind, WorkspaceActivityMode, WorkspaceInfo,
-    WorkspaceKind, WorkspaceService,
+    RemoteConnectionRebind, WorkspaceActivityMode, WorkspaceInfo, WorkspaceKind, WorkspaceService,
 };
 use crate::service_agent_runtime::CoreServiceAgentRuntime;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
@@ -95,6 +94,9 @@ use openbitfun_agent_runtime::prompt_suggestion::{
 use openbitfun_agent_runtime::remote_file_delivery::{
     needs_computer_links_for_source, remote_file_delivery_reminder,
     TOOL_CONTEXT_PEER_DEVICE_CONTROL_KEY, TOOL_CONTEXT_REMOTE_FILE_DELIVERY_KEY,
+};
+use openbitfun_agent_runtime::scheduler::session_executions::{
+    SessionExecutionLease, SessionExecutions,
 };
 use openbitfun_agent_runtime::sdk::PermissionReply;
 use openbitfun_agent_runtime::user_questions::USER_INPUT_AVAILABLE_CONTEXT_KEY;
@@ -125,7 +127,7 @@ use openbitfun_services_core::workspace_text::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, RwLock, Semaphore};
@@ -615,6 +617,7 @@ fn copy_turn_control_context(
 ) {
     for key in [
         USER_INPUT_AVAILABLE_CONTEXT_KEY,
+        openbitfun_agent_runtime::permission::PERMISSION_REPLIES_AVAILABLE_CONTEXT_KEY,
         AUTO_APPROVE_ASK_CONTEXT_KEY,
         TOOL_CONTEXT_PEER_DEVICE_CONTROL_KEY,
     ] {
@@ -1067,9 +1070,21 @@ struct CancelTokenGuard {
     dialog_turn_id: String,
 }
 
-#[derive(Debug)]
-struct SessionExecutionLease {
-    active_counter: Arc<AtomicUsize>,
+struct SessionExecutionGuard {
+    session_manager: Arc<SessionManager>,
+    session_id: String,
+    turn_id: String,
+    lease: Option<SessionExecutionLease>,
+}
+
+impl Drop for SessionExecutionGuard {
+    fn drop(&mut self) {
+        drop(self.lease.take());
+        self.session_manager
+            .reset_session_state_if_processing(&self.session_id, &self.turn_id);
+        self.session_manager
+            .clear_active_turn_permission_mode(&self.session_id, &self.turn_id);
+    }
 }
 
 struct ManualCompactionTask {
@@ -1081,12 +1096,6 @@ struct ManualCompactionControlGuard {
     execution_engine: Arc<ExecutionEngine>,
     controls: Arc<DashMap<String, Arc<ManualCompactionCommitGate>>>,
     turn_id: String,
-}
-
-impl Drop for SessionExecutionLease {
-    fn drop(&mut self) {
-        self.active_counter.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 impl Drop for ManualCompactionControlGuard {
@@ -1469,6 +1478,7 @@ pub struct ConversationCoordinator {
     background_subagent_tasks: Arc<DashMap<i64, BackgroundSubagentTaskControl>>,
     /// Parent-owned terminal outcomes consumed only through AgentWait.
     background_subagent_outcomes: Arc<BackgroundSubagentOutcomeStore>,
+    scheduler: OnceLock<std::sync::Weak<DialogScheduler>>,
     /// Notifies DialogScheduler of turn outcomes; injected after construction
     scheduler_notify_tx: OnceLock<mpsc::UnboundedSender<(String, TurnOutcome)>>,
     /// Round-boundary user steering source (mid-turn user message injection); injected after construction
@@ -1476,9 +1486,8 @@ pub struct ConversationCoordinator {
     /// In-flight dialog turn tracker per session, used to serialize cancel→start
     /// transitions so a new turn never starts touching the in-memory message
     /// list while the previous (cancelled) turn's spawn task is still draining.
-    /// Map value is a counter shared between the coordinator and the spawn
-    /// task; spawn task increments on entry and decrements on exit.
-    active_turns_per_session: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// The registering caller transfers its lease to the spawned execution.
+    session_executions: Arc<SessionExecutions>,
     /// Exact `(session_id, turn_id)` completion signals. A registration stays
     /// active through persistence finalization, not merely until session state
     /// changes to Idle.
@@ -1497,9 +1506,14 @@ pub struct ConversationCoordinator {
 }
 
 impl ConversationCoordinator {
-    pub(crate) async fn resolve_workspace_id_for_config(config: &SessionConfig) -> Option<String> {
+    pub(crate) async fn resolve_workspace_id_for_config(
+        &self,
+        config: &SessionConfig,
+    ) -> Option<String> {
         let mut resolved = config.clone();
-        crate::agentic::workspace::normalize_session_workspace(&mut resolved)
+        self.session_manager
+            .storage
+            .normalize_workspace(&mut resolved)
             .await
             .ok()?;
         resolved.workspace_id
@@ -1510,6 +1524,7 @@ impl ConversationCoordinator {
     /// catalog from the session's projection and could rewrite the record's
     /// kind or SSH facts, so a session without an ID is not tracked.
     async fn track_session_workspace_activity_best_effort(
+        &self,
         config: &SessionConfig,
         mode: WorkspaceActivityMode,
         reason: &str,
@@ -1527,7 +1542,7 @@ impl ConversationCoordinator {
             return;
         };
 
-        let Some(workspace_service) = get_global_workspace_service() else {
+        let Some(workspace_service) = self.session_manager.storage.workspaces.current() else {
             return;
         };
 
@@ -1542,55 +1557,8 @@ impl ConversationCoordinator {
         }
     }
 
-    /// Build a workspace binding that is remote-aware.
-    /// If the global remote workspace is active and matches the session path,
-    /// returns a `WorkspaceBinding` with remote metadata and correct local
-    /// session storage path.
-    ///
-    /// When the session's `remote_connection_id` does not match any active
-    /// SSH connection (e.g. the user changed the port and the old ID is now
-    /// stale), this method attempts to remap to the current workspace
-    /// registration so that historical sessions continue to work.
-    pub(crate) async fn build_workspace_binding(
-        config: &SessionConfig,
-    ) -> Option<WorkspaceBinding> {
-        let mut config = config.clone();
-        if let Err(error) =
-            crate::agentic::workspace::normalize_session_workspace(&mut config).await
-        {
-            warn!("Workspace identity resolution failed: {}", error);
-            return None;
-        }
-        let path = PathBuf::from(config.workspace_path.as_ref()?);
-        if config.is_remote_workspace() {
-            let connection_id = config.remote_connection_id.clone()?;
-            let host = config.remote_ssh_host.clone()?;
-            let identity = openbitfun_services_core::workspace_identity::WorkspaceSessionIdentity {
-                workspace_kind: openbitfun_core_types::WorkspaceKind::Remote,
-                hostname: host.clone(),
-                logical_workspace_path: crate::service::remote_ssh::normalize_remote_workspace_path(
-                    &path.to_string_lossy(),
-                ),
-                remote_connection_id: Some(connection_id.clone()),
-            };
-            return Some(WorkspaceBinding::new_remote(
-                config.workspace_id,
-                path,
-                connection_id,
-                host,
-                identity,
-            ));
-        }
-        let mut binding = WorkspaceBinding::new(config.workspace_id, path);
-        binding.project_workspace_id = config.project_workspace_id;
-        binding.session_identity.workspace_kind = config.workspace_kind.unwrap_or_default();
-        if let Some(project) = config.project_workspace_path {
-            binding = binding.with_project_root_path(PathBuf::from(project));
-        }
-        Some(binding.with_execution_target(config.execution_target))
-    }
-
     async fn build_session_config_for_workspace(
+        &self,
         workspace_id: String,
         model_id: Option<String>,
     ) -> OpenBitFunResult<SessionConfig> {
@@ -1600,7 +1568,10 @@ impl ConversationCoordinator {
             model_id,
             ..Default::default()
         };
-        crate::agentic::workspace::normalize_session_workspace(&mut config).await?;
+        self.session_manager
+            .storage
+            .normalize_workspace(&mut config)
+            .await?;
         Ok(config)
     }
 
@@ -2095,7 +2066,7 @@ impl ConversationCoordinator {
         let mut artifacts = Vec::with_capacity(references.len());
         let artifact_stems = Self::session_reference_artifact_stems(&references);
         for (reference, artifact_stem) in references.into_iter().zip(artifact_stems) {
-            if let Some(scheduler) = get_global_scheduler() {
+            if let Some(scheduler) = self.dialog_scheduler() {
                 if scheduler.is_session_busy_or_queued(&reference.session_id) {
                     return Err(OpenBitFunError::Validation(format!(
                         "Referenced session is busy or has queued work: {}",
@@ -2416,9 +2387,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             active_subagent_executions: Arc::new(DashMap::new()),
             background_subagent_tasks: Arc::new(DashMap::new()),
             background_subagent_outcomes,
+            scheduler: OnceLock::new(),
             scheduler_notify_tx: OnceLock::new(),
             round_injection_source: OnceLock::new(),
-            active_turns_per_session: Arc::new(DashMap::new()),
+            session_executions: Default::default(),
             turn_settlements: Arc::new(TurnSettlementTracker::default()),
             manual_compaction_controls: Arc::new(DashMap::new()),
             interrupted_turn_intents: Arc::new(DashMap::new()),
@@ -2491,7 +2463,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 legacy_ssh_host,
             )
             .await?;
-        crate::agentic::session::CoreSessionStorePort::default()
+        self.session_manager
+            .storage
             .resolve_workspace_storage(&workspace.id)
             .await
             .map(|resolution| resolution.effective_storage_path)
@@ -2508,7 +2481,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         legacy_connection_id: Option<&str>,
         legacy_ssh_host: Option<&str>,
     ) -> OpenBitFunResult<WorkspaceInfo> {
-        let service = crate::service::workspace::get_global_workspace_service()
+        let service = self
+            .session_manager
+            .storage
+            .workspaces
+            .current()
             .ok_or_else(|| OpenBitFunError::service("Workspace service is unavailable"))?;
         self.ensure_workspace_runtime_ownership_for_reference_with_service(
             service.as_ref(),
@@ -2762,6 +2739,20 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .cancel_token_for_dialog_turn(dialog_turn_id)
     }
 
+    pub(in crate::agentic) fn bind_dialog_scheduler(&self, scheduler: &Arc<DialogScheduler>) {
+        let _ = self.scheduler.set(Arc::downgrade(scheduler));
+        self.set_scheduler_notifier(scheduler.outcome_sender());
+        self.set_round_injection_source(scheduler.round_injection_monitor());
+    }
+
+    fn dialog_scheduler(&self) -> Option<Arc<DialogScheduler>> {
+        match self.scheduler.get() {
+            Some(owner) => owner.upgrade(),
+            // Older assembly code publishes the scheduler through the global facade.
+            None => get_global_scheduler().filter(|scheduler| scheduler.owns_coordinator(self)),
+        }
+    }
+
     /// Inject the DialogScheduler notification channel after construction.
     /// Called once during app initialization after the scheduler is created.
     pub fn set_scheduler_notifier(&self, tx: mpsc::UnboundedSender<(String, TurnOutcome)>) {
@@ -2881,7 +2872,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         inputs: crate::agentic::session::session_manager::ContextEstimateInputs,
         options: &openbitfun_core_types::UsageContextEstimateRequest,
     ) -> OpenBitFunResult<openbitfun_core_types::UsageContextEstimate> {
-        let workspace = Self::build_workspace_binding(&inputs.session.config)
+        let workspace = self
+            .session_manager
+            .build_workspace_binding(&inputs.session.config)
             .await
             .ok_or_else(|| {
                 OpenBitFunError::validation(
@@ -3091,13 +3084,16 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         // Persist the workspace binding inside the session config so execution can
         // consistently restore the correct workspace regardless of the entry point.
         config.workspace_path = Some(workspace_path.clone());
-        crate::agentic::workspace::normalize_session_workspace(&mut config).await?;
+        self.session_manager
+            .storage
+            .normalize_workspace(&mut config)
+            .await?;
         self.ensure_runtime_ownership(
             Path::new(&workspace_path),
             config.remote_connection_id.as_deref(),
             config.remote_ssh_host.as_deref(),
         )?;
-        config.workspace_id = Self::resolve_workspace_id_for_config(&config).await;
+        config.workspace_id = self.resolve_workspace_id_for_config(&config).await;
         let normalized_agent_type = Self::normalize_agent_type(&agent_type);
         let is_assistant_workspace =
             config.workspace_kind == Some(openbitfun_core_types::WorkspaceKind::Assistant);
@@ -3112,7 +3108,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         } else {
             config.agent_route_key.clone()
         };
-        let workspace_binding = Self::build_workspace_binding(&config).await;
+        let workspace_binding = self.session_manager.build_workspace_binding(&config).await;
         let external_sources_supported = workspace_binding
             .as_ref()
             .is_some_and(|workspace| !workspace.is_remote());
@@ -3156,7 +3152,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         };
 
         if !transient {
-            Self::track_session_workspace_activity_best_effort(
+            self.track_session_workspace_activity_best_effort(
                 &session.config,
                 WorkspaceActivityMode::RefreshMetadata,
                 "session_created",
@@ -3182,7 +3178,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             remote_ssh_host: session.config.remote_ssh_host.clone(),
         })
         .await;
-        Self::dispatch_session_start_hooks(&session, "startup").await;
+        self.dispatch_session_start_hooks(&session, "startup").await;
         Ok(session)
     }
 
@@ -3210,8 +3206,12 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     /// The workspace binding is the authority — a persisted `SessionConfig`
     /// can legitimately lose its remote connection id. A session that binds
     /// no workspace at all is treated as remote so dispatch fails closed.
-    async fn session_hooks_are_remote(session: &Session) -> bool {
-        match Self::build_workspace_binding(&session.config).await {
+    async fn session_hooks_are_remote(&self, session: &Session) -> bool {
+        match self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await
+        {
             Some(binding) => binding.is_remote(),
             None => session.config.workspace_path.is_some(),
         }
@@ -3219,10 +3219,13 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
 
     /// Run SessionStart hooks. `source` follows the Codex vocabulary:
     /// `startup` | `resume` | `clear` | `compact`.
-    async fn dispatch_session_start_hooks(session: &Session, source: &str) {
-        let binding = Self::build_workspace_binding(&session.config).await;
+    async fn dispatch_session_start_hooks(&self, session: &Session, source: &str) {
+        let binding = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
         let workspace_root = binding.as_ref().map(|binding| binding.root_path());
-        let is_remote = Self::session_hooks_are_remote(session).await;
+        let is_remote = self.session_hooks_are_remote(session).await;
         let workspace_services = match Self::build_workspace_services(&binding).await {
             Ok(services) => services,
             Err(error) => {
@@ -3267,7 +3270,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             config.remote_connection_id.as_deref(),
             config.remote_ssh_host.as_deref(),
         )?;
-        config.workspace_id = Self::resolve_workspace_id_for_config(&config).await;
+        config.workspace_id = self.resolve_workspace_id_for_config(&config).await;
         let agent_type = Self::normalize_agent_type(&agent_type);
         self.create_hidden_subagent_session(
             session_id,
@@ -4424,11 +4427,18 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         let is_chinese = Self::is_chinese_locale().await;
         let kickoff_query = Self::assistant_bootstrap_kickoff_query(is_chinese);
         let expected_reply_language = if is_chinese { "Chinese" } else { "English" };
-        let workspace_binding =
-            WorkspaceBinding::resolve(session.config.workspace_id.as_deref().ok_or_else(|| {
+        let workspace_binding = WorkspaceBinding::resolve_with_service(
+            session.config.workspace_id.as_deref().ok_or_else(|| {
                 OpenBitFunError::service("Assistant bootstrap requires its workspace ID")
-            })?)
-            .await?;
+            })?,
+            self.session_manager
+                .storage
+                .workspaces
+                .current()
+                .as_deref()
+                .ok_or_else(|| OpenBitFunError::service("Workspace service is unavailable"))?,
+        )
+        .await?;
         let (model_id, _) = self
             .execution_engine
             .resolve_model_id_for_turn(
@@ -4639,7 +4649,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     })?;
             }
 
-            let session_workspace = Self::build_workspace_binding(&session.config).await;
+            let session_workspace = self
+                .session_manager
+                .build_workspace_binding(&session.config)
+                .await;
             let normalized_agent_type = Self::normalize_agent_type(agent_type.trim());
             let effective_agent_type =
                 crate::agentic::session_policy::resolve_session_agent_type_for_workspace(
@@ -5278,7 +5291,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             remote_ssh_host: remote_ssh_host.map(ToOwned::to_owned),
         };
 
-        CoreSessionStorePort::with_path_manager(self.session_manager.path_manager())
+        self.session_manager
+            .storage
             .resolve_session_storage_path(request)
             .await
             .map_err(|error| OpenBitFunError::Session(error.to_string()))
@@ -5304,9 +5318,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         remote_connection_id: Option<&str>,
         remote_ssh_host: Option<&str>,
     ) -> OpenBitFunResult<SessionStoragePathResolution> {
-        let port = CoreSessionStorePort::with_path_manager(self.session_manager.path_manager());
         if let Some(resolution) = resolve_loaded_session_storage_by_id(
-            &port,
+            &self.session_manager.storage,
             session_config,
             workspace_path,
             remote_connection_id,
@@ -5517,7 +5530,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 // until the interrupted turn that paused the goal is abandoned, the
                 // objective steering below is parked and the active goal never moves.
                 self.release_superseded_interrupted_turn(session_id).await;
-                clear_thread_goal_continuation_abort(session_id);
+                if let Some(scheduler) = self.dialog_scheduler() {
+                    scheduler.goal_abort_flags().clear(session_id);
+                }
             }
             // The restart is handed over in the background like resume: an idle
             // session makes this steering admit the goal's next turn, and the user is
@@ -5722,7 +5737,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             // Resuming is explicit too: the interruption that paused the goal must
             // not keep parking the steering that starts its next turn.
             self.release_superseded_interrupted_turn(session_id).await;
-            clear_thread_goal_continuation_abort(session_id);
+            if let Some(scheduler) = self.dialog_scheduler() {
+                scheduler.goal_abort_flags().clear(session_id);
+            }
             self.schedule_thread_goal_steering(
                 session_id,
                 &result.goal,
@@ -6232,7 +6249,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             )));
         }
 
-        let manual_workspace = Self::build_workspace_binding(&initial_session.config).await;
+        let manual_workspace = self
+            .session_manager
+            .build_workspace_binding(&initial_session.config)
+            .await;
         let primary_agent_binding = Self::resolve_session_agent_for_turn(
             &initial_session,
             &initial_session.agent_type,
@@ -6625,7 +6645,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 images.len(),
             )?;
         }
-        let workspace = Self::build_workspace_binding(&session.config).await;
+        let workspace = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
         let context =
             crate::agentic::tools::framework::ToolUseContext::for_tool_listing(workspace, None);
         crate::agentic::image_analysis::attachments::prepare_inline_image_attachments(
@@ -6837,7 +6860,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         };
         ensure_session_accepts_conversation(&session)?;
         self.ensure_session_runtime_ownership(&session_id, None)?;
-        let session_workspace = Self::build_workspace_binding(&session.config).await;
+        let session_workspace = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
 
         let previous_agent_type = session.last_user_dialog_agent_type.clone();
         let requested_agent_type = agent_type.trim().to_string();
@@ -6878,7 +6904,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         let delegation_policy =
             delegation_policy_for_agent_turn(&effective_agent_type, swarm_depth, can_delegate)?;
 
-        Self::track_session_workspace_activity_best_effort(
+        self.track_session_workspace_activity_best_effort(
             &session.config,
             WorkspaceActivityMode::TouchOnly,
             "dialog_started",
@@ -6987,7 +7013,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 ..Self::session_hook_facts(
                     &session,
                     session.config.workspace_path.as_deref().map(Path::new),
-                    Self::session_hooks_are_remote(&session).await,
+                    self.session_hooks_are_remote(&session).await,
                     workspace_services.as_ref(),
                 )
             },
@@ -7491,32 +7517,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         // Register this turn as in-flight immediately after it becomes visible
         // as Processing. Later await points must not leave a cancel/start
         // window where wait_session_drained observes zero active work.
-        let active_counter = self
-            .active_turns_per_session
-            .entry(session_id.clone())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        active_counter.fetch_add(1, Ordering::SeqCst);
-        struct ActiveTurnRegistration {
-            counter: Arc<AtomicUsize>,
-            armed: bool,
-        }
-        impl ActiveTurnRegistration {
-            fn disarm(&mut self) {
-                self.armed = false;
-            }
-        }
-        impl Drop for ActiveTurnRegistration {
-            fn drop(&mut self) {
-                if self.armed {
-                    self.counter.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-        }
-        let mut active_registration = ActiveTurnRegistration {
-            counter: active_counter.clone(),
-            armed: true,
-        };
+        let execution_lease = self.session_executions.register(&session_id);
         let turn_settlement_registration = self
             .turn_settlements
             .register_accepted(session_id.clone(), turn_id.clone());
@@ -7813,48 +7814,12 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             // Because `Drop` is synchronous we use an in-memory-only state
             // update here; the async persistence of the state change is done
             // explicitly in the spawn body below.
-            struct SessionExecutionGuard {
-                session_manager: Arc<SessionManager>,
-                session_id: String,
-                turn_id: String,
-                active_counter: Arc<AtomicUsize>,
-            }
-            impl SessionExecutionGuard {
-                fn new(
-                    session_manager: Arc<SessionManager>,
-                    session_id: String,
-                    turn_id: String,
-                    active_counter: Arc<AtomicUsize>,
-                ) -> Self {
-                    Self {
-                        session_manager,
-                        session_id,
-                        turn_id,
-                        active_counter,
-                    }
-                }
-            }
-            impl Drop for SessionExecutionGuard {
-                fn drop(&mut self) {
-                    self.active_counter.fetch_sub(1, Ordering::SeqCst);
-                    // If the session is still in Processing (abnormal exit),
-                    // synchronously reset to Idle so the user is never stuck.
-                    self.session_manager
-                        .reset_session_state_if_processing(&self.session_id, &self.turn_id);
-                    // Clear after the state transition. This ordering prevents
-                    // an overlapping API update from validating Processing
-                    // immediately after cleanup and publishing a stale entry.
-                    self.session_manager
-                        .clear_active_turn_permission_mode(&self.session_id, &self.turn_id);
-                }
-            }
-
-            let _guard = SessionExecutionGuard::new(
-                session_manager.clone(),
-                session_id_clone.clone(),
-                turn_id_clone.clone(),
-                active_counter,
-            );
+            let _guard = SessionExecutionGuard {
+                session_manager: session_manager.clone(),
+                session_id: session_id_clone.clone(),
+                turn_id: turn_id_clone.clone(),
+                lease: Some(execution_lease),
+            };
 
             // Note: Don't check cancellation here as cancel token hasn't been created yet
             // Cancel token is created in execute_dialog_turn -> execute_round
@@ -7968,7 +7933,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             )
             .await;
         });
-        active_registration.disarm();
 
         Ok(())
     }
@@ -8062,7 +8026,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         self.ensure_session_execution_drained(&request.session_id, Duration::from_secs(30))
             .await?;
 
-        let session_workspace = Self::build_workspace_binding(&session.config).await;
+        let session_workspace = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
         if session_workspace
             .as_ref()
             .is_some_and(WorkspaceBinding::is_remote)
@@ -8265,12 +8232,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             recover_partial_on_cancel: false,
         };
 
-        let active_counter = self
-            .active_turns_per_session
-            .entry(plan.session_id.clone())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        active_counter.fetch_add(1, Ordering::SeqCst);
+        let execution_lease = self.session_executions.register(&plan.session_id);
         let turn_settlement_registration = self
             .turn_settlements
             .register_accepted(plan.session_id.clone(), plan.turn_id.clone());
@@ -8296,26 +8258,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         tokio::spawn(async move {
             let _external_agent_generation_lease = external_agent_generation_lease;
             let _turn_settlement_registration = turn_settlement_registration;
-            struct RecoveredExecutionGuard {
-                session_manager: Arc<SessionManager>,
-                session_id: String,
-                turn_id: String,
-                active_counter: Arc<AtomicUsize>,
-            }
-            impl Drop for RecoveredExecutionGuard {
-                fn drop(&mut self) {
-                    self.active_counter.fetch_sub(1, Ordering::SeqCst);
-                    self.session_manager
-                        .reset_session_state_if_processing(&self.session_id, &self.turn_id);
-                    self.session_manager
-                        .clear_active_turn_permission_mode(&self.session_id, &self.turn_id);
-                }
-            }
-            let _guard = RecoveredExecutionGuard {
+            let _guard = SessionExecutionGuard {
                 session_manager: session_manager.clone(),
                 session_id: session_id.clone(),
                 turn_id: turn_id.clone(),
-                active_counter,
+                lease: Some(execution_lease),
             };
 
             let recovered_dequeue_ack = match event_queue
@@ -8528,35 +8475,16 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     /// in-memory context cache while a cancelled turn's spawn task is still
     /// finishing its tail.
     async fn wait_session_drained(&self, session_id: &str, max_wait: Duration) -> usize {
-        let counter = match self.active_turns_per_session.get(session_id) {
-            Some(entry) => entry.value().clone(),
-            None => return 0,
-        };
-        let deadline = Instant::now() + max_wait;
-        loop {
-            let pending = counter.load(Ordering::SeqCst);
-            if pending == 0 {
-                self.active_turns_per_session
-                    .remove_if(session_id, |_, current| {
-                        Arc::ptr_eq(current, &counter) && current.load(Ordering::SeqCst) == 0
-                    });
-                return 0;
-            }
-            if Instant::now() >= deadline {
-                return pending;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+        self.session_executions
+            .wait_drained(session_id, max_wait)
+            .await
     }
 
-    fn register_session_execution(&self, session_id: &str) -> Arc<SessionExecutionLease> {
-        let active_counter = self
-            .active_turns_per_session
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        active_counter.fetch_add(1, Ordering::SeqCst);
-        Arc::new(SessionExecutionLease { active_counter })
+    pub(super) fn register_session_execution(
+        &self,
+        session_id: &str,
+    ) -> Arc<SessionExecutionLease> {
+        Arc::new(self.session_executions.register(session_id))
     }
 
     pub(crate) async fn wait_for_turn_settlement(
@@ -8612,12 +8540,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     ) -> Option<super::turn_settlement::TurnSettlementRegistration> {
         self.turn_settlements
             .try_register_pending(session_id.to_string(), turn_id.to_string())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_active_turn_count_for_test(&self, session_id: &str, count: usize) {
-        self.active_turns_per_session
-            .insert(session_id.to_string(), Arc::new(AtomicUsize::new(count)));
     }
 
     /// Strict maintenance barrier for callers that must not overlap an older
@@ -8813,7 +8735,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             }
         }
 
-        abort_thread_goal_continuation_for_session(session_id);
+        if let Some(scheduler) = self.dialog_scheduler() {
+            scheduler.goal_abort_flags().mark(session_id);
+        }
 
         let old_state = self
             .session_manager
@@ -8978,7 +8902,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         wait_timeout: Duration,
         cancel_descendants: bool,
     ) -> OpenBitFunResult<Option<String>> {
-        abort_thread_goal_continuation_for_session(session_id);
+        if let Some(scheduler) = self.dialog_scheduler() {
+            scheduler.goal_abort_flags().mark(session_id);
+        }
 
         let Some(session) = self.session_manager.get_session(session_id) else {
             return Ok(None);
@@ -9125,11 +9051,14 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         // Their timeout is capped tightly so deletion cannot hang.
         let session_hook_facts = match self.session_manager.get_session(session_id) {
             Some(session) => Some((
-                Self::session_hooks_are_remote(&session).await,
+                self.session_hooks_are_remote(&session).await,
                 session.config.model_id.clone().unwrap_or_default(),
                 session.config.workspace_id.clone(),
                 match Self::build_workspace_services(
-                    &Self::build_workspace_binding(&session.config).await,
+                    &self
+                        .session_manager
+                        .build_workspace_binding(&session.config)
+                        .await,
                 )
                 .await
                 {
@@ -9310,7 +9239,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         let id = session.config.workspace_id.as_deref().ok_or_else(|| {
             OpenBitFunError::Validation(format!("Session workspace ID is missing: {session_id}"))
         })?;
-        let service = crate::service::workspace::get_global_workspace_service()
+        let service = self
+            .session_manager
+            .storage
+            .workspaces
+            .current()
             .ok_or_else(|| OpenBitFunError::service("Workspace service is unavailable"))?;
         let workspace = service.require_workspace(id).await?;
         if workspace.workspace_kind == WorkspaceKind::Remote {
@@ -11329,7 +11262,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .await;
         }
 
-        let subagent_workspace = Self::build_workspace_binding(&session.config).await;
+        let subagent_workspace = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
         let subagent_services = Self::build_workspace_services(&subagent_workspace).await?;
         let subagent_hook_services = subagent_services.clone();
         let subagent_workspace_path = subagent_workspace
@@ -13011,14 +12947,15 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 let workspace_id = parent_session.config.workspace_id.clone().ok_or_else(|| {
                     OpenBitFunError::service("Parent session workspace ID is unavailable")
                 })?;
-                let mut session_config = Self::build_session_config_for_workspace(
-                    workspace_id,
-                    match &resolved_target {
-                        ModelSelection::Model { model_ref } => Some(model_ref.clone()),
-                        ModelSelection::Pool { .. } => None,
-                    },
-                )
-                .await?;
+                let mut session_config = self
+                    .build_session_config_for_workspace(
+                        workspace_id,
+                        match &resolved_target {
+                            ModelSelection::Model { model_ref } => Some(model_ref.clone()),
+                            ModelSelection::Pool { .. } => None,
+                        },
+                    )
+                    .await?;
                 inherit_matching_parent_workspace_binding(
                     &parent_session.config,
                     &mut session_config,
@@ -13356,7 +13293,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         let deadline = Instant::now() + Duration::from_secs(30);
         for session_id in session_ids {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if let Some(scheduler) = get_global_scheduler() {
+            if let Some(scheduler) = self.dialog_scheduler() {
                 scheduler
                     .cancel_active_turn_for_session_with_descendant_policy(
                         &session_id,
@@ -13563,7 +13500,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .await?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut maintenance_permits = Vec::new();
-        if let Some(scheduler) = get_global_scheduler() {
+        if let Some(scheduler) = self.dialog_scheduler() {
             for session_id in &subtree {
                 maintenance_permits.push(
                     scheduler
@@ -13603,10 +13540,13 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .get_session(session_id)
             .ok_or_else(|| OpenBitFunError::NotFound(format!("Session not found: {session_id}")))?;
         let workspace_path = session.config.workspace_path.clone().map(PathBuf::from);
-        let is_remote_workspace = Self::session_hooks_are_remote(&session).await;
+        let is_remote_workspace = self.session_hooks_are_remote(&session).await;
         let model = session.config.model_id.clone().unwrap_or_default();
         let workspace_services = match Self::build_workspace_services(
-            &Self::build_workspace_binding(&session.config).await,
+            &self
+                .session_manager
+                .build_workspace_binding(&session.config)
+                .await,
         )
         .await
         {
@@ -13724,7 +13664,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             );
             match &control.cancel_target {
                 BackgroundSubagentCancelTarget::Scheduler(handle) => {
-                    if let Some(scheduler) = get_global_scheduler() {
+                    if let Some(scheduler) = self.dialog_scheduler() {
                         scheduler
                             .request_hidden_subagent_cancellation_with_descendant_policy(
                                 handle,
@@ -13754,7 +13694,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         timeout_seconds: Option<u64>,
     ) -> OpenBitFunResult<SubagentResult> {
         let request = self.prepare_subagent_execution_request(request).await?;
-        let Some(scheduler) = get_global_scheduler() else {
+        let Some(scheduler) = self.dialog_scheduler() else {
             return self
                 .execute_prepared_hidden_subagent(request, cancel_token, timeout_seconds)
                 .await;
@@ -13818,11 +13758,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             session_name: request.session_name,
             agent_type: request.agent_type,
             logical_agent_type,
-            session_config: Self::build_session_config_for_workspace(
-                request.workspace_id,
-                request.model_id,
-            )
-            .await?,
+            session_config: self
+                .build_session_config_for_workspace(request.workspace_id, request.model_id)
+                .await?,
             initial_messages: vec![Message::user(task_description.clone())],
             user_input_text: task_description,
             created_by: request.created_by,
@@ -14024,7 +13962,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .cancel_token_for_dialog_turn(&subagent_parent_info.dialog_turn_id)
             .map(|token| token.child_token());
 
-        if let Some(scheduler) = get_global_scheduler() {
+        if let Some(scheduler) = self.dialog_scheduler() {
             let submit_result = match scheduler
                 .submit_hidden_subagent(request.clone(), timeout_seconds)
                 .await
@@ -14479,7 +14417,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .session_manager
             .get_session(session_id)
             .ok_or_else(|| OpenBitFunError::NotFound(format!("Session not found: {session_id}")))?;
-        let workspace = Self::build_workspace_binding(&session.config).await;
+        let workspace = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
         let is_assistant_locked =
             Self::is_assistant_workspace_session(&session, workspace.as_ref())
                 || (session.kind != SessionKind::Subagent
@@ -16118,7 +16059,10 @@ impl openbitfun_runtime_ports::AgentUserShellCommandPort for ConversationCoordin
                     request.session_id
                 )))
             })?;
-        let workspace = Self::build_workspace_binding(&session.config).await;
+        let workspace = self
+            .session_manager
+            .build_workspace_binding(&session.config)
+            .await;
         let workspace_services = Self::build_workspace_services(&workspace)
             .await
             .map_err(runtime_port_error_preserving_message)?;
@@ -16589,11 +16533,7 @@ impl ConversationCoordinator {
                 } => Some(current_turn_id),
                 _ => None,
             });
-        let in_flight_execution_count = self
-            .active_turns_per_session
-            .get(&request.session_id)
-            .map(|counter| counter.load(Ordering::SeqCst))
-            .unwrap_or(0);
+        let in_flight_execution_count = self.session_executions.count(&request.session_id);
         if candidate_active_turn_id.as_deref().is_some_and(|turn_id| {
             required_settled_turn_ids
                 .iter()

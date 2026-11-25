@@ -601,7 +601,7 @@ fn runtime_ownership_policy_is_assembled_once_in_core() {
     assert!(
         CLI_MAIN.contains("CoreRuntimeOwnership")
             && assembly_call.contains(
-                "init_agentic_system_with_computer_use_host(profile,runtime_ownership,computer_use_host,)"
+                "init_agentic_system_with_workspaces(profile,runtime_ownership,computer_use_host,WorkspaceServiceSource::Registered,)"
             ),
         "CLI must select a deployment and inject the single Core owner"
     );

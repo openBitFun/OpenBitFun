@@ -59,7 +59,6 @@ fn remote_connection_owner_missing(owner: &str, saved_connection_ids: &[String])
 /// Workspace service.
 pub struct WorkspaceService {
     manager: Arc<RwLock<WorkspaceManager>>,
-    #[allow(dead_code)]
     config: WorkspaceManagerConfig,
     persistence: Arc<PersistenceService>,
     path_manager: Arc<PathManager>,
@@ -907,7 +906,11 @@ impl WorkspaceService {
             .manager
             .write()
             .await
-            .touch_workspace_by_id(&workspace.id, true, refresh_worktree)
+            .touch_workspace_by_id(
+                &workspace.id,
+                self.config.add_session_activity_to_recent,
+                refresh_worktree,
+            )
             .await;
         if let Ok(workspace) = result.as_ref() {
             self.ensure_workspace_runtime_best_effort(workspace, "tracked")
@@ -2676,6 +2679,32 @@ pub struct WorkspaceQuickSummary {
 }
 
 // ── Global workspace service singleton ──────────────────────────────
+
+/// Selects the existing workspace owner. Desktop and some CLI entrypoints
+/// finish registration after constructing the session manager.
+#[derive(Clone)]
+pub enum WorkspaceServiceSource {
+    Registered,
+    Provided(Arc<WorkspaceService>),
+}
+
+impl WorkspaceServiceSource {
+    pub(crate) fn current(&self) -> Option<Arc<WorkspaceService>> {
+        match self {
+            Self::Registered => get_global_workspace_service(),
+            Self::Provided(service) => Some(service.clone()),
+        }
+    }
+}
+
+impl std::fmt::Debug for WorkspaceServiceSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Registered => "Registered",
+            Self::Provided(_) => "Provided",
+        })
+    }
+}
 
 static GLOBAL_WORKSPACE_SERVICE: std::sync::OnceLock<Arc<WorkspaceService>> =
     std::sync::OnceLock::new();

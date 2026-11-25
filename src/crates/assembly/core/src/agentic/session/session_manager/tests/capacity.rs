@@ -350,7 +350,7 @@ async fn concurrent_creates_cannot_overbook_active_session_capacity() {
 
     assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
     assert_eq!(manager.sessions.len(), 1);
-    assert_eq!(manager.active_session_permits.len(), 1);
+    assert_eq!(manager.residency.resident_count(), 1);
 }
 
 #[tokio::test]
@@ -392,10 +392,10 @@ async fn failed_unavailable_mode_migration_does_not_publish_the_restored_session
         manager.get_session(&session_id).is_none(),
         "failed migration must not consume active-session capacity"
     );
-    assert!(manager.active_session_permits.is_empty());
+    assert_eq!(manager.residency.resident_count(), 0);
     assert!(manager
         .session_storage_path_index
-        .get(&session_id)
+        .path(&session_id)
         .is_none());
 }
 
@@ -429,10 +429,10 @@ async fn failed_restore_state_write_does_not_publish_context_or_capacity() {
 
     assert!(error.to_string().contains("Injected session state"));
     assert!(manager.get_session(&session_id).is_none());
-    assert!(manager.active_session_permits.is_empty());
+    assert_eq!(manager.residency.resident_count(), 0);
     assert!(manager
         .session_storage_path_index
-        .get(&session_id)
+        .path(&session_id)
         .is_none());
     assert!(!manager.context_store.has_session(&session_id));
 }

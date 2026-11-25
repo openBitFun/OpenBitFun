@@ -34,6 +34,7 @@ fn session_manager_config_for_profile(
 #[derive(Clone)]
 pub struct AgenticSystem {
     pub coordinator: Arc<coordination::ConversationCoordinator>,
+    pub scheduler: Arc<coordination::DialogScheduler>,
     pub event_queue: Arc<events::EventQueue>,
     pub token_usage_service: Arc<TokenUsageService>,
 }
@@ -91,6 +92,21 @@ pub async fn init_agentic_system_with_computer_use_host(
     runtime_ownership: Arc<CoreRuntimeOwnership>,
     computer_use_host: Option<tools::computer_use_host::ComputerUseHostRef>,
 ) -> Result<AgenticSystem> {
+    init_agentic_system_with_workspaces(
+        delivery_profile,
+        runtime_ownership,
+        computer_use_host,
+        crate::service::workspace::WorkspaceServiceSource::Registered,
+    )
+    .await
+}
+
+pub async fn init_agentic_system_with_workspaces(
+    delivery_profile: DeliveryProfile,
+    runtime_ownership: Arc<CoreRuntimeOwnership>,
+    computer_use_host: Option<tools::computer_use_host::ComputerUseHostRef>,
+    workspaces: crate::service::workspace::WorkspaceServiceSource,
+) -> Result<AgenticSystem> {
     tools::computer_use_capability::set_computer_use_host_available(computer_use_host.is_some());
     info!("Initializing agentic system for profile {delivery_profile}");
 
@@ -107,12 +123,13 @@ pub async fn init_agentic_system_with_computer_use_host(
     set_global_token_usage_service(token_usage_service.clone());
 
     let context_store = Arc::new(session::SessionContextStore::new());
-    let context_compressor = Arc::new(session::ContextCompressor::new());
 
-    let session_manager = Arc::new(session::SessionManager::new(
+    let session_manager = Arc::new(session::SessionManager::with_storage(
         context_store,
-        persistence_manager,
+        persistence_manager.clone(),
         session_manager_config_for_profile(delivery_profile),
+        session::CoreSessionStorePort::new(path_manager, workspaces),
+        persistence_manager,
     ));
 
     event_router.subscribe_internal(
@@ -135,33 +152,18 @@ pub async fn init_agentic_system_with_computer_use_host(
             .with_permission_request_manager(permission_request_manager),
     );
 
-    let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
-    let round_executor = Arc::new(execution::RoundExecutor::new(
-        stream_processor,
-        event_queue.clone(),
-        tool_pipeline.clone(),
-    ));
-
-    let execution_config = execution::execution_engine_config_from_global_config().await;
-    let execution_engine = execution::ExecutionEngine::new(
-        round_executor,
-        event_queue.clone(),
-        session_manager.clone(),
-        context_compressor,
-        execution_config,
-    );
-    let execution_engine = Arc::new(execution_engine);
-
-    let coordinator = Arc::new(coordination::ConversationCoordinator::new(
+    let system = assemble_agentic_system(
         session_manager,
-        execution_engine,
         tool_pipeline,
         event_queue.clone(),
         event_router.clone(),
         runtime_ownership,
-    ));
+        Arc::new(execution::model_requests::ProductModelRequests),
+        token_usage_service.clone(),
+    )
+    .await;
 
-    coordination::ConversationCoordinator::set_global(coordinator.clone());
+    coordination::ConversationCoordinator::set_global(system.coordinator.clone());
 
     let mut internal_event_rx = event_queue.subscribe();
     let internal_event_router = event_router.clone();
@@ -183,11 +185,125 @@ pub async fn init_agentic_system_with_computer_use_host(
 
     info!("Agentic system initialization complete");
 
-    Ok(AgenticSystem {
+    coordination::set_global_scheduler(system.scheduler.clone());
+    Ok(system)
+}
+
+pub(crate) fn product_turn_postprocessor() -> Option<Arc<dyn execution::TurnPostprocessor>> {
+    #[cfg(feature = "deep-research")]
+    {
+        Some(Arc::new(ResearchReportPostprocessor))
+    }
+    #[cfg(not(feature = "deep-research"))]
+    {
+        None
+    }
+}
+
+#[cfg(feature = "deep-research")]
+struct ResearchReportPostprocessor;
+
+#[cfg(feature = "deep-research")]
+#[async_trait::async_trait]
+impl execution::TurnPostprocessor for ResearchReportPostprocessor {
+    async fn on_completion(
+        &self,
+        agent_type: &str,
+        context: &execution::ExecutionContext,
+        completed: bool,
+    ) {
+        if openbitfun_agent_workflows::deep_research::should_post_process_research_report(
+            agent_type, completed,
+        ) {
+            if let Some(workspace) = context.workspace.as_ref() {
+                if let Some(workspace_services) = context.workspace_services.as_ref() {
+                    openbitfun_services_integrations::deep_research::run_for_session_workspace(
+                        workspace_services.fs.as_ref(),
+                        &workspace.root_path().to_string_lossy(),
+                        &context.session_id,
+                    )
+                    .await;
+                } else {
+                    log::warn!(
+                            "citation_renumber: skipped because workspace filesystem services are unavailable: session_id={}, workspace={}",
+                            context.session_id,
+                            workspace.root_path().display()
+                        );
+                }
+            }
+        }
+    }
+}
+
+/// Assemble one execution authority for the host, including its live scheduler
+/// and the exact event queue used by its engine and subscribers.
+pub async fn assemble_agentic_system(
+    session_manager: Arc<session::SessionManager>,
+    tool_pipeline: Arc<tools::pipeline::ToolPipeline>,
+    event_queue: Arc<events::EventQueue>,
+    event_router: Arc<events::EventRouter>,
+    runtime_ownership: Arc<CoreRuntimeOwnership>,
+    models: Arc<dyn execution::model_requests::ModelRequests>,
+    token_usage_service: Arc<TokenUsageService>,
+) -> AgenticSystem {
+    let coordinator = assemble_agent_execution(
+        session_manager.clone(),
+        tool_pipeline,
+        event_queue.clone(),
+        event_router,
+        runtime_ownership,
+        models,
+        token_usage_service.clone(),
+    )
+    .await;
+    let scheduler = coordination::DialogScheduler::new(coordinator.clone(), session_manager);
+    coordinator.bind_dialog_scheduler(&scheduler);
+    AgenticSystem {
         coordinator,
+        scheduler,
         event_queue,
         token_usage_service,
-    })
+    }
+}
+
+/// Connects the turn engine to the host's session, tool, model and event owners.
+pub async fn assemble_agent_execution(
+    session_manager: Arc<session::SessionManager>,
+    tool_pipeline: Arc<tools::pipeline::ToolPipeline>,
+    event_queue: Arc<events::EventQueue>,
+    event_router: Arc<events::EventRouter>,
+    runtime_ownership: Arc<CoreRuntimeOwnership>,
+    models: Arc<dyn execution::model_requests::ModelRequests>,
+    token_usage_service: Arc<TokenUsageService>,
+) -> Arc<coordination::ConversationCoordinator> {
+    let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
+    let round_executor = Arc::new(execution::RoundExecutor::with_providers(
+        stream_processor,
+        event_queue.clone(),
+        tool_pipeline.clone(),
+        models,
+        Some(token_usage_service),
+    ));
+
+    let execution_config = execution::execution_engine_config_from_global_config().await;
+    let execution_engine = execution::ExecutionEngine::with_turn_postprocessor(
+        round_executor,
+        event_queue.clone(),
+        session_manager.clone(),
+        Arc::new(session::ContextCompressor::new()),
+        execution_config,
+        product_turn_postprocessor(),
+    );
+    let execution_engine = Arc::new(execution_engine);
+
+    Arc::new(coordination::ConversationCoordinator::new(
+        session_manager,
+        execution_engine,
+        tool_pipeline,
+        event_queue,
+        event_router,
+        runtime_ownership,
+    ))
 }
 
 #[cfg(test)]

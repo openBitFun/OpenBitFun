@@ -48,7 +48,11 @@ async fn explicit_agent_change_switches_owner_but_case_variant_does_not() {
     let session = session_manager
         .get_session(&session_id)
         .expect("session remains loaded");
-    let workspace = ConversationCoordinator::build_workspace_binding(&session.config).await;
+    let workspace = crate::agentic::workspace::WorkspaceBinding::from_session(
+        &crate::service::workspace::WorkspaceServiceSource::Registered,
+        &session.config,
+    )
+    .await;
 
     let binding =
         ConversationCoordinator::resolve_session_agent_for_turn(&session, "Standard", &workspace)

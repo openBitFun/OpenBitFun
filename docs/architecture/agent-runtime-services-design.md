@@ -17,8 +17,11 @@ Shared Agent Runtime 与 Plugin Host 的进程关系见
 新增公共类型前必须有真实生产调用方、版本边界和验证路径。现有 `agent-runtime::sdk` 是
 Rust Runtime SDK（当前 preview），不是公开 Python/TypeScript OpenBitFun Agent SDK。CLI、ACP、
 Desktop 仍复用 `openbitfun-core` 的兼容 owner；只有 Desktop 与本机兼容 Server Host 选择 `product-full`。CLI 与 CLI 托管的 ACP server 已消费各自的产品组装结果；
-Desktop 主交互只消费由现有 Core 归属模块构造的少量应用接口，尚未组装完整 Desktop profile。这些接入都不等于
-协调器、调度器、持久化或工具执行 owner 已迁移；ACP 的完整持久化历史、模型/模式目录与提供方配置、MCP、客户端路径与
+Desktop 主交互只消费由现有 Core 归属模块构造的少量应用接口，尚未组装完整 Desktop profile。桌面、CLI 和 SDK Host 的生产入口通过 `assemble_agentic_system` 装配同一套执行器。每个运行实例拥有一个调度器、一套会话状态和一条引擎事件队列。执行层的 `scheduler` 持有轮次队列、在途执行租约和精确到轮次的结算状态，定向取消与出队共用会话操作锁。`session` 持有会话驻留名额、写者租约和存储绑定。Core 注入磁盘存取、工作区路径规范化和运行时缓存清理，并沿用原会话文件与写锁。SDK Host 及需要完整产品装配的进程内调用方通过 `product_runtime::embedded::EmbeddedAgentRuntime` 使用这套能力。
+
+独立 Rust 应用可通过 `openbitfun-agent` 的 `local` feature 显式提供模型配置、工作区和数据目录。两种装配共用执行层的轮次驱动、模型尝试与流处理、工具批次执行、权限邮箱、会话驻留与写锁，以及消息快照和轮次记录的读写。基础装配提供本地文本 Read；产品组装继续提供工具目录、上下文压缩、模型路由和 Hook 策略。导出和跨进程接管会话的操作见 [Rust SDK 接入说明](../../sdk/rust/README.md)。
+
+ACP 的完整持久化历史、模型/模式目录与提供方配置、MCP、客户端路径与
 Desktop 的其余入口仍保留明确的兼容边界，活动会话的模型/模式写入已通过 Agent Runtime API 回到 Core owner。
 
 阅读路径：先从公开 SDK 产品文档区分公开语言 SDK 与内部应用接口；再由第 1 节确认内核、产品特性、
@@ -381,6 +384,19 @@ pub trait SecurityDecisionPort: Send + Sync {
 - 模型输出只能辅助解释和候选判断，不能直接写权限、审计或策略状态。
 
 ## 3. 内核、工具与工作流
+
+桌面、CLI 和 SDK Host 通过 `assemble_agent_execution` 把已选好的会话管理器、工具管线、
+模型请求提供方、事件队列及路由器交给同一执行链。工作区目录可在启动时传入，也可在宿主完成注册后供执行器读取。
+`CoreSessionStorePort` 定位会话存储，`SessionRecords` 读写会话和对话轮记录，产品装配使用同一个
+`PersistenceManager` 完成这些读写与原有的索引、快照维护。会话管理器继续持有写锁并决定提交顺序。
+`ModelRequests::send_once` 发送一次模型请求。执行层的 `model_round` 负责打开和消费流之间的取消、
+同一逻辑轮次的尝试计数、部分输出恢复，以及先提交助手工具调用再执行工具的顺序。
+`turn_execution` 推进轮次、拼接模型历史、处理工具失败或流中断后的续写，并决定收尾请求何时重试。其 `context` 模块按模型或模型池预算计算输入上限，超出上下文窗口时按完整消息轮裁剪历史。
+`tool-runtime::pipeline::execution` 按段运行预检，等待 Hook 改写最终参数后再安排权限和并发批次，
+并按调用顺序收集结果。Core 把已有的工具、审批邮箱、账户路由、存储及事件对象接入这些执行点；
+具体会话读写、模型压缩请求和压缩结果的持久化仍经过 Core。DeepResearch 的完成回调由产品装配按 feature 安装。
+构造入口和两轮文件读取回归分别见 [共享装配](../../src/crates/assembly/core/src/agentic/system.rs)
+和 [真实 SDK Host 用例](../../sdk/typescript/test/real-host-smoke.mjs)。
 
 ### 3.1 Agent Runtime / Agent Runtime API
 

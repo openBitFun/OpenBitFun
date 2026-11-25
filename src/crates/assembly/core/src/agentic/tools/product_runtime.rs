@@ -32,7 +32,8 @@ pub use catalog::{build_all_tools_info, build_tool_info, ToolInfoDto};
 pub(crate) use catalog::{
     product_get_tool_spec_runtime, resolve_product_get_tool_spec_results,
     resolve_product_readonly_enabled_tools, resolve_product_resolved_tool_manifest,
-    resolve_product_resolved_visible_tools, ProductGetToolSpecRuntime, ProductToolCatalogProvider,
+    resolve_product_resolved_visible_tools, resolved_manifest_from_registry,
+    ProductGetToolSpecRuntime, ProductToolCatalogProvider,
 };
 pub use catalog::{ResolvedToolManifest, ResolvedVisibleTools};
 pub use get_tool_spec_tool::GetToolSpecTool;

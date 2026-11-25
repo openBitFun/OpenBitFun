@@ -110,8 +110,7 @@ impl ExecutionEngine {
             &model_config.format,
             supports_images,
         );
-        let context_window =
-            CompressionTriggerBudget::for_request(&model_config, pool_budget).context_window;
+        let context_window = request_budget(&model_config, pool_budget).context_window;
         let policy = registry
             .get_agent_tool_policy(&session.agent_type, workspace.workspace_id.as_deref())
             .await;
@@ -148,12 +147,13 @@ impl ExecutionEngine {
         );
         let manifest = if session.config.enable_tools {
             Some(
-                resolve_tool_manifest(
-                    &policy.allowed_tools,
-                    &policy.exposure_overrides,
-                    &tool_context,
-                )
-                .await,
+                self.round_executor
+                    .tool_manifest(
+                        &policy.allowed_tools,
+                        &policy.exposure_overrides,
+                        &tool_context,
+                    )
+                    .await,
             )
         } else {
             None

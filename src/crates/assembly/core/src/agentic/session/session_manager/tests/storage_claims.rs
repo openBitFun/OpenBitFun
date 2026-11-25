@@ -14,11 +14,11 @@ async fn session_storage_identity_rejects_same_id_in_another_workspace() {
     let manager = test_manager(persistence_manager);
     let session_id = "shared-session-id";
 
-    assert!(manager
-        .claim_session_storage_path(session_id, workspace.path(), true)
-        .expect("first workspace claim"));
+    let _claim = manager
+        .claim_session_storage_path(session_id, workspace.path())
+        .expect("first workspace claim");
     let error = manager
-        .claim_session_storage_path(session_id, other_workspace.path(), true)
+        .claim_session_storage_path(session_id, other_workspace.path())
         .expect_err("a second workspace must not reuse an active session id");
 
     let message = error.to_string();
@@ -36,16 +36,16 @@ async fn failed_claim_does_not_release_a_concurrent_same_workspace_claim() {
     let session_id = "concurrent-restore-session";
 
     let first_claim = manager
-        .claim_session_storage_path(session_id, workspace.path(), true)
+        .claim_session_storage_path(session_id, workspace.path())
         .expect("first restore claim");
-    manager
-        .claim_session_storage_path(session_id, workspace.path(), true)
+    let _second_claim = manager
+        .claim_session_storage_path(session_id, workspace.path())
         .expect("concurrent restore in the same workspace");
 
-    manager.release_failed_session_storage_path_claim(session_id, workspace.path(), first_claim);
+    drop(first_claim);
 
     let error = manager
-        .claim_session_storage_path(session_id, other_workspace.path(), true)
+        .claim_session_storage_path(session_id, other_workspace.path())
         .expect_err("a concurrent same-workspace restore must retain the binding");
     assert!(error.to_string().contains("another workspace"));
 }
@@ -170,7 +170,10 @@ async fn invalid_fixed_session_id_does_not_claim_or_insert_runtime_state() {
 
     assert!(error.to_string().contains("session_id"));
     assert!(manager.get_session(invalid_id).is_none());
-    assert!(manager.session_storage_path_index.get(invalid_id).is_none());
+    assert!(manager
+        .session_storage_path_index
+        .path(invalid_id)
+        .is_none());
 }
 
 #[tokio::test]
@@ -198,7 +201,10 @@ async fn persistent_session_creation_failure_does_not_publish_runtime_state() {
         .expect_err("state persistence failure must fail session creation");
 
     assert!(manager.get_session(session_id).is_none());
-    assert!(manager.session_storage_path_index.get(session_id).is_none());
+    assert!(manager
+        .session_storage_path_index
+        .path(session_id)
+        .is_none());
     assert!(!persistence_manager
         .session_storage_exists(workspace.path(), session_id)
         .expect("session storage existence"));
@@ -263,9 +269,9 @@ async fn session_storage_reads_never_commit_or_follow_uncommitted_bindings() {
     );
 
     let in_flight = workspace.path().join("in-flight-claim");
-    assert!(manager
-        .claim_session_storage_path(&session_id, &in_flight, true)
-        .expect("pending claim"));
+    let _claim = manager
+        .claim_session_storage_path(&session_id, &in_flight)
+        .expect("pending claim");
     assert!(manager
         .require_session_storage_path(&session_id)
         .await
@@ -311,10 +317,8 @@ async fn loaded_session_identity_check_preserves_processing_state() {
         .expect("session should create");
     let storage_path = manager
         .session_storage_path_index
-        .get(&session.session_id)
-        .expect("storage binding")
-        .path
-        .clone();
+        .path(&session.session_id)
+        .expect("storage binding");
     manager
         .sessions
         .get_mut(&session.session_id)

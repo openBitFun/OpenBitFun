@@ -398,25 +398,6 @@ struct StoredTokenAnchorsFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredTurnContextSnapshotFile {
-    schema_version: u32,
-    session_id: String,
-    turn_index: usize,
-    messages: Vec<Message>,
-}
-
-/// Borrowed write-side counterpart of [`StoredTurnContextSnapshotFile`]; lets
-/// snapshot writes serialize messages without cloning ones that need no
-/// sanitization. Field names/order must stay in sync with the stored struct.
-#[derive(Debug, Serialize)]
-struct TurnContextSnapshotWriteFile<'a> {
-    schema_version: u32,
-    session_id: &'a str,
-    turn_index: usize,
-    messages: Vec<Cow<'a, Message>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredTurnSkillAgentSnapshotFile {
     schema_version: u32,
     session_id: String,
@@ -1049,103 +1030,6 @@ impl PersistenceManager {
 
     fn unix_ms_to_system_time(timestamp_ms: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_millis(timestamp_ms)
-    }
-
-    fn sanitize_messages_for_persistence(messages: &[Message]) -> Vec<Cow<'_, Message>> {
-        messages
-            .iter()
-            .map(Self::sanitize_message_for_persistence)
-            .collect()
-    }
-
-    /// Returns whether a message would be modified by
-    /// [`Self::sanitize_message_for_persistence`]. Used to avoid deep-cloning
-    /// messages that need no sanitization (the vast majority).
-    fn message_needs_persistence_sanitization(message: &Message) -> bool {
-        match &message.content {
-            MessageContent::Multimodal { images, .. } => images
-                .iter()
-                .any(|image| image.data_url.as_ref().is_some_and(|v| !v.is_empty())),
-            MessageContent::ToolResult {
-                result,
-                image_attachments,
-                ..
-            } => image_attachments.is_some() || Self::json_contains_data_url(result),
-            _ => false,
-        }
-    }
-
-    fn json_contains_data_url(value: &serde_json::Value) -> bool {
-        match value {
-            serde_json::Value::Object(map) => {
-                map.contains_key("data_url") || map.values().any(Self::json_contains_data_url)
-            }
-            serde_json::Value::Array(arr) => arr.iter().any(Self::json_contains_data_url),
-            _ => false,
-        }
-    }
-
-    fn sanitize_message_for_persistence(message: &Message) -> Cow<'_, Message> {
-        if !Self::message_needs_persistence_sanitization(message) {
-            return Cow::Borrowed(message);
-        }
-
-        let mut sanitized = message.clone();
-
-        match &mut sanitized.content {
-            MessageContent::Multimodal { images, .. } => {
-                for image in images.iter_mut() {
-                    if image.data_url.as_ref().is_some_and(|v| !v.is_empty()) {
-                        image.data_url = None;
-
-                        let mut metadata = image
-                            .metadata
-                            .take()
-                            .unwrap_or_else(|| serde_json::json!({}));
-                        if !metadata.is_object() {
-                            metadata = serde_json::json!({ "raw_metadata": metadata });
-                        }
-                        if let Some(obj) = metadata.as_object_mut() {
-                            obj.insert("has_data_url".to_string(), serde_json::json!(true));
-                        }
-                        image.metadata = Some(metadata);
-                    }
-                }
-            }
-            MessageContent::ToolResult {
-                result,
-                image_attachments,
-                ..
-            } => {
-                Self::redact_data_url_in_json(result);
-                if image_attachments.is_some() {
-                    *image_attachments = None;
-                }
-            }
-            _ => {}
-        }
-
-        Cow::Owned(sanitized)
-    }
-
-    fn redact_data_url_in_json(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(map) => {
-                let had_data_url = map.remove("data_url").is_some();
-                if had_data_url {
-                    map.insert("has_data_url".to_string(), serde_json::json!(true));
-                }
-                for child in map.values_mut() {
-                    Self::redact_data_url_in_json(child);
-                }
-            }
-            serde_json::Value::Array(arr) => {
-                for child in arr {
-                    Self::redact_data_url_in_json(child);
-                }
-            }
-            _ => {}
-        }
     }
 
     pub(super) async fn build_session_metadata(
@@ -2396,18 +2280,14 @@ impl PersistenceManager {
         self.ensure_snapshots_dir(workspace_path, session_id)
             .await?;
 
-        let snapshot = TurnContextSnapshotWriteFile {
-            schema_version: SESSION_STORAGE_SCHEMA_VERSION,
+        openbitfun_agent::records::save_context(
+            &self.context_snapshot_path(workspace_path, session_id, turn_index),
             session_id,
             turn_index,
-            messages: Self::sanitize_messages_for_persistence(messages),
-        };
-
-        self.write_json_atomic(
-            &self.context_snapshot_path(workspace_path, session_id, turn_index),
-            &snapshot,
+            messages,
         )
         .await
+        .map_err(Self::json_store_error)
     }
 
     pub async fn load_turn_context_snapshot(
@@ -2417,13 +2297,13 @@ impl PersistenceManager {
         turn_index: usize,
     ) -> OpenBitFunResult<Option<Vec<Message>>> {
         Self::validate_session_id(session_id)?;
-        let snapshot = self
-            .read_json_optional::<StoredTurnContextSnapshotFile>(&self.context_snapshot_path(
-                workspace_path,
-                session_id,
-                turn_index,
-            ))
-            .await?;
+        let snapshot = openbitfun_agent::records::load_context(&self.context_snapshot_path(
+            workspace_path,
+            session_id,
+            turn_index,
+        ))
+        .await
+        .map_err(Self::json_store_error)?;
         Ok(snapshot.map(|value| value.messages))
     }
 
@@ -4191,13 +4071,13 @@ impl PersistenceManager {
             }
         }
         let turn = &committed_turn;
-        let file = StoredDialogTurnFile::new(turn.clone());
         let write_started_at = Instant::now();
-        self.write_json_atomic(
+        openbitfun_agent::records::save_turn(
             &self.turn_path(workspace_path, &turn.session_id, turn.turn_index),
-            &file,
+            turn,
         )
-        .await?;
+        .await
+        .map_err(Self::json_store_error)?;
         let write_duration = write_started_at.elapsed();
 
         if let Err(error) = self
@@ -9701,7 +9581,10 @@ mod image_persistence_tests {
             .await
             .unwrap();
         let original = Message::user_multimodal("Read the screenshot".into(), images);
-        let persisted = PersistenceManager::sanitize_message_for_persistence(&original);
+        let persisted =
+            openbitfun_agent_runtime::message::snapshot::sanitize_message_for_persistence(
+                &original,
+            );
         let json = serde_json::to_value(persisted.as_ref()).unwrap();
         assert!(!json.to_string().contains("data:image/"));
         let restored: Message = serde_json::from_value(json).unwrap();

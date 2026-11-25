@@ -11,6 +11,7 @@ name = "openbitfun_services_core"
 crate-type = ["rlib"]
 
 [dependencies]
+cap-std = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
@@ -20,7 +21,6 @@ async-trait = { workspace = true, optional = true }
 openbitfun-core-types = { path = "../../contracts/core-types", optional = true }
 openbitfun-events = { path = "../../contracts/events", optional = true }
 openbitfun-runtime-ports = { path = "../../contracts/runtime-ports", optional = true }
-openbitfun-product-domains = { path = "../../contracts/product-domains", optional = true }
 tokio = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -52,6 +52,7 @@ windows = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 
 [features]
+workspace-reader = ["dep:cap-std", "dep:libc", "tokio/fs", "tokio/rt"]
 asar = []
 installed-apps = ["dep:windows", "windows/Win32_Foundation", "windows/Win32_System_Registry"]
 default = []
@@ -183,7 +184,7 @@ permission = [
     "tokio/rt",
 ]
 session-search = [
-    "dep:openbitfun-product-domains",
+    "dep:openbitfun-core-types",
     "dep:rusqlite",
     "dep:tokio",
     "tokio/rt",

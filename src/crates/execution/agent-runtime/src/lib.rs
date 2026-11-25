@@ -34,7 +34,11 @@ pub mod events;
 #[cfg(feature = "agent-runtime")]
 pub mod evidence_ledger;
 #[cfg(feature = "agent-runtime")]
+pub mod message;
+#[cfg(feature = "agent-runtime")]
 pub mod model_pool;
+#[cfg(feature = "agent-runtime")]
+pub mod model_round;
 #[cfg(feature = "native-hook-settings")]
 pub mod native_hooks;
 #[cfg(feature = "agent-runtime")]
@@ -87,5 +91,7 @@ pub mod thread_goal;
 pub mod thread_goal_tools;
 #[cfg(feature = "agent-runtime")]
 pub mod turn_cancellation;
+#[cfg(feature = "agent-runtime")]
+pub mod turn_execution;
 #[cfg(feature = "agent-runtime")]
 pub mod user_questions;

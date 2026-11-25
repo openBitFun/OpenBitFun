@@ -71,10 +71,10 @@ async fn cold_session_model_read_ignores_history_and_context_without_activating_
     assert!(!manager
         .is_session_loaded_from_storage_path(&storage_path, &id)
         .unwrap());
-    assert!(manager.active_session_permits.is_empty());
-    assert!(manager.session_write_locks.is_empty());
+    assert_eq!(manager.residency.resident_count(), 0);
+    assert!(!manager.residency.has_writer(&id));
     assert!(!manager.context_store.has_session(&id));
-    assert!(!manager.session_storage_path_index.contains_key(&id));
+    assert!(manager.session_storage_path_index.path(&id).is_none());
     assert_eq!(std::fs::read(layout.state_path(&id)).unwrap(), state_bytes);
     assert_eq!(
         std::fs::read(layout.metadata_path(&id)).unwrap(),
@@ -288,7 +288,7 @@ async fn cold_session_model_update_preserves_history_and_unknown_state_without_r
         .unwrap();
     assert_eq!(update.config.reasoning_preset.as_deref(), Some("high"));
     assert!(manager.get_session(&id).is_none());
-    assert!(manager.active_session_permits.is_empty());
+    assert_eq!(manager.residency.resident_count(), 0);
     assert!(!manager.context_store.has_session(&id));
     let updated: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();

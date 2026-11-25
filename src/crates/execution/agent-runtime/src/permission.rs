@@ -28,6 +28,9 @@ const PERMISSION_EVENT_CAPACITY: usize = 128;
 /// persisted submissions keep working.
 pub const AUTO_APPROVE_ASK_CONTEXT_KEY: &str = "auto_approve_ask";
 
+/// Whether this turn's host accepts tool permission replies independently of user questions.
+pub const PERMISSION_REPLIES_AVAILABLE_CONTEXT_KEY: &str = "permission_replies_available";
+
 /// Effective permission mode for one dialog turn.
 ///
 /// The owning surface resolves `turn -> session -> global default` once at

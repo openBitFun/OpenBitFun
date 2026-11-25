@@ -12,6 +12,7 @@ pub mod edit_constraint_guard;
 pub mod execution_engine;
 pub(crate) mod model_exchange_trace;
 pub mod model_pool;
+pub mod model_requests;
 mod prompt_suggestion;
 pub mod round_executor;
 pub mod round_model_routing;

@@ -1072,3 +1072,22 @@ mod remote_model_routing_compatibility {
         assert_eq!(serde_json::to_value(model).unwrap(), old);
     }
 }
+
+/// Shared token estimate used before the provider reports authoritative usage.
+pub fn estimate_text_tokens(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
+    let mut token_count: f32 = 0.;
+
+    for c in text.chars() {
+        if c.is_ascii() {
+            token_count += 0.3;
+        } else {
+            token_count += 0.6;
+        }
+    }
+
+    token_count as usize
+}

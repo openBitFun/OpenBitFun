@@ -13,13 +13,13 @@ pub mod native_hooks;
 pub mod product_control;
 pub mod product_control_owner_registry;
 pub mod product_release;
-pub mod product_search;
+pub use openbitfun_core_types::product_search;
 pub mod remote_control;
 pub mod remote_surface;
 #[cfg(feature = "external-sources")]
 pub mod session_import;
 pub mod superagent;
-pub mod tool_permissions;
+pub use openbitfun_permission_contracts as tool_permissions;
 
 #[cfg(feature = "external-sources")]
 pub mod external_integration_policy;
