@@ -48,6 +48,7 @@ import {
   turnStartedAt,
   type LiveModelRound,
   type LiveToolItem,
+  hasVisibleTextFrom,
 } from "../agentEvents";
 import { recoverInterruptedDialogTurn, rollbackSessionToTurn, type TranscriptTurnView } from "../api";
 import {
@@ -80,6 +81,7 @@ import {
   addFileAttachment,
   attachmentNotice,
   attachmentPreviewSrc,
+  fileUrlOfPath,
   attachImagesFromPicker,
   fileAttachments,
   imageAttachments,
@@ -403,7 +405,6 @@ import {
 } from "../btwStore";
 import { sessionMenuItems } from "../ui/sessionActions";
 import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
-import { VoiceDictationBar, VoiceInputButtons, type VoiceComposerActions } from "../ui/VoiceInput";
 import {
   TurnChangesDiffModal,
   TurnFileChangesCard,
@@ -411,7 +412,6 @@ import {
 } from "../ui/TurnFileChanges";
 import { GenUIToolItem } from "../genui/GenUIView";
 import { isGenUICall } from "../genui/genuiSource";
-import { ensureVoiceSettings } from "../voiceInputStore";
 import {
   isReviewCommand,
   launchReviewFromCommand,
@@ -789,14 +789,49 @@ function responsePartsOf(turn: unknown): TurnPart[] {
   return turnParts(turn).filter(part => part.role !== "user" && part.role !== "thinking");
 }
 
+/** A turn's searchable text, lowercased once: answered turns are replaced, never edited. */
+const turnSearchTextCache = new WeakMap<object, string>();
+
+function turnSearchText(turn: unknown): string {
+  if (!turn || typeof turn !== "object") return "";
+  let text = turnSearchTextCache.get(turn);
+  if (text === undefined) {
+    // Parts are joined by a character no query holds, so no match spans two parts.
+    text = turnParts(turn)
+      .map(part => part.text.toLowerCase())
+      .join("\u0000");
+    turnSearchTextCache.set(turn, text);
+  }
+  return text;
+}
+
 function turnMatchesSearch(turn: unknown, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return false;
-  return turnParts(turn).some(part => part.text.toLowerCase().includes(needle));
+  return turnSearchText(turn).includes(needle);
+}
+
+/** The query the matches are computed for: typing settles first, clearing applies at once. */
+const appliedTranscriptSearch = signal("");
+let searchApplyTimer: ReturnType<typeof setTimeout> | null = null;
+const SEARCH_SETTLE_MS = 120;
+
+function setTranscriptSearch(value: string): void {
+  transcriptSearchQuery.set(value);
+  if (searchApplyTimer) clearTimeout(searchApplyTimer);
+  searchApplyTimer = null;
+  if (!value.trim()) {
+    appliedTranscriptSearch.set("");
+    return;
+  }
+  searchApplyTimer = setTimeout(() => {
+    searchApplyTimer = null;
+    appliedTranscriptSearch.set(transcriptSearchQuery());
+  }, SEARCH_SETTLE_MS);
 }
 
 const transcriptMatchKeys = computed(() => {
-  const query = transcriptSearchQuery().trim();
+  const query = appliedTranscriptSearch().trim();
   if (!query) return [] as string[];
   return sessionTurns()
     .filter(turn => turnMatchesSearch(turn, query))
@@ -1783,7 +1818,7 @@ function ConversationHeader() {
               accessibilityLabel="transcript-search-input"
               style={{ flex: 1, minWidth: 0 }}
               onChange={value => {
-                transcriptSearchQuery.set(value);
+                setTranscriptSearch(value);
                 searchMatchIndex.set(0);
                 if (searchRevealTimer) clearTimeout(searchRevealTimer);
                 searchRevealTimer = setTimeout(() => {
@@ -1793,7 +1828,7 @@ function ConversationHeader() {
               }}
               onSubmit={() => stepSearchMatch(1)}
               trailing={
-                transcriptSearchQuery().trim().length > 0 ? (
+                appliedTranscriptSearch().trim().length > 0 ? (
                   <Text
                     style={{
                       flexShrink: 0,
@@ -1848,7 +1883,7 @@ function ConversationHeader() {
               style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => {
                 transcriptSearchOpen.set(false);
-                transcriptSearchQuery.set("");
+                setTranscriptSearch("");
               }}
             />
           </View>
@@ -1938,7 +1973,7 @@ function ThreadActionsSurface(props: {
                   closeThreadMenu();
                   const next = !transcriptSearchOpen();
                   transcriptSearchOpen.set(next);
-                  if (!next) transcriptSearchQuery.set("");
+                  if (!next) setTranscriptSearch("");
                 }}
               />
             </If>
@@ -2786,7 +2821,7 @@ function handleMarkdownImagePress(event: { image: { src: string; alt?: string; t
   const resolved = resolveWorkspaceMarkdownLink(raw, activeWorkspaceRoot(), isRemoteActiveWorkspace());
   if (resolved.kind === "workspace") {
     if (isLocalAttachmentPathAllowed()) {
-      openImageLightbox({ src: `file://${resolved.path}`, title: title || resolved.path.split("/").pop() });
+      openImageLightbox({ src: fileUrlOfPath(resolved.path), title: title || basename(resolved.path) });
     } else {
       openInAuxPane("files", resolved.path);
     }
@@ -3211,7 +3246,7 @@ function LiveTextSegment(props: { roundId: string; start: number; end?: number; 
     return full.slice(start, end);
   });
   return (
-    <If when={slice().trim()}>
+    <If when={hasVisibleTextFrom(slice())}>
       <AnswerMarkdown text={slice()} live={true} itemKey={props.itemKey} />
     </If>
   );
@@ -3890,11 +3925,14 @@ const stableTurnRows = computed<TurnRow[]>(() => {
  * while it runs would otherwise draw it twice (its partial record and the live
  * stream) until it settles.
  */
+/** Only which turn is live matters to the persisted rows, not each event it receives. */
+const liveTurnId = computed<string | null>(() => liveTurn()?.turnId ?? null);
+
 const visibleTurnRows = computed<TurnRow[]>(() => {
   const rows = stableTurnRows();
-  const live = liveTurn();
-  if (!live?.turnId) return rows;
-  return rows.filter(row => turnKeyOf(row.turn) !== live.turnId);
+  const liveId = liveTurnId();
+  if (!liveId) return rows;
+  return rows.filter(row => turnKeyOf(row.turn) !== liveId);
 });
 
 /** The persisted turns the transcript draws, in order. */
@@ -4181,6 +4219,21 @@ function blocksForSingleTurn(turnRow: TurnRow, isSecondary: boolean): Transcript
   return blocks;
 }
 
+/**
+ * A turn's first row with the space between turns. Kept per block, so every
+ * projection hands the list the same object and the list does not take an
+ * unchanged turn for a changed one.
+ */
+const turnOpeningRows = new WeakMap<TranscriptBlockRow, TranscriptBlockRow>();
+
+function turnOpeningRow(block: TranscriptBlockRow, topGap: number): TranscriptBlockRow {
+  const held = turnOpeningRows.get(block);
+  if (held && held.topGap === topGap) return held;
+  const row = { ...block, topGap };
+  turnOpeningRows.set(block, row);
+  return row;
+}
+
 function buildTranscriptBlockProjection(
   turnRows: ReadonlyArray<TurnRow>,
   isSecondary: boolean,
@@ -4203,7 +4256,7 @@ function buildTranscriptBlockProjection(
     const turnGap = rows.length > 0 ? TRANSCRIPT_ROW_GAP + space.sm : 0;
     for (let i = 0; i < turnBlocks.length; i += 1) {
       const block = turnBlocks[i]!;
-      const row = i === 0 && turnGap !== block.topGap ? { ...block, topGap: turnGap } : block;
+      const row = i === 0 && turnGap !== block.topGap ? turnOpeningRow(block, turnGap) : block;
       rows.push(row);
       estimatedTotal += estimatedRowHeightOf(row) + row.topGap;
     }
@@ -5867,20 +5920,6 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
   return items;
 }
 
-/** Where dictated text goes: appended to the draft, or appended and sent. */
-const composerVoiceActions: VoiceComposerActions = {
-  insert(text) {
-    const current = composerText();
-    const separator = current && !/\s$/.test(current) ? " " : "";
-    composerText.set(`${current}${separator}${text}`);
-  },
-  send(text) {
-    composerVoiceActions.insert(text);
-    void submitComposer();
-  },
-  disabled: () => composerDisabled(),
-};
-
 const DOC_FILE_EXTENSIONS = new Set(["MD", "DOC", "DOCX", "PDF", "RTF", "RST"]);
 const CODE_FILE_EXTENSIONS = new Set([
   "TS",
@@ -6579,7 +6618,6 @@ interface SessionComposerProps {
   showPermissionShield?: boolean;
   onOpenPermissionPicker?: (anchor: ViewRef | null) => void;
   showContextRing?: boolean;
-  voiceActions?: VoiceComposerActions;
   promptSuggestion?: () => string;
   onAcceptPromptSuggestion?: () => void;
   onInputChange?: (value: string, caret: number) => void;
@@ -6593,8 +6631,8 @@ interface SessionComposerProps {
 
 /**
  * Single unified composer component shared by Primary, Secondary Split, and BTW panes.
- * Every pane renders the exact same card shell, attachment strip, dictation bar,
- * multiline input geometry, toolbar rhythm, model capsule, voice controls, and send/stop button.
+ * Every pane renders the exact same card shell, attachment strip,
+ * multiline input geometry, toolbar rhythm, model capsule, and send/stop button.
  */
 function SessionComposer(props: SessionComposerProps) {
   const paneWidth = signal(0);
@@ -6638,20 +6676,6 @@ function SessionComposer(props: SessionComposerProps) {
     });
   };
 
-  const voiceActions: VoiceComposerActions = props.voiceActions ?? {
-    insert(text) {
-      props.onFocusPane?.();
-      const current = props.draft();
-      const separator = current && !/\s$/.test(current) ? " " : "";
-      props.draft.set(`${current}${separator}${text}`);
-    },
-    send(text) {
-      voiceActions.insert(text);
-      props.onSubmit();
-    },
-    disabled: isDisabled,
-  };
-
   const closePlus = () => localPlusOpen.set(false);
   const togglePlus = () => {
     props.onFocusPane?.();
@@ -6692,8 +6716,6 @@ function SessionComposer(props: SessionComposerProps) {
           onRemoveImage={props.onRemoveImage}
           onRemoveFile={props.onRemoveFile}
         />
-
-        <VoiceDictationBar actions={voiceActions} />
 
         {/* Multiline Editor — identical geometry across Primary, Split, and BTW */}
         <View
@@ -6906,7 +6928,6 @@ function SessionComposer(props: SessionComposerProps) {
                 onPress={anchor => props.onOpenPermissionPicker?.(anchor)}
               />
             </If>
-            <VoiceInputButtons actions={voiceActions} />
             <If when={Boolean(props.showContextRing) && !isCompact()}>
               <ContextUsageRing
                 sessionId={props.sessionId}
@@ -7160,7 +7181,6 @@ function ComposerDock() {
   ensureModelsLoaded();
   ensureQuickActions();
   ensurePromptSuggestionSettingLoaded();
-  void ensureVoiceSettings();
   subscribeContextUsage();
   effect(() => {
     const id = activeSessionId();
@@ -7269,7 +7289,6 @@ function ComposerDock() {
         permissionModePickerOpen.set(next);
       }}
       showContextRing={true}
-      voiceActions={composerVoiceActions}
       promptSuggestion={activePromptSuggestion}
       onAcceptPromptSuggestion={acceptActivePromptSuggestion}
       onInputChange={(next, caret) => {
@@ -9889,7 +9908,6 @@ function SecondaryTranscript() {
 function SecondaryComposerDock() {
   let inputRef: InputRef | undefined;
   ensureModelsLoaded();
-  void ensureVoiceSettings();
   subscribeContextUsage();
 
   const secondaryModelTarget = (): SessionModelTarget => ({
@@ -10151,7 +10169,6 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   const btwTurnOffsets = new Map<string, number>();
 
   ensureModelsLoaded();
-  void ensureVoiceSettings();
 
   const current = () => sideQuestion();
   const history = () => sideQuestionHistory();

@@ -888,7 +888,7 @@ export const APPEARANCE_ID_STORAGE_KEY = "openbitfun.nsh.appearance-id.v1";
 
 /** Native-first sans-serif stack matching the OS UI font across macOS, Windows, and Linux. */
 export const fontSans =
-  'system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif';
+  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif';
 
 /** Code / monospace font stack aligned with `src/web-ui`. */
 export const fontMono =

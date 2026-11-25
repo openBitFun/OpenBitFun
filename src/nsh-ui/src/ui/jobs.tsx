@@ -48,7 +48,6 @@ import {
   textStyle,
   touchSlop,
 } from "../theme";
-import { startVoiceInput, finishVoiceInput, voiceInputEnabled, voicePhase, voiceRecognizerAvailable } from "../voiceInputStore";
 import { answerPrompt } from "../attentionStore";
 import { ATTENTION_INDENT, PromptAttention, formatAge } from "./attention";
 import { DeviceBadge, MatrixMark, StateLabel, StateMark, deviceException as fleetDeviceException, markState, type DeviceException, type MarkState } from "./fleet";
@@ -1018,7 +1017,6 @@ export function SuperComposer(props: SuperComposerProps) {
   const focused = signal(false);
   const empty = () => props.value.trim().length === 0;
   const blocked = () => props.blocked ?? null;
-  const dictating = () => voicePhase() !== "idle";
   return (
     <View
       testID={props.testID ?? "super-composer"}
@@ -1128,22 +1126,6 @@ export function SuperComposer(props: SuperComposerProps) {
               style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => undefined}
             />
-            <If when={voiceInputEnabled()}>
-              <IconButton
-                icon="mic"
-                size="sm"
-                iconSize={16}
-                active={dictating()}
-                accessibilityLabel="super-composer-mic"
-                tooltip={voiceRecognizerAvailable() === false ? tr("voice.unavailable") : tr("voice.dictate")}
-                style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
-                onPress={() => {
-                  const insert = (text: string) => props.onChange(props.value ? `${props.value} ${text}` : text);
-                  if (voicePhase() === "idle") startVoiceInput(insert);
-                  else finishVoiceInput(insert);
-                }}
-              />
-            </If>
             <View style={{ flex: 1 }} />
             {props.accessory}
             <SendCircle

@@ -16,7 +16,7 @@ import { tr } from "./i18n";
 import { Storage, computed, signal } from "nsh";
 import { markSessionSeenOnHost, type SessionSummary } from "./api";
 import { fleetActive } from "./bridge";
-import { fleetDevices } from "./fleetStore";
+import { fleetSessionOwners } from "./fleetStore";
 import { pendingPermissions } from "./permissionStore";
 import { activeSessionDevice, activeSessionId, deviceContext, runningTurns, sessionKey, sessions } from "./state";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
@@ -54,19 +54,8 @@ function markSeenUnsupported(deviceId: string = deviceContext()): void {
   if (key === (fleetActive() ? deviceContext() : "")) seenUnsupported.set(true);
 }
 
-/** O(1) index of fleet session id → owning device id (rebuilt only when `fleetDevices()` changes). */
-const fleetOwnerBySession = computed<Map<string, string>>(() => {
-  const index = new Map<string, string>();
-  if (!fleetActive()) return index;
-  for (const device of fleetDevices()) {
-    for (const workspace of device.workspaces) {
-      for (const session of workspace.sessions) {
-        index.set(session.sessionId, device.deviceId);
-      }
-    }
-  }
-  return index;
-});
+/** O(1) index of fleet session id → owning device id (the fleet store's, rebuilt only when `fleetDevices()` changes). */
+const fleetOwnerBySession = fleetSessionOwners;
 
 function resolveDeviceOf(sessionId: string, deviceId?: string): string {
   if (!fleetActive()) return "";

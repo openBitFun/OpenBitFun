@@ -125,7 +125,6 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key><string>${xml(appName)} uses the microphone for voice input and local speech transcription.</string>
-	<key>NSSpeechRecognitionUsageDescription</key><string>${xml(appName)} turns what you dictate into text in the composer.</string>
 </dict>
 </plist>
 `;

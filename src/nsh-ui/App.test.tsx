@@ -2796,19 +2796,10 @@ test("settings carries the input and workspace groups as leaf writes", async () 
     value: false,
   });
 
-  await app.press("voice-input");
-  expect(backend.settingsWrites).toContainEqual({
-    path: "app.ai_experience.voice_input.enabled",
-    value: false,
-  });
-
-  await app.clear("voice-max-seconds");
-  await app.type("voice-max-seconds", "120");
-  await app.press("Save Longest recording (s) >> nth=0");
-  expect(backend.settingsWrites).toContainEqual({
-    path: "app.ai_experience.voice_input.max_recording_seconds",
-    value: 120,
-  });
+  // Voice input needs microphone capture, which this UI does not offer: no
+  // voice settings are drawn (the host keeps whatever it stores).
+  expect(app.shows("voice-input")).toBe(false);
+  expect(app.shows("voice-max-seconds")).toBe(false);
 
   await app.press("nav-settings-page-workspace");
   await app.waitFor("Worktree folder");
@@ -3614,52 +3605,6 @@ test("memory folder opens on the host and clearing memories asks first", async (
   await app.press("memory-reset-confirm");
   await app.waitFor("Cleared the stored memories");
   expect(resets).toBe(1);
-});
-
-test("voice input lists this machine's speech models and downloads one", async () => {
-  const backend = createBackend();
-  const invoke = backend.handlers["openbitfun.invoke"];
-  const downloads: unknown[] = [];
-  const handlers = {
-    ...backend.handlers,
-    "openbitfun.invoke": (data: unknown) => {
-      const args = (data ?? {}) as { action?: string; request?: Record<string, unknown>; raw?: unknown };
-      if (args.action === "speech_list_models") {
-        if (!("raw" in args)) throw new Error("speech_list_models takes no request");
-        return {
-          ok: true,
-          value: {
-            models: [
-              {
-                modelId: "sensevoice-small-int8",
-                displayName: "SenseVoice Small",
-                state: "not_installed",
-                expectedBytes: 240 * 1024 * 1024,
-              },
-            ],
-          },
-          transport: "dev",
-        };
-      }
-      if (args.action === "speech_download_model") {
-        downloads.push(args.request);
-        return {
-          ok: true,
-          value: { modelId: "sensevoice-small-int8", displayName: "SenseVoice Small", state: "installed", installedBytes: 240 * 1024 * 1024 },
-          transport: "dev",
-        };
-      }
-      return invoke(data);
-    },
-  };
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers } });
-
-  await app.press("Settings");
-  await app.press("nav-settings-page-input");
-  await app.waitFor("SenseVoice Small");
-  await app.press("speech-download-sensevoice-small-int8");
-  expect(downloads).toEqual([{ modelId: "sensevoice-small-int8" }]);
-  await app.waitFor("Ready");
 });
 
 test("the permission page is one host read: policy, approval models and the composer switch", async () => {

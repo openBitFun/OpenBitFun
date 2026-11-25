@@ -72,24 +72,40 @@ export function fleetWorkspaceByKey(key: WorkspaceKey | null | undefined): Fleet
   return fleetDeviceById(key.deviceId)?.workspaces.find(item => item.workspaceId === key.workspaceId) ?? null;
 }
 
+/**
+ * O(1) lookups over the navigator's session rows, rebuilt only when `fleetDevices()`
+ * changes: the first device that lists a session id owns it (the backend's device
+ * order), and every row is reachable by `"<deviceId>/<sessionId>"`.
+ */
+const fleetSessionIndex = computed<{ owners: Map<string, string>; rows: Map<string, FleetSession> }>(() => {
+  const owners = new Map<string, string>();
+  const rows = new Map<string, FleetSession>();
+  for (const device of fleetDevices()) {
+    for (const workspace of device.workspaces) {
+      for (const session of workspace.sessions) {
+        if (!owners.has(session.sessionId)) owners.set(session.sessionId, device.deviceId);
+        const key = `${device.deviceId}/${session.sessionId}`;
+        if (!rows.has(key)) rows.set(key, session);
+      }
+    }
+  }
+  return { owners, rows };
+});
+
+/** Session id → the first indexed device that lists it (the index behind `fleetSessionOwner`). */
+export function fleetSessionOwners(): ReadonlyMap<string, string> {
+  return fleetSessionIndex().owners;
+}
+
 /** The device whose index row holds `sessionId`, or `null` when no indexed device lists it. */
 export function fleetSessionOwner(sessionId: string | null | undefined): string | null {
   if (!sessionId) return null;
-  for (const device of fleetDevices()) {
-    for (const workspace of device.workspaces) {
-      if (workspace.sessions.some(session => session.sessionId === sessionId)) return device.deviceId;
-    }
-  }
-  return null;
+  return fleetSessionIndex().owners.get(sessionId) ?? null;
 }
 
 /** The index row of one session on one device. */
 export function fleetSessionRow(deviceId: string, sessionId: string): FleetSession | null {
-  for (const workspace of fleetDeviceById(deviceId)?.workspaces ?? []) {
-    const row = workspace.sessions.find(session => session.sessionId === sessionId);
-    if (row) return row;
-  }
-  return null;
+  return fleetSessionIndex().rows.get(`${deviceId}/${sessionId}`) ?? null;
 }
 
 /**

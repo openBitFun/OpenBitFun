@@ -119,13 +119,14 @@ function nextRowId(): string {
 }
 
 /** Appends text to the tail row when it is the same kind, so chunks stream in place. */
-function appendText(rows: DispatchRow[], kind: DispatchRow["kind"], text: string): DispatchRow[] {
+/** Appends to `rows` in place (the page's own copy): a chunk of the same kind joins the last row. */
+function appendText(rows: DispatchRow[], kind: DispatchRow["kind"], text: string): void {
   const tail = rows[rows.length - 1];
   if (tail && tail.kind === kind) {
-    const merged: DispatchRow = { ...tail, text: tail.text + text };
-    return [...rows.slice(0, -1), merged];
+    rows[rows.length - 1] = { ...tail, text: tail.text + text };
+    return;
   }
-  return [...rows, { id: nextRowId(), kind, text }];
+  rows.push({ id: nextRowId(), kind, text });
 }
 
 /**
@@ -188,23 +189,21 @@ function toolRow(payload: Record<string, unknown>): DispatchRow | null {
 
 /** Folds one page of target events into the transcript. */
 function applyEvents(rows: DispatchRow[], events: DispatchEventRecord[]): DispatchRow[] {
-  let next = rows;
+  // One copy per page: rows already shown keep their objects, new ones are pushed.
+  const next = rows.slice();
   for (const event of events) {
     if (event.type === "jobState") {
       const state = event.state ?? "";
       const message = event.message ? ` · ${clipped(event.message, 200)}` : "";
-      next = [...next, { id: nextRowId(), kind: "state", text: `${state}${message}` }];
+      next.push({ id: nextRowId(), kind: "state", text: `${state}${message}` });
       continue;
     }
     if (event.type === "permissionRejected") {
-      next = [
-        ...next,
-        {
-          id: nextRowId(),
-          kind: "error",
-          text: `Permission rejected${event.reason ? ` · ${clipped(event.reason, 180)}` : ""}`,
-        },
-      ];
+      next.push({
+        id: nextRowId(),
+        kind: "error",
+        text: `Permission rejected${event.reason ? ` · ${clipped(event.reason, 180)}` : ""}`,
+      });
       continue;
     }
     if (event.type !== "agentEvent") continue;
@@ -215,23 +214,23 @@ function applyEvents(rows: DispatchRow[], events: DispatchEventRecord[]): Dispat
       const text = typeof payload.text === "string" ? payload.text : "";
       if (!text) continue;
       // Thinking chunks carry `contentType: "thinking"` from the desktop mapping.
-      next = appendText(next, payload.contentType === "thinking" ? "thinking" : "assistant", text);
+      appendText(next, payload.contentType === "thinking" ? "thinking" : "assistant", text);
       continue;
     }
     if (name === "agentic://tool-event") {
       const row = toolRow(payload);
-      if (row) next = [...next, row];
+      if (row) next.push(row);
       continue;
     }
     if (name === "agentic://dialog-turn-failed") {
       const error = typeof payload.error === "string" ? clipped(payload.error, 200) : "";
-      next = [...next, { id: nextRowId(), kind: "error", text: `Turn failed${error ? ` · ${error}` : ""}` }];
+      next.push({ id: nextRowId(), kind: "error", text: `Turn failed${error ? ` · ${error}` : ""}` });
       continue;
     }
     // `dialog-turn-started` and `dialog-turn-completed` only bound a turn; the
     // text chunks inside it already read as one block.
   }
-  return next;
+  return next.length === rows.length && next.every((row, index) => row === rows[index]) ? rows : next;
 }
 
 function readPermissions(list: Array<Record<string, unknown>> | undefined): ObservedPermission[] {

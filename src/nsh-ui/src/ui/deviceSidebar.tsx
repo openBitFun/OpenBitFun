@@ -9,7 +9,7 @@
 // (shared with All sessions › By device), or the host's own catalogue without
 // the fleet layer. The only local state is which rows are folded.
 
-import { effect, signal, Text, untracked, View, type JSX, type ViewRef } from "nsh";
+import { effect, platform, signal, Text, untracked, View, type JSX, type ViewRef } from "nsh";
 import { fleetActive } from "../bridge";
 import { tr } from "../i18n";
 import {
@@ -64,6 +64,12 @@ const deviceFold = signal<Record<string, boolean>>({});
 const workspaceVisibleCount = signal<Record<string, number>>({});
 /** Workspaces whose own catalogue was read once (without the fleet layer). */
 const localCatalogueRead = new Set<string>();
+
+/**
+ * A tablet has no hover: the row actions a pointer reveals on hover stay shown
+ * there (phones use All sessions instead of this sidebar).
+ */
+const touchFirst = platform.os === "ios" || platform.os === "android";
 
 function workspaceKey(deviceId: string, workspaceId: string): string {
   return `${deviceId}/${workspaceId}`;
@@ -366,7 +372,7 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
           </If>
         }
         trailing={
-          <HoverActions visible={hovered() || menuOpen()}>
+          <HoverActions visible={hovered() || menuOpen() || touchFirst}>
             <IconButton
               icon="plus"
               size="xs"
@@ -534,10 +540,10 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
         }
         trailing={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-            <If when={!(hovered() || menuOpen())}>
+            <If when={!(hovered() || menuOpen() || touchFirst)}>
               <DeviceState node={props.node} />
             </If>
-            <If when={hovered() || menuOpen()}>
+            <If when={hovered() || menuOpen() || touchFirst}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
                 <If when={canCreate()}>
                   <IconButton
@@ -657,7 +663,7 @@ function SectionHeader(props: { label: string; action?: JSX.Element }) {
  * device is a foldable header that carries its own new-workspace action.
  */
 export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Element {
-  const nodes = () => deviceTree();
+  const nodes = deviceTree;
   const single = () => nodes().length <= 1;
   return (
     <View accessibilityLabel="sidebar-device-tree" style={{ gap: space.hair }}>

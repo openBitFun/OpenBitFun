@@ -249,6 +249,11 @@ test("conversation sub-header search, copy transcript, thread actions overlay, f
   await app.press("transcript-search-toggle");
   await app.type("transcript-search-input", "fork");
   await app.waitFor("1 match");
+  // Typing more narrows it once the input settles; an emptied box drops the count at once.
+  await app.type("transcript-search-input", "zzz-no-such-text");
+  await app.waitFor("0 matches");
+  await app.clear("transcript-search-input");
+  await app.waitUntil(() => !app.shows("0 matches") && !app.shows("1 match"));
   await app.press("close-transcript-search");
 
   // Copy transcript writes full user + assistant dialogue.

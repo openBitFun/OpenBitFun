@@ -212,6 +212,8 @@ export interface TranscriptToolView {
   resultForAssistant?: string;
   /** A summary read shortened this result; `toolDetailStore` reads it whole when the card opens. */
   detailOmitted?: boolean;
+  /** Lines an edit or write changes, counted by the host when `input` is a preview. */
+  diffStats?: { added: number; removed: number };
   durationMs?: number;
   startMs?: number;
   plan?: { filePath: string; name: string; overview?: string };
@@ -428,6 +430,24 @@ export interface GitStatus {
   current_branch: string;
   ahead: number;
   behind: number;
+  /**
+   * The backend's stable hash of the whole status (hex string). Older hosts
+   * do not send it; compare through `sameGitStatus`.
+   */
+  fingerprint?: string;
+}
+
+/**
+ * Whether two status reads describe the same repository state: by fingerprint
+ * when both carry one, by content otherwise (a host that predates fingerprints).
+ */
+export function sameGitStatus(a: GitStatus | null | undefined, b: GitStatus | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (typeof a.fingerprint === "string" && typeof b.fingerprint === "string") {
+    return a.fingerprint === b.fingerprint;
+  }
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** The repository state under the workspace root; a plain directory answers `null`. */

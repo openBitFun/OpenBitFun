@@ -8,7 +8,7 @@
 // the entry serves it), the host's own catalogue otherwise. Nothing here sorts
 // rows; the only local state is which rows are folded and the search text.
 
-import { batch, effect, Scroll, Text, View, signal, type JSX, type ViewRef } from "nsh";
+import { batch, computed, effect, Scroll, Text, View, signal, type JSX, type ViewRef } from "nsh";
 import { listSessions, type SessionSummary } from "../api";
 import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
 import { fleetDevices, fleetNavigator } from "../fleetStore";
@@ -74,9 +74,10 @@ import { sessionMenuItems, type SessionActionTarget } from "../ui/sessionActions
 import { workspaceMenuItems, type WorkspaceActionTarget } from "../ui/workspaceActions";
 import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
 import { superAgentUi } from "../productGates"; // wave23-E
+import { reuseRows, sameRecord } from "../rowReuse";
 
 /** One Recent row, whatever source it came from. */
-interface RecentRow {
+export interface RecentRow {
   key: string;
   deviceId: string;
   deviceName: string;
@@ -250,7 +251,7 @@ function fleetRecentRow(device: FleetDevice | undefined, workspace: FleetWorkspa
 }
 
 /** Recent rows in the backend's order: the entry's list, else the navigator as it lists them. */
-function recentRows(): RecentRow[] {
+function buildRecentRows(): RecentRow[] {
   if (fleetActive()) {
     const devices = fleetDevices();
     const byDevice = new Map(devices.map(device => [device.deviceId, device]));
@@ -267,20 +268,49 @@ function recentRows(): RecentRow[] {
   }
   const workspace = workspaces().find(item => item.id === activeWorkspaceId());
   const status = statusOfSession();
+  const untitled = tr("allSessions.untitled");
+  const deviceName = tr("device.thisDevice");
+  const workspaceName = workspace ? workspaceLabel(workspace) : "";
   return sessions()
     .filter(row => !isSessionArchived(row))
     .map(row => ({
       key: `/${row.sessionId}`,
       deviceId: "",
-      deviceName: tr("device.thisDevice"),
+      deviceName,
       deviceKind: "laptop",
       workspaceId: row.workspaceId ?? workspace?.id ?? "",
-      workspaceName: workspace ? workspaceLabel(workspace) : "",
+      workspaceName,
       sessionId: row.sessionId,
-      title: row.sessionName || tr("allSessions.untitled"),
+      title: row.sessionName || untitled,
       mark: localSessionMarkState(status(row.sessionId)?.kind),
       ageMs: sessionLastActivityMs(row),
     }));
+}
+
+/**
+ * The Recent rows, built once per change of what they read and shared by every
+ * reader: a row whose fields did not change stays the same object, so the keyed
+ * list redraws only the rows that changed.
+ */
+export const recentRows = computed<RecentRow[]>(previous => reuseRows(previous, buildRecentRows(), row => row.key));
+
+/** The lower-cased text the search box matches, made once per row object. */
+const recentSearchKeys = new WeakMap<RecentRow, string>();
+
+function recentSearchText(row: RecentRow): string {
+  let text = recentSearchKeys.get(row);
+  if (text === undefined) {
+    text = `${row.title} ${row.deviceName} ${row.workspaceName}`.toLowerCase();
+    recentSearchKeys.set(row, text);
+  }
+  return text;
+}
+
+/** The Recent rows the search text matches (all of them for an empty search). */
+export function filterRecentRows(rows: readonly RecentRow[], search: string): RecentRow[] {
+  const query = search.trim().toLowerCase();
+  if (!query) return rows as RecentRow[];
+  return rows.filter(row => recentSearchText(row).includes(query));
 }
 
 export async function loadLocalWorkspace(workspaceId: string): Promise<void> {
@@ -518,7 +548,7 @@ function titleLineHeight(): number {
 }
 
 function RecentList() {
-  const rows = () => recentRows().filter(row => matches(`${row.title} ${row.deviceName} ${row.workspaceName}`, searchText()));
+  const rows = computed(() => filterRecentRows(recentRows(), searchText()));
   return (
     <View style={{ gap: space.md }}>
       <If when={recentError()}>
@@ -578,6 +608,27 @@ function RecentList() {
 
 // ── By device ────────────────────────────────────────────────────────────────
 
+/** A session row of the device tree. */
+export interface DeviceTreeSession {
+  sessionId: string;
+  title: string;
+  mark: MarkState;
+  ageMs?: number;
+}
+
+/** A workspace of the device tree, with the sessions it previews. */
+export interface DeviceTreeWorkspace {
+  workspaceId: string;
+  name: string;
+  rootPath: string;
+  kind?: string;
+  sshHost?: string;
+  connectionId?: string;
+  connectionName?: string;
+  sessions: DeviceTreeSession[];
+  total: number;
+}
+
 export interface DeviceTreeNode {
   deviceId: string;
   name: string;
@@ -587,17 +638,7 @@ export interface DeviceTreeNode {
   asOfMs?: number;
   rollup: MarkState | null;
   expandedHint: boolean;
-  workspaces: Array<{
-    workspaceId: string;
-    name: string;
-    rootPath: string;
-    kind?: string;
-    sshHost?: string;
-    connectionId?: string;
-    connectionName?: string;
-    sessions: Array<{ sessionId: string; title: string; mark: MarkState; ageMs?: number }>;
-    total: number;
-  }>;
+  workspaces: DeviceTreeWorkspace[];
 }
 
 function deviceUiHint(device: FleetDevice): { expanded?: boolean; rollup?: string } {
@@ -605,7 +646,8 @@ function deviceUiHint(device: FleetDevice): { expanded?: boolean; rollup?: strin
   return ui ?? {};
 }
 
-export function deviceTree(): DeviceTreeNode[] {
+function buildDeviceTree(): DeviceTreeNode[] {
+  const untitled = tr("allSessions.untitled");
   if (fleetActive()) {
     return fleetDevices()
       // Runtime devices only: keeps this local desktop (`isClientDevice: true`) even with 0 workspaces,
@@ -634,7 +676,7 @@ export function deviceTree(): DeviceTreeNode[] {
             total: workspace.sessionTotal,
             sessions: workspace.sessions.map(row => ({
               sessionId: row.sessionId,
-              title: row.title || tr("allSessions.untitled"),
+              title: row.title || untitled,
               mark: sessionMarkState(row),
               ageMs: row.lastActivityMs,
             })),
@@ -669,7 +711,7 @@ export function deviceTree(): DeviceTreeNode[] {
           total: rows.length,
           sessions: rows.map(row => ({
             sessionId: row.sessionId,
-            title: row.sessionName || tr("allSessions.untitled"),
+            title: row.sessionName || untitled,
             mark: localSessionMarkState(status(row.sessionId)?.kind),
             ageMs: sessionLastActivityMs(row),
           })),
@@ -678,6 +720,29 @@ export function deviceTree(): DeviceTreeNode[] {
     },
   ];
 }
+
+function reuseTreeWorkspace(held: DeviceTreeWorkspace, fresh: DeviceTreeWorkspace): DeviceTreeWorkspace {
+  const sessions = reuseRows(held.sessions, fresh.sessions, row => row.sessionId);
+  const next = sessions === fresh.sessions ? fresh : { ...fresh, sessions };
+  return sameRecord(held, next) ? held : next;
+}
+
+function reuseTreeNode(held: DeviceTreeNode, fresh: DeviceTreeNode): DeviceTreeNode {
+  const workspaces = reuseRows(held.workspaces, fresh.workspaces, workspace => workspace.workspaceId, reuseTreeWorkspace);
+  const next = workspaces === fresh.workspaces ? fresh : { ...fresh, workspaces };
+  return sameRecord(held, next) ? held : next;
+}
+
+/**
+ * The account's runtime devices → workspaces → sessions, as the sidebar and
+ * All sessions › By device draw it. Built once per change of what it reads and
+ * shared by both; every device, workspace and session row whose fields did not
+ * change stays the same object (and so does the list), so a status change on one
+ * session rebuilds that row and its parents only.
+ */
+export const deviceTree = computed<DeviceTreeNode[]>(previous =>
+  reuseRows(previous, buildDeviceTree(), node => node.deviceId, reuseTreeNode),
+);
 
 function deviceExpanded(node: DeviceTreeNode): boolean {
   return deviceFold()[node.deviceId] ?? node.expandedHint;
@@ -1205,19 +1270,22 @@ function DeviceSection(props: { node: DeviceTreeNode }) {
 }
 
 function ByDeviceList() {
-  const all = () => deviceTree();
-  const visible = () => all().filter(node => matches(node.name, deviceFilter()));
+  const all = deviceTree;
+  const visible = computed(() => {
+    const nodes = all();
+    return deviceFilter().trim() ? nodes.filter(node => matches(node.name, deviceFilter())) : nodes;
+  });
   /**
    * Offline devices the backend lists last fold into one group. The order is
    * the backend's: only a trailing run of offline devices is grouped.
    */
-  const split = () => {
+  const split = computed<{ head: DeviceTreeNode[]; offline: DeviceTreeNode[] }>(() => {
     const nodes = visible();
     let cut = nodes.length;
     while (cut > 0 && nodes[cut - 1]!.state === "offline") cut -= 1;
     const tail = nodes.slice(cut);
     return tail.length >= 2 ? { head: nodes.slice(0, cut), offline: tail } : { head: nodes, offline: [] };
-  };
+  });
   const phone = () => compactLayout();
   const hasNotIndexed = () => fleetActive() && fleetDevices().some(device => device.state === "not_indexed");
   const hasPerDeviceTruncation = () => fleetActive() && fleetDevices().some(device => device.sessionsTruncated);

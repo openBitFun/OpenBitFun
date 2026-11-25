@@ -4,6 +4,7 @@ import { expect, open, test } from "nsh/test";
 import { createBackend, openSession } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
+const EDIT_NEW = Array.from({ length: 41 }, (_, i) => `line ${i}`).join("\n");
 const FULL = `FULL-OUTPUT ${"line of output ".repeat(40)}END-OF-OUTPUT`;
 
 function turn(output: string, omitted: boolean) {
@@ -27,6 +28,20 @@ function turn(output: string, omitted: boolean) {
           result: { output },
           startMs: 1,
           ...(omitted ? { detailOmitted: true } : {}),
+        },
+      },
+      {
+        kind: "tool",
+        roundIndex: 0,
+        tool: {
+          id: "call-2",
+          name: "Edit",
+          // A summary read sends a preview of the edit and the host's line counts.
+          input: { file_path: "/repo/src/main.rs", old_string: "a", new_string: omitted ? "b\nc\n…" : EDIT_NEW },
+          status: "completed",
+          success: true,
+          startMs: 2,
+          ...(omitted ? { detailOmitted: true, diffStats: { added: 41, removed: 1 } } : {}),
         },
       },
       { kind: "text", id: "t-1", roundIndex: 0, text: "Build finished" },
@@ -71,6 +86,8 @@ test("an opened card reads its turn whole once, and a failed read is said and re
   await app.waitFor("Build finished", { timeout: 20_000 });
   expect(reads.length).toBeGreaterThan(0);
   expect(reads.every(read => read.tool_detail === "summary")).toBe(true);
+  // The collapsed edit shows the host's counts, not ones taken from its preview.
+  expect(app.texts()).toContain("+41 −1");
 
   await app.press("label:tool-card-GetThings");
   await app.waitFor("Only a preview is available; the full result could not be read.");

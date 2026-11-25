@@ -324,6 +324,8 @@ function countLinesFast(text: string): number {
 const MAX_EXACT_DIFF_STATS_CHARS = 100_000;
 
 function diffStatsOf(call: ToolCallView): { added: number; removed: number } | null {
+  // The host counted from the whole input; this call's input may be a preview.
+  if (call.diffStats) return call.diffStats;
   const diff = diffOf(call.input);
   if (diff) {
     if ("patch" in diff) {

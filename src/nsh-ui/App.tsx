@@ -5,6 +5,7 @@ import {
   effect,
   ErrorBoundary,
   keymap,
+  lifecycle,
   mount,
   Overlay,
   PanResponder,
@@ -55,6 +56,7 @@ import {
   windowMaximized,
   windowPlatform,
 } from "./src/bridge";
+import { installSystemBack } from "./src/navigationHistory";
 import { subscribeAgentEvents } from "./src/agentEvents";
 import { installBackendResync } from "./src/backendResync";
 import { installControlPresenter } from "./src/controlPresenter";
@@ -65,7 +67,7 @@ import { WorkspaceActionDialogs } from "./src/ui/workspaceActions";
 import { signOutController } from "./src/controller/controllerStore";
 import { ControllerShell } from "./src/controller/ControllerShell";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
-import { formatPlural } from "./src/format";
+import { basename, formatPlural } from "./src/format";
 import {
   SUPPORTED_LOCALES,
   currentLocale,
@@ -111,7 +113,6 @@ import {
   goBackScene,
   goForwardScene,
   initAppLocale,
-  isSessionArchived,
   lastError,
   forgetRecentWorkspace,
   loadMoreSessions,
@@ -125,6 +126,7 @@ import {
   openPathWorkspace,
   openRecentWorkspace,
   openSceneTabs,
+  flushShellLayout,
   persistShellLayout,
   recentWorkspaces,
   renameSession,
@@ -132,7 +134,6 @@ import {
   sessionGrouping,
   sessionHasMore,
   sessionTotal,
-  sessions,
   splitPaneOpen,
   setAuxPaneHeight,
   setAuxPaneMaximized,
@@ -186,7 +187,7 @@ import { loadContentWidth, syncContentWidthFromHost } from "./src/contentWidthSt
 import { initAccountSync } from "./src/accountSyncStore";
 // wave24-replica: account records (agents, skills, routines, cards, pets, ...).
 import { initAccountRecords } from "./src/accountRecordsStore";
-import { keybindingOverrides, loadKeybindings } from "./src/shortcutsStore"; // wave22-p5
+import { keybindingOverrides, keystrokeReservedHere, loadKeybindings } from "./src/shortcutsStore"; // wave22-p5
 import { installSpaceAgentSurface } from "./src/spaceViewStore"; // wave22-p4
 import { loadQueue } from "./src/queueStore";
 import { ensureSendPolicy } from "./src/sendPolicyStore";
@@ -310,6 +311,8 @@ subscribeAgentEvents();
 installBackendResync();
 
 function shortcutLabel(chord: string, fallback: string): string {
+  // A key the browser keeps never reaches the page: no hint promises it.
+  if (keystrokeReservedHere(chord)) return "";
   try {
     return keymap.label(chord) || fallback;
   } catch {
@@ -477,8 +480,6 @@ const SEARCH_COMMANDS: ReadonlyArray<SearchCommandDef> = [
 ];
 
 const studioGroupOpen = signal(true);
-const showArchivedSessions = signal(false);
-const archiveFilterOpen = signal(false);
 const languageMenuOpen = signal(false);
 const languageTriggerRef = signal<ViewRef | null>(null);
 const appearanceMenuOpen = signal(false);
@@ -495,18 +496,6 @@ const workspaceContextPoint = signal<Point | null>(null);
 
 const sessionActivityCount = computed(
   () => Object.keys(runningTurns()).length + pendingPermissions().length,
-);
-
-const activeSessionRows = computed(() =>
-  sessions().filter(item => !isSessionArchived(item)),
-);
-
-const archivedSessionRows = computed(() =>
-  sessions().filter(item => isSessionArchived(item)),
-);
-
-const visibleSessionRows = computed(() =>
-  showArchivedSessions() ? archivedSessionRows() : activeSessionRows(),
 );
 
 /**
@@ -578,10 +567,8 @@ function expandWorkspace(workspaceId: string): void {
 
 function basenameLabel(rootPath: string, name?: string): string {
   if (name && name.trim()) return name.trim();
-  const normalized = rootPath.replace(/\/+$/, "");
-  const idx = normalized.lastIndexOf("/");
-  if (idx >= 0 && idx < normalized.length - 1) return normalized.slice(idx + 1);
-  return rootPath || tr("nav.workspaceFallback");
+  // `basename` reads both separators: a Windows workspace is `C:\\work\\app`.
+  return basename(rootPath) || rootPath || tr("nav.workspaceFallback");
 }
 
 function sessionDisplayTitle(session: { sessionId: string; sessionName?: string }): string {
@@ -1493,6 +1480,7 @@ async function minimizeToTray(): Promise<void> {
 }
 
 async function quitApp(): Promise<void> {
+  await flushShellLayout();
   await quitApplication();
 }
 
@@ -2617,6 +2605,7 @@ const SHELL_SHORTCUTS: ReadonlyArray<{ id: string; keystroke: string; run: () =>
 ];
 
 function bindShortcut(keystroke: string, run: () => void): (() => void) | null {
+  if (keystrokeReservedHere(keystroke)) return null;
   try {
     return keymap.bind(keystroke, () => run());
   } catch (error) {
@@ -3318,10 +3307,20 @@ function StudioApp() {
   });
   cleanup(() => unsubAccountAuth());
 
-  // The layout is the user's: written back on every change once the stored one was read.
+  // The layout is the user's: written back once a change (a drag runs one per frame)
+  // holds still, and at once when the app leaves the foreground, the window is asked
+  // to close, or the shell goes away, so the last change is never lost.
   effect(() => persistShellLayout());
+  effect(() => {
+    if (lifecycle() !== "active") untracked(() => void flushShellLayout());
+  });
+  cleanup(() => void flushShellLayout());
+
+  // Android's back button and the browser's back move through scenes.
+  installSystemBack();
 
   const unsubCloseRequest = onMainWindowCloseRequest(() => {
+    void flushShellLayout();
     void handleMainWindowCloseRequest();
   });
   cleanup(() => unsubCloseRequest());

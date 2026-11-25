@@ -15,7 +15,14 @@ pub struct GitRepository {
     pub remotes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The working-tree state of a repository.
+///
+/// Serializes with a derived `fingerprint` field (see [`GitStatus::fingerprint`])
+/// so clients can tell an unchanged status apart without comparing the whole
+/// payload. The field is computed from the content on every write and ignored
+/// on read, so it can never disagree with the status it describes, and payloads
+/// written without it (older hosts) still deserialize.
+#[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GitStatus {
     pub staged: Vec<GitFileStatus>,
@@ -26,6 +33,110 @@ pub struct GitStatus {
     pub current_branch: String,
     pub ahead: i32,
     pub behind: i32,
+}
+
+/// 64-bit FNV-1a over a length-prefixed encoding of every status field.
+///
+/// Stable across processes, platforms and Rust versions (unlike `std`'s
+/// hasher), so a status read on one host and one read on another compare.
+struct StatusHasher(u64);
+
+impl StatusHasher {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn str(&mut self, value: &str) {
+        self.u64(value.len() as u64);
+        self.bytes(value.as_bytes());
+    }
+
+    fn opt_str(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                self.bytes(&[1]);
+                self.str(value);
+            }
+            None => self.bytes(&[0]),
+        }
+    }
+
+    fn files(&mut self, files: &[GitFileStatus]) {
+        self.u64(files.len() as u64);
+        for file in files {
+            self.str(&file.path);
+            self.str(&file.status);
+            self.opt_str(file.index_status.as_deref());
+            self.opt_str(file.workdir_status.as_deref());
+        }
+    }
+
+    fn strings(&mut self, values: &[String]) {
+        self.u64(values.len() as u64);
+        for value in values {
+            self.str(value);
+        }
+    }
+}
+
+impl GitStatus {
+    /// A stable 64-bit hash of the whole status (files, conflicts, branch,
+    /// ahead/behind): equal statuses share it, and any change of a field
+    /// changes it. Order-sensitive, like the lists themselves.
+    pub fn fingerprint_u64(&self) -> u64 {
+        let mut hasher = StatusHasher(StatusHasher::OFFSET);
+        hasher.files(&self.staged);
+        hasher.files(&self.unstaged);
+        hasher.strings(&self.untracked);
+        hasher.strings(&self.conflicts);
+        hasher.str(&self.current_branch);
+        hasher.u64(i64::from(self.ahead) as u64);
+        hasher.u64(i64::from(self.behind) as u64);
+        hasher.0
+    }
+
+    /// [`Self::fingerprint_u64`] as 16 hex digits: a string on the wire, since a
+    /// 64-bit number does not survive a JavaScript `number`.
+    pub fn fingerprint(&self) -> String {
+        format!("{:016x}", self.fingerprint_u64())
+    }
+}
+
+impl Serialize for GitStatus {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            staged: &'a [GitFileStatus],
+            unstaged: &'a [GitFileStatus],
+            untracked: &'a [String],
+            conflicts: &'a [String],
+            current_branch: &'a str,
+            ahead: i32,
+            behind: i32,
+            fingerprint: String,
+        }
+        Wire {
+            staged: &self.staged,
+            unstaged: &self.unstaged,
+            untracked: &self.untracked,
+            conflicts: &self.conflicts,
+            current_branch: &self.current_branch,
+            ahead: self.ahead,
+            behind: self.behind,
+            fingerprint: self.fingerprint(),
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,4 +459,125 @@ pub struct GitGraph {
     pub max_lane: i32,
     /// Current branch name.
     pub current_branch: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(path: &str, status: &str, index: Option<&str>, workdir: Option<&str>) -> GitFileStatus {
+        GitFileStatus {
+            path: path.to_string(),
+            status: status.to_string(),
+            index_status: index.map(str::to_string),
+            workdir_status: workdir.map(str::to_string),
+        }
+    }
+
+    fn sample() -> GitStatus {
+        GitStatus {
+            staged: vec![file("a.rs", "M", Some("M"), None)],
+            unstaged: vec![file("b.rs", "M", None, Some("M"))],
+            untracked: vec!["c.txt".to_string()],
+            conflicts: vec!["d.rs".to_string()],
+            current_branch: "main".to_string(),
+            ahead: 1,
+            behind: 2,
+        }
+    }
+
+    #[test]
+    fn equal_statuses_share_a_fingerprint() {
+        assert_eq!(sample().fingerprint(), sample().fingerprint());
+        assert_eq!(sample().fingerprint().len(), 16);
+    }
+
+    #[test]
+    fn the_fingerprint_is_stable_across_builds() {
+        // Pinned: clients may compare fingerprints from different hosts, so the
+        // encoding must not drift with the toolchain.
+        let empty = GitStatus {
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+            conflicts: Vec::new(),
+            current_branch: String::new(),
+            ahead: 0,
+            behind: 0,
+        };
+        // Values computed independently of this implementation (FNV-1a 64 over
+        // the documented length-prefixed encoding).
+        assert_eq!(empty.fingerprint(), "8ac123d6f7dce585");
+        assert_eq!(sample().fingerprint(), "15c53654d07e99e9");
+    }
+
+    #[test]
+    fn any_field_change_changes_the_fingerprint() {
+        let base = sample().fingerprint();
+        let variants: Vec<Box<dyn Fn(&mut GitStatus)>> = vec![
+            Box::new(|s| s.staged.push(file("e.rs", "A", Some("A"), None))),
+            Box::new(|s| s.staged[0].status = "A".to_string()),
+            Box::new(|s| s.staged[0].index_status = None),
+            Box::new(|s| s.unstaged[0].path = "bb.rs".to_string()),
+            Box::new(|s| s.unstaged[0].workdir_status = Some("D".to_string())),
+            Box::new(|s| s.untracked.push("f.txt".to_string())),
+            Box::new(|s| s.conflicts.clear()),
+            Box::new(|s| s.current_branch = "dev".to_string()),
+            Box::new(|s| s.ahead = 0),
+            Box::new(|s| s.behind = 3),
+            // The same file moving from one list to another is a change.
+            Box::new(|s| {
+                let moved = s.staged.remove(0);
+                s.unstaged.insert(0, moved);
+            }),
+            // Field boundaries are length-prefixed: "ab"+"c" is not "a"+"bc".
+            Box::new(|s| {
+                s.untracked = vec!["c.tx".to_string(), "t".to_string()];
+            }),
+        ];
+        for (index, change) in variants.iter().enumerate() {
+            let mut status = sample();
+            change(&mut status);
+            assert_ne!(
+                status.fingerprint(),
+                base,
+                "variant {index} kept the fingerprint"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wire_carries_the_fingerprint_and_old_payloads_still_read() {
+        let status = sample();
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["fingerprint"], status.fingerprint());
+        assert_eq!(value["current_branch"], "main");
+        assert_eq!(value["staged"][0]["index_status"], "M");
+
+        // Round trip: the field is derived, so reading it back changes nothing.
+        let back: GitStatus = serde_json::from_value(value).unwrap();
+        assert_eq!(back.fingerprint(), status.fingerprint());
+
+        // A payload from a host without fingerprints (and without `conflicts`).
+        let legacy: GitStatus = serde_json::from_value(serde_json::json!({
+            "staged": [],
+            "unstaged": [{"path": "x", "status": "M", "index_status": null, "workdir_status": "M"}],
+            "untracked": ["y"],
+            "current_branch": "main",
+            "ahead": 0,
+            "behind": 0
+        }))
+        .unwrap();
+        assert!(legacy.conflicts.is_empty());
+        assert_eq!(legacy.unstaged[0].path, "x");
+
+        // A stale fingerprint on the wire never wins over the content.
+        let tampered: GitStatus = serde_json::from_value(serde_json::json!({
+            "staged": [], "unstaged": [], "untracked": [],
+            "current_branch": "main", "ahead": 0, "behind": 0,
+            "fingerprint": "0000000000000000"
+        }))
+        .unwrap();
+        assert_ne!(tampered.fingerprint(), "0000000000000000");
+    }
 }

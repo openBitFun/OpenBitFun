@@ -1,7 +1,7 @@
 // Git Workbench state and Tauri command orchestration.
 
 import { computed, effect, lifecycle, signal } from "nsh";
-import { type GitFileStatus, type GitStatus, type WorkspaceRecord } from "./api";
+import { sameGitStatus, type GitFileStatus, type GitStatus, type WorkspaceRecord } from "./api";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 import { subscribeWorkspaceFileChanges } from "./fileStore";
 import { gitLiveMode, holdGitStatusLive, renewGitStatusLive, type GitStatusChange } from "./gitStatusLive";
@@ -137,6 +137,8 @@ export const switchCommitMessage = signal("");
 
 /** Paths checked in the working-copy list for a batch stage / unstage. */
 export const checkedGitPaths = signal<string[]>([]);
+/** `checkedGitPaths` as a set: every row asks whether it is checked. */
+export const checkedGitPathSet = computed(() => new Set(checkedGitPaths()));
 
 export interface GitChangedFileRow {
   path: string;
@@ -206,6 +208,7 @@ function normalizeStatus(raw: Record<string, unknown> | null): GitStatus | null 
     current_branch: readStr(raw, "current_branch", "currentBranch") || "HEAD",
     ahead: readNum(raw, "ahead"),
     behind: readNum(raw, "behind"),
+    ...(typeof raw.fingerprint === "string" && raw.fingerprint ? { fingerprint: raw.fingerprint } : {}),
   };
 }
 
@@ -550,7 +553,7 @@ async function applyGitStatus(ws: WorkspaceRecord, normalized: GitStatus | null)
  */
 async function applyQuietStatus(ws: WorkspaceRecord, next: GitStatus | null, ticket: number): Promise<void> {
   const previous = gitStatus();
-  if (JSON.stringify(next) === JSON.stringify(previous)) return;
+  if (sameGitStatus(next, previous)) return;
   const headMoved =
     !previous ||
     !next ||
@@ -1411,8 +1414,14 @@ export function setCommitAmend(next: boolean): void {
 
 export function toggleCheckedGitPath(path: string): void {
   checkedGitPaths.update(current =>
-    current.includes(path) ? current.filter(item => item !== path) : [...current, path],
+    checkedGitPathSet().has(path) ? current.filter(item => item !== path) : [...current, path],
   );
+}
+
+/** Drops `paths` from the batch selection in one pass. */
+function uncheckGitPaths(paths: ReadonlyArray<string>): void {
+  const done = new Set(paths);
+  checkedGitPaths.update(current => current.filter(path => !done.has(path)));
 }
 
 export function setCheckedGitPaths(paths: string[]): void {
@@ -1425,7 +1434,7 @@ export async function stageCheckedGitPaths(): Promise<void> {
   const paths = checkedGitPaths().filter(path => !staged.has(path));
   if (paths.length === 0) return;
   await stageGitFiles(paths);
-  checkedGitPaths.update(current => current.filter(path => !paths.includes(path)));
+  uncheckGitPaths(paths);
 }
 
 export async function unstageCheckedGitPaths(): Promise<void> {
@@ -1433,7 +1442,7 @@ export async function unstageCheckedGitPaths(): Promise<void> {
   const paths = checkedGitPaths().filter(path => staged.has(path));
   if (paths.length === 0) return;
   await unstageGitFiles(paths);
-  checkedGitPaths.update(current => current.filter(path => !paths.includes(path)));
+  uncheckGitPaths(paths);
 }
 
 export async function loadMoreGitHistory(): Promise<void> {

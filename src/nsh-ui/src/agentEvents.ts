@@ -421,14 +421,30 @@ function createChannel(): RoundStreamChannel {
   };
 }
 
+/**
+ * Whether `text` holds anything but whitespace from `from` on, as `trim()` would
+ * judge it, without copying it: this runs every streaming frame over the whole
+ * reply, and the answer is almost always found at the first character.
+ */
+export function hasVisibleTextFrom(text: string, from = 0): boolean {
+  for (let i = Math.max(0, from); i < text.length; i += 1) {
+    const c = text.charCodeAt(i);
+    if (c > 0x20 && c !== 0xa0 && c !== 0xfeff && c !== 0x1680 && !(c >= 0x2000 && c <= 0x200a)
+      && c !== 0x2028 && c !== 0x2029 && c !== 0x202f && c !== 0x205f && c !== 0x3000) {
+      return true;
+    }
+    if (c <= 0x20 && c !== 0x20 && (c < 0x09 || c > 0x0d)) return true;
+  }
+  return false;
+}
+
 function syncChannelFlags(channel: RoundStreamChannel): void {
   const text = channel.displayedText;
-  const nonEmpty = text.trim().length > 0;
+  const nonEmpty = hasVisibleTextFrom(text);
   if (channel.hasAny() !== nonEmpty) {
     channel.hasAny.set(nonEmpty);
   }
-  const tailNonEmpty =
-    text.length > channel.tailOffset && text.slice(channel.tailOffset).trim().length > 0;
+  const tailNonEmpty = text.length > channel.tailOffset && hasVisibleTextFrom(text, channel.tailOffset);
   if (channel.hasTail() !== tailNonEmpty) {
     channel.hasTail.set(tailNonEmpty);
   }

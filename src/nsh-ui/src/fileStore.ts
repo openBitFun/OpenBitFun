@@ -30,6 +30,7 @@ import {
   pasteWorkspaceFiles,
   readFileContent,
   renameWorkspaceFile,
+  sameGitStatus,
   searchWorkspaceFiles,
   type GitStatus,
   type WorkspaceEntry,
@@ -414,15 +415,57 @@ function ensureTab(path: string): void {
 
 /** Reads one directory into the cache; a failure stays with that directory. */
 export async function loadDirectory(path: string): Promise<void> {
-  const workspaceId = activeWorkspaceId();
-  if (!workspaceId) return;
-  try {
-    const entries = await getDirectoryChildren(workspaceId, path);
-    dirChildren.update(current => ({ ...current, [path]: sortEntries(Array.isArray(entries) ? entries : []) }));
-  } catch (error) {
-    dirChildren.update(current => ({ ...current, [path]: current[path] ?? [] }));
-    reportError(error);
+  await loadDirectories([path]);
+}
+
+function sameEntries(left: ReadonlyArray<WorkspaceEntry> | undefined, right: ReadonlyArray<WorkspaceEntry>): boolean {
+  if (!left || left.length !== right.length) return false;
+  for (let index = 0; index < right.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (a.path !== b.path || a.name !== b.name || a.isDirectory !== b.isDirectory || a.size !== b.size) return false;
   }
+  return true;
+}
+
+/**
+ * Reads several directories at once and writes the cache once: every write of
+ * `dirChildren` rebuilds the whole tree, so a burst of disk changes costs one
+ * rebuild, and a directory whose listing did not change costs none. Each
+ * failure stays with its directory.
+ */
+export async function loadDirectories(paths: ReadonlyArray<string>): Promise<void> {
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId || paths.length === 0) return;
+  const unique = [...new Set(paths)];
+  const results = await Promise.all(
+    unique.map(async path => {
+      try {
+        const entries = await getDirectoryChildren(workspaceId, path);
+        return { path, entries: sortEntries(Array.isArray(entries) ? entries : []), error: null as unknown };
+      } catch (error) {
+        return { path, entries: null, error };
+      }
+    }),
+  );
+  // The workspace changed while reading: its tree is no longer on screen.
+  if (activeWorkspaceId() !== workspaceId) return;
+  const current = dirChildren();
+  let next: Record<string, WorkspaceEntry[]> | null = null;
+  for (const result of results) {
+    if (result.entries) {
+      if (sameEntries(current[result.path], result.entries)) continue;
+      next ??= { ...current };
+      next[result.path] = result.entries;
+    } else {
+      reportError(result.error);
+      if (current[result.path] === undefined) {
+        next ??= { ...current };
+        next[result.path] = [];
+      }
+    }
+  }
+  if (next) dirChildren.set(next);
 }
 
 /** Loads the root and keeps it expanded, which is what an explorer shows first. */
@@ -451,7 +494,7 @@ export async function loadGitStatus(options: { quiet?: boolean } = {}): Promise<
     const next = await getGitStatus(workspaceId, root);
     if (activeWorkspaceId() !== workspaceId) return true;
     // A poll that finds nothing new leaves the tree's decorations untouched.
-    if (JSON.stringify(next ?? null) !== JSON.stringify(gitStatus())) gitStatus.set(next ?? null);
+    if (!sameGitStatus(next ?? null, gitStatus())) gitStatus.set(next ?? null);
     return true;
   } catch {
     // A quiet poll keeps the last answer: one failed read must not blank the tree.
@@ -1278,9 +1321,9 @@ async function flushFileSystemChanges(): Promise<void> {
   const files = [...pendingFiles.entries()];
   pendingDirectories.clear();
   pendingFiles.clear();
-  for (const directory of directories) {
-    if (dirChildren()[directory]) void loadDirectory(directory);
-  }
+  // Only directories the tree already shows; all of them in one cache write.
+  const loaded = dirChildren();
+  void loadDirectories(directories.filter(directory => loaded[directory] !== undefined));
   void loadGitStatus({ quiet: true });
   for (const handler of [...workspaceChangeSubscribers]) {
     try {

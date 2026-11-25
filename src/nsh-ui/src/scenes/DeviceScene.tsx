@@ -13,7 +13,7 @@ import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
 import { localDeviceId } from "../devicePrefsStore";
 import { fleetDeviceById } from "../fleetStore";
 import type { FleetDevice, FleetWorkspace } from "../fleetTypes";
-import { formatPlural, formatRelativeTime, formatTime } from "../format";
+import { basename, formatPlural, formatRelativeTime, formatTime } from "../format";
 import { isCommandUnavailable } from "../hostCommands";
 import { tr } from "../i18n";
 import type { MessageKey } from "../locales/en-US";
@@ -122,8 +122,7 @@ const CAPABILITY_WORDS: Readonly<Record<string, MessageKey>> = {
 
 function workspaceName(workspace: Pick<FleetWorkspace, "name" | "rootPath">): string {
   if (workspace.name) return workspace.name;
-  const parts = workspace.rootPath.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? workspace.rootPath;
+  return basename(workspace.rootPath) || workspace.rootPath;
 }
 
 function currentView(): DeviceView | null {

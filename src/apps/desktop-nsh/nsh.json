@@ -8,7 +8,6 @@
     "application": true,
     "clipboard": true,
     "picker": true,
-    "speech": true,
     "notifications": true,
     "statusBar": true,
     "webview": {

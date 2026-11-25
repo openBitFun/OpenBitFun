@@ -97,7 +97,8 @@ pub struct GitStatusWatchSnapshot {
 #[derive(Default)]
 struct RepoState {
     revision: u64,
-    last: Option<serde_json::Value>,
+    /// [`GitStatus::fingerprint_u64`] of the last published status.
+    last: Option<u64>,
 }
 
 struct RepoEntry {
@@ -189,11 +190,11 @@ impl GitStatusMonitor {
         let mut state = state.lock().await;
         let (status, error) = match read {
             Ok(status) => {
-                let value = serde_json::to_value(&status).ok();
-                if state.last.is_some() && state.last != value {
+                let fingerprint = Some(status.fingerprint_u64());
+                if state.last.is_some() && state.last != fingerprint {
                     state.revision += 1;
                 }
-                state.last = value;
+                state.last = fingerprint;
                 (Some(status), None)
             }
             Err(error) => (None, Some(error)),
@@ -337,13 +338,13 @@ async fn publish(
             return;
         }
     };
-    let value = serde_json::to_value(&status).ok();
+    let fingerprint = Some(status.fingerprint_u64());
     let revision = {
         let mut state = state.lock().await;
-        if state.last == value {
+        if state.last == fingerprint {
             return;
         }
-        state.last = value;
+        state.last = fingerprint;
         state.revision += 1;
         state.revision
     };
@@ -601,6 +602,12 @@ mod tests {
         assert_eq!(events[0]["revision"], 1);
         assert_eq!(events[0]["cause"], "operation");
         assert_eq!(events[0]["status"]["current_branch"], "feat");
+        // The pushed status carries its fingerprint, and it moved with the change.
+        let pushed = events[0]["status"]["fingerprint"].as_str().unwrap();
+        let snapshot = serde_json::to_value(&first).unwrap();
+        let initial = snapshot["status"]["fingerprint"].as_str().unwrap();
+        assert_eq!(pushed.len(), 16);
+        assert_ne!(pushed, initial);
 
         assert!(monitor.unwatch("ws", "/remote/repo", "a"));
         assert_eq!(monitor.watched_repository_count(), 1);

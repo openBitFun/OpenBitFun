@@ -206,6 +206,134 @@ fn summary_keeps_tool_result(tool: &TranscriptToolView) -> bool {
         || tool.name.starts_with("mcp_")
 }
 
+/// What a summary read keeps of one input string. Paths, patterns and command
+/// lines stay whole; edit texts, file contents and payloads become previews.
+const SUMMARY_INPUT_STRING_BYTES: usize = 256;
+
+/// Shortens a summary read's long input strings in place; whether it lost anything.
+fn shorten_input_strings(value: &mut serde_json::Value, depth: usize) -> bool {
+    if depth >= MAX_TOOL_RESULT_TRAVERSAL_DEPTH {
+        return false;
+    }
+    match value {
+        serde_json::Value::String(text) => {
+            if text.len() <= SUMMARY_INPUT_STRING_BYTES || should_preserve_raw_tool_string(text) {
+                return false;
+            }
+            *text = truncate_utf8_with_ellipsis(std::mem::take(text), SUMMARY_INPUT_STRING_BYTES);
+            true
+        }
+        serde_json::Value::Array(items) => items.iter_mut().fold(false, |lost, item| {
+            shorten_input_strings(item, depth + 1) | lost
+        }),
+        serde_json::Value::Object(map) => map.values_mut().fold(false, |lost, item| {
+            shorten_input_strings(item, depth + 1) | lost
+        }),
+        _ => false,
+    }
+}
+
+// The edit and write input keys, as the UI's `diffOf` / `writeContentOf` read them.
+const DIFF_PATCH_KEYS: &[&str] = &["patch", "diff", "unifiedDiff", "unified_diff"];
+const DIFF_OLD_TEXT_KEYS: &[&str] = &[
+    "old_string",
+    "oldString",
+    "old_text",
+    "oldText",
+    "before",
+    "search",
+];
+const DIFF_NEW_TEXT_KEYS: &[&str] = &[
+    "new_string",
+    "newString",
+    "new_text",
+    "newText",
+    "after",
+    "replace",
+];
+const WRITE_CONTENT_KEYS: &[&str] = &["content", "contents", "file_text", "text"];
+/// Past this many UTF-16 units in total, line counts stand in for a line match.
+const MAX_EXACT_DIFF_STATS_UNITS: usize = 100_000;
+
+fn first_input_string<'a>(
+    input: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    non_blank: bool,
+) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        let text = input.get(*key)?.as_str()?;
+        let present = if non_blank {
+            !text.trim().is_empty()
+        } else {
+            !text.is_empty()
+        };
+        present.then_some(text)
+    })
+}
+
+fn count_lines(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.bytes().filter(|byte| *byte == b'\n').count() + 1
+    }
+}
+
+/// Counts what an edit or a write changes, exactly as the UI's `diffStatsOf`
+/// does from a whole input, so a summary read can ship previews instead.
+pub fn diff_stats_of(input: &serde_json::Value) -> Option<TranscriptDiffStats> {
+    let input = input.as_object()?;
+    if let Some(patch) = DIFF_PATCH_KEYS
+        .iter()
+        .find_map(|key| input.get(*key)?.as_str().filter(|text| text.contains("@@")))
+    {
+        let (mut added, mut removed) = (0, 0);
+        for line in patch.split('\n') {
+            if line.starts_with('+') && !line.starts_with("+++") {
+                added += 1;
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                removed += 1;
+            }
+        }
+        return Some(TranscriptDiffStats { added, removed });
+    }
+    if let (Some(old_text), Some(new_text)) = (
+        first_input_string(input, DIFF_OLD_TEXT_KEYS, false),
+        first_input_string(input, DIFF_NEW_TEXT_KEYS, false),
+    ) {
+        let units = old_text.encode_utf16().count() + new_text.encode_utf16().count();
+        if units > MAX_EXACT_DIFF_STATS_UNITS {
+            let (old_count, new_count) = (count_lines(old_text), count_lines(new_text));
+            return Some(TranscriptDiffStats {
+                added: new_count.saturating_sub(old_count),
+                removed: old_count.saturating_sub(new_count),
+            });
+        }
+        let mut remaining: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        let old_lines: Vec<&str> = old_text.split('\n').collect();
+        for line in &old_lines {
+            *remaining.entry(line).or_default() += 1;
+        }
+        let new_lines: Vec<&str> = new_text.split('\n').collect();
+        let mut common = 0;
+        for line in &new_lines {
+            if let Some(count) = remaining.get_mut(line).filter(|count| **count > 0) {
+                *count -= 1;
+                common += 1;
+            }
+        }
+        return Some(TranscriptDiffStats {
+            added: new_lines.len() - common,
+            removed: old_lines.len() - common,
+        });
+    }
+    first_input_string(input, WRITE_CONTENT_KEYS, true).map(|content| TranscriptDiffStats {
+        added: count_lines(content),
+        removed: 0,
+    })
+}
+
 fn summarize_tool(tool: &mut TranscriptToolView) {
     for item in &mut tool.subagent_items {
         if let TranscriptItemView::Tool { tool, .. } = item {
@@ -215,6 +343,8 @@ fn summarize_tool(tool: &mut TranscriptToolView) {
     if summary_keeps_tool_result(tool) {
         return;
     }
+    tool.diff_stats = diff_stats_of(&tool.input);
+    tool.detail_omitted |= shorten_input_strings(&mut tool.input, 0);
     let mut budget = SUMMARY_RESULT_TOTAL_BYTES;
     if let Some(result) = tool.result.as_mut() {
         tool.detail_omitted |= summarize_tool_result_value(result, &mut budget);
@@ -332,6 +462,13 @@ pub struct TranscriptUserMessage {
     pub images: Vec<TranscriptImage>,
 }
 
+/// Lines added and removed by one edit or write call (`TranscriptToolView::diff_stats`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptDiffStats {
+    pub added: usize,
+    pub removed: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptToolView {
@@ -356,6 +493,11 @@ pub struct TranscriptToolView {
     /// without `toolDetail` answers them whole. Only set when the client asked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub detail_omitted: bool,
+    /// Lines an edit or a write adds and removes, counted from the whole input
+    /// by a summary read (whose input strings are previews). Absent otherwise:
+    /// a client counts from the input it holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_stats: Option<TranscriptDiffStats>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     pub start_ms: u64,
@@ -627,6 +769,7 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
                         result: bounded_result,
                         result_for_assistant: bounded_result_for_assistant,
                         detail_omitted: false,
+                        diff_stats: None,
                         duration_ms: item.duration_ms,
                         start_ms: item.start_ms,
                         plan,
@@ -1409,6 +1552,7 @@ mod tests {
                     result: Some(result),
                     result_for_assistant: assistant.map(str::to_string),
                     detail_omitted: false,
+                    diff_stats: None,
                     duration_ms: None,
                     start_ms: 1,
                     plan: None,
@@ -1500,7 +1644,7 @@ mod tests {
             .filter(|tool| tool.detail_omitted)
             .map(|tool| tool.name.as_str())
             .collect();
-        assert_eq!(omitted, ["Bash", "Read", "LS"]);
+        assert_eq!(omitted, ["Bash", "Read", "LS", "Fig", "Short"]);
         let bash = tools[0];
         assert_eq!(bash.result.as_ref().unwrap()["exit_code"], 3);
         assert!(
@@ -1522,14 +1666,105 @@ mod tests {
             tools[2].result.as_ref().unwrap().as_array().unwrap().len(),
             8
         );
-        // Inputs carry the diff a collapsed edit counts its lines from.
-        assert_eq!(bash.input["new_string"].as_str().unwrap().len(), 4_000);
+        // Long inputs become previews; their line counts were taken first.
+        assert!(bash.input["new_string"].as_str().unwrap().len() < 300);
+        assert_eq!(
+            bash.diff_stats, None,
+            "an input without an old text is not an edit"
+        );
         let json = serde_json::to_value(tools[6]).unwrap();
-        assert!(json.get("detailOmitted").is_none());
+        assert_eq!(json["detailOmitted"], true);
+        assert!(json.get("diffStats").is_none());
         // An answer from a host that never shortens reads as whole.
         let mut legacy = serde_json::to_value(bash).unwrap();
         legacy.as_object_mut().unwrap().remove("detailOmitted");
         let legacy: TranscriptToolView = serde_json::from_value(legacy).unwrap();
         assert!(!legacy.detail_omitted);
+    }
+
+    #[test]
+    fn diff_stats_count_like_the_ui_from_the_whole_input() {
+        let stats = |input: serde_json::Value| diff_stats_of(&input).map(|s| (s.added, s.removed));
+        // A unified patch: +/- lines, file headers skipped.
+        let patch = "--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n a\n-b\n+c\n+d\n";
+        assert_eq!(stats(serde_json::json!({ "patch": patch })), Some((2, 1)));
+        // Without hunks a "diff" key is not a patch.
+        assert_eq!(stats(serde_json::json!({ "diff": "+x" })), None);
+        // Before/after texts: a line multiset match, as `diffStatsOf` does.
+        assert_eq!(
+            stats(serde_json::json!({ "old_string": "a\nb\nb\nc", "new_string": "b\nc\nd\nd\ne" })),
+            Some((3, 2))
+        );
+        assert_eq!(
+            stats(serde_json::json!({ "oldString": "", "newString": "x" })),
+            None
+        );
+        assert_eq!(
+            stats(serde_json::json!({ "old_text": "same", "new_text": "same" })),
+            Some((0, 0))
+        );
+        // Over 100k UTF-16 units: line counts only.
+        let big_old = "\u{4E2D}\n".repeat(30_000);
+        let big_new = "\u{4E2D}\n".repeat(80_000);
+        assert_eq!(
+            stats(serde_json::json!({ "old_string": big_old, "new_string": big_new })),
+            Some((50_000, 0))
+        );
+        // A write counts its content's lines; blank content counts nothing.
+        assert_eq!(
+            stats(serde_json::json!({ "file_path": "a", "content": "1\n2\n3" })),
+            Some((3, 0))
+        );
+        assert_eq!(stats(serde_json::json!({ "content": "   " })), None);
+        assert_eq!(stats(serde_json::json!("text")), None);
+    }
+
+    #[test]
+    fn a_summary_read_counts_edits_before_it_shortens_their_input() {
+        let new_text = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let edit = TranscriptToolView {
+            id: "e".into(),
+            name: "Edit".into(),
+            input: serde_json::json!({
+                "file_path": "/repo/src/main.rs",
+                "old_string": "line 0",
+                "new_string": new_text,
+            }),
+            input_preview: None,
+            status: "completed".into(),
+            success: Some(true),
+            error: None,
+            result: None,
+            result_for_assistant: None,
+            detail_omitted: false,
+            diff_stats: None,
+            duration_ms: None,
+            start_ms: 1,
+            plan: None,
+            subagent_items: Vec::new(),
+        };
+        let mut tool = edit.clone();
+        summarize_tool(&mut tool);
+        assert_eq!(
+            tool.diff_stats,
+            Some(TranscriptDiffStats {
+                added: 199,
+                removed: 0
+            })
+        );
+        assert!(tool.detail_omitted);
+        assert_eq!(tool.input["file_path"], "/repo/src/main.rs");
+        assert_eq!(tool.input["old_string"], "line 0");
+        assert!(tool.input["new_string"].as_str().unwrap().len() < 300);
+        let wire = serde_json::to_value(&tool).unwrap();
+        assert_eq!(
+            wire["diffStats"],
+            serde_json::json!({ "added": 199, "removed": 0 })
+        );
+        // A whole read keeps the input and leaves the counting to the client.
+        assert_eq!(serde_json::to_value(&edit).unwrap().get("diffStats"), None);
     }
 }

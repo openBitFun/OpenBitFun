@@ -9,7 +9,6 @@
     "clipboard": true,
     "notifications": true,
     "picker": true,
-    "speech": true,
     "statusBar": true,
     "webview": {
       "hosts": [

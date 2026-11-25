@@ -381,10 +381,11 @@ switcher in the main flow.
   on the live tool. State a user changes lives per card for the transcript's
   lifetime; nothing is persisted. Images, maps and HTML are shown without
   network or scripts and say so.
-- `src/voiceInputStore.ts` + `src/ui/VoiceInput.tsx`: composer dictation on the
-  system recognizer (`Speech`, capability `speech`). The window cannot capture
-  raw audio, so the host speech service and voice calls are explained, never
-  started.
+- Voice input and voice calls need microphone capture, which NSH does not give
+  an app (longbridge/nsh#1059, not planned): the UI offers no dictation, voice
+  call or voice settings. The host's speech service (`speech_*`) is unchanged;
+  bringing voice back means capturing audio outside NSH (the desktop backend,
+  the phone app's Rust crate, the web page host) and streaming it to that service.
 - `src/controlPresenter.ts`: the Agent's "open this screen" requests
   (`agentic://openbitfun-control-request`). The host sends the resolved catalog
   `destination`; this module only maps it onto scenes and settings pages and

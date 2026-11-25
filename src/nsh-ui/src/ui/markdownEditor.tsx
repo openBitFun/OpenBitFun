@@ -108,7 +108,7 @@ function normalizeMarkdown(text: string): string {
 
 /** Whether two Markdown texts are the same document byte for byte, but for whitespace at line ends. */
 export function sameMarkdown(left: string, right: string): boolean {
-  return normalizeMarkdown(left) === normalizeMarkdown(right);
+  return left === right || normalizeMarkdown(left) === normalizeMarkdown(right);
 }
 
 const fidelityCache = new Map<string, boolean>();
@@ -749,6 +749,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   /** The text the document was last set from: an edit that returns to it reads as that text. */
   let baseline = untracked(() => owner.text);
   let lastEmitted = baseline;
+  let normalizedBaseline: string | null = null;
   const session = createMarkdownSession(baseline);
   let quietRevision = session.revision;
   const hasSelection = signal(false);
@@ -767,6 +768,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
     untracked(() => {
       if (text === lastEmitted) return;
       baseline = text;
+      normalizedBaseline = null;
       lastEmitted = text;
       session.setContent(text, "markdown");
       quietRevision = session.revision;
@@ -776,7 +778,10 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const emit = (revision: number) => {
     if (revision <= quietRevision) return;
     const serialized = session.getMarkdown();
-    const text = sameMarkdown(serialized, baseline) ? baseline : serialized;
+    // The baseline is normalized once per baseline, not on every keystroke.
+    if (normalizedBaseline === null) normalizedBaseline = normalizeMarkdown(baseline);
+    const text =
+      serialized === baseline || normalizeMarkdown(serialized) === normalizedBaseline ? baseline : serialized;
     if (text === lastEmitted) return;
     lastEmitted = text;
     owner.onChange(text);

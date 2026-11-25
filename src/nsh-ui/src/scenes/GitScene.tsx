@@ -1,5 +1,5 @@
 import { ToolPaneHeader } from "../ui/toolPane";
-import { Canvas, cleanup, Clipboard, computed, effect, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { Canvas, cleanup, Clipboard, computed, effect, List, Scroll, signal, Text, untracked, View, type JSX, type ViewRef } from "nsh";
 import { ensureWorkspaceWatch, openFileAt } from "../fileStore";
 import { isRemoteWorkspace as isRemoteWorkspaceRecord, joinWorkspacePath } from "../shared/workspaceUtils";
 import { DiffView, Input } from "nsh/base";
@@ -75,6 +75,7 @@ import {
   gitLiveNotice,
   branchFilter,
   checkedGitPaths,
+  checkedGitPathSet,
   setCheckedGitPaths,
   stageCheckedGitPaths,
   toggleCheckedGitPath,
@@ -555,7 +556,7 @@ interface GitFileRowProps {
 
 /** A 16 px high-contrast checkbox for batch selection of working-copy rows. */
 function RowCheckbox(props: { path: string; label: string; quiet?: boolean }) {
-  const checked = () => checkedGitPaths().includes(props.path);
+  const checked = () => checkedGitPathSet().has(props.path);
   return (
     <View
       role="checkbox"
@@ -591,12 +592,56 @@ function RowCheckbox(props: { path: string; label: string; quiet?: boolean }) {
   );
 }
 
+/** Past this many rows a working-copy group mounts only the rows near the viewport. */
+export const GIT_ROWS_VIRTUALIZE_AT = 200;
+
+/**
+ * The rows of one working-copy group. A short group renders every row; a long
+ * one (a generated tree, a vendored directory) is a `List` laid out in the
+ * scene's scroll view (`viewport="parent"`), so only the rows near the
+ * viewport exist and a status change never rebuilds thousands of rows.
+ */
+function GitGroupRows<T>(props: {
+  items: readonly T[];
+  keyOf: (item: T) => string;
+  testID: string;
+  children: (item: () => T) => JSX.Element;
+}) {
+  return (
+    <If
+      when={props.items.length > GIT_ROWS_VIRTUALIZE_AT}
+      else={
+        <Each of={props.items} key={item => props.keyOf(item)}>
+          {item => props.children(item)}
+        </Each>
+      }
+    >
+      <List<T>
+        viewport="parent"
+        testID={props.testID}
+        each={props.items}
+        keyExtractor={item => props.keyOf(item)}
+        estimatedItemSize={compactLayout() ? WORKBENCH_TOUCH_MIN : 32}
+        contentStyle={{ gap: 2 }}
+        style={{ width: "100%" }}
+      >
+        {item => props.children(item)}
+      </List>
+    </If>
+  );
+}
+
 /**
  * Working-copy file row using sibling pressable label and sibling hover-aligned
  * action IconButtons (never nesting interactive controls inside role="button").
  */
 function GitFileRow(props: GitFileRowProps) {
   const hovered = signal(false);
+  // A virtualized group recycles the row for another file: its hover is not the new file's.
+  effect(() => {
+    void props.rowLabel;
+    hovered.set(false);
+  });
 
   return (
     <View
@@ -1070,7 +1115,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 onToggle={() => toggleGroup("staged")}
               />
               <If when={expanded().staged}>
-                <Each of={filteredStaged()} key={file => `staged:${file.path}`}>
+                <GitGroupRows items={filteredStaged()} keyOf={file => `staged:${file.path}`} testID="git-rows-staged">
                   {file => (
                     <GitFileRow
                       displayPath={displayRepoFilePath(file().path)}
@@ -1098,7 +1143,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       }
                     />
                   )}
-                </Each>
+                </GitGroupRows>
               </If>
             </View>
           </If>
@@ -1114,7 +1159,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 onToggle={() => toggleGroup("unstaged")}
               />
               <If when={expanded().unstaged}>
-                <Each of={filteredUnstaged()} key={file => `unstaged:${file.path}`}>
+                <GitGroupRows items={filteredUnstaged()} keyOf={file => `unstaged:${file.path}`} testID="git-rows-unstaged">
                   {file => (
                     <GitFileRow
                       displayPath={displayRepoFilePath(file().path)}
@@ -1148,7 +1193,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       }
                     />
                   )}
-                </Each>
+                </GitGroupRows>
               </If>
             </View>
           </If>
@@ -1164,7 +1209,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 onToggle={() => toggleGroup("untracked")}
               />
               <If when={expanded().untracked}>
-                <Each of={filteredUntracked()} key={path => `untracked:${path}`}>
+                <GitGroupRows items={filteredUntracked()} keyOf={path => `untracked:${path}`} testID="git-rows-untracked">
                   {path => (
                     <GitFileRow
                       displayPath={displayRepoFilePath(path())}
@@ -1197,7 +1242,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       }
                     />
                   )}
-                </Each>
+                </GitGroupRows>
               </If>
             </View>
           </If>

@@ -5,7 +5,7 @@
 // the shell's shortcuts, records a new key and writes the document back with
 // `set_config`; the shell rebinds when the overrides change.
 
-import { signal } from "nsh";
+import { keymap, platform, signal } from "nsh";
 import { entryDeviceId, fleetActive, invokeCommand } from "./bridge";
 import type { MessageKey } from "./locales/en-US";
 import { superAgentUi } from "./productGates"; // wave23-E
@@ -193,6 +193,26 @@ const NAMED_KEYS: Record<string, string> = {
   Tab: "tab",
 };
 
+/** Whether the primary modifier is Command here: Apple platforms, and a browser on one. */
+function commandIsPrimary(): boolean {
+  try {
+    return keymap.label("mod+a").includes("\u2318");
+  } catch {
+    return platform.os === "macos" || platform.os === "ios";
+  }
+}
+
+/**
+ * Keystrokes a browser keeps for itself (a new window, a new tab, closing the
+ * tab): on the web they never reach the page, so they are neither bound nor
+ * shown as the app's.
+ */
+const BROWSER_RESERVED_KEYSTROKES = new Set(["mod+n", "mod+shift+n", "mod+t", "mod+shift+t", "mod+w", "mod+shift+w"]);
+
+export function keystrokeReservedHere(keystroke: string): boolean {
+  return platform.os === "web" && BROWSER_RESERVED_KEYSTROKES.has(keystroke);
+}
+
 /**
  * A pressed key as a keystroke (`"mod+shift+p"`), or `null` while only
  * modifiers are down. A shortcut needs the primary modifier or Alt, so typing
@@ -201,8 +221,10 @@ const NAMED_KEYS: Record<string, string> = {
 export function keystrokeFromKeyEvent(event: {
   key: string;
   code?: string;
-  modifiers: { control: boolean; alt: boolean; shift: boolean; platform: boolean };
+  modifiers: { control: boolean; alt: boolean; shift: boolean; platform: boolean; altGraph?: boolean };
 }): string | null {
+  // AltGr holds Ctrl and Alt to type a character (`@`, `ę`): that is text.
+  if (event.modifiers.altGraph) return null;
   if (MODIFIER_KEYS.has(event.key) || event.key === "Unidentified") return null;
   const code = event.code ?? "";
   let key = NAMED_KEYS[event.key] ?? "";
@@ -212,7 +234,9 @@ export function keystrokeFromKeyEvent(event: {
   else if (!key) key = event.key.length === 1 ? event.key.toLowerCase() : "";
   if (!key) return null;
   const parts: string[] = [];
-  if (event.modifiers.platform || event.modifiers.control) parts.push("mod");
+  // `mod` is Command on Apple platforms (a browser on a Mac included) and Ctrl
+  // elsewhere; the Windows / Super key and a Mac's Control are not it.
+  if (commandIsPrimary() ? event.modifiers.platform : event.modifiers.control) parts.push("mod");
   if (event.modifiers.shift) parts.push("shift");
   if (event.modifiers.alt) parts.push("alt");
   if (!parts.includes("mod") && !parts.includes("alt")) return null;

@@ -402,6 +402,9 @@ const treeItems = computed<TreeItem[]>(() => {
   return build(activeWorkspaceRoot());
 });
 
+/** The expanded directories as a set: tree rows ask once each, per render. */
+const expandedDirSet = computed(() => new Set(expandedDirs()));
+
 /** Every directory the tree knows about, so selecting one never reads it as a file. */
 const knownDirectoryPaths = computed(() => {
   const directories = new Set<string>();
@@ -1381,7 +1384,7 @@ function renderExplorerRow(
         }}
       >
         <If when={entry.folder || knownDirectoryPaths().has(entry.id)}>
-          <View style={rotatingChevronStyle(expandedDirs().includes(entry.id))}>
+          <View style={rotatingChevronStyle(expandedDirSet().has(entry.id))}>
             <Icon
               name="chevron-right"
               size={12}
@@ -1394,7 +1397,7 @@ function renderExplorerRow(
         name={fileIconForPath(
           entry.id,
           entry.folder || knownDirectoryPaths().has(entry.id),
-          expandedDirs().includes(entry.id),
+          expandedDirSet().has(entry.id),
         )}
         size={14}
         color={fileIconColor(
@@ -1829,8 +1832,9 @@ function FileTree(props: {
                 for (const directory of expandedDirs()) {
                   if (!next.has(directory)) void setExpanded(directory, false);
                 }
+                const current = expandedDirSet();
                 for (const directory of next) {
-                  if (!expandedDirs().includes(directory)) void setExpanded(directory, true);
+                  if (!current.has(directory)) void setExpanded(directory, true);
                 }
               }}
               onExpand={event => {
@@ -3092,7 +3096,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
                     variant="primary"
                     size="xs"
                     loading={fileSaving()}
-                    tooltip={tr("files.saveShortcut")}
+                    tooltip={tr("files.saveShortcut", { keys: keymap.label("mod+s") })}
                     onPress={() => void saveEditedFile()}
                   />
                 </If>

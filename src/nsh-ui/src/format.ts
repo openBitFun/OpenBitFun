@@ -74,6 +74,8 @@ export interface ToolCallView {
   /** `result` is a preview; `detailTurn` is where it is read whole from. */
   detailOmitted?: boolean;
   detailTurn?: TranscriptTurnView;
+  /** What the host counted from the whole input of an edit or write. */
+  diffStats?: { added: number; removed: number };
   /** Tool execution duration in milliseconds, when persisted. */
   durationMs?: number;
   /** What a subagent the call started did, as the host nested it. */
@@ -132,6 +134,7 @@ export function toolCallOf(tool: TranscriptToolView, turn?: TranscriptTurnView):
     ...(tool.result === undefined || tool.result === null ? {} : { result: tool.result }),
     ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
     ...(tool.detailOmitted && turn ? { detailOmitted: true, detailTurn: turn } : {}),
+    ...(tool.diffStats ? { diffStats: tool.diffStats } : {}),
     ...(typeof tool.durationMs === "number" ? { durationMs: tool.durationMs } : {}),
     ...(tool.subagentItems?.length ? { subagentItems: tool.subagentItems } : {}),
   };

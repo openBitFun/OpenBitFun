@@ -12,6 +12,7 @@
 // are not searched (the host's file search walks this machine's disk); that is
 // said in the notice instead of returning an empty group.
 
+import { basename } from "./format";
 import { searchWorkspaceFiles, type WorkspaceRecord } from "./api";
 import { invokeCommand } from "./bridge";
 import { tr } from "./i18n";
@@ -177,9 +178,7 @@ function sessionNameItems(query: string): SearchItem[] {
 function workspaceName(ws: WorkspaceRecord): string {
   const named = ws.name?.trim();
   if (named) return named;
-  const normalized = ws.rootPath.replace(/\/+$/, "");
-  const idx = normalized.lastIndexOf("/");
-  return idx >= 0 ? normalized.slice(idx + 1) || ws.rootPath : ws.rootPath;
+  return basename(ws.rootPath) || ws.rootPath;
 }
 
 function isAssistant(ws: WorkspaceRecord): boolean {

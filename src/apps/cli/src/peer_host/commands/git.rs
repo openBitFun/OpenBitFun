@@ -252,6 +252,8 @@ mod tests {
             .unwrap();
         assert_eq!(status["unstaged"][0]["path"], "tracked.txt");
         assert_eq!(status["untracked"][0], "untracked.txt");
+        // Same fingerprint as the desktop host: the shared status serializer adds it.
+        assert_eq!(status["fingerprint"].as_str().map(str::len), Some(16));
         let count = read_at_path("git_get_tracked_change_count", path, &json!({}))
             .await
             .unwrap();

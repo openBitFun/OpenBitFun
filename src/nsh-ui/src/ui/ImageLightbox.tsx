@@ -6,7 +6,7 @@
 
 import { Clipboard, Image, Scroll, Text, View, cleanup, computed, effect, signal } from "nsh";
 import { Dialog } from "nsh/base";
-import { Menu } from "nsh/desktop";
+import { isAvailable as desktopMenusAvailable, Menu } from "nsh/desktop";
 import { tr } from "../i18n";
 import { elevationShadow, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
 import { Icon } from "./icons";
@@ -347,6 +347,8 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
               <View
                 onPress={() => undefined}
                 onContextMenu={event => {
+                  // Desktops only: the toolbar's copy button is the same action elsewhere.
+                  if (!desktopMenusAvailable) return;
                   void Menu.popup(
                     [{ label: tr("sessions.copyImage"), onSelect: () => void copyViaContextMenu() }],
                     event.pagePosition,

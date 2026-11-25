@@ -1,5 +1,6 @@
 import {
   cleanup,
+  computed,
   context,
   effect,
   horizontalSizeClass,
@@ -419,14 +420,8 @@ import {
   generalControlValue,
   generalControlValues,
   loadGeneralControl,
-  cancelSpeechModelDownload,
-  downloadSpeechModel,
-  loadSpeechModels,
   memoryActionBusy,
   memoryResetPending,
-  speechModels,
-  speechNotice,
-  type SpeechModelStatus,
   openMemoryFolder,
   resetMemory,
   setGeneralControl,
@@ -523,6 +518,7 @@ import { keymap } from "nsh";
 import { TextField } from "../ui/primitives";
 import {
   effectiveKeystroke,
+  keystrokeReservedHere,
   keybindingOverrides,
   keystrokeFromKeyEvent,
   loadKeybindings,
@@ -687,7 +683,7 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         labelKey: "settings.page.input",
         descriptionKey: "settings.page.inputDesc",
         icon: "command",
-        keywords: ["voice", "speech", "selection", "send", "queue"],
+        keywords: ["selection", "send", "queue"],
         anchors: [
           { id: "input", labelKey: "settings.section.input" },
           { id: "send-policy", labelKey: "settings.sendPolicy.title" },
@@ -954,6 +950,13 @@ export interface SettingsSearchHit {
  * field hit names the page it lives on and reveals its section.
  */
 export function settingsSearchResults(): SettingsSearchHit[] {
+  return settingsSearchHits();
+}
+
+/** One search per query (and language): the results list, its count and Enter read it. */
+const settingsSearchHits = computed<SettingsSearchHit[]>(() => searchSettings());
+
+function searchSettings(): SettingsSearchHit[] {
   const needle = settingsSearchQuery().trim().toLowerCase();
   if (!needle) return [];
   const matches = (...texts: Array<string | undefined>): boolean =>
@@ -8442,104 +8445,6 @@ function MemoryActionsRow() {
   );
 }
 
-const SPEECH_STATE_KEYS: Record<string, MessageKey> = {
-  not_installed: "settings.speech.notInstalled",
-  downloading: "settings.speech.downloading",
-  installed: "settings.speech.installed",
-  verifying: "settings.speech.verifying",
-  corrupt: "settings.speech.corrupt",
-  deleting: "settings.speech.deleting",
-  error: "settings.speech.error",
-};
-
-/**
- * The local speech models voice input runs on, with their install state and a
- * download (or cancel) per model, as the desktop's voice section offers them.
- * They live on the machine this window runs on, so this row says so while
- * another device is driven.
- */
-function SpeechModelsRow() {
-  useDeviceScopedLoad("speech-models", () => void loadSpeechModels(), () => void loadSpeechModels(true));
-  const models = () => {
-    const list = speechModels();
-    return Array.isArray(list) ? list : [];
-  };
-  const stateText = (model: SpeechModelStatus): string => {
-    const label = SPEECH_STATE_KEYS[model.state] ? tr(SPEECH_STATE_KEYS[model.state]) : model.state;
-    if (model.state === "downloading" && model.progress && model.progress.totalBytes > 0) {
-      return `${label} · ${formatBytes(model.progress.downloadedBytes)} / ${formatBytes(model.progress.totalBytes)}`;
-    }
-    if (model.state === "installed" && model.installedBytes) return `${label} · ${formatBytes(model.installedBytes)}`;
-    if (model.state === "not_installed" && model.expectedBytes) return `${label} · ${formatBytes(model.expectedBytes)}`;
-    return model.error ? `${label} · ${model.error}` : label;
-  };
-  return (
-    <View>
-      <SettingsRow
-        label={tr("settings.speech.title")}
-        description={
-          speechModels() === false
-            ? tr("settings.speech.unavailable")
-            : tr("settings.speech.desc")
-        }
-      />
-      <If when={speechNotice()}>
-        {notice => (
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
-            <InlineBanner tone="danger" message={localizeHostError(notice())} onDismiss={() => speechNotice.set("")} />
-          </View>
-        )}
-      </If>
-      <Each of={models()} key={model => model.modelId}>
-        {model => (
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md, gap: space.sm }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
-              <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-                <Text style={textStyle("label")}>{model().displayName || model().modelId}</Text>
-                <Text style={textStyle("caption")}>{stateText(model())}</Text>
-              </View>
-              <If when={model().state === "not_installed" || model().state === "corrupt" || model().state === "error"}>
-                <Button
-                  label={tr("settings.speech.download")}
-                  variant="secondary"
-                  size="sm"
-                  leadingIcon="download"
-                  accessibilityLabel={`speech-download-${model().modelId}`}
-                  onPress={() => void downloadSpeechModel(model().modelId)}
-                />
-              </If>
-              <If when={model().state === "downloading"}>
-                <Button
-                  label={tr("common.cancel")}
-                  variant="ghost"
-                  size="sm"
-                  accessibilityLabel={`speech-cancel-${model().modelId}`}
-                  onPress={() => void cancelSpeechModelDownload(model().modelId)}
-                />
-              </If>
-              <If when={model().state === "installed"}>
-                <RowValue text={tr("settings.speech.ready")} />
-              </If>
-            </View>
-            <If when={model().state === "downloading"}>
-              <View style={{ height: 4, borderRadius: radii.pill, backgroundColor: palette().segmentedTrackBg, overflow: "hidden" }}>
-                <View
-                  style={{
-                    height: "100%",
-                    width: `${Math.max(2, Math.min(100, model().progress?.percent ?? 0))}%`,
-                    borderRadius: radii.pill,
-                    backgroundColor: palette().accent,
-                  }}
-                />
-              </View>
-            </If>
-          </View>
-        )}
-      </Each>
-    </View>
-  );
-}
-
 /** States why a section is missing, instead of leaving a page silently empty. */
 /** How much an unsupported row fades (visual spec §3 Settings row). */
 const UNSUPPORTED_OPACITY = 0.4;
@@ -10055,9 +9960,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   if (page === "input") {
     return (
       <View style={{ gap: layout.sectionGap }}>
-        <FieldSection sectionId="input">
-          <SpeechModelsRow />
-        </FieldSection>
+        <FieldSection sectionId="input" />
         <Anchor id="send-policy">
           <SendPolicySection />
         </Anchor>
@@ -10839,6 +10742,11 @@ function ShortcutRow(props: { definition: ShortcutDefinition; first: boolean }) 
               <View accessibilityLabel={`shortcut-keys-${props.definition.id}`}>
                 <KeyCaps keystroke={effectiveKeystroke(props.definition)} />
               </View>
+              <If when={keystrokeReservedHere(effectiveKeystroke(props.definition))}>
+                <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+                  {tr("shortcuts.reservedByBrowser")}
+                </Text>
+              </If>
               <Button
                 label={tr("shortcuts.change")}
                 variant="ghost"

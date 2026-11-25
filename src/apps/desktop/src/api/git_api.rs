@@ -2331,6 +2331,40 @@ mod tests {
         assert_eq!(watch.repository_path, "");
     }
 
+    #[test]
+    fn a_remote_status_carries_the_same_fingerprint_as_a_local_read() {
+        // SSH workspaces parse porcelain here instead of reading through the
+        // service; the status must still reach clients with its fingerprint,
+        // equal to what a local read of the same state would carry.
+        let output = "## main...origin/main [ahead 2]\0M  staged.rs\0 M dirty.rs\0?? new.txt\0";
+        let parsed = parse_remote_git_status(output);
+        let value = serde_json::to_value(&parsed).unwrap();
+        let fingerprint = value["fingerprint"].as_str().unwrap();
+        assert_eq!(fingerprint, parsed.fingerprint());
+        let local = GitStatus {
+            staged: vec![GitFileStatus {
+                path: "staged.rs".into(),
+                status: "M".into(),
+                index_status: Some("M".into()),
+                workdir_status: None,
+            }],
+            unstaged: vec![GitFileStatus {
+                path: "dirty.rs".into(),
+                status: "M".into(),
+                index_status: None,
+                workdir_status: Some("M".into()),
+            }],
+            untracked: vec!["new.txt".into()],
+            conflicts: Vec::new(),
+            current_branch: "main".into(),
+            ahead: 2,
+            behind: 0,
+        };
+        assert_eq!(fingerprint, local.fingerprint());
+        let changed = parse_remote_git_status("## main...origin/main [ahead 2]\0M  staged.rs\0");
+        assert_ne!(changed.fingerprint(), fingerprint);
+    }
+
     fn remote_output(stdout: &str, stderr: &str, exit_code: i32) -> RemoteGitOutput {
         RemoteGitOutput {
             stdout: stdout.to_string(),

@@ -380,9 +380,22 @@ export function attachmentContexts() {
 export function attachmentPreviewSrc(entry: { dataUrl?: string; imagePath?: string }): string {
   if (entry.dataUrl) return entry.dataUrl;
   if (entry.imagePath && isLocalAttachmentPathAllowed()) {
-    return entry.imagePath.startsWith("file://") ? entry.imagePath : `file://${entry.imagePath}`;
+    return fileUrlOfPath(entry.imagePath);
   }
   return "";
+}
+
+/**
+ * A local path as a `file:` URL on every OS. `file://` + a Windows path reads
+ * its drive as a host (`file://C:/x`), so a drive path gets the empty host
+ * (`file:///C:/x`) and a UNC path its server (`\\srv\share` -> `file://srv/share`).
+ * POSIX paths are left as they are (a backslash is a character there).
+ */
+export function fileUrlOfPath(path: string): string {
+  if (path.startsWith("file://")) return path;
+  if (/^[A-Za-z]:[\\/]/.test(path)) return `file:///${path.replace(/\\/g, "/")}`;
+  if (path.startsWith("\\\\")) return `file:${path.replace(/\\/g, "/")}`;
+  return `file://${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
 export function pathOfFileUrl(url: string): string {
@@ -392,6 +405,9 @@ export function pathOfFileUrl(url: string): string {
   }
   if (/^\/+[A-Za-z]:[\\/]/.test(withoutScheme)) {
     withoutScheme = withoutScheme.replace(/^\/+/, "");
+  } else if (url.startsWith("file://") && withoutScheme && !withoutScheme.startsWith("/")) {
+    // `file://srv/share/x` names a UNC path: keep its server.
+    withoutScheme = `//${withoutScheme}`;
   }
   try {
     return decodeURIComponent(withoutScheme);

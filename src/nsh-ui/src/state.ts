@@ -29,7 +29,7 @@ import {
   refreshFleetNavigator,
   startFleetStore,
 } from "./fleetStore";
-import type { FleetSession, FleetWorkspace, WorkspaceKey } from "./fleetTypes";
+import type { FleetNavigator, FleetSession, FleetWorkspace, WorkspaceKey } from "./fleetTypes";
 import {
   currentLocale,
   loadAppLocale,
@@ -39,6 +39,7 @@ import {
   type AppLocale,
 } from "./i18n";
 import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
+import { reuseRows } from "./rowReuse";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import { clearPermissionsForSession } from "./permissionStore";
 import {
@@ -399,7 +400,19 @@ export async function loadShellLayout(): Promise<void> {
   }
 }
 
-/** Writes the current layout; called from an effect in the shell. */
+/** How long the layout must hold still before it is written (a drag changes it every frame). */
+export const SHELL_LAYOUT_PERSIST_DELAY_MS = 200;
+/** The layout waiting to be written, or `null` when the stored one is current. */
+let pendingShellLayout: Record<string, unknown> | null = null;
+let shellLayoutTimer: number | undefined;
+/** The text last handed to storage, so an unchanged layout is not written again. */
+let writtenShellLayout: string | null = null;
+
+/**
+ * Notes the current layout and writes it once it has held still for
+ * `SHELL_LAYOUT_PERSIST_DELAY_MS`; called from an effect in the shell, so it reads
+ * every field it stores. `flushShellLayout` writes a pending layout at once.
+ */
 export function persistShellLayout(): void {
   const doc = {
     drawerOpen: drawerOpen(),
@@ -413,7 +426,30 @@ export function persistShellLayout(): void {
   };
   // Never write before the stored document was read, or launch defaults win.
   if (!shellLayoutLoaded) return;
-  void Storage.setItem(SHELL_LAYOUT_STORAGE_KEY, JSON.stringify(doc)).catch(() => undefined);
+  pendingShellLayout = doc;
+  if (shellLayoutTimer !== undefined) clearTimeout(shellLayoutTimer);
+  shellLayoutTimer = setTimeout(() => void flushShellLayout(), SHELL_LAYOUT_PERSIST_DELAY_MS);
+}
+
+/**
+ * Writes the layout a debounced `persistShellLayout` still holds (window close, app
+ * going inactive, quit); the promise settles once storage took it and never rejects.
+ */
+export function flushShellLayout(): Promise<void> {
+  if (shellLayoutTimer !== undefined) {
+    clearTimeout(shellLayoutTimer);
+    shellLayoutTimer = undefined;
+  }
+  const doc = pendingShellLayout;
+  pendingShellLayout = null;
+  if (!doc) return Promise.resolve();
+  const text = JSON.stringify(doc);
+  if (text === writtenShellLayout) return Promise.resolve();
+  writtenShellLayout = text;
+  return Storage.setItem(SHELL_LAYOUT_STORAGE_KEY, text).catch(() => {
+    // A failed write is retried with the next change; forget it so that change is not skipped.
+    if (writtenShellLayout === text) writtenShellLayout = null;
+  });
 }
 
 export const workspaces = signal<WorkspaceRecord[]>([]);
@@ -440,6 +476,14 @@ export const deviceContext = computed<string>(() => {
 export const activeDeviceId = deviceContext;
 setFleetDeviceContextReader(() => deviceContext() || null);
 export const sessions = signal<SessionSummary[]>([]);
+/** O(1) lookup of the listed rows by session id (the first row of an id wins, as `find` would). */
+const sessionRowsById = computed<Map<string, SessionSummary>>(() => {
+  const index = new Map<string, SessionSummary>();
+  for (const row of sessions()) {
+    if (!index.has(row.sessionId)) index.set(row.sessionId, row);
+  }
+  return index;
+});
 export const sessionTotal = signal(0);
 export const activeSessionId = signal<string | null>(null);
 /** The device of the open session (`""` without the fleet layer). */
@@ -1843,7 +1887,7 @@ export function agentTypeOf(sessionId: string | null): string {
   if (!sessionId) return chosenAgentType();
   const bound = sessionAgentTypes()[sessionKey(sessionId)];
   if (bound) return bound;
-  const stored = sessions().find(row => row.sessionId === sessionId)?.agentType;
+  const stored = sessionRowsById().get(sessionId)?.agentType;
   if (stored && stored.trim()) return stored.trim();
   const fleetRow = fleetSessionRow(deviceOfSession(sessionId), sessionId);
   if (fleetRow?.agentType && fleetRow.agentType.trim()) return fleetRow.agentType.trim();
@@ -1858,7 +1902,7 @@ export function agentTypeOf(sessionId: string | null): string {
  */
 export function sessionStarted(sessionId: string | null): boolean {
   if (!sessionId) return false;
-  const row = sessions().find(item => item.sessionId === sessionId);
+  const row = sessionRowsById().get(sessionId);
   if (!row) return true;
   return row.messageCount === undefined || row.messageCount > 0;
 }
@@ -2106,21 +2150,32 @@ function sessionSummaryOf(row: FleetSession): SessionSummary {
   };
 }
 
-/** Puts the device context's index rows into the workspace and session lists. */
+/** The navigator view the lists were last filled from (`undefined` before the first fill). */
+let appliedFleetNavigator: FleetNavigator | null | undefined;
+
+/**
+ * Puts the device context's index rows into the workspace and session lists.
+ * A list whose rows did not change is not set again.
+ */
 function applyFleetWorkspaceRows(): void {
   if (!fleetActive()) return;
+  appliedFleetNavigator = untracked(() => fleetNavigator());
   const device = fleetDeviceById(deviceContext());
-  workspaces.set((device?.workspaces ?? []).map(workspaceRecordOf));
-  recentWorkspaces.set([]);
+  const currentWorkspaces = workspaces();
+  const nextWorkspaces = reuseRows(currentWorkspaces, (device?.workspaces ?? []).map(workspaceRecordOf), row => row.id);
+  if (nextWorkspaces !== currentWorkspaces) workspaces.set(nextWorkspaces);
+  if (recentWorkspaces().length > 0) recentWorkspaces.set([]);
   workspaceNavigatorOutdated.set(false);
   const key = activeWorkspaceKey();
   const row = key ? fleetWorkspaceByKey(key) : null;
   if (!row) return;
   const rows = row.sessions.map(sessionSummaryOf);
   const known = new Set(rows.map(item => item.sessionId));
+  const current = sessions();
   // Rows read from the owner beyond the index's newest stay below them.
-  const extra = sessions().filter(item => !known.has(item.sessionId) && item.workspaceId === row.workspaceId);
-  sessions.set([...rows, ...extra]);
+  const extra = current.filter(item => !known.has(item.sessionId) && item.workspaceId === row.workspaceId);
+  const next = reuseRows(current, [...rows, ...extra], item => item.sessionId);
+  if (next !== current) sessions.set(next);
   reconcileSessionReadState(rows);
   sessionTotal.set(row.sessionTotal);
   sessionHasMore.set(row.hasMore || sessionCursor() !== null);
@@ -2132,8 +2187,11 @@ function followFleetRows(): void {
   if (followingFleetRows) return;
   followingFleetRows = true;
   effect(() => {
-    fleetNavigator();
-    untracked(() => applyFleetWorkspaceRows());
+    const view = fleetNavigator();
+    // A caller that awaited the read already filled the lists from this view.
+    untracked(() => {
+      if (view !== appliedFleetNavigator) applyFleetWorkspaceRows();
+    });
   });
 }
 
