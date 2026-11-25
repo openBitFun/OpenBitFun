@@ -321,7 +321,9 @@ any of them can be the entry, there is no home device, and the user never picks 
   (`{"$secretRef": …}`) that the device needing them fills locally (`device_records_overview` tells the UI
   which MCP servers, SSH profiles and skill markets still need one here, and which routines run elsewhere).
   Device-bound items (command cards, another device's routines) are listed but materialized only on their
-  device; prose (personas, memory) keeps a conflict copy when a concurrent edit replaces local content.
+  device; prose (memory) keeps a conflict copy when a concurrent edit replaces local content. Assistants
+  stay on their device: their persona documents are not account records, so one device's assistant never
+  replaces another's.
 - **Compatibility.** An entry without `fleet` on its hello leaves the UI on that one backend (with an "update
   this device" notice) and its legacy Peer Device Mode ([peer-device-mode.md](peer-device-mode.md)). Fleet DTOs
   read tolerantly: every field defaults, unknown fields are ignored, every enum has an `Unknown` variant.

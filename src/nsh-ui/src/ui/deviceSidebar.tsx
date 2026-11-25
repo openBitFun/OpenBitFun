@@ -139,7 +139,8 @@ function TreeRow(props: {
   expanded?: boolean;
   onPress: () => void;
   onHover?: (hovered: boolean) => void;
-  leading: JSX.Element;
+  /** The 16 px glyph slot; a row without one (a device header) starts at its text. */
+  leading?: JSX.Element;
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
@@ -180,9 +181,11 @@ function TreeRow(props: {
           userSelect: "none",
         }}
       >
-        <View style={{ width: space.lg, height: space.lg, alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          {props.leading}
-        </View>
+        <If when={props.leading !== undefined}>
+          <View style={{ width: space.lg, height: space.lg, alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            {props.leading}
+          </View>
+        </If>
         {props.children}
       </View>
       {props.trailing}
@@ -548,16 +551,6 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
           if (!next) resetDeviceVisibleCounts(props.node.deviceId);
           deviceFold.update(all => ({ ...all, [props.node.deviceId]: next }));
         }}
-        leading={
-          <If
-            when={hovered()}
-            else={<Icon name={deviceGlyphIcon(props.node.kind)} size={16} color={palette().chromeTextMuted} />}
-          >
-            <View style={rotatingChevronStyle(open())}>
-              <Icon name="chevron-right" size={12} color={palette().chromeTextMuted} />
-            </View>
-          </If>
-        }
         trailing={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
             <If when={!(hovered() || menuOpen() || touchFirst)}>
@@ -586,11 +579,13 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
           </View>
         }
       >
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        {/* A device reads as the heading of its workspaces: small caps-style caption, no glyph or indent. */}
+        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
           <Text
             style={{
-              ...textStyle("label", { color: offline() ? palette().chromeTextMuted : palette().chromeText }),
+              ...textStyle("caption", { uppercase: true, color: palette().chromeTextMuted }),
               fontWeight: "600",
+              opacity: offline() ? 0.6 : 1,
               flexShrink: 1,
               minWidth: 0,
               numberOfLines: 1,
@@ -600,20 +595,26 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
             {props.node.name}
           </Text>
           <If when={props.node.isClient}>
-            <Text style={{ ...textStyle("label", { color: palette().chromeTextMuted }), flexShrink: 0, numberOfLines: 1 }}>
+            <Text style={{ ...textStyle("caption", { color: palette().chromeTextMuted }), flexShrink: 0, numberOfLines: 1 }}>
               {tr("device.thisDevice")}
             </Text>
+          </If>
+          {/* The fold state, shown while pointed at (a folded device always says so). */}
+          <If when={hovered() || !open()}>
+            <View style={rotatingChevronStyle(open())}>
+              <Icon name="chevron-right" size={10} color={palette().chromeTextMuted} />
+            </View>
           </If>
         </View>
       </TreeRow>
       <If when={open()}>
-        <WorkspaceList node={props.node} indent={INDENT} onNavigate={props.onNavigate} />
+        <WorkspaceList node={props.node} indent={0} single={false} onNavigate={props.onNavigate} />
       </If>
     </View>
   );
 }
 
-function WorkspaceList(props: { node: DeviceTreeNode; indent: number; onNavigate?: () => void }) {
+function WorkspaceList(props: { node: DeviceTreeNode; indent: number; single: boolean; onNavigate?: () => void }) {
   return (
     <View style={{ gap: space.hair }}>
       <Each of={props.node.workspaces} key={workspace => workspace.workspaceId}>
@@ -624,7 +625,7 @@ function WorkspaceList(props: { node: DeviceTreeNode; indent: number; onNavigate
       <RecentlyClosed node={props.node} indent={props.indent} />
       {/* An empty device offers its New workspace row when it is the only one or this device;
           other devices keep the action on their header, so a long device list stays calm. */}
-      <If when={props.node.workspaces.length === 0 && (props.indent === 0 || props.node.isClient)}>
+      <If when={props.node.workspaces.length === 0 && (props.single || props.node.isClient)}>
         <QuietRow
           indent={props.indent}
           icon="folder-plus"
@@ -729,7 +730,7 @@ function RecentlyClosed(props: { node: DeviceTreeNode; indent: number }) {
   );
 }
 
-/** The section title over the tree: "Workspaces" with one device, "Devices" with several. */
+/** The section title over a single device's tree ("Workspaces"); several devices head their own lists. */
 function SectionHeader(props: { label: string; action?: JSX.Element }) {
   return (
     <View
@@ -762,7 +763,8 @@ function SectionHeader(props: { label: string; action?: JSX.Element }) {
 /**
  * The account's runtime devices → workspaces → sessions. With one device its
  * workspaces sit directly under a "Workspaces" header; with several, each
- * device is a foldable header that carries its own new-workspace action.
+ * device's name (upper case, no glyph) heads its workspaces at the same indent,
+ * folds them, and carries its own new-workspace action and ⋯.
  */
 export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Element {
   const nodes = deviceTree;
@@ -773,10 +775,12 @@ export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Eleme
         when={single()}
         else={
           <>
-            <SectionHeader label={tr("nav.devices")} />
-            <Each of={nodes()} key={node => node.deviceId || "local"}>
-              {node => <DeviceSection node={node()} onNavigate={props.onNavigate} />}
-            </Each>
+            {/* No "Devices" title: each device row heads its own workspaces, a gap apart. */}
+            <View style={{ gap: space.md }}>
+              <Each of={nodes()} key={node => node.deviceId || "local"}>
+                {node => <DeviceSection node={node()} onNavigate={props.onNavigate} />}
+              </Each>
+            </View>
           </>
         }
       >
@@ -809,7 +813,7 @@ export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Eleme
             </View>
           }
         />
-        <If when={nodes()[0]}>{node => <WorkspaceList node={node()} indent={0} onNavigate={props.onNavigate} />}</If>
+        <If when={nodes()[0]}>{node => <WorkspaceList node={node()} indent={0} single={true} onNavigate={props.onNavigate} />}</If>
       </If>
     </View>
   );

@@ -1,6 +1,6 @@
 //! Account records on the CLI host: the Core bindings (quick actions,
 //! custom agents and modes, skills, routines, MCP server shapes, the
-//! consolidated memory, assistant personas, bot binding metadata) on this
+//! consolidated memory, bot binding metadata) on this
 //! device's copy of the account replica, the one settings sync uses
 //! (`account_settings_sync`). A CLI host holds and relays every account
 //! collection (desktop cards and pets too) even where it applies none of

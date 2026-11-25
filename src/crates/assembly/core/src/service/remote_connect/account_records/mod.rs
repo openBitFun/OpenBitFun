@@ -7,8 +7,12 @@
 //! account's devices (obp `fleet::replica`). Nothing is stored on a server.
 //! This module holds the bindings whose owners live in Core (quick actions,
 //! custom agents and modes, skills, routines, MCP server shapes, the
-//! consolidated memory, assistant personas) and starts the binder with the
-//! host's own bindings added (the desktop adds cards, pets and SSH profiles).
+//! consolidated memory) and starts the binder with the host's own bindings
+//! added (the desktop adds cards, pets and SSH profiles). Assistants are the
+//! device's own: their persona documents (`IDENTITY.md`, `SOUL.md`,
+//! `USER.md`) are not bound, so one device's assistant never replaces
+//! another's (records older builds still publish under
+//! `assistants.personas` are neither applied nor answered here).
 //! The switch is the device's account sync switch
 //! (`settings_sync::SWITCH_PATH`); the binding state is kept per account
 //! under `<user data>/account_sync/`.
@@ -27,7 +31,6 @@ pub mod agents;
 #[cfg(feature = "mcp-runtime")]
 pub mod mcp;
 pub mod memory_document;
-pub mod personas;
 pub mod quick_actions;
 #[cfg(feature = "scheduled-jobs")]
 pub mod routines;
@@ -72,10 +75,6 @@ pub fn core_collections(config: Arc<ConfigService>) -> Vec<Arc<dyn LocalCollecti
         )),
         Arc::new(memory_document::MemoryRecords::new(
             paths.memories_root_dir(),
-        )),
-        Arc::new(personas::PersonaRecords::new(
-            paths.assistant_workspace_base_dir(None),
-            Some(personas::workspace_create()),
         )),
         Arc::new(bots::BotBindingRecords),
     ];
@@ -137,7 +136,6 @@ pub fn start(
             (paths.user_agents_dir(), false),
             (paths.user_skills_dir(), true),
             (paths.memories_root_dir(), false),
-            (paths.assistant_workspace_base_dir(None), true),
         ];
         let tx = merged_tx.clone();
         openbitfun_services_integrations::file_watch::PathChangeWatcher::watch_paths(
@@ -307,3 +305,21 @@ pub fn conflict_copy_path(path: &Path, tag: &str) -> PathBuf {
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn assistants_stay_on_their_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = quick_actions::tests_support_config(dir.path()).await;
+        let names: Vec<&str> = core_collections(config)
+            .iter()
+            .map(|collection| collection.collection())
+            .collect();
+        // One device's assistant persona must never replace another device's.
+        assert!(!names.contains(&PERSONAS_COLLECTION));
+        assert!(names.contains(&MEMORY_COLLECTION));
+    }
+}

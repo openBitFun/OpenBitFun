@@ -2,7 +2,7 @@
 // account's records beyond settings.
 //
 // Display only. The backend keeps the account's quick actions, agents,
-// skills, routines, MCP server shapes, SSH profiles, personas, memory, desktop
+// skills, routines, MCP server shapes, SSH profiles, memory, desktop
 // cards, pets and bot metadata in the account replica (no server keeps them)
 // and answers `device_records_overview` with the few facts a list draws: the
 // routines that run on another device, and the SSH, MCP and skill market

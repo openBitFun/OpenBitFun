@@ -48,7 +48,9 @@ pub const MCP_SERVERS_COLLECTION: &str = "mcp.servers";
 pub const SSH_PROFILES_COLLECTION: &str = "ssh.profiles";
 /// The consolidated memory document (files as blobs).
 pub const MEMORY_COLLECTION: &str = "memory";
-/// Assistant persona documents (files as blobs), a record per assistant.
+/// Assistant persona documents (files as blobs), a record per assistant
+/// folder. Retired: assistants stay on their device, so no host binds it;
+/// kept so records older builds publish stay within the replica's budgets.
 pub const PERSONAS_COLLECTION: &str = "assistants.personas";
 /// Desktop card definitions (geometry and fetched data stay on the device).
 pub const DESKTOP_CARDS_COLLECTION: &str = "desktop.cards";
