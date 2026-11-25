@@ -27,6 +27,7 @@ import { closeSideQuestion, sideQuestionOpen } from "./btwStore";
 import { fleetDeviceById, fleetSessionRow, fleetWorkspaceByKey } from "./fleetStore";
 import { isCommandUnavailable } from "./hostCommands";
 import { tr } from "./i18n";
+import { noteTranscriptSource } from "./toolDetailStore";
 import { clearPermissionsForSession } from "./permissionStore";
 import { clearPromptSuggestion, hydratePromptSuggestionFromTranscript } from "./promptSuggestionStore";
 import { markSessionSeen } from "./sessionStatusStore";
@@ -523,6 +524,7 @@ async function fetchSecondaryEarlierPage(
         workspace_id: workspaceId,
         limit: pageSize,
         before_turn_index: earliest,
+        tool_detail: "summary",
       },
       secondaryRouteOptions(device),
     );
@@ -536,6 +538,7 @@ async function fetchSecondaryEarlierPage(
     }
     if (view.mode !== "before") return;
     const older = Array.isArray(view.turns) ? view.turns : [];
+    noteTranscriptSource(older, { sessionId, workspaceId, deviceId: device });
     const more = Boolean(view.hasEarlier);
     if (older.length > 0) {
       secondaryBeforePrependListener?.();
@@ -593,7 +596,7 @@ export async function loadSecondaryTurns(
             session_id: sessionId,
             workspace_id: workspaceId,
             ...(limit ? { limit } : {}),
-            ...(cursor ? { cursor } : {}),
+            ...(cursor ? { cursor } : { tool_detail: "summary" }),
           },
           secondaryRouteOptions(device),
         );
@@ -606,6 +609,7 @@ export async function loadSecondaryTurns(
               session_id: sessionId,
               workspace_id: workspaceId,
               limit: fallbackLimit,
+              tool_detail: "summary",
             },
             secondaryRouteOptions(device),
           );
@@ -640,6 +644,7 @@ export async function loadSecondaryTurns(
           : Array.isArray(view.turns)
             ? view.turns
             : [];
+      noteTranscriptSource(view.turns, { sessionId, workspaceId, deviceId: device });
       secondaryTranscriptCursor = view.cursor ? { sessionKey: key, cursor: view.cursor } : null;
       batch(() => {
         secondaryTranscriptNotice.set("");

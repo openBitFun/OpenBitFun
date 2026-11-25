@@ -923,20 +923,14 @@ function pushFailure(message: string): string {
 
 async function loadGitBranches(ws: WorkspaceRecord, ticket: number): Promise<void> {
   try {
-    let raw: Array<Record<string, unknown>>;
-    try {
-      raw = await invokeCommand<Array<Record<string, unknown>>>("git_get_enhanced_branches", {
-        workspaceId: ws.id,
-        repositoryPath: ws.rootPath,
-        includeRemote: true,
-      });
-    } catch {
-      raw = await invokeCommand<Array<Record<string, unknown>>>("git_get_branches", {
-        workspaceId: ws.id,
-        repositoryPath: ws.rootPath,
-        includeRemote: true,
-      });
-    }
+    // The plain list carries every field the branch rows show. The enhanced one
+    // test-merges each local branch into HEAD, which keeps a core busy for
+    // seconds in a repository with many branches, on every open and HEAD move.
+    const raw = await invokeCommand<Array<Record<string, unknown>>>("git_get_branches", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      includeRemote: true,
+    });
     if (ticket !== probeTicket) return;
     gitBranches.set(
       (Array.isArray(raw) ? raw : [])

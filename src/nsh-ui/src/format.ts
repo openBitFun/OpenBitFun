@@ -71,6 +71,9 @@ export interface ToolCallView {
   result?: unknown;
   /** What the model was told the result was, when the host kept it apart. */
   resultForAssistant?: string;
+  /** `result` is a preview; `detailTurn` is where it is read whole from. */
+  detailOmitted?: boolean;
+  detailTurn?: TranscriptTurnView;
   /** Tool execution duration in milliseconds, when persisted. */
   durationMs?: number;
   /** What a subagent the call started did, as the host nested it. */
@@ -116,7 +119,7 @@ function summarizeInput(value: unknown, limit = 160): string {
 }
 
 /** A tool item of the view as a card reads it. */
-export function toolCallOf(tool: TranscriptToolView): ToolCallView {
+export function toolCallOf(tool: TranscriptToolView, turn?: TranscriptTurnView): ToolCallView {
   const preview = typeof tool.inputPreview === "string" && tool.inputPreview.trim() ? tool.inputPreview.trim() : "";
   return {
     ...(tool.id ? { id: tool.id } : {}),
@@ -128,6 +131,7 @@ export function toolCallOf(tool: TranscriptToolView): ToolCallView {
     ...(tool.error ? { error: tool.error } : {}),
     ...(tool.result === undefined || tool.result === null ? {} : { result: tool.result }),
     ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
+    ...(tool.detailOmitted && turn ? { detailOmitted: true, detailTurn: turn } : {}),
     ...(typeof tool.durationMs === "number" ? { durationMs: tool.durationMs } : {}),
     ...(tool.subagentItems?.length ? { subagentItems: tool.subagentItems } : {}),
   };
@@ -175,6 +179,20 @@ export type TranscriptItem =
 export function turnItems(turn: unknown): TranscriptItem[] {
   const view = viewOf(turn);
   if (!view) return [];
+  const cached = turnItemsCache.get(view);
+  if (cached) return cached;
+  const items = readTurnItems(view);
+  turnItemsCache.set(view, items);
+  return items;
+}
+
+/**
+ * A turn the host answered is replaced, never edited, so what it draws is read
+ * once: a long transcript re-projects on every page of older turns.
+ */
+const turnItemsCache = new WeakMap<TranscriptTurnView, TranscriptItem[]>();
+
+function readTurnItems(view: TranscriptTurnView): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   for (let index = 0; index < view.items.length; index += 1) {
     const item = view.items[index]!;
@@ -193,7 +211,7 @@ export function turnItems(turn: unknown): TranscriptItem[] {
       });
       continue;
     }
-    const call = toolCallOf(item.tool);
+    const call = toolCallOf(item.tool, view);
     items.push({ kind: "tool", key: `tool:${item.tool.id || `${view.turnId}-${index}-${item.tool.name}`}`, call });
   }
   return groupExploreItems(items);

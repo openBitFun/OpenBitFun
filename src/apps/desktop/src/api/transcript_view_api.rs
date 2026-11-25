@@ -24,7 +24,7 @@ use openbitfun_core::service::snapshot::open_snapshot_history_for_workspace;
 use openbitfun_core::{
     is_prompt_suggestion_enabled, resolved_transcript_prompt_suggestion,
     session_transcript_view_before_from_turns, session_transcript_view_from_turns,
-    SessionTranscriptView, TranscriptTurnFileChange,
+    SessionTranscriptView, TranscriptTurnFileChange, TRANSCRIPT_TOOL_DETAIL_SUMMARY,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -67,6 +67,10 @@ pub struct GetSessionTranscriptViewRequest {
     /// index (`mode: "before"`) without re-reading newer turns.
     #[serde(default, alias = "beforeTurnIndex")]
     pub before_turn_index: Option<usize>,
+    /// `"summary"` answers settled turns with shortened tool results
+    /// (`detailOmitted`); anything else, and absence, answers them whole.
+    #[serde(default, alias = "toolDetail")]
+    pub tool_detail: Option<String>,
 }
 
 // @backend-command
@@ -188,6 +192,9 @@ pub async fn get_session_transcript_view(
         view.prompt_suggestion =
             resolved_transcript_prompt_suggestion(metadata.as_ref(), &page.turns);
     }
+    if request.tool_detail.as_deref() == Some(TRANSCRIPT_TOOL_DETAIL_SUMMARY) {
+        view.summarize_tool_results();
+    }
     Ok(DesktopSessionTranscriptView { view, running_turn })
 }
 
@@ -206,13 +213,16 @@ mod tests {
         assert_eq!(snake.limit, Some(30));
         assert!(snake.cursor.is_none());
         assert!(snake.before_turn_index.is_none());
+        assert!(snake.tool_detail.is_none());
         let camel: GetSessionTranscriptViewRequest = serde_json::from_value(serde_json::json!({
-            "sessionId": "s2", "workspaceId": "w2", "cursor": "tv1:0:abc:t", "beforeTurnIndex": 12
+            "sessionId": "s2", "workspaceId": "w2", "cursor": "tv1:0:abc:t", "beforeTurnIndex": 12,
+            "toolDetail": "summary"
         }))
         .unwrap();
         assert_eq!(camel.session_id, "s2");
         assert_eq!(camel.cursor.as_deref(), Some("tv1:0:abc:t"));
         assert_eq!(camel.before_turn_index, Some(12));
+        assert_eq!(camel.tool_detail.as_deref(), Some("summary"));
         assert_eq!(camel.workspace_path, "");
         let snake_before: GetSessionTranscriptViewRequest =
             serde_json::from_value(serde_json::json!({

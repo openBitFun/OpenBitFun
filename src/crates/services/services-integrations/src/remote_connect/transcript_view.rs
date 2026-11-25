@@ -69,6 +69,12 @@ const MAX_REDUNDANT_RESULT_FOR_ASSISTANT_BYTES: usize = 4_096;
 
 const MAX_TOOL_RESULT_TRAVERSAL_DEPTH: usize = 8;
 
+/// What a summary read (`toolDetail: "summary"`) keeps of one settled call's
+/// result: enough for its collapsed row (exit code, short fields, a first line).
+const SUMMARY_RESULT_STRING_BYTES: usize = 256;
+const SUMMARY_RESULT_TOTAL_BYTES: usize = 1_024;
+const SUMMARY_RESULT_ARRAY_ITEMS: usize = 8;
+
 /// The cursor format version; an unknown prefix is answered with a full view.
 const CURSOR_PREFIX: &str = "tv1";
 
@@ -150,6 +156,104 @@ fn bound_tool_result_value(
         other => other,
     }
 }
+
+/// Shortens one result value in place for a summary read; whether it lost anything.
+fn summarize_tool_result_value(value: &mut serde_json::Value, budget: &mut usize) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            if should_preserve_raw_tool_string(text) {
+                return false;
+            }
+            // A JSON document in a string is read structurally by its row (its
+            // exit code, say); half of one would read as nothing.
+            if text.trim_start().starts_with('{') && text.len() <= SUMMARY_RESULT_TOTAL_BYTES {
+                return false;
+            }
+            let cap = (*budget).min(SUMMARY_RESULT_STRING_BYTES);
+            let omitted = text.len() > cap.max(64);
+            if omitted {
+                *text = truncate_utf8_with_ellipsis(std::mem::take(text), cap.max(64));
+            }
+            *budget = budget.saturating_sub(text.len());
+            omitted
+        }
+        serde_json::Value::Array(items) => {
+            let mut omitted = items.len() > SUMMARY_RESULT_ARRAY_ITEMS;
+            items.truncate(SUMMARY_RESULT_ARRAY_ITEMS);
+            for entry in items {
+                omitted |= summarize_tool_result_value(entry, budget);
+            }
+            omitted
+        }
+        serde_json::Value::Object(map) => {
+            let mut omitted = false;
+            for entry in map.values_mut() {
+                omitted |= summarize_tool_result_value(entry, budget);
+            }
+            omitted
+        }
+        _ => false,
+    }
+}
+
+/// Whether a call's collapsed row already draws its whole result.
+fn summary_keeps_tool_result(tool: &TranscriptToolView) -> bool {
+    tool.status == "running"
+        || tool.plan.is_some()
+        || GENUI_TOOL_NAMES.contains(&tool.name.as_str())
+        || CHAT_TOOL_INPUT_NAMES.contains(&tool.name.as_str())
+        // An MCP result may carry the UI resource its app view mounts.
+        || tool.name.starts_with("mcp_")
+}
+
+fn summarize_tool(tool: &mut TranscriptToolView) {
+    for item in &mut tool.subagent_items {
+        if let TranscriptItemView::Tool { tool, .. } = item {
+            summarize_tool(tool);
+        }
+    }
+    if summary_keeps_tool_result(tool) {
+        return;
+    }
+    let mut budget = SUMMARY_RESULT_TOTAL_BYTES;
+    if let Some(result) = tool.result.as_mut() {
+        tool.detail_omitted |= summarize_tool_result_value(result, &mut budget);
+    }
+    let result_has_text = result_has_display_text(tool.result.as_ref());
+    if let Some(text) = tool.result_for_assistant.take() {
+        if should_preserve_raw_tool_string(&text) {
+            tool.result_for_assistant = Some(text);
+        } else if result_has_text {
+            tool.detail_omitted = true;
+        } else {
+            tool.detail_omitted |= text.len() > SUMMARY_RESULT_STRING_BYTES;
+            tool.result_for_assistant = Some(truncate_utf8_with_ellipsis(
+                text,
+                SUMMARY_RESULT_STRING_BYTES,
+            ));
+        }
+    }
+}
+
+impl SessionTranscriptView {
+    /// Answers `toolDetail: "summary"`: settled turns keep what a collapsed row
+    /// shows of each tool result, so opening a long session does not ship (and
+    /// the client does not parse and hold) megabytes nobody opened. A client
+    /// reads the one turn whole when a card in it is opened.
+    pub fn summarize_tool_results(&mut self) {
+        for turn in self.turns.iter_mut().filter(|turn| turn.settled) {
+            for item in &mut turn.items {
+                if let TranscriptItemView::Tool { tool, .. } = item {
+                    summarize_tool(tool);
+                }
+            }
+        }
+    }
+}
+
+/// The `toolDetail` value that asks for [`SessionTranscriptView::summarize_tool_results`].
+/// Any other value (and its absence) answers whole results.
+pub const TRANSCRIPT_TOOL_DETAIL_SUMMARY: &str = "summary";
 
 fn value_has_display_text(value: &serde_json::Value, depth: usize) -> bool {
     if depth > 3 {
@@ -248,6 +352,10 @@ pub struct TranscriptToolView {
     pub result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_for_assistant: Option<String>,
+    /// A summary read shortened `result` / `resultForAssistant`; reading the turn
+    /// without `toolDetail` answers them whole. Only set when the client asked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detail_omitted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     pub start_ms: u64,
@@ -518,6 +626,7 @@ fn transcript_turn_view(turn: RemoteChatHistoryTurn) -> TranscriptTurnView {
                         error: item.error,
                         result: bounded_result,
                         result_for_assistant: bounded_result_for_assistant,
+                        detail_omitted: false,
                         duration_ms: item.duration_ms,
                         start_ms: item.start_ms,
                         plan,
@@ -1283,5 +1392,144 @@ mod tests {
         assert!(matches.len() <= MAX_TOOL_RESULT_ARRAY_ITEMS + 1);
         let wide_serialized = serde_json::to_string(wide_res).unwrap();
         assert!(wide_serialized.len() <= MAX_TRANSCRIPT_TOOL_RESULT_TOTAL_BYTES + 4_096);
+    }
+
+    #[test]
+    fn a_summary_read_shortens_settled_results_and_says_so() {
+        let tool =
+            |name: &str, status: &str, result: serde_json::Value, assistant: Option<&str>| {
+                TranscriptToolView {
+                    id: name.to_string(),
+                    name: name.to_string(),
+                    input: serde_json::json!({"new_string": "n".repeat(4_000)}),
+                    input_preview: None,
+                    status: status.to_string(),
+                    success: Some(true),
+                    error: None,
+                    result: Some(result),
+                    result_for_assistant: assistant.map(str::to_string),
+                    detail_omitted: false,
+                    duration_ms: None,
+                    start_ms: 1,
+                    plan: None,
+                    subagent_items: Vec::new(),
+                }
+            };
+        let long = "x".repeat(20_000);
+        let cjk = "\u{4E2D}".repeat(4_000);
+        let turn = |settled: bool| TranscriptTurnView {
+            settled,
+            items: vec![
+                tool(
+                    "Bash",
+                    "completed",
+                    serde_json::json!({"output": long, "exit_code": 3}),
+                    Some(&long),
+                ),
+                tool(
+                    "Read",
+                    "completed",
+                    serde_json::json!({"content": cjk}),
+                    None,
+                ),
+                tool(
+                    "LS",
+                    "completed",
+                    serde_json::json!((0..100).collect::<Vec<u32>>()),
+                    None,
+                ),
+                tool(
+                    "GenUI",
+                    "completed",
+                    serde_json::json!({"html": long}),
+                    None,
+                ),
+                tool(
+                    "mcp__x__y",
+                    "completed",
+                    serde_json::json!({"content": long}),
+                    None,
+                ),
+                tool(
+                    "Fig",
+                    "completed",
+                    serde_json::json!({"output": format!("\u{E200}{long}")}),
+                    None,
+                ),
+                tool(
+                    "Short",
+                    "completed",
+                    serde_json::json!({"output": "ok"}),
+                    None,
+                ),
+                tool("Now", "running", serde_json::json!({"output": long}), None),
+            ]
+            .into_iter()
+            .map(|tool| TranscriptItemView::Tool {
+                round_index: 0,
+                tool,
+            })
+            .collect(),
+            ..build_transcript_view(vec![RemoteChatHistoryTurn::default()]).remove(0)
+        };
+        let mut view = SessionTranscriptView {
+            session_id: "s".into(),
+            mode: "full".into(),
+            kept_through_index: None,
+            turns: vec![turn(true), turn(false)],
+            cursor: None,
+            has_earlier: false,
+            prompt_suggestion: None,
+        };
+        let untouched = view.turns[1].clone();
+        view.summarize_tool_results();
+        assert_eq!(
+            view.turns[1], untouched,
+            "a turn still running is read whole"
+        );
+        let tools: Vec<&TranscriptToolView> = view.turns[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItemView::Tool { tool, .. } => Some(tool),
+                _ => None,
+            })
+            .collect();
+        let omitted: Vec<&str> = tools
+            .iter()
+            .filter(|tool| tool.detail_omitted)
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert_eq!(omitted, ["Bash", "Read", "LS"]);
+        let bash = tools[0];
+        assert_eq!(bash.result.as_ref().unwrap()["exit_code"], 3);
+        assert!(
+            bash.result.as_ref().unwrap()["output"]
+                .as_str()
+                .unwrap()
+                .len()
+                < 300
+        );
+        assert!(bash.result_for_assistant.is_none());
+        assert!(
+            tools[1].result.as_ref().unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .len()
+                < 300
+        );
+        assert_eq!(
+            tools[2].result.as_ref().unwrap().as_array().unwrap().len(),
+            8
+        );
+        // Inputs carry the diff a collapsed edit counts its lines from.
+        assert_eq!(bash.input["new_string"].as_str().unwrap().len(), 4_000);
+        let json = serde_json::to_value(tools[6]).unwrap();
+        assert!(json.get("detailOmitted").is_none());
+        // An answer from a host that never shortens reads as whole.
+        let mut legacy = serde_json::to_value(bash).unwrap();
+        legacy.as_object_mut().unwrap().remove("detailOmitted");
+        let legacy: TranscriptToolView = serde_json::from_value(legacy).unwrap();
+        assert!(!legacy.detail_omitted);
     }
 }

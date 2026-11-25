@@ -17,7 +17,6 @@ interface WorkbenchFixtures {
   gitTrustState?: "trusted" | "trust_required" | "not_a_repository";
   gitTrustOutcomeState?: "trusted" | "trust_required";
   quickCommitFails?: boolean;
-  enhancedBranchesFails?: boolean;
   miniapps?: Array<Record<string, unknown>>;
   runningWorkers?: string[];
   /** `git_push` without an upstream fails the way git does unless the host publishes it (`publishIfNoUpstream`). */
@@ -504,9 +503,6 @@ function createWorkbenchBackend(
         if (filePath === "/repo/scratch.txt") return { handled: true, value: "scratch line one\nscratch line two\n" };
         return { handled: false };
       }
-      case "git_get_enhanced_branches":
-        if (fx.enhancedBranchesFails) return { handled: true, error: "enhanced branches unsupported" };
-        return { handled: true, value: branches };
       case "git_get_branches":
         return { handled: true, value: branches };
       case "git_checkout_branch": {
@@ -821,7 +817,7 @@ test("git: trust_required recovery and not_a_repository initialize with agent", 
 });
 
 test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, history remote skip, and compact AuxPane", async () => {
-  const backend = createWorkbenchBackend({}, { quickCommitFails: true, enhancedBranchesFails: true });
+  const backend = createWorkbenchBackend({}, { quickCommitFails: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openToolScene(app, "git");
@@ -830,6 +826,9 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   expect(app.texts()).toContain("main.rs");
   expect(app.texts()).toContain("scratch.txt");
   expect(app.texts()).toContain("conflict.txt");
+  // The branch list never asks for the per-branch merge analysis.
+  expect(backend.calls.some(c => c.action === "git_get_branches")).toBe(true);
+  expect(backend.calls.some(c => c.action === "git_get_enhanced_branches")).toBe(false);
 
   // Select staged file to inspect staged diff, then unstage & discard working/untracked changes
   await app.press("label:git-staged-main.rs");

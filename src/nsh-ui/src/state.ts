@@ -78,6 +78,7 @@ import {
   type TranscriptTurnView,
   type WorkspaceRecord,
 } from "./api";
+import { noteTranscriptSource } from "./toolDetailStore";
 
 /**
  * Routes. `openbitfun` (the conversation), `inbox`, `sessions` (one session),
@@ -755,6 +756,7 @@ export function removeSessionFromEvent(sessionId: string): void {
     sessions.update(current => current.filter(item => item.sessionId !== sessionId));
     sessionTotal.update(total => Math.max(0, total - 1));
   }
+  forgetRecentTails(sessionKey(sessionId));
   if (activeSessionId() === sessionId) {
     setActiveSession(null);
     sessionTurns.set([]);
@@ -864,6 +866,7 @@ export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Pr
 }
 
 function clearWorkspaceSelection(): void {
+  forgetRecentTails();
   batch(() => {
     setActiveWorkspaceKey(null);
     setActiveSession(null);
@@ -1124,10 +1127,11 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
         composerText.set("");
         clearAttachments();
       }
+      const tail = swapRecentTail(previousKey, key);
       transcriptCursor = null;
       transcriptHasEarlier.set(false);
-      sessionTurns.set([]);
-      turnsLoading.set(true);
+      sessionTurns.set(tail);
+      turnsLoading.set(tail.length === 0);
       clearPendingTurn();
       clearStreamedText();
       turnError.set("");
@@ -1142,6 +1146,40 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   // A question asked before this surface looked at the session has no event left
   // to replay, so the host's mailbox is read on every open.
   void loadQuestionMailbox(sessionId);
+}
+
+/**
+ * The tail of the sessions last left, for their first paint on return. Hidden
+ * transcripts are otherwise released: what is kept is only as much as an open
+ * asks the host for, of a few sessions, and never an oversized turn.
+ */
+const RECENT_TAIL_SESSIONS = 4;
+const RECENT_TAIL_MAX_ITEMS = 160;
+const recentTails = new Map<string, TranscriptTurnView[]>();
+
+/**
+ * Keeps the tail of the transcript being left and answers the one being entered,
+ * so going back to a session does not pass through an empty view. It is a first
+ * paint, not a truth: the read that follows is the full one and replaces it.
+ */
+function swapRecentTail(leaving: string | null, entering: string): TranscriptTurnView[] {
+  if (leaving && transcriptCursor?.sessionKey === leaving && !untracked(turnsLoading)) {
+    const tail = untracked(sessionTurns).slice(-INITIAL_FAST_TURN_COUNT);
+    recentTails.delete(leaving);
+    if (tail.length > 0 && countTranscriptItems(tail) <= RECENT_TAIL_MAX_ITEMS) {
+      recentTails.set(leaving, tail);
+      if (recentTails.size > RECENT_TAIL_SESSIONS) {
+        recentTails.delete(recentTails.keys().next().value!);
+      }
+    }
+  }
+  return recentTails.get(entering) ?? [];
+}
+
+/** Forgets kept tails: one session's, or all when the machine being read changes. */
+function forgetRecentTails(key?: string): void {
+  if (key) recentTails.delete(key);
+  else recentTails.clear();
 }
 
 /**
@@ -1297,6 +1335,7 @@ async function fetchEarlierTurnsPage(
     if (reqSeq !== earlierLoadSeq || turnsLoadSeq !== loadSeqSnapshot || activeSessionKey() !== key) {
       return;
     }
+    noteTranscriptSource(view.turns, { sessionId, workspaceId, deviceId: activeSessionDevice() });
     if (view.mode !== "before") return;
     const older = Array.isArray(view.turns) ? view.turns : [];
     const more = Boolean(view.hasEarlier);
@@ -1402,6 +1441,7 @@ export async function loadTurns(
           : Array.isArray(view.turns)
             ? view.turns
             : [];
+      noteTranscriptSource(view.turns, { sessionId, workspaceId, deviceId: activeSessionDevice() });
       transcriptCursor = view.cursor ? { sessionKey: key, cursor: view.cursor } : null;
       batch(() => {
         transcriptNotice.set("");
@@ -1933,6 +1973,7 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     clearPermissionsForSession(sessionId, device);
     clearPromptSuggestion(sessionId, device);
     clearPendingTurn(sessionId, key);
+    forgetRecentTails(key);
     if (activeSessionId() === sessionId) {
       cancelPendingTranscriptBackfill();
       transcriptCursor = null;

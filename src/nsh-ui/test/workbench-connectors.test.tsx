@@ -488,7 +488,6 @@ test("files and git stack list then detail with a back control when the scene is
       return "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old\n+new staged line";
     },
     git_get_branches: () => [],
-    git_get_enhanced_branches: () => [],
     git_get_commits: () => [],
     git_get_graph: () => ({ nodes: [], maxLane: 0 }),
     git_list_worktrees: () => [],

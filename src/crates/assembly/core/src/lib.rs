@@ -78,6 +78,7 @@ pub use openbitfun_services_integrations::remote_connect::{
 #[cfg(feature = "remote-connect")]
 pub use openbitfun_services_integrations::remote_connect::{
     SessionTranscriptView, TranscriptPromptSuggestion, TranscriptTurnFileChange,
+    TRANSCRIPT_TOOL_DETAIL_SUMMARY,
 };
 #[cfg(feature = "agent-runtime")]
 pub use service_agent_runtime::is_prompt_suggestion_enabled;

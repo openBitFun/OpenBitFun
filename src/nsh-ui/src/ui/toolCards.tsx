@@ -12,9 +12,10 @@
  */
 
 import { McpAppLauncher } from "./sessionExtras"; // wave22-p5
-import { cleanup, Clipboard, computed, effect, Image, openUrl, Scroll, signal, Text, View } from "nsh";
+import { cleanup, Clipboard, computed, effect, Image, openUrl, Scroll, signal, Text, untracked, View } from "nsh";
 import type { JSX, Signal, ViewStyle } from "nsh";
 import { DiffView } from "nsh/base";
+import { detailedToolCall, loadToolDetail, toolDetailState } from "../toolDetailStore";
 import {
   activityCounts,
   basename,
@@ -1505,6 +1506,33 @@ export function TranscriptRowChevron(props: { expanded: () => boolean }) {
 }
 
 /**
+ * Mounted with an opened card's body: a result the host shortened is read whole
+ * (its preview stays in place meanwhile, so the body never opens empty), and a
+ * read that fails says so and offers another try.
+ */
+function ToolDetailNotice(props: { call: ToolCallView; cardId: string }) {
+  effect(() => {
+    const call = props.call;
+    if (call.detailOmitted) untracked(() => void loadToolDetail(call));
+  });
+  return (
+    <If when={toolDetailState(props.call) === "failed"}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, paddingTop: space.xs }}>
+        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.45) }}>
+          {tr("chat.tool.detailFailed")}
+        </Text>
+        <SmallButton
+          label={tr("common.retry")}
+          icon="refresh"
+          accessibilityLabel={`tool-detail-retry-${props.cardId}`}
+          onPress={() => void loadToolDetail(props.call)}
+        />
+      </View>
+    </If>
+  );
+}
+
+/**
  * One tool call. The summary row is always drawn; the body only once opened, so
  * a long transcript does not build hundreds of diff views it never shows.
  */
@@ -1696,7 +1724,8 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
                 reveal.style,
               ]}
             >
-              <ToolBody call={props.call} cardId={props.cardId} kind={kind()} />
+              <ToolBody call={detailedToolCall(props.call)} cardId={props.cardId} kind={kind()} />
+              <ToolDetailNotice call={props.call} cardId={props.cardId} />
             </View>
           );
         }}

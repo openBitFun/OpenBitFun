@@ -2136,6 +2136,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "chat.tool.image.done": "已查看图片",
   "chat.tool.image.running": "正在查看图片",
   "chat.tool.error": "错误",
+  "chat.tool.detailFailed": "仅有预览，未能读取完整结果。",
   "chat.tool.result": "结果",
   "chat.tool.output": "输出",
   "chat.tool.command": "命令",

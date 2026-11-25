@@ -541,11 +541,20 @@ impl FileWatchService {
         let worker = std::thread::Builder::new()
             .name("openbitfun-file-watch".to_string())
             .spawn(move || {
-                let poll = std::time::Duration::from_millis(50);
+                // Idle means blocked on the channel: a watcher exists per watched
+                // owner, and a poll in each of them keeps waking an idle process.
+                // Only events waiting out their debounce need a deadline.
+                const DEBOUNCE_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
                 let mut last_event_time: Option<std::time::Instant> = None;
 
                 loop {
-                    match rx.recv_timeout(poll) {
+                    let received = if last_event_time.is_some() {
+                        rx.recv_timeout(DEBOUNCE_CHECK)
+                    } else {
+                        rx.recv()
+                            .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    };
+                    match received {
                         Ok(Ok(event)) => {
                             // Synchronous path-table snapshot: no block_on needed
                             // per event.

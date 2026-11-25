@@ -2137,6 +2137,7 @@ export const enUSMessages = {
   "chat.tool.image.done": "Viewed image",
   "chat.tool.image.running": "Viewing image",
   "chat.tool.error": "Error",
+  "chat.tool.detailFailed": "Only a preview is available; the full result could not be read.",
   "chat.tool.result": "Result",
   "chat.tool.output": "Output",
   "chat.tool.command": "Command",

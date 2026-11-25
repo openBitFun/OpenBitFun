@@ -210,6 +210,8 @@ export interface TranscriptToolView {
   error?: string;
   result?: unknown;
   resultForAssistant?: string;
+  /** A summary read shortened this result; `toolDetailStore` reads it whole when the card opens. */
+  detailOmitted?: boolean;
   durationMs?: number;
   startMs?: number;
   plan?: { filePath: string; name: string; overview?: string };
@@ -306,6 +308,9 @@ export const getSessionTranscriptView = (
     ...(limit ? { limit } : {}),
     ...(cursor ? { cursor } : {}),
     ...(beforeTurnIndex !== undefined ? { before_turn_index: beforeTurnIndex } : {}),
+    // A read after a cursor answers the turn that just settled, whose cards may
+    // be open: it stays whole. Everything older is history to summarize.
+    ...(cursor ? {} : { tool_detail: "summary" }),
   });
 
 export interface OperationDiffResult {

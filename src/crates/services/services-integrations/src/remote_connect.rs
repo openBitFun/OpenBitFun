@@ -83,6 +83,7 @@ pub use transcript_view::{
     session_transcript_view_before, SessionTranscriptView, TranscriptImage, TranscriptItemView,
     TranscriptPromptSuggestion, TranscriptTokenUsage, TranscriptToolView, TranscriptTurnFileChange,
     TranscriptTurnRecovery, TranscriptTurnView, TranscriptUserMessage,
+    TRANSCRIPT_TOOL_DETAIL_SUMMARY,
 };
 
 fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>

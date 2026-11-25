@@ -585,6 +585,11 @@ pub(crate) async fn get_session_transcript_view(
         view.prompt_suggestion =
             openbitfun_core::resolved_transcript_prompt_suggestion(metadata.as_ref(), &page.turns);
     }
+    let tool_detail =
+        optional_string(request, "tool_detail").or_else(|| optional_string(request, "toolDetail"));
+    if tool_detail.as_deref() == Some(openbitfun_core::TRANSCRIPT_TOOL_DETAIL_SUMMARY) {
+        view.summarize_tool_results();
+    }
     serde_json::to_value(view).map_err(|e| format!("serialize transcript view: {e}"))
 }
 

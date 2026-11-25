@@ -1981,16 +1981,19 @@ test("welcome page with no active session hides the disabled composer dock until
   expect(app.shows("bot-capsule-trigger")).toBe(true);
 });
 
-test("switching away from a session releases hidden transcript state and reloads cleanly on return", async () => {
+test("returning to a session paints the tail it was left with and reloads it from the host", async () => {
   const backend = createBackend();
   const baseInvoke = backend.handlers["openbitfun.invoke"];
   let holdSession1Reload = false;
   const reloadGate: { release: (() => void) | null } = { release: null };
   let delayedResponse: unknown = null;
+  let heldRequest: { session_id?: string; cursor?: string } | undefined;
 
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
-    const args = (data ?? {}) as { action?: string; request?: { session_id?: string } };
+    const args = (data ?? {}) as { action?: string; request?: { session_id?: string; cursor?: string } };
     if (args.action === "get_session_transcript_view" && args.request?.session_id === "session-1" && holdSession1Reload) {
+      holdSession1Reload = false;
+      heldRequest = args.request;
       delayedResponse = baseInvoke(data);
       return new Promise(resolve => {
         reloadGate.release = () => resolve(delayedResponse);
@@ -2003,22 +2006,31 @@ test("switching away from a session releases hidden transcript state and reloads
   await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
-  // Switch to a second session: session-1's turns are released (no hidden background transcript cache).
+  // Switch to a second session: session-1's turns are released but for the tail its return paints first.
   await openSession(app, "Terminal migration");
   await app.waitFor("Port the terminal.");
 
-  // Returning to session-1 fetches fresh turns from the host without flashing the Welcome empty state.
+  // Returning to session-1 shows that tail at once, without an empty view, while the host's answer is out.
   holdSession1Reload = true;
   const switchPromise = app.press("id:sidebar-session-session-1 >> nth=0");
   await app.waitUntil(() => reloadGate.release !== null);
   expect(app.texts()).not.toContain("How can I help today?");
-  expect(app.texts()).not.toContain("Port the session list.");
+  expect(app.texts()).toContain("Add the plan and fix the imports.");
+  expect(app.texts()).not.toContain("Port the terminal.");
 
-  // Releasing the host response populates the transcript cleanly.
+  // The host's answer is the truth: it is a whole read and it replaces the tail.
+  expect(heldRequest?.cursor).toBe(undefined);
+  const answer = delayedResponse as { value: { turns: Array<{ user: { text: string; displayText?: string } }> } };
+  answer.value.turns[answer.value.turns.length - 1]!.user = {
+    ...answer.value.turns[answer.value.turns.length - 1]!.user,
+    text: "Rewritten elsewhere.",
+    displayText: "Rewritten elsewhere.",
+  };
   reloadGate.release?.();
   await switchPromise;
   await app.waitFor("Port the session list.");
-  await app.waitFor("Add the plan and fix the imports.");
+  await app.waitFor("Rewritten elsewhere.");
+  expect(app.texts()).not.toContain("Add the plan and fix the imports.");
 });
 
 test("a single heavy turn with hundreds of items virtualizes its cells and halts auto-backfill", async () => {

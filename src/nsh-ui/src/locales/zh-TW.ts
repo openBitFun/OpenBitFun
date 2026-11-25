@@ -2136,6 +2136,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "chat.tool.image.done": "已檢視圖片",
   "chat.tool.image.running": "正在檢視圖片",
   "chat.tool.error": "錯誤",
+  "chat.tool.detailFailed": "僅有預覽，未能讀取完整結果。",
   "chat.tool.result": "結果",
   "chat.tool.output": "輸出",
   "chat.tool.command": "命令",
