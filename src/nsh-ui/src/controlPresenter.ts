@@ -96,6 +96,7 @@ const SETTINGS_PAGES: Record<string, { page: string; anchor?: string }> = {
   "tools.acp": { page: "external-agents" },
   "tools.external-agents": { page: "external-agents" },
   "tools.external-import": { page: "external-import" },
+  "data.storage": { page: "storage" },
   "data.usage": { page: "usage" },
   "data.diagnostics": { page: "diagnostics" },
 };

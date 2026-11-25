@@ -361,3 +361,16 @@ test("Settings coalesces parent config reads when the host returns full section 
   expect(settingsRootReads.includes("superagent")).toBe(false);
   expect(readPaths.filter(p => p.startsWith("editor.") || p.startsWith("terminal.") || p.startsWith("memories.")).length).toBe(0);
 });
+
+test("a peer device's storage page never scans or cleans the controller's snapshot store", async () => {
+  const { app, host, backend } = await openSettings();
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.press("nav-settings-page-storage");
+  await app.waitFor("Open Storage in the desktop app to manage snapshots on this device.");
+  expect(app.shows("snapshot-storage-clean")).toBe(false);
+  for (const command of ["inspect_snapshot_storage", "clean_snapshot_storage"]) {
+    expect(backend.actions()).not.toContain(command);
+    expect(host.fleetCalls.some(call => call.command === command)).toBe(false);
+  }
+});

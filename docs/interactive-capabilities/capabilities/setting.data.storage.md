@@ -29,7 +29,7 @@ Inspect local file snapshot usage by workspace and clean up eligible session his
 2. 核对预览并确认删除文件快照。
    Review the preview and confirm deletion of file snapshots.
 
-入口 / Entry: 设置 → 数据与维护 → 存储空间 / Settings → Data & Maintenance → Storage
+入口 / Entry: 设置 → 设备 → 存储空间 / Settings → Device → Storage
 
 ## 智能体可替你做什么 / What an agent can do for you
 
