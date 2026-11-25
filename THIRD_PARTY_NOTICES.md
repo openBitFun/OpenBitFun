@@ -23,14 +23,14 @@ The offline map renderer includes d3-geo 3.1.0 and 3.1.1, and d3-array 3.2.4. Th
 - License: HarmonyOS Sans Fonts License Agreement
 - Copyright: Copyright 2021 Huawei Device Co., Ltd.
 
-Non-Apple OpenBitFun GUI distributions bundle unmodified copies of the Base and
+Windows and Linux native desktop distributions bundle unmodified copies of the Base and
 Simplified Chinese variable fonts (Version 2.040), exposing the design system's
 Regular (400), Medium (500), Semibold (600), and Bold (700) weights. They do not bundle the
 Traditional Chinese font family. Apple GUI distributions and Traditional
 Chinese UI text use platform system fonts instead.
 
 The complete license agreement and a font-specific notice are included only in
-the non-Apple frontend artifact under `third-party/fonts/harmonyos-sans/`.
+these desktop packages under `nsh/third-party/fonts/harmonyos-sans/`.
 
 ## models.dev catalog data
 

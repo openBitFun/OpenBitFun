@@ -9,7 +9,7 @@
 import { Clipboard, openUrl, signal, Text, View } from "nsh";
 import { controllerAppVersion, invokeCommand } from "../bridge";
 import { localizeHostError, tr } from "../i18n";
-import { controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { controlHeight, hasBundledUiFonts, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { Icon } from "./icons";
 import { ModalDialog, pushToast } from "./overlays";
 import { Button, SkeletonBlock, focusRingStyle } from "./primitives";
@@ -288,6 +288,11 @@ export function AboutDialog() {
           >
             {tr("about.tagline")}
           </Text>
+          <If when={hasBundledUiFonts()}>
+            <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), marginTop: space.xs }}>
+              {tr("about.harmonyFonts")}
+            </Text>
+          </If>
         </View>
 
         <If when={aboutError()}>

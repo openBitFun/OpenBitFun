@@ -696,7 +696,7 @@ function editorStyles(compact: boolean): RichEditorStyles {
   }
   const prose = typeScale.prose;
   const styles: RichEditorStyles = {
-    root: { color: p.text, fontFamily: fontSans, fontSize: textSize(prose), lineHeight: textLineHeight(prose, 1.6) },
+    root: { color: p.text, fontFamily: fontSans(), fontSize: textSize(prose), lineHeight: textLineHeight(prose, 1.6) },
     content: {
       paddingHorizontal: compact ? space.lg : space.x3l,
       paddingVertical: compact ? space.lg : space.xxl,

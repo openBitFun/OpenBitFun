@@ -887,8 +887,26 @@ export const APPEARANCE_STORAGE_KEY = "openbitfun.nsh.appearance.v1";
 export const APPEARANCE_ID_STORAGE_KEY = "openbitfun.nsh.appearance-id.v1";
 
 /** Native-first sans-serif stack matching the OS UI font across macOS, Windows, and Linux. */
-export const fontSans =
+const systemFontSans =
   'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif';
+
+type BundledUiFonts = { base: string; simplifiedChinese: string };
+let bundledUiFonts: BundledUiFonts | undefined;
+
+/** A desktop entry supplies the family names returned by NSH's font imports before mount. */
+export function installBundledUiFonts(fonts: BundledUiFonts): void {
+  bundledUiFonts = fonts;
+}
+
+export function hasBundledUiFonts(): boolean {
+  return bundledUiFonts !== undefined;
+}
+
+export function fontSans(): string {
+  if (!bundledUiFonts || currentLocale() === "zh-TW") return systemFontSans;
+  const base = `"${bundledUiFonts.base}", ${systemFontSans}`;
+  return currentLocale() === "zh-CN" ? `"${bundledUiFonts.simplifiedChinese}", ${base}` : base;
+}
 
 /** Code / monospace font stack aligned with `src/web-ui`. */
 export const fontMono =
@@ -1013,7 +1031,7 @@ function paletteToCssVars(p: Palette): Record<string, string | number> {
  * OpenBitFun appearance preset. Safe to invoke in both browser and headless
  * test runtimes.
  */
-export function syncGlobalNativeTheme(): void {
+export function syncGlobalNativeTheme(family = fontSans()): void {
   const chosenId = appearanceId();
   const activePreset = chosenId ? PRESET_MAP[chosenId] : null;
   const activePalette = activePreset ? activePreset.palette : palette();
@@ -1022,7 +1040,7 @@ export function syncGlobalNativeTheme(): void {
     cssVars: {
       theme: {
         radius: "0.5rem",
-        "font-sans": fontSans,
+        "font-sans": family,
         "font-mono": fontMono,
       },
       light: paletteToCssVars(

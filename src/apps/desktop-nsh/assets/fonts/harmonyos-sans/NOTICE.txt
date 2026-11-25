@@ -1,0 +1,7 @@
+OpenBitFun uses HarmonyOS Sans Fonts. Copyright 2021 Huawei Device Co., Ltd.
+
+The bundled HarmonyOS Sans and HarmonyOS Sans SC variable fonts (version
+2.040) are unmodified copies from Huawei's official download:
+https://developer.huawei.com/consumer/cn/design/resource/
+
+The complete HarmonyOS Sans Fonts License Agreement is in LICENSE.txt.

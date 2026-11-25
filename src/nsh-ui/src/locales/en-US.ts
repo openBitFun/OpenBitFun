@@ -2953,6 +2953,7 @@ export const enUSMessages = {
   "signin.accountTitle": "Your account",
   "about.version": "Version {{version}}",
   "about.tagline": "One conversation for all your devices.",
+  "about.harmonyFonts": "Includes HarmonyOS Sans fonts.",
   "about.releaseNotes": "Release notes",
   "about.licenses": "Licenses",
   "about.details": "Details",

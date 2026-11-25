@@ -2952,6 +2952,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "signin.accountTitle": "你的账号",
   "about.version": "版本 {{version}}",
   "about.tagline": "一个对话，连接你的所有设备。",
+  "about.harmonyFonts": "本应用内含 HarmonyOS Sans 字体。",
   "about.releaseNotes": "更新说明",
   "about.licenses": "许可",
   "about.details": "详细信息",

@@ -165,6 +165,7 @@ import {
   controlHeight,
   elevationShadow,
   fontMono,
+  fontSans,
   isLightAppearance,
   palette,
   radii,
@@ -3245,7 +3246,10 @@ function FleetUpdateNotice() {
   );
 }
 function StudioApp() {
-  syncGlobalNativeTheme();
+  effect(() => {
+    const family = fontSans();
+    untracked(() => syncGlobalNativeTheme(family));
+  });
   void initAppLocale();
   // Probe window chrome once before `startShellIntegration` so deferred tray init waits for it.
   void initWindowChrome().then(() => {

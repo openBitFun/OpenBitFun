@@ -17,6 +17,9 @@ window the NSH web target ran in during the migration.
 - **Native desktop.** `src/apps/desktop-nsh/App.tsx` installs the in-process
   connection (`src/jsonWireConnection.ts` over the `openbitfun/native` module) and
   the native window shell (`src/nshDesktopShell.ts`), then mounts this app.
+  Windows and Linux builds enter through `BundledFontsApp.tsx` to register the
+  bundled HarmonyOS Sans fonts before mount. The UI uses the SC face for Simplified
+  Chinese, the base face for English and system fonts for Traditional Chinese.
 - **Browser / phone.** `servedBackend.ts` installs `webSocketConnection.ts` when the
   page was served by a backend's OBP listener (`#nsh-params`).
 - **Other devices.** Every 2.0 backend is a fleet entry: the bridge sends each

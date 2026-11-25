@@ -85,7 +85,7 @@
     "data-tools:build": "node scripts/data-tools-tauri-build.mjs",
     "desktop-nsh:generate-dispatch": "node scripts/generate-desktop-native-dispatch.mjs",
     "desktop-nsh:check-dispatch": "node scripts/generate-desktop-native-dispatch.mjs --check",
-    "desktop-nsh:bundle": "node scripts/sync-nsh-vendor-assets.mjs && nsh build src/apps/desktop-nsh --out target/desktop-nsh/nsh && node scripts/desktop-nsh-dev.mjs --stamp-only",
+    "desktop-nsh:bundle": "node scripts/desktop-nsh-dev.mjs --bundle-only",
     "desktop-nsh:web": "node scripts/build-desktop-web-ui.mjs",
     "web-controller:build": "node scripts/build-web-controller.mjs",
     "web-controller:test": "node --test src/nsh-ui/web/ui-loader.test.mjs src/nsh-ui/web/handoff.test.mjs",

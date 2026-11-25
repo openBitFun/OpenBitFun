@@ -3,8 +3,8 @@
   "allowedBlobs": [
     {
       "oid": "91edb76b95851a087b1ddf65c873f99f12ac306b",
-      "path": "src/web-ui/src/assets/fonts/harmonyos-sans/sc/HarmonyOS_Sans_SC.ttf",
-      "reason": "History-only since the React desktop UI (src/web-ui) was retired: official unmodified HarmonyOS Sans SC 2.040 variable font. The exact oid stays approved because full-history scans still traverse it."
+      "path": "src/apps/desktop-nsh/assets/fonts/harmonyos-sans/HarmonyOS_Sans_SC.ttf",
+      "reason": "Official unmodified HarmonyOS Sans SC 2.040 variable font, also shipped by the former React desktop UI."
     },
     {
       "oid": "5c925d1fb1f1eccc85a1c7c78cc71a50ef9cc2db",

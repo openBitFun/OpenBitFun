@@ -99,7 +99,7 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
   const h6Size = Math.max(11, base - 2);
 
   return {
-    // Omit `fontFamily` so prose inherits the OS native UI font (SF Pro + PingFang SC on macOS),
+    // Omit `fontFamily` so prose inherits the current locale's UI font,
     // matching `textStyle("prose")` and `UserBubble` 1:1. Drive block spacing through `root.gap`
     // and container gaps instead of `paragraph.marginBottom` so list items and quotes never double-space.
     root: {

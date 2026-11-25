@@ -68,8 +68,14 @@ export function resolveDesktopDevStorageEnvironment(env = process.env, rootDir =
   };
 }
 
-function main(args) {
+async function main(args) {
   const appDir = path.join(ROOT, 'target', 'desktop-nsh', 'nsh');
+  if (args.includes('--bundle-only')) {
+    const { buildNativeUi } = await import('./desktop-nsh-package-common.mjs');
+    buildNativeUi({ nshOut: appDir });
+    stampDevAppIdentity(appDir, ROOT);
+    return;
+  }
   if (args.includes('--stamp-only')) {
     stampDevAppIdentity(appDir, ROOT);
     return;
@@ -108,7 +114,7 @@ function main(args) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    main(process.argv.slice(2).filter((arg) => arg !== '--'));
+    await main(process.argv.slice(2).filter((arg) => arg !== '--'));
   } catch (error) {
     console.error(`[desktop-dev] ${error.message}`);
     process.exit(1);

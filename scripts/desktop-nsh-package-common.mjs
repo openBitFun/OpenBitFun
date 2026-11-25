@@ -28,10 +28,11 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ensureFlashgrepBinary, flashgrepBinaryName } from "./prepare-flashgrep-resource.mjs";
+import { syncVendorAssets } from "./sync-nsh-vendor-assets.mjs";
 import { extractProductConfigArg } from "./product-customization/cli.mjs";
 import {
   desktopPackageIdentity,
@@ -124,16 +125,31 @@ export function backendEnv(productEnv = {}, base = process.env) {
   return env;
 }
 
+/** Build the native UI for the target OS, including the notices for its font assets. */
+export function buildNativeUi({ nshOut, target, release = false }) {
+  syncVendorAssets();
+  const app = "src/apps/desktop-nsh";
+  const apple = target ? target.includes("apple-darwin") : process.platform === "darwin";
+  const entry = apple ? app : `${app}/BundledFontsApp.tsx`;
+  run("nsh", ["build", entry, ...(release ? ["--release"] : []), "--out", relative(root, nshOut)]);
+  if (!apple) {
+    const notices = join(nshOut, "third-party/fonts/harmonyos-sans");
+    mkdirSync(notices, { recursive: true });
+    for (const file of ["LICENSE.txt", "NOTICE.txt"]) {
+      cpSync(join(root, app, "assets/fonts/harmonyos-sans", file), join(notices, file));
+    }
+  }
+}
+
 /**
  * Builds the UI bundle, the web bundle, the backend library, the runner, the
  * MiniApp shell and the DeepSeek Harness profile. The runner and the MiniApp
  * shell carry no product identity, so they stay in the regular target dir.
  */
 export async function buildAll({ profile, target, nshOut, webOut, productEnv = {} }) {
-  // The app ships its own copy of the shared UI's document renderers.
-  const { syncVendorAssets } = await import("./sync-nsh-vendor-assets.mjs");
-  syncVendorAssets();
-  run("nsh", ["build", "src/apps/desktop-nsh", "--release", "--out", nshOut]);
+  // NSH leaves unreferenced assets on disk. A cross-build must ship only its own fonts.
+  rmSync(nshOut, { recursive: true, force: true });
+  buildNativeUi({ nshOut, target, release: true });
   rmSync(webOut, { recursive: true, force: true });
   run("nsh", ["package", "src/nsh-ui/WebApp.tsx", "--target", "web", "-o", webOut]);
   const targetArgs = target ? ["--target", target] : [];

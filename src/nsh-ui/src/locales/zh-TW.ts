@@ -2952,6 +2952,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "signin.accountTitle": "你的帳號",
   "about.version": "版本 {{version}}",
   "about.tagline": "一個對話，連接你的所有裝置。",
+  "about.harmonyFonts": "本應用程式內含 HarmonyOS Sans 字型。",
   "about.releaseNotes": "版本資訊",
   "about.licenses": "授權",
   "about.details": "詳細資訊",
