@@ -4003,6 +4003,7 @@ export function fleetDeviceRow(
     connectionName?: string;
     sessions: Array<Record<string, unknown>>;
     isHostCurrent?: boolean;
+    sessionTotal?: number;
   }>,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -4030,64 +4031,116 @@ export function fleetDeviceRow(
   };
 }
 
-// ── shell navigation (wave 15 UI-A) ──────────────────────────────────────────
+// ── shell navigation ─────────────────────────────────────────────────────────
 //
-// A session opens from All sessions (Recent lists the host's rows by title).
-// The sidebar's device tree shows the same titles (wave 23), so the helpers
-// press the row inside the All sessions page. They walk that path so a test
-// reads the way a user gets there.
+// A session opens from the session tree: the sidebar on a wide window, the
+// Sessions tab's list on a phone (both draw `sidebar-device-tree`). The helpers
+// unfold what hides a row (a folded device or workspace, "Show more") the way a
+// user does, so a test reads the way a user gets there.
 
 /** The part of `nsh/test`'s app handle the helpers press. */
 export interface ShellNavigator {
   press(target: string): Promise<unknown>;
   waitFor(target: string, options?: unknown): Promise<unknown>;
   shows(target: string): boolean;
+  accessibility?(selector?: string | null): TreeAccessNode | null;
 }
 
-/** Navigates to All sessions (sidebar on Super Agent layout, tab bar on phone, or ⌘K command on streamlined desktop). */
-async function openAllSessionsScene(app: ShellNavigator): Promise<void> {
-  if (app.shows("nav-all-sessions")) {
-    await app.press("nav-all-sessions");
-    return;
-  }
+/** The accessibility tree fields the helpers read (`nsh/test`'s `AccessibilityNode`). */
+interface TreeAccessNode {
+  label?: string | null;
+  expanded?: boolean | null;
+  disabled: boolean;
+  children?: TreeAccessNode[];
+}
+
+const TREE = "label:sidebar-device-tree";
+
+/** Shows the session tree: the phone's Sessions tab, else the sidebar (opened when folded away). */
+async function openSessionTree(app: ShellNavigator): Promise<void> {
   if (app.shows("phone-tab-all-sessions")) {
     await app.press("phone-tab-all-sessions");
-    return;
+  } else if (!app.shows(TREE) && app.shows("toggle-drawer")) {
+    await app.press("toggle-drawer");
   }
-  await app.waitFor("global-search-trigger");
-  await app.press("global-search-trigger");
-  await app.waitFor("label:global-search-item-command:sessions");
-  await app.press("label:global-search-item-command:sessions");
+  await app.waitFor(TREE);
 }
 
-/** Opens All sessions › Recent and waits for `title` (a session row) to show. */
-export async function showAllSessions(app: ShellNavigator, title?: string): Promise<void> {
-  await openAllSessionsScene(app);
-  await app.press("all-sessions-tab-recent");
-  if (title) await app.waitFor(title);
+function treeLabels(app: ShellNavigator): TreeAccessNode[] {
+  const out: TreeAccessNode[] = [];
+  const walk = (node: TreeAccessNode | null | undefined) => {
+    if (!node) return;
+    if (node.label) out.push(node);
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(app.accessibility?.(TREE) ?? null);
+  return out;
 }
 
-/** Opens a session by its row title through All sessions (`"Title >> nth=0"` works too). */
-export async function openSessionRow(app: ShellNavigator, title: string): Promise<void> {
-  await showAllSessions(app);
-  await app.press(`label:all-sessions-scene >> ${title}`);
-}
 /**
- * Opens a session the way a user does: All sessions › Recent › its row (the
- * first row with that title; `"Title >> nth=1"` picks another). `deviceId` is
- * accepted for call sites that name the device; Recent rows are matched by
- * title, so keep titles unique across devices in a fixture.
+ * Unfolds the tree until `title` shows: a folded device (the one named, when
+ * given), then a folded workspace, then "Show more", one press at a time.
  */
-export async function openSession(app: ShellNavigator, title: string, _options: { deviceId?: string } = {}): Promise<void> {
-  const base = title.split(" >> ")[0]!;
-  await showAllSessions(app, base);
-  await app.press(`label:all-sessions-scene >> ${title.includes(" >> ") ? title : `${title} >> nth=0`}`);
+async function revealInTree(app: ShellNavigator, title: string, deviceId?: string): Promise<void> {
+  for (let step = 0; step < 24; step += 1) {
+    if (app.shows(`${TREE} >> ${title}`)) return;
+    const nodes = treeLabels(app);
+    const pick =
+      nodes.find(node => node.label!.startsWith("sidebar-device-toggle-") && node.expanded === false && (!deviceId || node.label === `sidebar-device-toggle-${deviceId}`)) ??
+      nodes.find(node => node.label!.startsWith("sidebar-workspace-toggle-") && node.expanded === false) ??
+      nodes.find(node => node.label!.startsWith("sidebar-show-more-") && !node.disabled);
+    if (!pick) return;
+    await app.press(`label:${pick.label}`);
+  }
 }
 
-/** Opens All sessions › By device: the account's devices (and, on an older backend, the way into one). */
+/** Shows the session tree and waits for `title` (a session row) to show in it. */
+export async function showAllSessions(app: ShellNavigator, title?: string): Promise<void> {
+  await openSessionTree(app);
+  if (title) {
+    await revealInTree(app, title);
+    await app.waitFor(`${TREE} >> ${title}`);
+  }
+}
+
+/** Opens a session by its row title in the session tree (`"Title >> nth=0"` works too). */
+export async function openSessionRow(app: ShellNavigator, title: string): Promise<void> {
+  await openSession(app, title);
+}
+
+/**
+ * Opens a session the way a user does: the session tree's row with that title
+ * (the first; `"Title >> nth=1"` picks another). `deviceId` names the device
+ * to unfold first when several devices list sessions.
+ */
+export async function openSession(app: ShellNavigator, title: string, options: { deviceId?: string } = {}): Promise<void> {
+  const base = title.split(" >> ")[0]!;
+  await openSessionTree(app);
+  if (options.deviceId) await revealInTree(app, base, options.deviceId);
+  await revealInTree(app, base);
+  await app.waitFor(`${TREE} >> ${base}`);
+  await app.press(`${TREE} >> ${title.includes(" >> ") ? title : `${title} >> nth=0`}`);
+}
+
+/** Shows the account's devices: the session tree, every device row in it. */
 export async function showDevices(app: ShellNavigator): Promise<void> {
-  await openAllSessionsScene(app);
-  await app.press("all-sessions-tab-by-device");
+  await openSessionTree(app);
+}
+
+/**
+ * Makes a workspace the current one from the session tree the way a user does:
+ * its ⋯ › Open files (which switches even while a conversation is open).
+ */
+export async function selectTreeWorkspace(
+  app: ShellNavigator & { hover(target: string): Promise<unknown> },
+  workspaceId: string,
+): Promise<void> {
+  await openSessionTree(app);
+  await app.waitFor(`id:sidebar-workspace-row-${workspaceId}`);
+  // A pointer reveals the row's ⋯ on hover; a phone shows it already (and has no hover).
+  if (!app.shows(`sidebar-workspace-actions-${workspaceId}`)) await app.hover(`id:sidebar-workspace-row-${workspaceId}`);
+  await app.press(`sidebar-workspace-actions-${workspaceId}`);
+  await app.press(`workspace-menu-open-files-${workspaceId}`);
 }
 
 /** Opens a workspace tool full width through ⌘K's commands (Files, Git, Terminal, Browser). */

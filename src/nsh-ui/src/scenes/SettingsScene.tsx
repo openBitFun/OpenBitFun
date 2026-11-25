@@ -159,7 +159,6 @@ import {
   formatDuration,
   formatPercent,
   formatPlural,
-  formatRelativeTime,
   formatTokens,
   weekdayShortLabels,
 } from "../format";
@@ -417,6 +416,7 @@ import {
   fieldMissing,
   fieldPlaceholder,
   fieldSaving,
+  fieldJustSaved,
   fieldUnit,
   generalControlSaving,
   generalControlValue,
@@ -1323,9 +1323,13 @@ function clearDraft(spec: FieldSpec): void {
 
 const ALL_FIELDS: readonly FieldSpec[] = SETTINGS_SECTIONS.flatMap(section => section.fields);
 
-/** Fields with typed, unsaved text: what the unsaved-changes prompt is about. */
+/**
+ * Fields with typed, unsaved text: what the unsaved-changes prompt is about. A
+ * number saves itself when its field loses focus, so only text fields can hold
+ * typed text a page change would drop.
+ */
 function dirtyFields(): FieldSpec[] {
-  return ALL_FIELDS.filter(spec => fieldDirty(spec));
+  return ALL_FIELDS.filter(spec => spec.kind !== "number" && fieldDirty(spec));
 }
 
 function clampNumber(spec: FieldSpec, value: number): number {
@@ -1378,12 +1382,20 @@ async function commitDraft(spec: FieldSpec): Promise<boolean> {
   return ok;
 }
 
-/** Steps a number field and saves at once, as the desktop's steppers do. */
+/**
+ * Steps a number field and saves at once, as the desktop's steppers do. A typed
+ * number is the base the step starts from, so `+` after typing never throws the
+ * typed value away.
+ */
 function stepNumber(spec: FieldSpec, direction: 1 | -1): void {
+  const typed = drafts()[spec.id]?.trim() ?? "";
+  const typedNumber = typed ? Number(typed) : Number.NaN;
   const current = Number(fieldDisplay(spec));
-  const base = Number.isFinite(current) && fieldDisplay(spec) !== null
-    ? current
-    : Number(defaultForField(spec) ?? minForField(spec) ?? 0);
+  const base = Number.isFinite(typedNumber)
+    ? typedNumber
+    : Number.isFinite(current) && fieldDisplay(spec) !== null
+      ? current
+      : Number(defaultForField(spec) ?? minForField(spec) ?? 0);
   clearDraft(spec);
   void writeField(spec, clampNumber(spec, base + direction * stepFor(spec)));
 }
@@ -1646,31 +1658,27 @@ function SectionFootnote(props: { text: string }) {
 
 /**
  * The one place a settings section reports the outcome of its own load or
- * write: a banner between its header and its list, localized, in its status
- * tone. A success clears itself after a few seconds; a failure stays until it
- * is dismissed. Never drawn inside a header beside the section's controls.
+ * write. A success is a toast (it never inserts a banner that pushes the page
+ * up and down while the user is still editing); a warning or a failure stays
+ * inline between the header and the list, localized, until it is dismissed.
  */
 function SectionNoticeBanner(props: { notice: string; onDismiss?: () => void }) {
-  let timer: ReturnType<typeof setTimeout> | null = null;
   effect(() => {
     const notice = props.notice;
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    if (notice && noticeTone(notice) === "success" && props.onDismiss) {
-      const dismiss = props.onDismiss;
-      timer = setTimeout(() => {
-        timer = null;
-        dismiss();
-      }, 4500);
-    }
+    if (!notice || noticeTone(notice) !== "success" || !props.onDismiss) return;
+    const dismiss = props.onDismiss;
+    untracked(() => {
+      pushToast(localizeHostError(notice), "success");
+      dismiss();
+    });
   });
-  cleanup(() => {
-    if (timer !== null) clearTimeout(timer);
-  });
+  const inlineNotice = (): string => {
+    const notice = props.notice;
+    if (!notice) return "";
+    return noticeTone(notice) === "success" && props.onDismiss ? "" : notice;
+  };
   return (
-    <If when={props.notice}>
+    <If when={inlineNotice()}>
       {notice => (
         <View style={{ marginBottom: space.sm }}>
           <InlineBanner tone={noticeTone(notice())} message={localizeHostError(notice())} onDismiss={props.onDismiss} />
@@ -1835,21 +1843,29 @@ function SettingsConfigRow(props: {
 }
 
 /**
- * The real Save button beside a field, shown once the typed text differs from
- * what is stored. It answers to `Save <label>` and to `<field id>-save`.
+ * The Save button beside a text field. It is always drawn (quiet and disabled
+ * until the typed text differs from what is stored), so the row never shifts
+ * when typing starts or a save lands. It answers to `Save <label>` and to
+ * `<field id>-save`.
  */
-function RowSaveButton(props: { spec: FieldSpec; onPress: () => void }) {
+function RowSaveButton(props: { spec: FieldSpec; dirty: boolean; onPress: () => void }) {
   const spec = props.spec;
+  const active = (): boolean => props.dirty && !fieldSaving(spec);
   return (
     <View
       role="button"
       testID={`${spec.id}-save`}
       accessibilityLabel={tr("settings.field.saveField", { label: fieldLabel(spec) })}
-      disabled={fieldSaving(spec)}
+      accessibilityState={{ disabled: !active(), busy: fieldSaving(spec) }}
+      disabled={!active()}
       hitSlop={touchSlop(controlHeight.sm)}
-      onPress={props.onPress}
+      onPress={() => {
+        if (active()) props.onPress();
+      }}
       style={{
+        boxSizing: "border-box",
         minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+        minWidth: 64,
         paddingHorizontal: space.md,
         flexShrink: 0,
         flexDirection: "row",
@@ -1858,21 +1874,23 @@ function RowSaveButton(props: { spec: FieldSpec; onPress: () => void }) {
         gap: space.xs,
         borderRadius: radii.md,
         borderCurve: "continuous",
-        backgroundColor: palette().actionPrimaryBg,
-        cursor: "pointer",
+        borderWidth: 1,
+        borderColor: props.dirty ? "transparent" : palette().borderSubtle,
+        backgroundColor: props.dirty ? palette().actionPrimaryBg : palette().buttonSecondaryBg,
+        cursor: active() ? "pointer" : "default",
         userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: palette().actionPrimaryHover }}
+      hoverStyle={props.dirty ? { backgroundColor: palette().actionPrimaryHover } : undefined}
       activeStyle={tactileActiveStyle()}
       focusVisibleStyle={focusRingStyle()}
     >
       <If when={fieldSaving(spec)}>
-        <Spinner size={11} color={palette().actionPrimaryFg} />
+        <Spinner size={11} color={props.dirty ? palette().actionPrimaryFg : palette().textMuted} />
       </If>
       <Text
         style={{
-          ...textStyle("caption", { color: palette().actionPrimaryFg }),
+          ...textStyle("caption", { color: props.dirty ? palette().actionPrimaryFg : palette().textMuted }),
           fontWeight: "600",
         }}
       >
@@ -1903,10 +1921,8 @@ function ChoiceControl(props: { spec: FieldSpec }) {
       accessibilityLabel: `${spec.id}-${option.value}`,
     }));
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, maxWidth: "100%" }}>
-      <If when={fieldSaving(spec)}>
-        <Spinner size={12} color={palette().accent} />
-      </If>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, maxWidth: "100%" }}>
+      <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
       <If when={segmentedFits(spec)}>
         <SegmentedTabs size="sm" value={current()} options={options()} onChange={value => void writeField(spec, value)} />
       </If>
@@ -1964,10 +1980,8 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
     return rows;
   };
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, maxWidth: "100%" }}>
-      <If when={fieldSaving(spec)}>
-        <Spinner size={12} color={palette().accent} />
-      </If>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, maxWidth: "100%" }}>
+      <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
       <SelectDropdown
         size="sm"
         value={current()}
@@ -1992,11 +2006,27 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
 const NUMBER_STEPPER_WIDTH = 200;
 
 /**
- * The one number control of the settings pages: `−` value unit `+` in a box of
- * fixed width flush with the row's right edge. Editable when `onChangeText` is
- * given (Return saves). The empty value shows `placeholder`: the backend's
- * default, or what an empty value means ("No limit"). `leading` (a spinner,
- * Save, Reset, No limit) sits left of the box, so it never moves the column.
+ * A rough advance width of `text` at `fontSize`: tabular digits ~0.62em, other
+ * Latin ~0.56em, CJK 1em. It sizes the typed value so the value and its unit
+ * stay centered as one group inside the stepper.
+ */
+function approxTextWidth(text: string, fontSize: number): number {
+  let em = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    em += code >= 0x2e80 ? 1 : ch >= "0" && ch <= "9" ? 0.62 : 0.56;
+  }
+  return Math.ceil(em * fontSize);
+}
+
+/**
+ * The one number control of the settings pages: `−` [value unit] `+` in a box
+ * of fixed width flush with the row's right edge, the value and its unit
+ * centered as one group. Editable when `onChangeText` is given: Return or
+ * leaving the field saves what was typed (`onSubmit`), so no Save button ever
+ * appears and moves the row. The empty value shows `placeholder`: the backend's
+ * default, or what an empty value means ("No limit"). `leading` (a status slot,
+ * Reset, No limit) sits left of the box, so it never moves the column.
  */
 function SettingsNumberStepper(props: {
   /** Accessibility base: the value is `id`, the buttons `id-decrease` / `id-increase`. */
@@ -2019,12 +2049,19 @@ function SettingsNumberStepper(props: {
     width: compactLayout() ? 36 : controlHeight.xs,
     minHeight: compactLayout() ? 36 : controlHeight.xs,
     paddingHorizontal: 0,
+    flexShrink: 0,
   });
+  const fontSize = (): number => (compactLayout() ? Math.max(16, textSize(14)) : textSize(13));
   const valueStyle = () => ({
     ...textStyle("label", { color: palette().text, tabular: true }),
     fontWeight: "600" as const,
   });
   const unit = (): string => props.unit ?? "";
+  /** The typed value's own width (at least three digits, so it stays easy to click). */
+  const inputWidth = (): number => {
+    const shown = props.text || props.placeholder || "";
+    return Math.max(approxTextWidth(shown, fontSize()), approxTextWidth("000", fontSize())) + space.xs;
+  };
   return (
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
       {props.leading}
@@ -2032,7 +2069,8 @@ function SettingsNumberStepper(props: {
         style={{
           boxSizing: "border-box",
           width: NUMBER_STEPPER_WIDTH,
-          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+          maxWidth: "100%",
+          height: compactLayout() ? layout.touchTarget : controlHeight.sm,
           flexDirection: "row",
           alignItems: "center",
           padding: space.hair,
@@ -2056,7 +2094,17 @@ function SettingsNumberStepper(props: {
           style={stepButton()}
           onPress={props.onDecrease}
         />
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.xs }}>
+        <View
+          style={{
+            flex: 1,
+            minWidth: 0,
+            height: "100%",
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: space.xs,
+          }}
+        >
           <If when={editable()}>
             <Input
               value={props.text}
@@ -2065,16 +2113,23 @@ function SettingsNumberStepper(props: {
               keyboardType="number-pad"
               onChange={event => props.onChangeText?.(event.value)}
               onSubmit={() => props.onSubmit?.()}
+              onBlur={() => {
+                if (props.dirty) props.onSubmit?.();
+              }}
               style={{
                 ...valueStyle(),
-                flex: 1,
+                // With a unit the field is as wide as its value, so value and unit center together;
+                // without one it takes the whole middle and centers its text.
+                flex: unit() ? undefined : 1,
+                width: unit() ? inputWidth() : undefined,
+                flexShrink: 1,
                 minWidth: 0,
-                minHeight: compactLayout() ? 36 : controlHeight.xs,
+                height: "100%",
                 paddingHorizontal: 0,
-                textAlign: unit() ? "right" : "center",
+                textAlign: "center",
                 placeholderColor: palette().textMuted,
                 caretColor: palette().accent,
-                fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
+                fontSize: fontSize(),
                 backgroundColor: "transparent",
                 borderWidth: 0,
               }}
@@ -2086,8 +2141,9 @@ function SettingsNumberStepper(props: {
               style={{
                 ...valueStyle(),
                 color: props.text ? palette().text : palette().textMuted,
-                flex: unit() ? 1 : undefined,
-                textAlign: unit() ? "right" : "center",
+                flexShrink: 1,
+                minWidth: 0,
+                textAlign: "center",
                 numberOfLines: 1,
               }}
             >
@@ -2096,7 +2152,7 @@ function SettingsNumberStepper(props: {
           </If>
           <If when={unit()}>
             {value => (
-              <Text style={{ ...textStyle("caption", { tabular: true }), flex: 1, minWidth: 0, numberOfLines: 1 }}>
+              <Text style={{ ...textStyle("caption", { tabular: true }), flexShrink: 0, numberOfLines: 1 }}>
                 {value()}
               </Text>
             )}
@@ -2116,7 +2172,7 @@ function SettingsNumberStepper(props: {
   );
 }
 
-/** A quiet icon button left of a number box (reset to the default, remove the limit); the tooltip names it. */
+/** A quiet icon button left of a number box (reset to the default); the tooltip names it. */
 function StepperAccessory(props: { icon: IconName; tooltip: string; accessibilityLabel: string; onPress: () => void }) {
   return (
     <IconButton
@@ -2130,11 +2186,52 @@ function StepperAccessory(props: { icon: IconName; tooltip: string; accessibilit
 }
 
 /**
- * A number field: `−` / `+` step and save at once (clamped), and the value can
- * also be typed — Return or the Save that appears beside it saves the typed
- * value. Empty shows the backend's default (`get_settings_schema`), or "No
- * limit" for a value the host keeps as `Option` and holds unset; such a value
- * can be set back to no limit, any other back to the backend's default.
+ * A slot of fixed size left of a number box, so what appears in it (a saving
+ * spinner, Reset) never moves the box or the row's text.
+ */
+function StepperSlot(props: { width: number; children?: JSX.Element }) {
+  return (
+    <View
+      style={{
+        width: props.width,
+        height: controlHeight.sm,
+        flexShrink: 0,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      {props.children}
+    </View>
+  );
+}
+
+/**
+ * The reserved status slot left of a settings control: a spinner while its
+ * write is in flight, a quiet check for a moment after it landed, empty
+ * otherwise. Its width never changes, so the control and the row never move.
+ */
+function FieldStatus(props: { saving: boolean; saved: boolean }) {
+  return (
+    <StepperSlot width={space.lg}>
+      <If when={props.saving}>
+        <Spinner size={12} color={palette().accent} />
+      </If>
+      <If when={!props.saving && props.saved}>
+        <View accessibilityLabel="settings-field-saved">
+          <Icon name="check" size={13} color={palette().textMuted} />
+        </View>
+      </If>
+    </StepperSlot>
+  );
+}
+
+/**
+ * A number field: `−` / `+` step and save at once (clamped, from the typed
+ * value when there is one), and the value can also be typed — Return or
+ * leaving the field saves it. Empty shows the backend's default
+ * (`get_settings_schema`), or "No limit" for a value the host keeps as
+ * `Option` and holds unset; such a value has a "No limit" action, any other a
+ * Reset to the backend's default.
  */
 function NumberControl(props: { spec: FieldSpec }) {
   const spec = props.spec;
@@ -2159,6 +2256,12 @@ function NumberControl(props: { spec: FieldSpec }) {
   const showsUnit = (): boolean => !(noLimit() && draftOf(spec).trim() === "");
   const min = () => minForField(spec);
   const max = () => maxForField(spec);
+  /** The value the steppers start from: what is typed, else what is stored. */
+  const stepBase = (): number | null => {
+    const typed = drafts()[spec.id]?.trim() ?? "";
+    const typedNumber = typed ? Number(typed) : Number.NaN;
+    return Number.isFinite(typedNumber) ? typedNumber : value();
+  };
   const resettable = (): boolean => {
     const fallback = backendDefault();
     return !spec.clearable && fallback !== null && value() !== null && value() !== fallback;
@@ -2171,35 +2274,40 @@ function NumberControl(props: { spec: FieldSpec }) {
       unit={showsUnit() ? fieldUnit(spec) : undefined}
       dirty={fieldDirty(spec)}
       readonly={unavailable()}
-      decreaseDisabled={unavailable() || fieldSaving(spec) || (value() !== null && value()! <= (min() ?? Number.NEGATIVE_INFINITY))}
-      increaseDisabled={unavailable() || fieldSaving(spec) || (value() !== null && max() !== undefined && value()! >= max()!)}
+      decreaseDisabled={unavailable() || fieldSaving(spec) || (stepBase() !== null && stepBase()! <= (min() ?? Number.NEGATIVE_INFINITY))}
+      increaseDisabled={unavailable() || fieldSaving(spec) || (stepBase() !== null && max() !== undefined && stepBase()! >= max()!)}
       onDecrease={() => stepNumber(spec, -1)}
       onIncrease={() => stepNumber(spec, 1)}
       onChangeText={text => setDraft(spec, text)}
       onSubmit={() => void commitDraft(spec)}
       leading={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <If when={fieldSaving(spec)}>
-            <Spinner size={12} color={palette().accent} />
-          </If>
-          <If when={fieldDirty(spec)}>
-            <RowSaveButton spec={spec} onPress={() => void commitDraft(spec)} />
-          </If>
-          <If when={!fieldDirty(spec) && spec.clearable === true && value() !== null}>
-            <StepperAccessory
-              icon="close"
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <FieldStatus saving={fieldSaving(spec)} saved={fieldJustSaved(spec.id)} />
+          <If when={spec.clearable === true && !noLimit()}>
+            <Button
+              label={tr("settings.placeholder.noLimit")}
               tooltip={tr("settings.field.clearLimit")}
+              variant="ghost"
+              size="sm"
+              disabled={fieldSaving(spec)}
               accessibilityLabel={`${spec.id}-clear`}
-              onPress={() => void writeField(spec, null)}
+              onPress={() => {
+                clearDraft(spec);
+                void writeField(spec, null);
+              }}
             />
           </If>
-          <If when={!fieldDirty(spec) && resettable()}>
-            <StepperAccessory
-              icon="undo"
-              tooltip={tr("settings.field.resetToDefault", { value: String(backendDefault() ?? "") })}
-              accessibilityLabel={`${spec.id}-reset`}
-              onPress={() => void writeField(spec, backendDefault())}
-            />
+          <If when={!spec.clearable && backendDefault() !== null}>
+            <StepperSlot width={controlHeight.sm}>
+              <If when={resettable() && !fieldDirty(spec)}>
+                <StepperAccessory
+                  icon="undo"
+                  tooltip={tr("settings.field.resetToDefault", { value: String(backendDefault() ?? "") })}
+                  accessibilityLabel={`${spec.id}-reset`}
+                  onPress={() => void writeField(spec, backendDefault())}
+                />
+              </If>
+            </StepperSlot>
           </If>
         </View>
       }
@@ -2207,7 +2315,10 @@ function NumberControl(props: { spec: FieldSpec }) {
   );
 }
 
-/** A text field prefilled with what is stored; Save appears once it differs. */
+/**
+ * A text field prefilled with what is stored. Return or Save writes it; Save is
+ * always there (quiet until the text differs), so the row never shifts.
+ */
 function TextControl(props: { spec: FieldSpec }) {
   const spec = props.spec;
   const unavailable = () => fieldMissing(spec) && defaultForField(spec) === undefined;
@@ -2234,8 +2345,8 @@ function TextControl(props: { spec: FieldSpec }) {
         onChange={value => setDraft(spec, value)}
         onSubmit={() => void commitDraft(spec)}
       />
-      <If when={fieldDirty(spec)}>
-        <RowSaveButton spec={spec} onPress={() => void commitDraft(spec)} />
+      <If when={!unavailable()}>
+        <RowSaveButton spec={spec} dirty={fieldDirty(spec)} onPress={() => void commitDraft(spec)} />
       </If>
     </View>
   );
@@ -2261,10 +2372,8 @@ function FieldRow(props: { spec: FieldSpec; first?: boolean }) {
   return (
     <SettingsRow label={fieldLabel(spec)} description={description()} first={props.first}>
       <If when={spec.kind === "boolean"}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <If when={saving()}>
-            <Spinner size={12} color={palette().accent} />
-          </If>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <FieldStatus saving={saving()} saved={fieldJustSaved(spec.id)} />
           <ToggleSwitch
             value={checked()}
             accessibilityLabel={spec.id}
@@ -2884,7 +2993,9 @@ function ApprovalSection() {
     void saveApproval({ timeoutSeconds: seconds });
   };
   const stepApprovalTimeout = (direction: 1 | -1): void => {
-    const current = approvalSettings()?.timeoutSeconds;
+    // A typed number is the base, so a step after typing keeps what was typed.
+    const typed = Number.parseInt(pick("timeout").trim(), 10);
+    const current = Number.isFinite(typed) ? typed : approvalSettings()?.timeoutSeconds;
     if (current === undefined) return;
     clearTimeoutDraft();
     void saveApproval({ timeoutSeconds: Math.max(1, current + direction) });
@@ -3039,17 +3150,6 @@ function ApprovalSection() {
             onIncrease={() => stepApprovalTimeout(1)}
             onChangeText={val => approvalDrafts.update(current => ({ ...current, timeout: val }))}
             onSubmit={() => saveApprovalTimeout()}
-            leading={
-              <If when={approvalTimeoutDirty()}>
-                <Button
-                  label={tr("settings.field.saveShort")}
-                  variant="secondary"
-                  size="sm"
-                  accessibilityLabel="save-approval-timeout"
-                  onPress={() => saveApprovalTimeout()}
-                />
-              </If>
-            }
           />
         </SettingsConfigRow>
         <SettingsConfigRow label={tr("settings.permissions.whenUnsure")}>
@@ -4253,7 +4353,7 @@ function McpSection() {
                 </If>
                 <If when={!mcpResourceContentBusy() && mcpResourceContent() ? mcpResourceContent() : ""}>
                   {content => (
-                    <Scroll style={{ maxHeight: 240, minHeight: 0, flexShrink: 1 }}>
+                    <Scroll smoothWheel style={{ maxHeight: 240, minHeight: 0, flexShrink: 1 }}>
                       <Text style={textStyle("mono", { color: palette().textSecondary })}>
                         {content()}
                       </Text>
@@ -4789,7 +4889,7 @@ function UsageSection() {
         onDismissNotice={() => usageNotice.set("")}
         extra={
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
-            <Scroll horizontal style={{ maxWidth: "100%", flexShrink: 1 }}>
+            <Scroll smoothWheel horizontal style={{ maxWidth: "100%", flexShrink: 1 }}>
               <SegmentedTabs
                 size="sm"
                 value={usageRange()}
@@ -4930,7 +5030,7 @@ function UsageSection() {
                   )}
                 </Each>
               </View>
-              <Scroll horizontal style={{ flex: 1, minWidth: 0 }}>
+              <Scroll smoothWheel horizontal style={{ flex: 1, minWidth: 0 }}>
                 <Plot<UsageHeatmapPlotRow>
                   data={usageHeatmapPlotData().rows}
                   xScale={{
@@ -5632,6 +5732,39 @@ function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number];
   );
 }
 
+/** The model form's folded "Advanced" part; opened when an entry already uses it. */
+const modelAdvancedOpen = signal(false);
+
+/** A preset or the edited entry already chose the protocol, so the form folds it. */
+function modelProtocolDecided(): boolean {
+  return Boolean(modelDraft().editingId) || modelCatalogProvider() !== null;
+}
+
+/** The wire protocol of the model form, with the hint that `#` sends the base URL verbatim. */
+function ModelProtocolField() {
+  return (
+    <View style={{ gap: space.chip }}>
+      <Text style={textStyle("label", { color: palette().textSecondary })}>
+        {tr("settings.models.providerFormat")}
+      </Text>
+      <SegmentedTabs
+        size="sm"
+        value={modelDraft().provider}
+        options={PROVIDER_FORMATS.map(format => ({
+          value: format,
+          label: format,
+          accessibilityLabel: `model-format-${format}`,
+        }))}
+        onChange={format => {
+          resetRemoteDiscovery();
+          updateDraft({ provider: format as (typeof PROVIDER_FORMATS)[number] });
+        }}
+      />
+      <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.models.baseUrlHint")}</Text>
+    </View>
+  );
+}
+
 function ModelFormField(props: {
   label: string;
   value: string;
@@ -5673,6 +5806,21 @@ function LogFilesSection() {
             accessibilityLabel="logging-reload"
             onPress={() => void loadRuntimeLogging()}
           />
+          <If when={Boolean(runtimeLogging())}>
+            <Button
+              label={
+                loggingBusy() === "export"
+                  ? tr("settings.logs.exporting")
+                  : tr("settings.logs.exportBundle")
+              }
+              variant="secondary"
+              size="sm"
+              leadingIcon="download"
+              disabled={loggingBusy() === "export"}
+              accessibilityLabel="logging-export"
+              onPress={() => diagnosticsExportPending.set(true)}
+            />
+          </If>
         </View>
       }
     >
@@ -5680,103 +5828,63 @@ function LogFilesSection() {
         <If when={runtimeLogging()}>
           {info => (
             <View>
-              <SettingsConfigRow
-                label={tr("settings.logs.effectiveLevel", {
-                  level: info().effectiveLevel || tr("common.unknown").toLowerCase(),
-                })}
-              />
+              {/* The folder of this run: one selectable path and the action that opens it. */}
               <View
                 style={{
-                  gap: space.xs,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.md,
                   minHeight: SETTINGS_ROW_MIN,
-                  justifyContent: "center",
                   paddingHorizontal: SETTINGS_ROW_INSET,
-                  paddingVertical: space.md,
+                  paddingVertical: space.sm,
                 }}
               >
+                <Icon name="folder" size={16} color={palette().textMuted} />
                 <Text
                   style={{
-                    ...textStyle("mono", { color: palette().textSecondary }),
+                    ...textStyle("mono", {
+                      color: info().sessionLogDir ? palette().textSecondary : palette().textMuted,
+                    }),
+                    flex: 1,
                     minWidth: 0,
-                    numberOfLines: 2,
+                    numberOfLines: 1,
                     textOverflow: "ellipsis-middle",
+                    userSelect: "text",
                   }}
                 >
                   {info().sessionLogDir || tr("settings.logs.noFolder")}
                 </Text>
-                <If when={info().appLogPath}>
-                  {path => (
-                    <Text
-                      style={{
-                        ...textStyle("mono", { color: palette().textMuted }),
-                        minWidth: 0,
-                        numberOfLines: 2,
-                        textOverflow: "ellipsis-middle",
-                      }}
-                    >
-                      {path()}
-                    </Text>
-                  )}
-                </If>
-              </View>
-              <If when={info().previousCrash}>
-                {crash => (
-                  <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: 10 }}>
-                  <InlineBanner
-                    tone="warning"
-                    message={tr("settings.logs.previousCrash", {
-                      category: crash().category || tr("common.unknown").toLowerCase(),
-                      dir: crash().sessionLogDir || tr("settings.logs.thatFolder"),
-                    })}
-                  />
-                  </View>
-                )}
-              </If>
-              <View
-                style={{
-                  position: "relative",
-                  flexDirection: "row",
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  gap: 8,
-                  minHeight: SETTINGS_ROW_MIN,
-                  paddingHorizontal: SETTINGS_ROW_INSET,
-                  paddingVertical: 8,
-                }}
-              >
-                <RowSeparator edge="top" />
                 <Button
-                  label={
-                    loggingBusy() === "reveal"
-                      ? tr("settings.logs.opening")
-                      : tr("settings.logs.openFolder")
-                  }
+                  label={loggingBusy() === "reveal" ? tr("settings.logs.opening") : tr("common.open")}
+                  tooltip={tr("settings.logs.openFolder")}
                   variant="secondary"
                   size="sm"
                   leadingIcon="folder-open"
+                  disabled={!info().sessionLogDir || loggingBusy() === "reveal"}
                   accessibilityLabel="logging-open-folder"
                   onPress={() => void revealLogFolder()}
                 />
-                <Button
-                  label={
-                    loggingBusy() === "export"
-                      ? tr("settings.logs.exporting")
-                      : tr("settings.logs.exportBundle")
-                  }
-                  variant="primary"
-                  size="sm"
-                  accessibilityLabel="logging-export"
-                  onPress={() => diagnosticsExportPending.set(true)}
-                />
               </View>
+              <If when={info().previousCrash}>
+                {crash => (
+                  <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
+                    <InlineBanner
+                      tone="warning"
+                      message={tr("settings.logs.previousCrash", {
+                        category: crash().category || tr("common.unknown").toLowerCase(),
+                        dir: crash().sessionLogDir || tr("settings.logs.thatFolder"),
+                      })}
+                    />
+                  </View>
+                )}
+              </If>
             </View>
           )}
         </If>
         <If when={diagnosticsExportPending()}>
           <View
             testID="logging-export-confirm"
-            style={{ position: "relative", paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: 12, gap: 8 }}
+            style={{ position: "relative", paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, gap: space.sm }}
           >
             <RowSeparator edge="top" />
             <Text style={textStyle("label")}>{tr("settings.logs.exportConfirmTitle")}</Text>
@@ -5797,7 +5905,7 @@ function LogFilesSection() {
           </View>
         </If>
         <If when={!runtimeLogging()}>
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: 12, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
             <Text style={textStyle("caption")}>{tr("settings.logs.noLocation")}</Text>
           </View>
         </If>
@@ -5805,7 +5913,6 @@ function LogFilesSection() {
     </SettingsSection>
   );
 }
-
 
 function quotaPeriodLabel(seconds: number | undefined): string {
   if (!seconds) return "";
@@ -6375,6 +6482,14 @@ function groupModelsByProvider(
 
 function ModelSection() {
   void loadModels();
+  // Each time the form opens, the folded part starts open only when the entry uses it.
+  effect(() => {
+    if (!modelFormOpen()) return;
+    untracked(() => {
+      const draft = modelDraft();
+      modelAdvancedOpen.set(draft.customHeaders.trim() !== "" || draft.skipSslVerify);
+    });
+  });
   const limitsModalOpen = usePresenceFlag(() => modelLimitsDraft() !== null);
   const limitsTargetModel = () =>
     storedModels().find(model => model.id === modelLimitsDraft()?.id) ?? null;
@@ -6713,30 +6828,24 @@ function ModelSection() {
             </View>
           }
         >
-          <View style={{ gap: space.md }}>
+          <View style={{ gap: space.lg }}>
             <If when={testStatus().status === "error" && testStatus().errorDetails ? testStatus().errorDetails! : ""}>
               {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
             </If>
+            {/* Presets: a provider fills the endpoint and protocol, a model fills the id and limits. */}
             <If when={!modelDraft().editingId && modelCatalogLoaded() && modelCatalog().length > 0}>
-              <View
-                style={{
-                  gap: space.md,
-                  padding: space.lg,
-                  borderRadius: radii.md,
-                  borderCurve: "continuous",
-                  backgroundColor: palette().surfaceTertiary,
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                }}
-              >
-                <Text style={textStyle("caption")}>{tr("settings.models.discoverHint")}</Text>
-                <ModelFormField
-                  label={tr("common.filter")}
-                  value={modelCatalogQuery()}
-                  placeholder="anthropic"
-                  accessibilityLabel="model-filter"
-                  onChange={value => setCatalogQuery(value)}
-                />
+              <View style={{ gap: space.sm }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                  <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 200 }}>{tr("settings.models.discoverHint")}</Text>
+                  <SearchInput
+                    size="sm"
+                    value={modelCatalogQuery()}
+                    placeholder={tr("common.filter")}
+                    accessibilityLabel="model-filter"
+                    style={{ width: settingsCompact() ? "100%" : 180 }}
+                    onChange={value => setCatalogQuery(value)}
+                  />
+                </View>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                   <Each of={catalogProviders()} key={provider => provider.id}>
                     {provider => (
@@ -6774,72 +6883,40 @@ function ModelSection() {
                 </If>
               </View>
             </If>
-            <ModelFormField
-              label={tr("common.name")}
-              value={modelDraft().name}
-              placeholder={tr("settings.models.namePlaceholder")}
-              accessibilityLabel="model-name"
-              onChange={value => updateDraft({ name: value })}
-            />
-            <View style={{ gap: 6 }}>
-              <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("settings.models.providerFormat")}
-              </Text>
-              <SegmentedTabs
-                size="sm"
-                value={modelDraft().provider}
-                options={PROVIDER_FORMATS.map(format => ({
-                  value: format,
-                  label: format,
-                  accessibilityLabel: `model-format-${format}`,
-                }))}
-                onChange={format => {
+            {/* Protocol stays in view only while nothing chose it yet (no preset, not an edit). */}
+            <If when={!modelProtocolDecided()}>
+              <ModelProtocolField />
+            </If>
+            <View style={{ gap: space.xs }}>
+              <ModelFormField
+                label={tr("settings.models.baseUrl")}
+                value={modelDraft().baseUrl}
+                placeholder="https://api.openai.com/v1"
+                monospace
+                accessibilityLabel="model-base-url"
+                onChange={value => {
                   resetRemoteDiscovery();
-                  updateDraft({ provider: format as (typeof PROVIDER_FORMATS)[number] });
+                  updateDraft({ baseUrl: value });
                 }}
               />
-            </View>
-            <ModelFormField
-              label={tr("settings.models.baseUrl")}
-              value={modelDraft().baseUrl}
-              placeholder="https://api.openai.com/v1"
-              monospace
-              accessibilityLabel="model-base-url"
-              onChange={value => {
-                resetRemoteDiscovery();
-                updateDraft({ baseUrl: value });
-              }}
-            />
-            <If when={urlPreview()}>
-              {preview => (
-                <View
-                  style={{
-                    gap: 4,
-                    paddingHorizontal: 12,
-                    paddingVertical: 9,
-                    borderRadius: radii.sm,
-                    borderCurve: "continuous",
-                    backgroundColor: palette().surfaceTertiary,
-                    borderWidth: 1,
-                    borderColor: palette().borderSubtle,
-                  }}
-                >
+              <If when={urlPreview()}>
+                {preview => (
                   <Text
                     accessibilityLabel="model-request-url-preview"
                     style={{
-                      minWidth: 0,
-                      color: palette().textSecondary,
-                      fontSize: textSize(12),
+                      ...textStyle("caption", { color: palette().textMuted }),
                       fontFamily: fontMono,
-                      lineHeight: textLineHeight(12, 1.42),
+                      minWidth: 0,
+                      numberOfLines: 2,
+                      textOverflow: "ellipsis-middle",
+                      userSelect: "text",
                     }}
                   >
                     {tr("settings.models.requestUrl", { url: preview() })}
                   </Text>
-                  <Text style={textStyle("micro")}>{tr("settings.models.baseUrlHint")}</Text>
-                </View>
-              )}
-            </If>
+                )}
+              </If>
+            </View>
             <ModelFormField
               label={tr("settings.models.apiKey")}
               value={modelDraft().apiKey}
@@ -6851,139 +6928,171 @@ function ModelSection() {
                 updateDraft({ apiKey: value });
               }}
             />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: 8 }}>
-              <View style={{ flex: 1, minWidth: 200 }}>
-                <ModelFormField
-                  label={tr("settings.models.modelName")}
-                  value={modelDraft().modelName}
-                  placeholder="gpt-4.1-mini"
-                  monospace
-                  accessibilityLabel="model-model-name"
-                  onChange={value => updateDraft({ modelName: value })}
-                />
-              </View>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 0, gap: space.sm }}>
-                <Button
-                  label={
-                    remoteDiscoveryLoading()
-                      ? tr("settings.models.detecting")
-                      : tr("settings.models.detectModels")
-                  }
-                  variant="secondary"
-                  size="md"
-                  disabled={remoteDiscoveryLoading()}
-                  accessibilityLabel="model-detect-btn"
-                  onPress={() => void detectModelsForConfig(modelDraft(), true)}
-                />
-                <Button
-                  label={`${tr("settings.models.quickAddModels")}${remoteDiscoveredModels().length > 0 ? ` (${remoteDiscoveredModels().length})` : ""}`}
-                  variant="secondary"
-                  size="md"
-                  accessibilityLabel="settings-model-select"
-                  onPress={() => openDiscoveryPicker(modelDraft())}
-                />
-              </View>
-            </View>
-            <If when={remoteDiscoveryLoading()}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                <Spinner size={12} color={palette().accent} />
-                <Text style={textStyle("caption")}>{tr("settings.models.queryingRemote")}</Text>
-              </View>
-            </If>
-            <If when={!remoteDiscoveryLoading() && remoteDiscoveredModels().length > 0}>
-              <Text style={textStyle("caption", { color: palette().textSecondary, tabular: true })}>
-                {tr("settings.models.detectedSummary", { count: remoteDiscoveredModels().length })}
-              </Text>
-            </If>
-            <If when={remoteDiscoveryError()}>
-              {err => (
-                <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
-                  {localizeHostError(err())}
-                </Text>
-              )}
-            </If>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-              <View style={{ flex: 1, minWidth: 160 }}>
-                <ModelFormField
-                  label={tr("settings.models.contextWindow")}
-                  value={modelDraft().contextWindow}
-                  placeholder="200000"
-                  accessibilityLabel="model-context-window"
-                  onChange={value => updateDraft({ contextWindow: value })}
-                />
-              </View>
-              <View style={{ flex: 1, minWidth: 160 }}>
-                <ModelFormField
-                  label={tr("settings.models.maxOutput")}
-                  value={modelDraft().maxTokens}
-                  placeholder="8000"
-                  accessibilityLabel="model-max-output"
-                  onChange={value => updateDraft({ maxTokens: value })}
-                />
-              </View>
-            </View>
-            <View style={{ gap: 6 }}>
-              <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("settings.models.category")}
-              </Text>
-              <SegmentedTabs
-                size="sm"
-                value={modelDraft().category}
-                options={MODEL_CATEGORIES.map(category => ({
-                  value: category,
-                  label: tr(MODEL_CATEGORY_KEYS[category]),
-                  accessibilityLabel: `model-category-${category}`,
-                }))}
-                onChange={category => updateDraft({ category })}
-              />
-            </View>
-            <View
-              style={{
-                gap: 10,
-                padding: 12,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().borderSubtle,
-              }}
-            >
-              <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("settings.models.advanced")}
-              </Text>
-              <InputBox
-                label={tr("settings.models.customHeaders")}
-                hint={tr("settings.models.customHeadersHint")}
-                size="md"
-                multiline={true}
-                minHeight={64}
-                monospace={true}
-                value={modelDraft().customHeaders}
-                placeholder="X-Team: research"
-                accessibilityLabel="model-custom-headers"
-                onChange={value => updateDraft({ customHeaders: value })}
-              />
-              <If when={modelDraft().customHeaders.trim() !== ""}>
-                <SegmentedTabs
-                  size="sm"
-                  value={modelDraft().customHeadersMode}
-                  options={[
-                    { value: "merge", label: tr("settings.models.headersMerge"), accessibilityLabel: "model-headers-merge" },
-                    { value: "replace", label: tr("settings.models.headersReplace"), accessibilityLabel: "model-headers-replace" },
-                  ]}
-                  onChange={mode => updateDraft({ customHeadersMode: mode as "merge" | "replace" })}
-                />
-              </If>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                  <Text style={textStyle("label")}>{tr("settings.models.skipSsl")}</Text>
-                  <Text style={textStyle("caption")}>{tr("settings.models.skipSslHint")}</Text>
+            <View style={{ gap: space.xs }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: space.sm }}>
+                <View style={{ flex: 1, minWidth: 200 }}>
+                  <ModelFormField
+                    label={tr("settings.models.modelName")}
+                    value={modelDraft().modelName}
+                    placeholder="gpt-4.1-mini"
+                    monospace
+                    accessibilityLabel="model-model-name"
+                    onChange={value => updateDraft({ modelName: value })}
+                  />
                 </View>
-                <ToggleSwitch
-                  value={modelDraft().skipSslVerify}
-                  accessibilityLabel="model-skip-ssl"
-                  onChange={next => updateDraft({ skipSslVerify: next })}
-                />
+                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
+                  <Button
+                    label={
+                      remoteDiscoveryLoading()
+                        ? tr("settings.models.detecting")
+                        : tr("settings.models.detectModels")
+                    }
+                    variant="secondary"
+                    size="md"
+                    loading={remoteDiscoveryLoading()}
+                    disabled={remoteDiscoveryLoading()}
+                    accessibilityLabel="model-detect-btn"
+                    onPress={() => void detectModelsForConfig(modelDraft(), true)}
+                  />
+                  <Button
+                    label={`${tr("settings.models.quickAddModels")}${remoteDiscoveredModels().length > 0 ? ` (${remoteDiscoveredModels().length})` : ""}`}
+                    variant="secondary"
+                    size="md"
+                    accessibilityLabel="settings-model-select"
+                    onPress={() => openDiscoveryPicker(modelDraft())}
+                  />
+                </View>
               </View>
+              <If when={remoteDiscoveryLoading()}>
+                <Text style={textStyle("caption")}>{tr("settings.models.queryingRemote")}</Text>
+              </If>
+              <If when={!remoteDiscoveryLoading() && remoteDiscoveredModels().length > 0}>
+                <Text style={textStyle("caption", { color: palette().textSecondary, tabular: true })}>
+                  {tr("settings.models.detectedSummary", { count: remoteDiscoveredModels().length })}
+                </Text>
+              </If>
+              <If when={remoteDiscoveryError()}>
+                {err => (
+                  <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
+                    {localizeHostError(err())}
+                  </Text>
+                )}
+              </If>
+            </View>
+            {/* Everything set once or rarely: folded, open when the entry already uses it. */}
+            <View style={{ position: "relative", gap: space.md }}>
+              <RowSeparator edge="top" />
+              <View
+                role="button"
+                accessibilityLabel="model-more-options"
+                accessibilityState={{ expanded: modelAdvancedOpen() }}
+                hitSlop={touchSlop(controlHeight.sm)}
+                onPress={() => modelAdvancedOpen.update(open => !open)}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.sm,
+                  minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+                  marginTop: space.sm,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                activeStyle={tactileActiveStyle(0.99)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <View style={{ flexShrink: 0, ...rotatingChevronStyle(modelAdvancedOpen()) }}>
+                  <Icon name="chevron-right" size={13} color={palette().textMuted} />
+                </View>
+                <Text style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "600" }}>
+                  {tr("settings.models.advanced")}
+                </Text>
+              </View>
+              <If when={modelAdvancedOpen()}>
+                <View style={{ gap: space.md }}>
+                  <ModelFormField
+                    label={tr("common.name")}
+                    value={modelDraft().name}
+                    placeholder={modelDraft().modelName.trim() || tr("settings.models.namePlaceholder")}
+                    accessibilityLabel="model-name"
+                    onChange={value => updateDraft({ name: value })}
+                  />
+                  <If when={modelProtocolDecided()}>
+                    <ModelProtocolField />
+                  </If>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.md }}>
+                    <View style={{ flex: 1, minWidth: 160 }}>
+                      <ModelFormField
+                        label={tr("settings.models.contextWindow")}
+                        value={modelDraft().contextWindow}
+                        placeholder="200000"
+                        accessibilityLabel="model-context-window"
+                        onChange={value => updateDraft({ contextWindow: value })}
+                      />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 160 }}>
+                      <ModelFormField
+                        label={tr("settings.models.maxOutput")}
+                        value={modelDraft().maxTokens}
+                        placeholder="8000"
+                        accessibilityLabel="model-max-output"
+                        onChange={value => updateDraft({ maxTokens: value })}
+                      />
+                    </View>
+                  </View>
+                  <View style={{ gap: space.chip }}>
+                    <Text style={textStyle("label", { color: palette().textSecondary })}>
+                      {tr("settings.models.category")}
+                    </Text>
+                    <Scroll smoothWheel horizontal style={{ maxWidth: "100%" }}>
+                      <SegmentedTabs
+                        size="sm"
+                        value={modelDraft().category}
+                        options={MODEL_CATEGORIES.map(category => ({
+                          value: category,
+                          label: tr(MODEL_CATEGORY_KEYS[category]),
+                          accessibilityLabel: `model-category-${category}`,
+                        }))}
+                        onChange={category => updateDraft({ category })}
+                      />
+                    </Scroll>
+                  </View>
+                  <InputBox
+                    label={tr("settings.models.customHeaders")}
+                    hint={tr("settings.models.customHeadersHint")}
+                    size="md"
+                    multiline={true}
+                    minHeight={64}
+                    monospace={true}
+                    value={modelDraft().customHeaders}
+                    placeholder="X-Team: research"
+                    accessibilityLabel="model-custom-headers"
+                    onChange={value => updateDraft({ customHeaders: value })}
+                  />
+                  <If when={modelDraft().customHeaders.trim() !== ""}>
+                    <SegmentedTabs
+                      size="sm"
+                      value={modelDraft().customHeadersMode}
+                      options={[
+                        { value: "merge", label: tr("settings.models.headersMerge"), accessibilityLabel: "model-headers-merge" },
+                        { value: "replace", label: tr("settings.models.headersReplace"), accessibilityLabel: "model-headers-replace" },
+                      ]}
+                      onChange={mode => updateDraft({ customHeadersMode: mode as "merge" | "replace" })}
+                    />
+                  </If>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+                    <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+                      <Text style={textStyle("label")}>{tr("settings.models.skipSsl")}</Text>
+                      <Text style={textStyle("caption")}>{tr("settings.models.skipSslHint")}</Text>
+                    </View>
+                    <ToggleSwitch
+                      value={modelDraft().skipSslVerify}
+                      accessibilityLabel="model-skip-ssl"
+                      onChange={next => updateDraft({ skipSslVerify: next })}
+                    />
+                  </View>
+                </View>
+              </If>
             </View>
           </View>
         </ModalDialog>
@@ -7072,7 +7181,7 @@ function ModelSection() {
             <If when={discoveredMatches().length === 0}>
               <Text style={textStyle("caption")}>{tr("settings.models.noMatches")}</Text>
             </If>
-            <Scroll style={{ maxHeight: 260, minHeight: 0, flexShrink: 1 }}>
+            <Scroll smoothWheel style={{ maxHeight: 260, minHeight: 0, flexShrink: 1 }}>
               <View style={{ gap: space.sm }}>
                 <Each of={discoveredMatches()} key={item => item.id}>
                   {item => {
@@ -7501,14 +7610,16 @@ function ContentWidthRow() {
           onDecrease={() => adjustContentWidth(-CONTENT_WIDTH_STEP)}
           onIncrease={() => adjustContentWidth(CONTENT_WIDTH_STEP)}
           leading={
-            <If when={isCustomWidth()}>
-              <StepperAccessory
-                icon="undo"
-                tooltip={tr("common.reset")}
-                accessibilityLabel="content-width-reset"
-                onPress={() => resetContentWidth()}
-              />
-            </If>
+            <StepperSlot width={controlHeight.sm}>
+              <If when={isCustomWidth()}>
+                <StepperAccessory
+                  icon="undo"
+                  tooltip={tr("common.reset")}
+                  accessibilityLabel="content-width-reset"
+                  onPress={() => resetContentWidth()}
+                />
+              </If>
+            </StepperSlot>
           }
         />
       </View>
@@ -7562,18 +7673,20 @@ function FontSizeRows() {
           onDecrease={() => void adjustFontPx(-1)}
           onIncrease={() => void adjustFontPx(1)}
           leading={
-            <If when={fontLevel() !== "default"}>
-              <StepperAccessory
-                icon="undo"
-                tooltip={tr("common.reset")}
-                accessibilityLabel="font-size-reset"
-                onPress={() => void resetFontPreference()}
-              />
-            </If>
+            <StepperSlot width={controlHeight.sm}>
+              <If when={fontLevel() !== "default"}>
+                <StepperAccessory
+                  icon="undo"
+                  tooltip={tr("common.reset")}
+                  accessibilityLabel="font-size-reset"
+                  onPress={() => void resetFontPreference()}
+                />
+              </If>
+            </StepperSlot>
           }
         />
       </View>
-      <Scroll horizontal style={{ maxWidth: "100%" }}>
+      <Scroll smoothWheel horizontal style={{ maxWidth: "100%" }}>
         <SegmentedTabs
           size="sm"
           value={fontLevel()}
@@ -8329,9 +8442,7 @@ function LaunchAtLoginRow() {
       }
       first={true}
     >
-      <If when={generalControlSaving() === "launch-at-login"}>
-        <Spinner size={12} color={palette().accent} />
-      </If>
+      <FieldStatus saving={generalControlSaving() === "launch-at-login"} saved={fieldJustSaved("launch-at-login")} />
       <If when={value() !== undefined}>
         <ToggleSwitch
           value={value() === true}
@@ -8355,6 +8466,21 @@ async function pickCompanionPack(): Promise<void> {
   if (!picked?.file || picked.status !== "read") return;
   const bytes = new Uint8Array(await picked.file.arrayBuffer());
   await importCompanionPetArchive(picked.name, Buffer.from(bytes).toString("base64"));
+}
+
+/** Imports a pet pack; drawn in the Pet page's header, where other pages keep their actions. */
+function PetImportButton() {
+  return (
+    <Button
+      label={tr("pet.import")}
+      variant="secondary"
+      size="sm"
+      leadingIcon="upload"
+      loading={companionBusy() === "import"}
+      accessibilityLabel="pet-import"
+      onPress={() => void pickCompanionPack()}
+    />
+  );
 }
 
 /**
@@ -8398,17 +8524,6 @@ function DesktopCompanionRow() {
         </SettingsRow>
         <SettingsRow label={tr("pet.character")} description={tr("pet.characterBody")} stacked={true}>
           <PetCharacterGrid />
-          <View style={{ flexDirection: "row" }}>
-            <Button
-              label={tr("pet.import")}
-              variant="secondary"
-              size="sm"
-              leadingIcon="upload"
-              loading={companionBusy() === "import"}
-              accessibilityLabel="pet-import"
-              onPress={() => void pickCompanionPack()}
-            />
-          </View>
         </SettingsRow>
         <SettingsRow label={tr("cards.settingsEnabled")} description={tr("cards.settingsEnabledBody")}>
           <If when={desktopCardsEnabled() !== null}>
@@ -8601,35 +8716,25 @@ async function deleteSuperagentData(): Promise<void> {
 
 // ── Account › Profile: account settings sync (the backend reports the state) ──
 
-function accountSyncStateText(): string {
+/**
+ * The one sync state worth a line: one the user can act on or that means sync
+ * is not working. Healthy states (synced, syncing, waiting for another device,
+ * off by the switch) say nothing; the switch already shows on or off.
+ */
+function accountSyncProblemText(): string {
   const status = accountSync();
+  if (status?.enabled === false) return "";
   switch (status?.phase) {
     case "synced":
-      return (status.peers ?? 0) === 0 ? tr("settings.sync.state.only") : tr("settings.sync.state.synced");
     case "syncing":
-      return tr("settings.sync.state.syncing");
     case "offline":
-      return tr("settings.sync.state.offline");
     case "off":
-      return tr("settings.sync.state.off");
+      return "";
     case "signed_out":
       return tr("settings.sync.state.signedOut");
     default:
       return tr("settings.sync.state.unavailable");
   }
-}
-
-function accountSyncDetail(): string {
-  const status = accountSync();
-  const parts: string[] = [];
-  if ((status?.peers ?? 0) > 0) {
-    parts.push(tr("settings.sync.peers", { online: String(status?.peersOnline ?? 0), total: String(status?.peers ?? 0) }));
-  }
-  if ((status?.pending ?? 0) > 0) parts.push(tr("settings.sync.pending", { count: String(status?.pending ?? 0) }));
-  if (status?.phase === "synced" && typeof status.lastSyncedAtMs === "number") {
-    parts.push(tr("settings.sync.lastSynced", { time: formatRelativeTime(status.lastSyncedAtMs) }));
-  }
-  return parts.join(" · ");
 }
 
 function AccountSyncSection() {
@@ -8682,12 +8787,17 @@ function AccountSyncSection() {
               onChange={next => void setAccountSyncEnabled(next)}
             />
           </SettingsRow>
-          <SettingsRow label={tr("settings.sync.status")} description={accountSyncDetail() || undefined}>
-            <Text accessibilityLabel="account-sync-state" style={textStyle("label", { color: palette().textMuted })}>
-              {accountSyncStateText()}
-            </Text>
-          </SettingsRow>
         </SettingsGroup>
+        <If when={accountSyncProblemText()}>
+          {message => (
+            <Text
+              accessibilityLabel="account-sync-state"
+              style={{ ...textStyle("caption"), paddingHorizontal: space.xs, maxWidth: 600 }}
+            >
+              {message()}
+            </Text>
+          )}
+        </If>
       </If>
     </View>
   );
@@ -9086,7 +9196,7 @@ function ActivityPage() {
               days: activityView()?.activeDays ?? 0,
             })}
           </Text>
-          <Scroll horizontal={true} style={{ width: "100%", minWidth: 0 }}>
+          <Scroll smoothWheel horizontal={true} style={{ width: "100%", minWidth: 0 }}>
             <View
               accessibilityLabel="settings-activity-heatmap"
               style={{ flexDirection: "row", gap: ACTIVITY_GAP }}
@@ -10093,7 +10203,7 @@ function ModelsPage() {
   return (
     <View style={{ gap: layout.sectionGap }}>
       <If when={scrollTabs()} else={tabBar()}>
-        <Scroll horizontal={true} scrollbar={false}>
+        <Scroll smoothWheel horizontal={true} scrollbar={false}>
           {tabBar()}
         </Scroll>
       </If>
@@ -10159,7 +10269,12 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   if (page === "shortcuts") return <ShortcutsSection />; // wave22-p5
   if (page === "pet") {
     return (
-      <SettingsGroup id="pet" title={tr("settings.page.pet")} hideTitle={true}>
+      <SettingsGroup
+        id="pet"
+        title={tr("settings.page.pet")}
+        hideTitle={true}
+        extra={companionAvailableHere() ? <PetImportButton /> : undefined}
+      >
         <DesktopCompanionRow />
       </SettingsGroup>
     );
@@ -10364,26 +10479,15 @@ export function SettingsScene() {
     }
     lastSettingsDevice = ctx;
   });
-  let noticeAutoClearTimer: ReturnType<typeof setTimeout> | null = null;
-  const clearNoticeTimer = () => {
-    if (noticeAutoClearTimer !== null) {
-      clearTimeout(noticeAutoClearTimer);
-      noticeAutoClearTimer = null;
-    }
-  };
+  // A page-level success (the interface language) is a toast, so the page never jumps.
   effect(() => {
     const notice = settingsNotice();
-    clearNoticeTimer();
-    if (notice && settingsNoticeTone(notice) === "success") {
-      noticeAutoClearTimer = setTimeout(() => {
-        noticeAutoClearTimer = null;
-        if (settingsNotice() === notice) {
-          settingsNotice.set("");
-        }
-      }, 4500);
-    }
+    if (!notice || settingsNoticeTone(notice) !== "success") return;
+    untracked(() => {
+      pushToast(localizeHostError(notice), "success");
+      settingsNotice.set("");
+    });
   });
-  cleanup(() => clearNoticeTimer());
   effect(() => {
     const activeLocale = currentLocale();
     if (lastSettingsLocale !== null && activeLocale !== lastSettingsLocale) {
@@ -10424,7 +10528,7 @@ export function SettingsScene() {
             backgroundColor: palette().canvasSubtle,
           }}
         >
-          <Scroll style={{ flex: 1, minHeight: 0 }}>
+          <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
             <View style={{ paddingHorizontal: space.md, paddingTop: space.lg, paddingBottom: space.x3l }}>
               <SettingsNavigationList />
             </View>
@@ -10433,7 +10537,7 @@ export function SettingsScene() {
       </If>
       {/* The page clips to its own column so a long unbroken value never draws over the list. */}
       <View style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
-      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ alignItems: "center" }}>
+      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ alignItems: "center" }}>
         <View
           style={{
             width: "100%",
@@ -10472,7 +10576,7 @@ export function SettingsScene() {
                   />
                 </If>
               </View>
-              <If when={settingsNotice()}>
+              <If when={settingsNotice() && settingsNoticeTone(settingsNotice()) !== "success" ? settingsNotice() : ""}>
                 {notice => (
                   <InlineBanner
                     tone={settingsNoticeTone(notice())}

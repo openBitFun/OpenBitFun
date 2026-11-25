@@ -316,11 +316,6 @@ function btnFg(variant: ButtonVariant, surface: ControlSurface = "canvas"): stri
   return surface === "chrome" ? palette().chromeText : palette().text;
 }
 
-function btnShadow(variant: ButtonVariant): string | undefined {
-  if (variant === "primary" || variant === "accent") return palette().innerHighlight;
-  return undefined;
-}
-
 function btnPadX(size: ButtonSize): number {
   if (size === "xs") return 8;
   if (size === "sm") return 12;
@@ -395,7 +390,6 @@ export function Button(props: ButtonProps) {
           backgroundColor: isMutedPrimaryDisabled()
             ? palette().buttonSecondaryBg
             : btnBg(props.variant ?? "secondary", props.surface ?? "canvas"),
-          boxShadow: isMutedPrimaryDisabled() ? undefined : btnShadow(props.variant ?? "secondary"),
           cursor: props.disabled || props.loading ? "not-allowed" : "pointer",
           userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
@@ -1455,11 +1449,10 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                     ? palette().panelRaised
                     : palette().panelHover
                   : "transparent",
+              // No inset top-edge highlight on controls: it reads as a white seam on fills.
               boxShadow:
-                option().value === props.value
-                  ? isLightAppearance()
-                    ? elevationShadow(1)
-                    : palette().innerHighlight
+                option().value === props.value && isLightAppearance()
+                  ? elevationShadow(1)
                   : undefined,
               cursor: "pointer",
               userSelect: "none",

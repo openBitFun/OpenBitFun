@@ -1,10 +1,11 @@
 // Settings › Account › Devices and chat apps (visual spec §4.9, ux-redesign §3.8).
 //
-// The account's devices as quiet rows (a device opens its page), one "Open on
-// your phone" row whose address and QR open in a sheet, and the chat apps
-// (Telegram, Feishu, WeChat) this device's connector serves. Everything is the
-// backend's answer: the fleet navigator for devices, the connector store for
-// chat apps.
+// Two sections that match what their controls do. Devices: the account's
+// devices as informative rows, then this device's own switch (may the others
+// control it) and "Open on your phone", whose address and QR open in a sheet.
+// Chat apps: Telegram, Feishu and WeChat, each with its own state and action,
+// and the reply-detail switch of the bots. Everything is the backend's answer:
+// the fleet navigator for devices, the connector store for chat apps.
 
 import { signal, Text, View } from "nsh";
 import {
@@ -38,10 +39,10 @@ import {
   setRemoteControlAllowed,
 } from "../connectorsStore";
 import { fleetDevices } from "../fleetStore";
+import type { FleetDevice } from "../fleetTypes";
 import { localizeHostError, tr, type MessageKey } from "../i18n";
 import { loadObpStatus, obpStatus } from "../obpStore";
 import { superAgentUi } from "../productGates";
-import * as navigation from "../state";
 import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { DeviceGlyph, deviceException, stateColor } from "../ui/fleet";
 import { ObpPairingCard } from "./ObpPairingCard";
@@ -49,13 +50,13 @@ import { UseOnPhonePanel } from "./UseOnPhonePanel";
 import { Icon, type IconName } from "../ui/icons";
 import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { InsetGroup, InsetRow, MoreMenu, QrCodeView, StudioEmpty, StudioSection } from "../ui/studio";
-import { ModalDialog, type DropdownMenuItem } from "../ui/overlays";
-import { Button, InlineBanner, InputBox, ToggleSwitch, focusRingStyle } from "../ui/primitives";
+import { ModalDialog, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { Badge, Button, InlineBanner, InputBox, ToggleSwitch, focusRingStyle } from "../ui/primitives";
 
 type ChannelId = "telegram" | "feishu" | "weixin";
 
 const activeChannelModal = signal<ChannelId | null>(null);
-const connectorBannerOwner = signal<ChannelId | "page">("page");
+const connectorBannerOwner = signal<ChannelId | "page" | "device">("page");
 const phoneSheetOpen = signal(false);
 
 function openChannelModal(channel: ChannelId): void {
@@ -72,10 +73,42 @@ function closeChannelModal(): void {
   connectorError.set("");
 }
 
-function isChannelActive(keyword: string): boolean {
+/**
+ * Runs a page-level connector action. Its confirmation is a toast, so nothing
+ * on the page moves; an error stays inline under the owning section.
+ */
+async function runPageAction(owner: "page" | "device", action: () => Promise<void>): Promise<void> {
+  connectorBannerOwner.set(owner);
+  connectorNotice.set("");
+  await action();
+  const notice = connectorNotice();
+  if (notice && activeChannelModal() === null) {
+    pushToast(localizeHostError(notice), "success");
+    connectorNotice.set("");
+  }
+}
+
+const CHANNEL_KEYWORDS: Record<ChannelId, readonly string[]> = {
+  telegram: ["telegram"],
+  feishu: ["feishu", "lark"],
+  weixin: ["weixin", "wechat"],
+};
+
+/** The chat app whose bot this device runs now (the host runs one at a time), if it is one of ours. */
+function activeChannel(): ChannelId | null {
   const connected = (connectorStatus()?.botConnected ?? "").toLowerCase();
-  if (!connected) return false;
-  return connected.includes(keyword);
+  if (!connected) return null;
+  for (const id of Object.keys(CHANNEL_KEYWORDS) as ChannelId[]) {
+    if (CHANNEL_KEYWORDS[id].some(keyword => connected.includes(keyword))) return id;
+  }
+  return null;
+}
+
+/** The host reports `Telegram(<chat>)`; the row already names the app, so show the chat only. */
+function connectedChat(): string {
+  const raw = connectorStatus()?.botConnected ?? "";
+  const match = /^[^()]*\((.+)\)\s*$/.exec(raw);
+  return match ? match[1] : raw;
 }
 
 /** A wrapping secondary line under an inset row's label. */
@@ -91,21 +124,42 @@ function RowNote(props: { text: string }) {
   );
 }
 
-function ChannelRow(props: {
-  icon: IconName;
-  label: string;
-  description: string;
-  accessibilityLabel: string;
-  onPress: () => void;
-}) {
+function DisconnectButton() {
+  return (
+    <Button
+      label={tr("devices.chatAppDisconnect")}
+      variant="secondary"
+      size="sm"
+      accessibilityLabel="connector-bot-stop"
+      disabled={connectorBusy()}
+      onPress={() => void runPageAction("page", stopBotConnector)}
+    />
+  );
+}
+
+/** One chat app: its own state on the second line and the one action that fits it. */
+function ChannelRow(props: { first?: boolean; channel: ChannelId; icon: IconName; label: string }) {
+  const active = () => activeChannel() === props.channel;
   return (
     <InsetRow
+      first={props.first}
       icon={props.icon}
       label={props.label}
-      detail={props.description}
-      chevron
-      accessibilityLabel={props.accessibilityLabel}
-      onPress={props.onPress}
+      detail={active() ? tr("devices.channelConnected", { bot: connectedChat() }) : tr("devices.noBotConnected")}
+      accessibilityLabel={`channel-row-${props.channel}`}
+      trailing={
+        active() ? (
+          <DisconnectButton />
+        ) : (
+          <Button
+            label={tr("devices.channelConnect")}
+            variant="secondary"
+            size="sm"
+            accessibilityLabel={`channel-toggle-${props.channel}`}
+            onPress={() => openChannelModal(props.channel)}
+          />
+        )
+      }
     />
   );
 }
@@ -133,6 +187,21 @@ function channelMenuItems(): DropdownMenuItem[] {
   ];
 }
 
+/** Inline errors of a page-level action, under the section that owns it. */
+function PageError(props: { owner: "page" | "device" }) {
+  return (
+    <If
+      when={
+        activeChannelModal() === null && connectorBannerOwner() === props.owner && connectorError()
+          ? connectorError()
+          : ""
+      }
+    >
+      {err => <InlineBanner tone="danger" message={localizeHostError(err())} onDismiss={() => connectorError.set("")} />}
+    </If>
+  );
+}
+
 function ChannelsSection() {
   ensureConnectors();
 
@@ -140,7 +209,13 @@ function ChannelsSection() {
     <StudioSection
       title={tr("devices.chatAppsTitle")}
       accessibilityLabel="channels-section"
-      footnote={connectorsSupported() === true ? tr("devices.channelsSubtitle") : undefined}
+      footnote={
+        connectorsSupported() === true
+          ? connectorStatus()?.remoteControlAllowed === false
+            ? tr("devices.chatAppsPaused")
+            : tr("devices.channelsSubtitle")
+          : undefined
+      }
       trailing={
         <MoreMenu
           accessibilityLabel="channels-menu"
@@ -159,103 +234,44 @@ function ChannelsSection() {
           />
         </If>
         <If when={connectorsSupported() === true}>
-          <If when={activeChannelModal() === null && connectorBannerOwner() === "page" && connectorNotice() ? connectorNotice() : ""}>
-            {notice => <InlineBanner tone="success" message={localizeHostError(notice())} onDismiss={() => connectorNotice.set("")} />}
-          </If>
-          <If when={activeChannelModal() === null && connectorBannerOwner() === "page" && connectorError() ? connectorError() : ""}>
-            {err => <InlineBanner tone="danger" message={localizeHostError(err())} onDismiss={() => connectorError.set("")} />}
-          </If>
+          <PageError owner="page" />
           <InsetGroup accessibilityLabel="channels-list">
+            <ChannelRow first channel="telegram" icon="message-circle" label={tr("devices.telegram")} />
+            <ChannelRow channel="feishu" icon="globe" label={tr("devices.feishu")} />
+            <ChannelRow channel="weixin" icon="smartphone" label={tr("devices.wechat")} />
+            {/* A bot of a kind this build does not list still shows, and can still be stopped. */}
+            <If when={connectorStatus()?.botConnected && activeChannel() === null ? connectorStatus()!.botConnected! : ""}>
+              {name => (
+                <InsetRow
+                  icon="message-circle"
+                  label={name()}
+                  detail={tr("devices.channelConnected", { bot: connectedChat() })}
+                  trailing={<DisconnectButton />}
+                />
+              )}
+            </If>
+          </InsetGroup>
+          <InsetGroup accessibilityLabel="channels-options">
             <InsetRow
               first
-              label={tr("devices.remoteControlAllowed")}
-              below={<RowNote text={tr("devices.remoteControlAllowedHint")} />}
-              value={
-                connectorStatus()?.remoteControlAllowed === undefined ? tr("devices.remoteControlUnreported") : undefined
-              }
-              trailing={
-                connectorStatus()?.remoteControlAllowed !== undefined ? (
-                  <ToggleSwitch
-                    value={connectorStatus()?.remoteControlAllowed === true}
-                    disabled={remoteControlSaving()}
-                    accessibilityLabel="remote-control-allowed"
-                    onChange={next => {
-                      connectorBannerOwner.set("page");
-                      void setRemoteControlAllowed(next);
-                    }}
-                  />
-                ) : undefined
-              }
-            />
-            <InsetRow
-              icon="message-circle"
-              label={
-                connectorStatus()?.botConnected
-                  ? tr("devices.chatAppActive", { name: connectorStatus()!.botConnected! })
-                  : tr("devices.noBotConnected")
-              }
-              trailing={
-                connectorStatus()?.botConnected ? (
-                  <Button
-                    label={tr("devices.chatAppDisconnect")}
-                    variant="ghost"
-                    size="sm"
-                    accessibilityLabel="connector-bot-stop"
-                    disabled={connectorBusy()}
-                    onPress={() => {
-                      connectorBannerOwner.set("page");
-                      void stopBotConnector();
-                    }}
-                  />
-                ) : undefined
-              }
-            />
-            <InsetRow
               label={tr("devices.verboseBotMode")}
+              below={
+                <RowNote
+                  text={
+                    connectorStatus()?.botConnected
+                      ? tr("devices.verboseBotModeHint")
+                      : tr("devices.verboseBotModeNeedsBot")
+                  }
+                />
+              }
               trailing={
                 <ToggleSwitch
                   value={botVerboseMode()}
                   accessibilityLabel="connector-bot-verbose"
-                  disabled={connectorBusy()}
-                  onChange={next => {
-                    connectorBannerOwner.set("page");
-                    void setBotVerboseConnectorMode(next);
-                  }}
+                  disabled={connectorBusy() || !connectorStatus()?.botConnected}
+                  onChange={next => void runPageAction("page", () => setBotVerboseConnectorMode(next))}
                 />
               }
-            />
-            <ChannelRow
-              icon="message-circle"
-              label={tr("devices.telegram")}
-              description={
-                isChannelActive("telegram")
-                  ? tr("devices.channelConnected", { bot: connectorStatus()?.botConnected ?? "" })
-                  : tr("devices.telegramDesc")
-              }
-              accessibilityLabel="channel-toggle-telegram"
-              onPress={() => openChannelModal("telegram")}
-            />
-            <ChannelRow
-              icon="globe"
-              label={tr("devices.feishu")}
-              description={
-                isChannelActive("feishu") || isChannelActive("lark")
-                  ? tr("devices.channelConnected", { bot: connectorStatus()?.botConnected ?? "" })
-                  : tr("devices.feishuDesc")
-              }
-              accessibilityLabel="channel-toggle-feishu"
-              onPress={() => openChannelModal("feishu")}
-            />
-            <ChannelRow
-              icon="smartphone"
-              label={tr("devices.wechat")}
-              description={
-                isChannelActive("weixin") || isChannelActive("wechat")
-                  ? tr("devices.channelConnected", { bot: connectorStatus()?.botConnected ?? "" })
-                  : tr("devices.wechatDesc")
-              }
-              accessibilityLabel="channel-toggle-weixin"
-              onPress={() => openChannelModal("weixin")}
             />
           </InsetGroup>
         </If>
@@ -689,6 +705,76 @@ function RemoteDisclaimerModal() {
   );
 }
 
+function deviceKindWord(kind: string): string {
+  if (kind === "cli") return tr("settings.devicesPage.kindServer");
+  if (kind === "container") return tr("settings.devicesPage.kindContainer");
+  return tr("settings.devicesPage.kindComputer");
+}
+
+/** "Computer · OpenBitFun 2.0.1": what the device is, as quiet secondary text. */
+function deviceDetail(device: FleetDevice): string {
+  const parts = [deviceKindWord(device.hostKind)];
+  if (device.version) parts.push(tr("settings.devicesPage.version", { version: device.version }));
+  return parts.join(" · ");
+}
+
+/** The device's reachability as the backend reports it; an unknown state draws nothing. */
+function DeviceStateText(props: { device: FleetDevice }) {
+  const exception = () => deviceException(props.device.state);
+  return (
+    <If
+      when={exception()}
+      else={
+        <If when={props.device.state === "online"}>
+          <Text style={textStyle("caption", { color: palette().textSecondary })}>
+            {tr("settings.devicesPage.online")}
+          </Text>
+        </If>
+      }
+    >
+      {kind => (
+        <Text
+          style={textStyle("caption", {
+            color: kind() === "update_required" ? stateColor("needs_you") : stateColor("idle"),
+          })}
+        >
+          {kind() === "update_required" ? tr("state.updateNeeded") : tr("state.offline")}
+        </Text>
+      )}
+    </If>
+  );
+}
+
+/**
+ * Whether the account's other devices (and the chat apps this device serves)
+ * may reach this device (`remote_connect_set_allowed`). A host that does not
+ * report it says so instead of drawing a switch that would do nothing.
+ */
+function AllowControlRow() {
+  ensureConnectors();
+  return (
+    <InsetRow
+      first
+      icon="shield"
+      label={tr("devices.remoteControlAllowed")}
+      below={<RowNote text={tr("devices.remoteControlAllowedHint")} />}
+      value={
+        connectorStatus()?.remoteControlAllowed === undefined ? tr("devices.remoteControlUnreported") : undefined
+      }
+      trailing={
+        connectorStatus()?.remoteControlAllowed !== undefined ? (
+          <ToggleSwitch
+            value={connectorStatus()?.remoteControlAllowed === true}
+            disabled={remoteControlSaving()}
+            accessibilityLabel="remote-control-allowed"
+            onChange={next => void runPageAction("device", () => setRemoteControlAllowed(next))}
+          />
+        ) : undefined
+      }
+    />
+  );
+}
+
 function AccountDevicesSection() {
   const visibleDevices = () =>
     superAgentUi()
@@ -702,38 +788,33 @@ function AccountDevicesSection() {
           when={visibleDevices().length > 0}
           else={<Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.devicesPage.none")}</Text>}
         >
+          {/* Informative rows: a device is used from the sidebar, not from here. */}
           <InsetGroup accessibilityLabel="account-devices-list">
             <Each of={visibleDevices()} key={device => device.deviceId}>
-              {(device, index) => {
-                const exception = () => deviceException(device().state);
-                return (
-                  <InsetRow
-                    first={index() === 0}
-                    leading={<DeviceGlyph kind={device().hostKind} size={16} />}
-                    label={device().name}
-                    trailing={
-                      exception() ? (
-                        <Text
-                          style={textStyle("caption", {
-                            color: exception() === "update_required" ? stateColor("needs_you") : stateColor("idle"),
-                          })}
-                        >
-                          {exception() === "update_required" ? tr("state.updateNeeded") : tr("state.offline")}
-                        </Text>
-                      ) : undefined
-                    }
-                    chevron
-                    accessibilityLabel={`account-device-${device().deviceId}`}
-                    onPress={() => navigation.openDevicePage(device().deviceId)}
-                  />
-                );
-              }}
+              {(device, index) => (
+                <InsetRow
+                  first={index() === 0}
+                  leading={<DeviceGlyph kind={device().hostKind} size={16} />}
+                  label={device().name}
+                  detail={deviceDetail(device())}
+                  trailing={
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                      <If when={device().isClientDevice}>
+                        <Badge label={tr("devices.thisDevice")} size="xs" />
+                      </If>
+                      <DeviceStateText device={device()} />
+                    </View>
+                  }
+                  accessibilityLabel={`account-device-${device().deviceId}`}
+                />
+              )}
             </Each>
           </InsetGroup>
         </If>
-        <InsetGroup accessibilityLabel="account-phone-group">
+        <PageError owner="device" />
+        <InsetGroup accessibilityLabel="account-this-device-group">
+          <AllowControlRow />
           <InsetRow
-            first
             icon="smartphone"
             label={tr("settings.devicesPage.phone")}
             chevron
@@ -745,22 +826,11 @@ function AccountDevicesSection() {
       <ModalDialog
         open={phoneSheetOpen()}
         title={tr("settings.devicesPage.phone")}
-        size="md"
+        size="sm"
         accessibilityLabel="account-phone-sheet"
         onClose={() => phoneSheetOpen.set(false)}
-        footer={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
-            <Button
-              label={tr("common.close")}
-              variant="secondary"
-              size="md"
-              accessibilityLabel="account-phone-sheet-close"
-              onPress={() => phoneSheetOpen.set(false)}
-            />
-          </View>
-        }
       >
-        <UseOnPhonePanel embedded={true} />
+        <UseOnPhonePanel />
       </ModalDialog>
     </StudioSection>
   );

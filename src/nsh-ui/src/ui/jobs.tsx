@@ -12,7 +12,7 @@ import { Scroll, Text, View, cleanup, reduceMotion, safeArea, signal, type JSX, 
 import { Dialog, Input } from "nsh/base";
 import { fleetDeviceById, fleetPromptList, fleetSessionRow, refreshFleetNavigator } from "../fleetStore";
 import { tr, type MessageKey } from "../i18n";
-import { activeScene, navigateScene, openDevicePage, selectSession } from "../state";
+import { activeScene, navigateScene, showDevice, selectSession } from "../state";
 import {
   conversationGroups,
   conversationsCursor,
@@ -244,7 +244,7 @@ function cardDetail(card: JobCardData): string {
 export async function openJob(card: JobCardData): Promise<void> {
   const sessionId = card.sessionId;
   if (!sessionId) {
-    openDevicePage(card.deviceId);
+    showDevice(card.deviceId);
     return;
   }
   // A job that just started may not be in the index yet: read it once more.
@@ -457,7 +457,7 @@ export function JobCard(props: JobCardProps) {
             name={card().deviceName}
             kind={card().hostKind}
             exception={deviceException(card().deviceId)}
-            onPress={phone() ? undefined : () => openDevicePage(card().deviceId)}
+            onPress={phone() ? undefined : () => showDevice(card().deviceId)}
           />
           <If when={phone()}>
             <Text style={textStyle("caption")}>·</Text>
@@ -890,7 +890,7 @@ function WorkingNowRow(props: { card: JobCardData; divided: boolean }) {
               name={card().deviceName}
               kind={card().hostKind}
               exception={deviceException(card().deviceId)}
-              onPress={() => openDevicePage(card().deviceId)}
+              onPress={() => showDevice(card().deviceId)}
             />
           </View>
         }
@@ -1231,7 +1231,7 @@ export function SuggestionChips(props: { suggestions: string[]; onPick: (text: s
   return (
     <If when={props.suggestions.length > 0}>
       <If when={compactLayout()} else={<View testID="sa-suggestions" style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>{chips()}</View>}>
-        <Scroll horizontal testID="sa-suggestions" contentStyle={{ flexDirection: "row", gap: space.sm }}>
+        <Scroll smoothWheel horizontal testID="sa-suggestions" contentStyle={{ flexDirection: "row", gap: space.sm }}>
           {chips()}
         </Scroll>
       </If>

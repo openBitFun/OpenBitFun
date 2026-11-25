@@ -557,6 +557,7 @@ function BackgroundCommandsDialog(): JSX.Element {
               <Text style={textStyle("caption", { color: palette().textMuted })}>{backgroundStatusWord(command())}</Text>
             </View>
             <Scroll
+              smoothWheel
               style={{
                 height: 320,
                 minHeight: 0,

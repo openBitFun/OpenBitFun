@@ -29,7 +29,8 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
   await showAllSessions(app, "Terminal migration");
 
   // Rename opens a dialog with the current name and saves through the session's own catalogue.
-  await app.press("session-actions-session-2");
+  await app.hover("id:sidebar-session-session-2 >> nth=0");
+  await app.press("sidebar-session-actions-session-2");
   await app.press("session-menu-rename-session-2");
   await app.waitFor("session-rename-input");
   await app.clear("session-rename-input");
@@ -43,12 +44,14 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
   await app.waitFor("Terminal port");
 
   // Copy session ID writes the id, nothing else.
-  await app.press("session-actions-session-2");
+  await app.hover("id:sidebar-session-session-2 >> nth=0");
+  await app.press("sidebar-session-actions-session-2");
   await app.press("session-menu-copy-id-session-2");
   await app.waitUntil(() => app.clipboard() === "session-2");
 
   // The storage folder is on this machine, so the file manager opens it.
-  await app.press("session-actions-session-2");
+  await app.hover("id:sidebar-session-session-2 >> nth=0");
+  await app.press("sidebar-session-actions-session-2");
   await app.press("session-menu-storage-session-2");
   await app.waitUntil(() => callsOf(backend, "reveal_session_storage_directory").length === 1);
   expect(callsOf(backend, "reveal_session_storage_directory")[0]?.request).toMatchObject({
@@ -57,7 +60,8 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
   });
 
   // Delete asks in-place inside the menu ("Cancel | Confirm"); Cancel sends nothing and no modal opens.
-  await app.press("session-actions-session-2");
+  await app.hover("id:sidebar-session-session-2 >> nth=0");
+  await app.press("sidebar-session-actions-session-2");
   await app.press("session-menu-delete-session-2");
   await app.waitFor("session-delete-confirm");
   expect(app.shows("session-delete-modal")).toBe(false);
@@ -75,7 +79,8 @@ test("a session row's ⋯ renames, archives, copies its ID, shows its folder and
   await app.waitFor("Terminal port", { state: "gone" });
 
   // Archive leaves Recent and says so.
-  await app.press("session-actions-session-1");
+  await app.hover("id:sidebar-session-session-1 >> nth=0");
+  await app.press("sidebar-session-actions-session-1");
   await app.press("session-menu-archive-session-1");
   await app.waitUntil(() => callsOf(backend, "archive_session").length === 1);
   expect(callsOf(backend, "archive_session")[0]?.request).toMatchObject({ session_id: "session-1" });
@@ -86,7 +91,7 @@ test("the session header ⋯ copies the session ID and exports the transcript as
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await showAllSessions(app, "Terminal migration");
-  await app.press("label:all-sessions-scene >> Terminal migration");
+  await app.press("label:sidebar-device-tree >> Terminal migration >> nth=0");
   await app.press("thread-actions-trigger >> nth=0");
   await app.press("session-menu-copy-id-session-2");
   await app.waitUntil(() => app.clipboard() === "session-2");
@@ -131,7 +136,8 @@ test("a session of another device is archived and renamed there, and its folder 
   await app.waitFor("nav-library");
   await showAllSessions(app, "Build release");
 
-  await app.press("session-actions-session-9");
+  await app.hover("id:sidebar-session-session-9 >> nth=0");
+  await app.press("sidebar-session-actions-session-9");
   // The storage folder lives on linux-box: the item is there, disabled, with its reason.
   expect(app.enabled("session-menu-storage-session-9")).toBe(false);
   expect(app.shows("text:Only for sessions on this device")).toBe(true);
@@ -142,7 +148,8 @@ test("a session of another device is archived and renamed there, and its folder 
     args: { request: { session_id: "session-9", workspace_id: "workspace-9" } },
   });
 
-  await app.press("session-actions-session-9");
+  await app.hover("id:sidebar-session-session-9 >> nth=0");
+  await app.press("sidebar-session-actions-session-9");
   await app.press("session-menu-rename-session-9");
   await app.clear("session-rename-input");
   await app.type("session-rename-input", "Build 1.2");
@@ -164,13 +171,15 @@ test("a workspace row's ⋯ keeps the old workspace menu: terminal, rename, path
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await showDevices(app);
-  await app.waitFor("workspace-actions-workspace-1");
+  await app.waitFor("id:sidebar-workspace-row-workspace-1");
 
   // Copy path and rename.
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   await app.press("workspace-menu-copy-path-workspace-1");
   await app.waitUntil(() => app.clipboard() === "/repo");
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   await app.press("workspace-menu-rename-workspace-1");
   await app.clear("workspace-rename-input");
   await app.type("workspace-rename-input", "Main repo");
@@ -179,13 +188,15 @@ test("a workspace row's ⋯ keeps the old workspace menu: terminal, rename, path
   expect(callsOf(backend, "update_workspace_info")[0]?.request).toMatchObject({ workspaceId: "workspace-1", name: "Main repo" });
 
   // A local folder can be shown in the file manager.
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   expect(app.enabled("workspace-menu-reveal-workspace-1")).toBe(true);
   await app.press("workspace-menu-reveal-workspace-1");
   await app.waitUntil(() => backend.reveals.includes("/repo"));
 
   // An assistant workspace adds reset and delete; reset asks first.
-  await app.press("workspace-actions-assistant-1");
+  await app.hover("id:sidebar-workspace-row-assistant-1");
+  await app.press("sidebar-workspace-actions-assistant-1");
   await app.press("workspace-menu-reset-assistant-assistant-1");
   await app.waitFor("assistant-action-modal");
   expect(callsOf(backend, "reset_assistant_workspace")).toHaveLength(0);
@@ -194,13 +205,15 @@ test("a workspace row's ⋯ keeps the old workspace menu: terminal, rename, path
   expect(callsOf(backend, "reset_assistant_workspace")[0]?.request).toMatchObject({ workspaceId: "assistant-1" });
 
   // Close.
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   await app.press("workspace-menu-close-workspace-1");
   await app.waitUntil(() => callsOf(backend, "close_workspace").length === 1);
   expect(callsOf(backend, "close_workspace")[0]?.request).toMatchObject({ workspaceId: "workspace-1" });
 
   // New terminal opens the Terminal tool in that workspace.
-  await app.press("workspace-actions-assistant-1");
+  await app.hover("id:sidebar-workspace-row-assistant-1");
+  await app.press("sidebar-workspace-actions-assistant-1");
   await app.press("workspace-menu-new-terminal-assistant-1");
   await app.waitUntil(() => backend.calls.some(call => call.action === "terminal_create"));
 });
@@ -250,7 +263,7 @@ test("without the fleet layer the Inbox lists this backend's approvals, answerab
   expect(callsOf(backend, "respond_permission")[0]?.request).toMatchObject({ requestId: "perm-1", reply: "once" });
 });
 
-test("recently closed workspaces reopen from By device and can be removed from the list", async () => {
+test("recently closed workspaces reopen from the session tree and can be removed from the list", async () => {
   const backend = createBackend({
     recentOnlyWorkspaces: [
       { id: "workspace-old", name: "legacy-app", rootPath: "/work/legacy-app", workspaceKind: "local" },
@@ -259,9 +272,10 @@ test("recently closed workspaces reopen from By device and can be removed from t
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await showDevices(app);
-  await app.press("all-sessions-recently-closed");
+  await app.press("sidebar-recently-closed");
   await app.waitFor("recent-workspace-workspace-gone");
 
+  await app.hover("id:recent-workspace-workspace-gone");
   await app.press("recent-workspace-actions-workspace-gone");
   await app.press("recent-workspace-remove-workspace-gone");
   await app.waitUntil(() => callsOf(backend, "remove_recent_workspace").length === 1);
@@ -270,7 +284,7 @@ test("recently closed workspaces reopen from By device and can be removed from t
 
   await app.press("recent-workspace-reopen-workspace-old");
   await app.waitUntil(() => callsOf(backend, "open_workspace").length === 1);
-  await app.waitFor("workspace-row-workspace-old");
+  await app.waitFor("label:sidebar-workspace-toggle-workspace-old");
 });
 
 test("Delete all in Archived sessions asks first, then deletes the workspace's archived sessions on its device", async () => {

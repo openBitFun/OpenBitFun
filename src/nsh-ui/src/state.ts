@@ -79,15 +79,17 @@ import {
   type TranscriptTurnView,
   type WorkspaceRecord,
 } from "./api";
+import { compactLayout } from "./theme";
 import { noteTranscriptSource } from "./toolDetailStore";
 
 /**
  * Routes. `openbitfun` (the conversation), `inbox`, `sessions` (one session),
- * `all-sessions`, `device`, `library` and `settings` are the destinations of the
- * shell; `files` / `git` / `terminal` / `browser` are the workspace tools. The
- * older ids stay valid as aliases (`navigateScene` resolves them): `home` is
- * OpenBitFun, the five studio ids are Library tabs and `devices` is All sessions
- * by device.
+ * `library` and `settings` are the destinations of the shell; `files` / `git` /
+ * `terminal` / `browser` are the workspace tools; `all-sessions` is the phone's
+ * session list (on a wide window the sidebar lists sessions, so it resolves to
+ * `sessions`). The older ids stay valid as aliases (`navigateScene` resolves
+ * them): `home` is OpenBitFun, the five studio ids are Library tabs, `device`
+ * and `devices` are the session list.
  */
 export type SceneId =
   | "openbitfun"
@@ -162,17 +164,28 @@ export type LibraryTab = "assistants" | "agents" | "skills" | "spaces" | "routin
 export const LIBRARY_TABS: ReadonlyArray<LibraryTab> = ["assistants", "agents", "skills", "spaces", "routines"];
 export const libraryTab = signal<LibraryTab>("assistants");
 
-/** All sessions' two views (visual spec §4.6). */
-export type AllSessionsView = "recent" | "by-device";
-export const allSessionsView = signal<AllSessionsView>("recent");
+/**
+ * The device the session tree unfolds and brings into view next (a device
+ * badge asks for it); `null` once the tree has shown it.
+ */
+export const revealedDevice = signal<string | null>(null);
 
-/** The device the device page shows (a fleet device id; `""` = this device). */
-export const devicePageId = signal<string>("");
+/**
+ * Where the account's sessions are listed: the sidebar's device tree on a wide
+ * window, the session list scene (`all-sessions`) on a phone. `device` and
+ * `devices` are older ids of the same place.
+ */
+function sessionListScene(): SceneId {
+  if (compactLayout()) return "all-sessions";
+  drawerOpen.set(true);
+  return "sessions";
+}
 
 /**
  * Resolves the older scene ids onto the current routes: `home` is the
  * OpenBitFun conversation, the five studio ids open that Library tab, and
- * `devices` opens All sessions by device.
+ * `devices`, `device` and `all-sessions` open the session tree (the phone's
+ * session list, the desktop's sidebar).
  */
 export function resolveSceneAlias(scene: SceneId): SceneId {
   switch (scene) {
@@ -189,8 +202,9 @@ export function resolveSceneAlias(scene: SceneId): SceneId {
       libraryTab.set(scene);
       return "library";
     case "devices":
-      allSessionsView.set("by-device");
-      return "all-sessions";
+    case "device":
+    case "all-sessions":
+      return sessionListScene();
     default:
       return scene;
   }
@@ -201,15 +215,15 @@ export function openLibrary(tab?: LibraryTab): void {
   navigateScene("library");
 }
 
-export function openAllSessions(view?: AllSessionsView): void {
-  if (view) allSessionsView.set(view);
+/** Shows the account's sessions: the sidebar tree, or the session list on a phone. */
+export function openSessionList(): void {
   navigateScene("all-sessions");
 }
 
-/** Opens a device's page (from a device badge, a breadcrumb or All sessions). */
-export function openDevicePage(deviceId: string): void {
-  devicePageId.set(deviceId);
-  navigateScene("device");
+/** Shows a device in the session tree, unfolded (from a device badge or a job card). */
+export function showDevice(deviceId: string): void {
+  revealedDevice.set(deviceId);
+  openSessionList();
 }
 
 export function navigateScene(requested: SceneId): void {

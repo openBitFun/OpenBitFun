@@ -1197,7 +1197,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
       onLayout={trackStudioWidth}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
-      <Scroll style={{ flex: 1, minHeight: 0 }}>
+      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
         <If
           when={props.embedded}
           else={

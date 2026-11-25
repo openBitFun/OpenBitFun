@@ -36,16 +36,21 @@ switcher in the main flow.
 ## Information architecture
 
 - **Sidebar and landing** (wave 23, owner decision): the sidebar is the account's
-  runtime devices → workspaces → sessions (`ui/deviceSidebar.tsx`, the same
-  `deviceTree()` projection as All sessions › By device; one device draws no device
-  header), under New session (⌘N), Search and Inbox, with All sessions, Library and
-  the account row below. The app opens on the session view (`landingScene()` in
-  `state.ts`); a phone opens on Sessions › By device (tabs Sessions, Inbox, Library).
+  runtime devices → workspaces → sessions, every device at once (`ui/deviceSidebar.tsx`
+  over the `deviceTree()` projection in `src/deviceTree.ts`; one device draws no device
+  header, its ⋯ sits beside "Workspaces"), under Search and Library, with the account
+  row below. A workspace's "Show more" pages further sessions in from the device that
+  owns it; a device's ⋯ (`src/deviceActions.tsx`) holds its own actions (new
+  workspace, terminal, SSH connections, settings, the jobs this computer sent, rename,
+  copy id, remove, and the update a stale device needs). The app opens on the session
+  view (`landingScene()` in `state.ts`); a phone opens on its Sessions tab, the same
+  tree with touch-sized rows (`scenes/SessionListScene.tsx`; tabs Sessions, Inbox,
+  Library).
 - **Super Agent gate** (`src/productGates.ts`, `superAgentUi()`, off by owner
   decision): hides every Super Agent entry without deleting it (the sidebar row and
   history, the `openbitfun` scene, its phone tab and ⌘N meaning, the ⌘K command,
   Account › Super Agent, the per-device `superagent.*` switches, conversation items in
-  the Inbox, "Started by Super Agent", the device page's job rows), and
+  the Inbox, "Started by Super Agent"), and
   `superagentStore.ts` sends no `superagent_*` command while it is off. Setting
   `SUPER_AGENT_UI_DEFAULT` to `true` restores the surface below; suites that cover it
   open `test/fixtures/*SuperAgent.tsx` (or import `test/fixtures/superAgentOn.ts`).
@@ -54,9 +59,10 @@ switcher in the main flow.
   the model dispatched work; no device picker, mode or model chip.
 - **Inbox** (`inbox`, and the ⌘I sheet; `scenes/InboxScene.tsx`): everything that waits
   on the user from every device, answered in place.
-- **All sessions** (`all-sessions`; `scenes/AllSessionsScene.tsx`): every agent session
-  on every device, Recent or By device; the browse path. A session opens in `sessions`.
-  The device page (`device`; `scenes/DeviceScene.tsx`) opens from a device badge.
+- **Session tree**: the All sessions and device pages are retired. `all-sessions` is the
+  phone's Sessions tab (`scenes/SessionListScene.tsx`); on a wide window it, `devices`
+  and `device` open the sidebar instead, and a device badge (`showDevice`) unfolds that
+  device in it. A session opens in `sessions`.
 - **Library** (`library`; `scenes/LibraryScene.tsx` + `LibraryChrome.tsx`): Assistants,
   Agents, Skills, Spaces and Routines of the device in context ("On {device}"), one tab
   each (`libraryTab`).
@@ -237,11 +243,11 @@ switcher in the main flow.
   It is read once at launch, not when the settings page opens.
 - `src/state.ts`: signals and loaders. NSH components run once, so state lives in
   signals, not in component state. It owns the `SceneId` routes (`openbitfun`,
-  `inbox`, `sessions`, `all-sessions`, `device`, `library`, `settings`, and the tools
-  `files` / `git` / `terminal` / `browser`; the older ids `home`, `assistants`,
-  `agents`, `skills`, `routines`, `spaces` and `devices` resolve onto them in
-  `navigateScene`), `libraryTab`, `allSessionsView`, `devicePageId` with
-  `openLibrary` / `openAllSessions` / `openDevicePage`, workspace opening via
+  `inbox`, `sessions`, `all-sessions` (the phone's session list), `library`,
+  `settings`, and the tools `files` / `git` / `terminal` / `browser`; the older ids
+  `home`, `assistants`, `agents`, `skills`, `routines`, `spaces`, `devices` and `device`
+  resolve onto them in `navigateScene`), `libraryTab`, `revealedDevice` with
+  `openLibrary` / `openSessionList` / `showDevice`, workspace opening via
   `openPathWorkspace`, collapsible/resizable `NavPanel` & right `AuxPane`
   state (`drawerOpen`, `toggleDrawer`, `auxPaneOpen`, `auxPaneTab`,
   `auxPaneSide`, `auxPaneWidth`, `auxPaneMaximized`, `openInAuxPane`,
@@ -257,14 +263,13 @@ switcher in the main flow.
 - `App.tsx`: the shell (visual spec §4.2, wave 15). Desktop: a sidebar (264 wide on
   wide windows, 240 on medium ones, an overlay drawer at 720–959) holding OpenBitFun
   (✎ new conversation), Inbox (the backend's count as a pill), Search (⌘K), the
-  conversation history (`ConversationHistory` from `ui/jobs.tsx`), then All sessions,
-  Library and the account row (menu: Settings, update, About, sign in/out); the canvas
+  conversation history (`ConversationHistory` from `ui/jobs.tsx`) over the device tree,
+  then Library and the account row (menu: Settings, update, About, sign in/out); the canvas
   is inset 8 with radius 12 and a 44 title bar carrying nothing scene-specific. Phone
   (< 720): a 48 top bar (☰ history drawer | title | avatar on OpenBitFun), the scene,
   and a 56 tab bar (`PhoneTabBar` in `ui/fleet.tsx`) on OpenBitFun / Inbox / All
-  sessions / Library; a session draws its own header instead. The sidebar never lists
-  sessions or devices: sessions open from All sessions (Recent, By device), Inbox,
-  job cards and ⌘K. The inspector (`AuxPane`) has text tabs Changes / Files /
+  sessions / Library; a session draws its own header instead. Sessions open from the
+  device tree (the sidebar, the phone's Sessions tab), Inbox, job cards and ⌘K. The inspector (`AuxPane`) has text tabs Changes / Files /
   Terminal / Browser and an Expand control to the full-width tool. One quiet line at the top
   of the canvas states a failed connection or a non-fleet entry reached from a
   browser or phone.
@@ -582,8 +587,8 @@ switcher in the main flow.
   Stop through `superagent_job_action`, a card's prompt answered on its origin
   device, the "OpenBitFun allowed it" line, citations, signed-out / off /
   unavailable, the history slot, and no device picker in the composer.
-- IA and foundations tests: `test/inbox.test.tsx`, `test/all-sessions.test.tsx`,
-  `test/device-page.test.tsx`, `test/library.test.tsx`, `test/settings-scopes.test.tsx`,
+- IA and foundations tests: `test/inbox.test.tsx`, `test/sidebar-tree.test.tsx`
+  (the device tree and each device's ⋯), `test/library.test.tsx`, `test/settings-scopes.test.tsx`,
   `test/sign-in.test.tsx`, `test/session-view.test.tsx`, `test/compact-layout.test.tsx`
   (phone shell), `test/theme-foundations.test.tsx` and `test/foundations-atoms.test.tsx`
   (scales and `ui/fleet.tsx` atoms; gallery fixture `test/fixtures/foundationsGallery.tsx`).
@@ -597,9 +602,9 @@ switcher in the main flow.
   `GitScene` trust/init recovery, working copy staging/unstaging/AI commit,
   branches CRUD, history graph local vs remote `git_get_graph` skip, and
   `SpacesScene` list/inspect/stop-worker/delete/create.
-- `test/parity-actions.test.tsx`: the session ⋯ (All sessions rows and the session
+- `test/parity-actions.test.tsx`: the session ⋯ (session tree rows and the session
   header: rename, archive, copy ID, export, storage folder, delete with a confirmation,
-  routed to the session's device), the workspace ⋯ in By device, recently closed
+  routed to the session's device), the workspace ⋯ in the tree, recently closed
   workspaces, Archived sessions delete / delete all, and the Inbox of a backend without
   the fleet layer (this window's approvals and finished / stopped turns).
 - `test/workbench-connectors.test.tsx`: `FilesScene` live edit + `write_file_content`
@@ -627,7 +632,7 @@ switcher in the main flow.
 ## Commands
 
 ```bash
-# `pnpm install` installs pinned nsh (v0.6.1) to ~/.nsh/bin and links node_modules/.bin/nsh.
+# `pnpm install` installs pinned nsh (v0.7.0) to ~/.nsh/bin and links node_modules/.bin/nsh.
 # Use `pnpm exec nsh ...` directly, or export PATH="$HOME/.nsh/bin:$PATH" for bare `nsh`:
 export PATH="$HOME/.nsh/bin:$PATH"
 

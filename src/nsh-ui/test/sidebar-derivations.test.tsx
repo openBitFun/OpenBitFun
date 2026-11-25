@@ -1,5 +1,5 @@
-// The sidebar and All sessions derivations are shared and structurally shared:
-// `deviceTree()` and `recentRows()` are built once per change of what they read,
+// The sidebar derivation is shared and structurally shared: `deviceTree()` is
+// built once per change of what it reads,
 // and a rebuild hands back the same row objects (and the same list) for rows
 // whose fields did not change, so keyed lists redraw only what changed. The
 // fleet session index answers owner and row lookups without scanning, and the
@@ -17,7 +17,7 @@ import {
   startFleetStore,
 } from "../src/fleetStore";
 import type { FleetHelloAnswer, FleetNavigator } from "../src/fleetTypes";
-import { deviceTree, filterRecentRows, recentRows } from "../src/scenes/AllSessionsScene";
+import { deviceTree } from "../src/deviceTree";
 import { reuseRows } from "../src/rowReuse";
 import {
   SHELL_LAYOUT_PERSIST_DELAY_MS,
@@ -92,7 +92,7 @@ test("reuseRows keeps unchanged rows and the list itself", () => {
   expect(reordered[1]).toBe(a);
 });
 
-test("device tree and recent rows reuse unchanged rows across navigator reads; the index answers owners", async () => {
+test("the device tree reuses unchanged rows across navigator reads; the index answers owners", async () => {
   const answers: Record<string, FleetNavigator> = {
     full: view(1, [
       device("dev-a", "Studio", [["s1", "Plan the release"]]),
@@ -119,12 +119,9 @@ test("device tree and recent rows reuse unchanged rows across navigator reads; t
   await refreshFleetNavigator({ full: true });
 
   const tree1 = deviceTree();
-  const recent1 = recentRows();
   expect(tree1.map(node => node.deviceId)).toEqual(["dev-a", "dev-b"]);
-  expect(recent1.map(row => row.key)).toEqual(["dev-a/s1", "dev-b/s2", "dev-b/s3"]);
   // Reading twice without a change is the same list (one build shared by every reader).
   expect(deviceTree()).toBe(tree1);
-  expect(recentRows()).toBe(recent1);
   expect(fleetSessionOwner("s3")).toBe("dev-b");
   expect(indexedFleetSessionRow("dev-b", "s3")?.title).toBe("Bump deps");
   expect(indexedFleetSessionRow("dev-a", "s3")).toBe(null);
@@ -132,31 +129,19 @@ test("device tree and recent rows reuse unchanged rows across navigator reads; t
   entry.push([{ event: "fleet://index-changed", payload: { revision: 2, deviceIds: ["dev-a", "dev-b"] } }]);
   await tick();
   const tree2 = deviceTree();
-  const recent2 = recentRows();
   expect(tree2).not.toBe(tree1);
   // dev-a did not change: the very same node; dev-b's untouched session row is kept.
   expect(tree2[0]).toBe(tree1[0]);
   expect(tree2[1]).not.toBe(tree1[1]);
   expect(tree2[1]!.workspaces[0]!.sessions[0]).toBe(tree1[1]!.workspaces[0]!.sessions[0]);
   expect(tree2[1]!.workspaces[0]!.sessions[1]!.title).toBe("Bump all deps");
-  expect(recent2[0]).toBe(recent1[0]);
-  expect(recent2[1]).toBe(recent1[1]);
-  expect(recent2[2]).not.toBe(recent1[2]);
-  expect(recent2[2]!.title).toBe("Bump all deps");
   expect(indexedFleetSessionRow("dev-b", "s3")?.title).toBe("Bump all deps");
 
   entry.push([{ event: "fleet://index-changed", payload: { revision: 3, deviceIds: ["dev-a"] } }]);
   await tick();
-  // A new navigator view with the same content keeps both lists as they were.
+  // A new navigator view with the same content keeps the tree as it was.
   expect(deviceTree()).toBe(tree2);
-  expect(recentRows()).toBe(recent2);
 
-  // The search keeps matching as before (title, device, workspace; case-insensitive).
-  expect(filterRecentRows(recent2, "").length).toBe(3);
-  expect(filterRecentRows(recent2, "  ")).toBe(recent2);
-  expect(filterRecentRows(recent2, "BUILDER").map(row => row.sessionId)).toEqual(["s2", "s3"]);
-  expect(filterRecentRows(recent2, "linux").map(row => row.sessionId)).toEqual(["s2"]);
-  expect(filterRecentRows(recent2, "nothing")).toEqual([]);
 });
 
 test("the shell layout is written once it holds still, with the last value", async () => {
@@ -198,23 +183,18 @@ test("on a single host a session's status change rebuilds only that session's ro
     { sessionId: "s2", sessionName: "Build on Linux", workspaceId: "ws-1", lastActiveAt: 1763000000000 },
   ]);
   const tree1 = deviceTree();
-  const recent1 = recentRows();
   const rows1 = tree1[0]!.workspaces[0]!.sessions;
   expect(rows1.map(row => row.sessionId)).toEqual(["s1", "s2"]);
   expect(rows1[0]!.mark).not.toBe("working");
 
   runningTurns.set({ "/s1": "turn-1" });
   const tree2 = deviceTree();
-  const recent2 = recentRows();
   const rows2 = tree2[0]!.workspaces[0]!.sessions;
   expect(rows2[0]).not.toBe(rows1[0]);
   expect(rows2[0]!.mark).toBe("working");
   expect(rows2[1]).toBe(rows1[1]);
-  expect(recent2[0]).not.toBe(recent1[0]);
-  expect(recent2[1]).toBe(recent1[1]);
 
-  // An unrelated change (a running turn's id) keeps every row and both lists.
+  // An unrelated change (a running turn's id) keeps every row and the list.
   runningTurns.set({ "/s1": "turn-2" });
   expect(deviceTree()).toBe(tree2);
-  expect(recentRows()).toBe(recent2);
 });

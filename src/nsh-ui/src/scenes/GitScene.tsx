@@ -385,7 +385,7 @@ function GitUnderlineTabs(props: {
   onChange: (next: GitTab) => void;
 }) {
   return (
-    <Scroll horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
+    <Scroll smoothWheel horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
       <View
         role="tablist"
         style={{
@@ -1046,6 +1046,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
         </If>
 
         <Scroll
+          smoothWheel
           style={{ flex: 1, minHeight: 0 }}
           contentStyle={{ padding: props.compact ? 6 : 8, gap: props.compact ? 6 : 8 }}
         >
@@ -1670,7 +1671,7 @@ function BranchesView(props: { compact?: boolean }) {
           )}
         </If>
 
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: space.lg, paddingBottom: space.xl }}>
+        <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: space.lg, paddingBottom: space.xl }}>
           <View style={{ gap: space.sm }}>
             <Text
               style={{
@@ -2298,7 +2299,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
             </If>
           </View>
           <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
-            <Scroll style={{ maxHeight: props.compact ? 140 : 200, minHeight: 0, flexShrink: 0 }}>
+            <Scroll smoothWheel style={{ maxHeight: props.compact ? 140 : 200, minHeight: 0, flexShrink: 0 }}>
               <View style={{ padding: space.xs, gap: 2 }}>
                 <If when={commitFilesLoading()}>
                   <View style={{ flexDirection: "row", gap: space.xs, alignItems: "center", padding: space.xs }}>
@@ -2490,7 +2491,7 @@ function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
           </View>
         </If>
 
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingVertical: space.xs, paddingBottom: space.lg }}>
+        <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingVertical: space.xs, paddingBottom: space.lg }}>
           <If when={gitCommits().length === 0}>
             <View style={{ padding: space.xl }}>
               <EmptyStateCard icon="history" title={tr("git.noCommitsTitle")} subtitle={tr("git.noCommitsSubtitle")} />
@@ -2597,7 +2598,7 @@ function WorktreesView(props: { compact?: boolean }) {
           />
         </If>
 
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingBottom: space.lg }}>
+        <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingBottom: space.lg }}>
           <If when={gitWorktrees().length === 0 && !gitWorktreeRemoteUnsupported() && !gitWorktreeNote()}>
             <EmptyStateCard
               icon="folder-plus"
@@ -3119,6 +3120,7 @@ export function GitScene(props: GitSceneProps = {}) {
 
       <If when={Boolean(activeWorkspace()) && gitRepoState() === "error"}>
         <Scroll
+          smoothWheel
           style={{ flex: 1, minHeight: 0 }}
           contentStyle={{
             flexGrow: 1,
@@ -3141,6 +3143,7 @@ export function GitScene(props: GitSceneProps = {}) {
 
       <If when={Boolean(activeWorkspace()) && gitRepoState() === "trust_required"}>
         <Scroll
+          smoothWheel
           style={{ flex: 1, minHeight: 0 }}
           contentStyle={{
             flexGrow: 1,
@@ -3226,6 +3229,7 @@ export function GitScene(props: GitSceneProps = {}) {
 
       <If when={Boolean(activeWorkspace()) && gitRepoState() === "not_a_repository"}>
         <Scroll
+          smoothWheel
           style={{ flex: 1, minHeight: 0 }}
           contentStyle={{
             flexGrow: 1,

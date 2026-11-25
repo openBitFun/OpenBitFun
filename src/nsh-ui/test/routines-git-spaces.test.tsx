@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { openSession, openToolScene, showDevices, createBackend, type BackendOptions } from "./support";
+import { openSession, openToolScene, showDevices, createBackend, type BackendOptions, selectTreeWorkspace } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -975,7 +975,7 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
 
   // Switch to remote workspace: NEVER call git_get_graph or git_list_worktrees for remote-host!
   await showDevices(app);
-  await app.press("label:workspace-row-workspace-2");
+  await selectTreeWorkspace(app, "workspace-2");
   await openToolScene(app, "git");
   await app.waitFor("Commit lane graphs are available on local workspaces only. Showing linear commit history for this remote workspace.");
   expect(backend.calls.filter(c => c.action === "git_get_graph").length).toBe(localGraphCalls);
@@ -987,8 +987,8 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
 
   // Switch back to local workspace + Sessions and open GitScene inside AuxPane compact split
   await showDevices(app);
-  await app.press("label:workspace-row-workspace-2");
-  await app.press("label:workspace-row-workspace-1");
+  await selectTreeWorkspace(app, "workspace-2");
+  await selectTreeWorkspace(app, "workspace-1");
   await openSession(app, "NSH skeleton");
   await app.press("label:session-tool-git");
   await app.waitFor("label:git-branch-switcher");
@@ -1094,7 +1094,7 @@ test("spaces: follows miniapp catalogue events and guards Create with Agent on r
 
   // Remote workspace: creation is refused loudly, nothing is started.
   await showDevices(app);
-  await app.press("label:workspace-row-workspace-2");
+  await selectTreeWorkspace(app, "workspace-2");
   await openLibraryTab(app, "spaces");
   await app.waitFor("Creating Spaces is not supported in remote workspaces. Switch to a local workspace to create one.");
   expect(app.enabled("label:spaces-create-agent")).toBe(false);
@@ -1303,11 +1303,12 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   await app.type("label:spaces-prompt-input", "A tiny habit tracker");
   expect(app.enabled("label:spaces-create-agent")).toBe(true);
 
-  // Devices: All sessions › By device keeps its rows at phone width (the dispatch form is retired:
-  // OpenBitFun starts jobs).
+  // Devices: the session list keeps its rows and its New workspace action at phone width
+  // (the dispatch form is retired: OpenBitFun starts jobs).
   await app.setViewport(390, 844);
   await showDevices(app);
-  await app.waitFor("text:This device");
+  await app.waitFor("label:session-list-scene");
+  expect(app.shows("sidebar-new-workspace")).toBe(true);
 });
 
 test("routines: the editor previews and validates through the host scheduler", async () => {

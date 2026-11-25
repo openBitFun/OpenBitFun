@@ -28,7 +28,7 @@ import { pendingPermissions } from "../permissionStore";
 import { questionPrompts } from "../userQuestionStore";
 import { tr } from "../i18n";
 import { openConversation } from "../superagentStore";
-import { navigateScene, openDevicePage, selectSession } from "../state";
+import { navigateScene, showDevice, selectSession } from "../state";
 import { compactLayout, elevationScrim, elevationShadow, layout, palette, radii, space, textStyle } from "../theme";
 import { AttentionTray } from "../ui/attention";
 import { IconButton, Button } from "../ui/primitives";
@@ -54,7 +54,7 @@ export function openAttentionEntry(entry: AttentionEntry): void {
 
 function openDevice(deviceId: string): void {
   inboxSheetOpen.set(false);
-  openDevicePage(deviceId);
+  showDevice(deviceId);
 }
 
 function answeredToast(entry: AttentionEntry): void {
@@ -147,7 +147,7 @@ function InboxHeader(props: { sheet?: boolean }) {
 export function InboxScene() {
   startAttentionStore();
   return (
-    <Scroll testID="inbox-scene" style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
+    <Scroll smoothWheel testID="inbox-scene" style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
       <View
         style={{
           width: "100%",
@@ -213,7 +213,7 @@ function SheetPanel() {
             motion.style,
           ]}
         >
-          <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
+          <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
             <View
               style={{
                 flexGrow: 1,

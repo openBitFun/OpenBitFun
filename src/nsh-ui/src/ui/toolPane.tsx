@@ -7,7 +7,7 @@ import { Scroll, Text, View } from "nsh";
 import { fleetDeviceById } from "../fleetStore";
 import { tr } from "../i18n";
 import { remoteWorkspaceAliasOf } from "../sshRemoteStore";
-import { activeScene, activeWorkspace, activeWorkspaceKey, navigateScene, openDevicePage } from "../state";
+import { activeScene, activeWorkspace, activeWorkspaceKey, navigateScene, showDevice } from "../state";
 import { compactLayout, layout, palette, space, textStyle } from "../theme";
 import { DeviceBadge, deviceException } from "./fleet";
 import { SegmentedTabs, type SegmentedTabOption } from "./primitives";
@@ -93,7 +93,7 @@ export function ToolPaneHeader() {
               name={row().name}
               kind={row().hostKind}
               exception={deviceException(row().state)}
-              onPress={() => openDevicePage(row().deviceId)}
+              onPress={() => showDevice(row().deviceId)}
             />
           )}
         </If>
@@ -110,6 +110,7 @@ export function ToolPaneHeader() {
         }
       >
         <Scroll
+          smoothWheel
           horizontal
           scrollbar={false}
           style={{ flexShrink: 0 }}

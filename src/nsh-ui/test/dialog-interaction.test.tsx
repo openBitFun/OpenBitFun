@@ -95,11 +95,10 @@ test("a dialog with typed input stays on a backdrop click and asks for a second 
   const backend = createBackend();
   const app = await open("../App.tsx", { ...TALL_PHONE, host: { handlers: backend.handlers } });
   const openNewWorkspace = async () => {
-    if (!app.shows("device-new-workspace")) await app.press("device-open-local");
-    await app.press("device-new-workspace");
+    await app.press("sidebar-new-workspace");
     await app.waitFor("new-workspace-modal");
   };
-  await app.waitFor("device-open-local");
+  await app.waitFor("sidebar-new-workspace");
 
   // Untouched, a tap beside the sheet closes it.
   await openNewWorkspace();

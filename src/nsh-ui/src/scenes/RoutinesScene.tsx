@@ -1142,7 +1142,7 @@ function RoutineEditorModal() {
               when={Boolean(routineDraft().preservedTarget)}
               else={
                 <View style={{ gap: space.sm }}>
-                  <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                  <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
                     <SegmentedTabs
                       size="sm"
                       value={routineDraft().targetKind ?? "workspace"}
@@ -1389,7 +1389,7 @@ export function RoutinesScene(props: { embedded?: boolean }) {
       }}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row", backgroundColor: palette().canvas }}
     >
-      <Scroll style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+      <Scroll smoothWheel style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
         <If
           when={props.embedded}
           else={
@@ -1423,6 +1423,7 @@ export function RoutinesScene(props: { embedded?: boolean }) {
 
       <If when={sideCalendar(props.embedded)}>
         <Scroll
+          smoothWheel
           accessibilityLabel="routines-calendar-panel"
           style={{
             width: 340,

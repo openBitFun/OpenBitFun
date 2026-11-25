@@ -1080,7 +1080,7 @@ function SshConnectionModal() {
 
       {/* Target type selector — clean underline tabs, zero heavy box */}
       <If when={!sshFixedSource() && !sshEditOnly()}>
-        <Scroll horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
+        <Scroll smoothWheel horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
           <UnderlineTabs
             size="sm"
             scrollable={compactLayout()}
@@ -2658,6 +2658,7 @@ function RemoteFileBrowserModal() {
           when={browserLoading()}
           else={
             <Scroll
+              smoothWheel
               style={compactLayout() ? { maxHeight: 320, minHeight: 160 } : { height: 320, minHeight: 0 }}
               scrollbar={true}
             >
@@ -2920,7 +2921,7 @@ function PortForwardModal() {
           </If>
 
           <If when={listeningPorts().length > 0}>
-            <Scroll style={{ maxHeight: 164, minHeight: 0 }} scrollbar={true}>
+            <Scroll smoothWheel style={{ maxHeight: 164, minHeight: 0 }} scrollbar={true}>
               <View>
                 <Each of={listeningPorts()} key={p => `${p.port}-${p.bindAddress}`}>
                   {(port, idx) => {

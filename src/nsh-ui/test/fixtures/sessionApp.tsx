@@ -18,9 +18,10 @@ import {
   activeSessionKey,
   auxPaneOpen,
   auxPaneTab,
-  devicePageId,
+
   loadWorkspaces,
   navigateScene,
+  revealedDevice,
   selectSession,
 } from "../../src/state";
 import { compactLayout, layout, palette } from "../../src/theme";
@@ -37,7 +38,7 @@ function SessionHarness() {
       style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}
     >
       <View style={{ flexDirection: "row", gap: 8 }}>
-        <Text testID="harness-route">{`route:${activeScene()}:${devicePageId()}:${activeConversationId() ?? ""}`}</Text>
+        <Text testID="harness-route">{`route:${activeScene()}::${activeConversationId() ?? ""}:${revealedDevice() ?? ""}`}</Text>
         <Text testID="harness-aux">{`aux:${auxPaneOpen() ? auxPaneTab() : "closed"}`}</Text>
         <Text
           role="button"

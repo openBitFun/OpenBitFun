@@ -1068,6 +1068,35 @@ export function fieldSaving(spec: FieldSpec): boolean {
   return savingFields()[spec.id] === true;
 }
 
+/**
+ * Fields whose write just landed, by field id, for a moment: the row shows a
+ * quiet check in a slot it always reserves, instead of a banner that pushes the
+ * page while the user is still editing. The control itself shows the value.
+ */
+export const savedFields = signal<Record<string, boolean>>({});
+const savedFieldTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function fieldJustSaved(id: string): boolean {
+  return savedFields()[id] === true;
+}
+
+export function flashFieldSaved(id: string): void {
+  const previous = savedFieldTimers.get(id);
+  if (previous !== undefined) clearTimeout(previous);
+  savedFields.update(current => ({ ...current, [id]: true }));
+  savedFieldTimers.set(
+    id,
+    setTimeout(() => {
+      savedFieldTimers.delete(id);
+      savedFields.update(current => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }, 1600),
+  );
+}
+
 function noticeFor(spec: FieldSpec, message: string): void {
   const section = sectionOfField(spec);
   if (section) setSectionNotice(section.id, message);
@@ -1354,7 +1383,10 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
         if (path === "app.ai_experience.enable_prompt_suggestion" && typeof value === "boolean") {
           setPromptSuggestionsEnabled(value);
         }
-        noticeFor(spec, tr("settings.notice.savedField", { label: fieldLabel(spec) }));
+        // Success is the control's own value plus a passing check; an earlier failure of
+        // this section is answered, so its banner goes.
+        noticeFor(spec, "");
+        flashFieldSaved(spec.id);
         ok = true;
       } catch (error) {
         noticeFor(spec, localizedWriteError(error));
@@ -1420,19 +1452,14 @@ export async function setGeneralControl(option: GeneralControlOption, value: boo
       value,
     });
     generalControlValues.update(current => (current ? { ...current, [option]: value } : current));
-    setSectionNotice("general", tr("settings.notice.savedField", { label: tr(GENERAL_CONTROL_LABELS[option]) }));
+    setSectionNotice("general", "");
+    flashFieldSaved(option);
   } catch (error) {
     setSectionNotice("general", error instanceof Error ? error.message : String(error));
   } finally {
     generalControlSaving.set(null);
   }
 }
-
-export const GENERAL_CONTROL_LABELS: Record<GeneralControlOption, MessageKey> = {
-  "launch-at-login": "settings.field.launchAtLogin",
-  "prevent-sleep": "settings.field.preventSleep",
-  "auto-update": "settings.field.autoUpdate",
-};
 
 /** The memory actions the desktop's memory section offers beside its fields. */
 export const memoryActionBusy = signal<"open" | "reset" | null>(null);

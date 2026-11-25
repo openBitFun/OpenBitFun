@@ -8,8 +8,7 @@ import {
   fleetDeviceRow,
   fleetObpHost,
   fleetSessionRow,
-  projectWorkspaceNavigator,
-} from "./support";
+  projectWorkspaceNavigator, selectTreeWorkspace } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -604,22 +603,17 @@ function createSshBackend(options: MockSshBackendOptions = {}) {
   };
 }
 
-/** This device's page: All sessions › By device › This device (New workspace…, SSH connections). */
-async function openThisDevicePage(app: Awaited<ReturnType<typeof open>>) {
-  await showDevices(app);
-  await app.press("device-open-local");
-  await app.waitFor("device-scene");
-}
-
 async function openNewWorkspaceViaUi(app: Awaited<ReturnType<typeof open>>) {
-  await openThisDevicePage(app);
-  await app.press("device-new-workspace");
+  await showDevices(app);
+  await app.press("sidebar-new-workspace");
   await app.waitFor("new-workspace-modal");
 }
 
+/** This device's ⋯ in the session tree › SSH connections. */
 async function openSshModalViaUi(app: Awaited<ReturnType<typeof open>>) {
-  await openThisDevicePage(app);
-  await app.press("device-ssh");
+  await showDevices(app);
+  await app.press("label:sidebar-device-actions-local");
+  await app.press("device-ssh-local");
   await app.waitFor("ssh-connection-modal");
 }
 
@@ -889,8 +883,9 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
 
   // Disconnect SSH & close the remote workspace from its row in All sessions › By device
   await showDevices(app);
-  await app.waitFor("workspace-actions-ws-remote-1");
-  await app.press("workspace-actions-ws-remote-1");
+  await app.waitFor("id:sidebar-workspace-row-ws-remote-1");
+  await app.hover("id:sidebar-workspace-row-ws-remote-1");
+  await app.press("sidebar-workspace-actions-ws-remote-1");
   await app.waitFor("Disconnect SSH");
   await app.press("Disconnect SSH");
   await app.waitUntil(() => ssh.callsFor("ssh_disconnect").length === 1);
@@ -899,7 +894,8 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
     payload: { connectionId: "conn-prod-1" },
   });
 
-  await app.press("workspace-actions-ws-remote-1");
+  await app.hover("id:sidebar-workspace-row-ws-remote-1");
+  await app.press("sidebar-workspace-actions-ws-remote-1");
   await app.waitFor("Close workspace");
   await app.press("Close workspace");
   await app.waitUntil(() => ssh.callsFor("remote_close_workspace").length === 1);
@@ -1047,7 +1043,7 @@ test("Remote workspace activation asks the backend to restore a dropped link and
   // This surface reconnects and activates nothing itself (the saved-host list
   // still reads each host's status for its dot).
   await showDevices(app);
-  await app.press("workspace-row-ws-staging");
+  await selectTreeWorkspace(app, "ws-staging");
   await openToolScene(app, "files");
   await app.waitUntil(() => ssh.linkRestores.includes("conn-staging-2"));
   expect(ssh.callsFor("remote_workspace_ensure_connected")[0]).toMatchObject({
@@ -1063,7 +1059,7 @@ test("Remote workspace activation asks the backend to restore a dropped link and
 
   // A workspace whose saved connection is gone is marked offline, loudly, with a way to retry.
   await showDevices(app);
-  await app.press("workspace-row-ws-gone");
+  await selectTreeWorkspace(app, "ws-gone");
   await openToolScene(app, "files");
   await app.waitFor("remote-link-offline");
   await app.waitFor("gone.example.com is offline");
@@ -1086,7 +1082,7 @@ test("Remote link state follows the backend's remote://link-state events and ask
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await showDevices(app);
-  await app.press("workspace-row-ws-prod");
+  await selectTreeWorkspace(app, "ws-prod");
   await openToolScene(app, "files");
   await app.waitUntil(() => ssh.callsFor("remote_workspace_ensure_connected").length === 1);
   expect(app.shows("remote-link-reconnecting")).toBe(false);
@@ -1123,7 +1119,7 @@ test("A host without backend link supervision gets an explicit update-the-host s
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await showDevices(app);
-  await app.press("workspace-row-ws-staging");
+  await selectTreeWorkspace(app, "ws-staging");
   await openToolScene(app, "files");
   await app.waitFor("remote-link-host-outdated");
   await app.waitFor("Staging Box: this device cannot restore remote connections");
@@ -1155,13 +1151,15 @@ test("an SSH workspace of this machine uploads and downloads through the backend
   await app.waitFor("nav-library");
 
   await showDevices(app);
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   await app.waitFor("Change icon…");
   expect(app.shows("text:Upload to workspace…")).toBe(false);
   expect(app.shows("text:Download from workspace…")).toBe(false);
   await app.keyboard.press("escape");
 
-  await app.press("workspace-actions-ws-staging");
+  await app.hover("id:sidebar-workspace-row-ws-staging");
+  await app.press("sidebar-workspace-actions-ws-staging");
   await app.press("text:Upload to workspace…");
   await app.waitFor("workspace-transfer-modal");
   await app.type("workspace-transfer-local", "/Users/me/notes.md");
@@ -1176,7 +1174,8 @@ test("an SSH workspace of this machine uploads and downloads through the backend
   expect(String(sent[0]?.payload.transferId)).toMatch(/^transfer-/);
   await app.waitFor("Uploaded notes.md");
 
-  await app.press("workspace-actions-ws-staging");
+  await app.hover("id:sidebar-workspace-row-ws-staging");
+  await app.press("sidebar-workspace-actions-ws-staging");
   await app.press("text:Download from workspace…");
   await app.waitFor("workspace-transfer-modal");
   await app.clear("workspace-transfer-remote");
@@ -1221,7 +1220,8 @@ test("the workspace icon offers the glyphs the device supports and saves against
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
   await app.waitFor("nav-library");
   await showDevices(app);
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   await app.press("text:Change icon…");
   await app.waitFor("workspace-icon-glyph-code");
   expect(app.shows("workspace-icon-glyph-music")).toBe(false);
@@ -1237,7 +1237,8 @@ test("the workspace icon offers the glyphs the device supports and saves against
 
   // A device that offers no glyphs (an older one) says so instead of a picker.
   supported = [];
-  await app.press("workspace-actions-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-workspace-actions-workspace-1");
   await app.press("text:Change icon…");
   await app.waitFor("Update OpenBitFun on this device to choose an icon.");
   expect(app.shows("workspace-icon-glyph-code")).toBe(false);
@@ -1520,8 +1521,9 @@ test("Fleet mode displays remote workspace aliases instead of raw IPs and remove
 
   // Closing the remote workspace from its workspace menu calls close_workspace and refreshes Fleet navigator so it disappears from the sidebar immediately.
   await showDevices(app);
-  await app.waitFor("workspace-actions-ws-remote");
-  await app.press("workspace-actions-ws-remote");
+  await app.waitFor("id:sidebar-workspace-row-ws-remote");
+  await app.hover("id:sidebar-workspace-row-ws-remote");
+  await app.press("sidebar-workspace-actions-ws-remote");
   await app.waitFor("Close workspace");
   await app.press("Close workspace");
   await app.waitUntil(() => !app.shows("id:sidebar-workspace-row-ws-remote"));

@@ -383,6 +383,7 @@ export function SignInScreen(props: SignInScreenProps) {
   };
   return (
     <Scroll
+      smoothWheel
       accessibilityLabel="sign-in-screen"
       style={{
         flex: 1,

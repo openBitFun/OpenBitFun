@@ -557,6 +557,7 @@ function ToolMultiSelect() {
 
         <If when={filteredSelectableTools().length > 0}>
           <Scroll
+            smoothWheel
             style={{ maxHeight: 224, minHeight: 0 }}
             scrollbar={true}
           >
@@ -1382,7 +1383,7 @@ export function AgentsScene(props: { embedded?: boolean }) {
       onLayout={trackStudioWidth}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
-      <Scroll style={{ flex: 1, minHeight: 0 }}>
+      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
         <If
           when={props.embedded}
           else={

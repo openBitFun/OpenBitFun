@@ -64,7 +64,7 @@ test("the header names the session, its device and workspace, and where it start
 
   // The origin line opens the OpenBitFun conversation that started it.
   await app.press("session-origin");
-  await app.waitFor("text:route:openbitfun::c-1");
+  await app.waitFor("text:route:openbitfun::c-1:");
 });
 
 test("with Super Agent gated off, a session it started shows no origin line", async () => {
@@ -76,7 +76,7 @@ test("with Super Agent gated off, a session it started shows no origin line", as
   expect(app.texts().some(text => text.includes("Super Agent"))).toBe(false);
 });
 
-test("the device badge opens the device page, and the tool toggles open the inspector", async () => {
+test("the device badge reveals the device in the sidebar, and the tool toggles open the inspector", async () => {
   const host = sessionHost(null);
   const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
   await openSession(app);
@@ -91,7 +91,8 @@ test("the device badge opens the device page, and the tool toggles open the insp
   await app.press("session-tool-git");
   await app.waitFor("text:aux:closed");
   await app.press("id:session-breadcrumb-device");
-  await app.waitFor("text:route:device:dev-b:");
+  // The device is revealed in the session tree (the sidebar, opened if folded away).
+  await app.waitFor("text:route:sessions:::dev-b");
 });
 
 test("review notes are sent to the session's agent on its device as one message", async () => {

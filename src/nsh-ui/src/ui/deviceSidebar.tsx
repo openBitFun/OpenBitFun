@@ -5,9 +5,10 @@
 // sees this device's workspaces with no device header.
 //
 // Display only. The rows, their order (newest session first), states and the
-// action gates are the backend's: the fleet navigator through `deviceTree()`
-// (shared with All sessions › By device), or the host's own catalogue without
-// the fleet layer. The only local state is which rows are folded.
+// action gates are the backend's: the fleet navigator through `deviceTree()`,
+// or the host's own catalogue without the fleet layer. The only local state is
+// which rows are folded and how many sessions a workspace shows. On a phone the
+// same tree is the session list scene, with touch-sized rows.
 
 import { effect, platform, signal, Text, untracked, View, type JSX, type ViewRef } from "nsh";
 import { fleetActive } from "../bridge";
@@ -18,32 +19,35 @@ import {
   activeWorkspaceId,
   collapsedWorkspaces,
   deviceContext,
-  openAllSessions,
-  openDevicePage,
+  forgetRecentWorkspace,
+  openRecentWorkspace,
+  recentWorkspaces,
+  revealedDevice,
+  selectWorkspace,
   secondarySessionDevice,
   secondarySessionId,
-  selectDeviceContext,
   splitPaneOpen,
   workspacesLoaded,
 } from "../state";
-import { fleetDeviceById } from "../fleetStore";
 import {
+  SESSION_PAGE,
   deviceTree,
   loadLocalWorkspace,
+  loadWorkspaceSessions,
   newSessionHere,
   openSessionRow,
   remoteWorkspaceHost,
   sessionTarget,
   workspaceTarget,
   type DeviceTreeNode,
-} from "../scenes/AllSessionsScene";
-import { openNewWorkspaceModal } from "../sshRemoteStore";
-import { controlHeight, palette, radii, space, textStyle } from "../theme";
+} from "../deviceTree";
+import { deviceCanCreateWorkspace, deviceMenuItems, newWorkspaceOn } from "../deviceActions";
+import { compactLayout, controlHeight, layout, palette, radii, space, textStyle } from "../theme";
 import { formatRelativeTime } from "../format";
 import { StateMark, deviceException, deviceGlyphIcon, stateColor, type MarkState } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { MOTION_DURATION, paintTransition, rotatingChevronStyle } from "./motion";
-import { DropdownMenu, type DropdownMenuItem } from "./overlays";
+import { DropdownMenu, pushToast, type DropdownMenuItem } from "./overlays";
 import { IconButton, focusRingStyle } from "./primitives";
 import { sessionMenuItems } from "./sessionActions";
 import { workspaceMenuItems } from "./workspaceActions";
@@ -65,10 +69,7 @@ const workspaceVisibleCount = signal<Record<string, number>>({});
 /** Workspaces whose own catalogue was read once (without the fleet layer). */
 const localCatalogueRead = new Set<string>();
 
-/**
- * A tablet has no hover: the row actions a pointer reveals on hover stay shown
- * there (phones use All sessions instead of this sidebar).
- */
+/** A tablet or a phone has no hover: the row actions a pointer reveals on hover stay shown there. */
 const touchFirst = platform.os === "ios" || platform.os === "android";
 
 function workspaceKey(deviceId: string, workspaceId: string): string {
@@ -127,15 +128,9 @@ function workspaceIcon(workspace: TreeWorkspace, open: boolean): IconName {
   return open ? "folder-open" : "folder";
 }
 
-/** Opens the new-workspace sheet (folder, SSH, container, WSL) on `deviceId`. */
-async function newWorkspaceOn(deviceId: string): Promise<void> {
-  if (fleetActive() && deviceId) await selectDeviceContext(deviceId);
-  await openNewWorkspaceModal();
-}
-
 // ── Building blocks ──────────────────────────────────────────────────────────
 
-/** A chrome row: 32 high, radius 8, hover and selection tints, keyboard focus ring. */
+/** A chrome row: 32 high (a touch target on a phone), radius 8, hover and selection tints, keyboard focus ring. */
 function TreeRow(props: {
   indent: number;
   active?: boolean;
@@ -153,7 +148,7 @@ function TreeRow(props: {
       onMouseEnter={() => props.onHover?.(true)}
       onMouseLeave={() => props.onHover?.(false)}
       style={{
-        height: controlHeight.md,
+        height: compactLayout() ? layout.touchTarget : controlHeight.md,
         paddingLeft: space.sm + props.indent,
         paddingRight: space.xs,
         borderRadius: radii.md,
@@ -306,7 +301,7 @@ function SessionRow(props: { node: DeviceTreeNode; workspaceId: string; row: Tre
       }}
       leading={<If when={shownMark(props.row.mark)}>{mark => <StateMark state={mark()} />}</If>}
       trailing={
-        <HoverActions visible={hovered() || menuOpen()}>
+        <HoverActions visible={hovered() || menuOpen() || touchFirst}>
           <RowMenuButton
             items={() => sessionMenuItems(sessionTarget(props.row, props.node.deviceId, props.workspaceId))}
             accessibilityLabel={`sidebar-session-actions-${props.row.sessionId}`}
@@ -329,8 +324,24 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
   const visibleLimit = () => workspaceVisibleCount()[key()] ?? SESSION_PREVIEW;
   const rows = () => props.workspace.sessions.slice(0, visibleLimit());
   const hasMoreLoaded = () => props.workspace.sessions.length > visibleLimit();
-  const canShowLess = () => !hasMoreLoaded() && visibleLimit() > SESSION_PREVIEW && props.workspace.sessions.length > SESSION_PREVIEW;
   const unlisted = () => Math.max(0, props.workspace.total - props.workspace.sessions.length);
+  const hasMore = () => hasMoreLoaded() || unlisted() > 0;
+  const canShowLess = () => !hasMore() && visibleLimit() > SESSION_PREVIEW && props.workspace.sessions.length > SESSION_PREVIEW;
+  const loadingMore = signal(false);
+  /** Shows the next sessions: those already read first, then the next page from the device that owns the workspace. */
+  const showMore = async () => {
+    const k = key();
+    const next = visibleLimit() + SESSION_MORE_STEP;
+    if (next > props.workspace.sessions.length && unlisted() > 0) {
+      loadingMore.set(true);
+      try {
+        await loadWorkspaceSessions(props.node.deviceId, props.workspace.workspaceId, Math.max(next, props.workspace.sessions.length + SESSION_PAGE));
+      } finally {
+        loadingMore.set(false);
+      }
+    }
+    workspaceVisibleCount.update(all => ({ ...all, [k]: next }));
+  };
   const current = () =>
     activeWorkspaceId() === props.workspace.workspaceId && (!fleetActive() || deviceContext() === props.node.deviceId);
   const newSession = () => {
@@ -360,7 +371,16 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
         accessibilityLabel={`sidebar-workspace-toggle-${props.workspace.workspaceId}`}
         expanded={open()}
         onHover={value => hovered.set(value)}
-        onPress={() => toggleWorkspace(props.node.deviceId, props.workspace.workspaceId)}
+        onPress={() => {
+          const unfolding = !open();
+          toggleWorkspace(props.node.deviceId, props.workspace.workspaceId);
+          // With no conversation open, unfolding a workspace makes it the place
+          // the tools, the Library and a new session use; an open conversation
+          // keeps its own workspace (peeking at another one never closes it).
+          if (unfolding && activeSessionId() === null) {
+            selectWorkspace(props.workspace.workspaceId, fleetActive() ? { deviceId: props.node.deviceId } : undefined);
+          }
+        }}
         leading={
           <If
             when={hovered()}
@@ -437,36 +457,31 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
               />
             )}
           </Each>
-          <If when={hasMoreLoaded() || canShowLess()}>
+          <If when={hasMore() || canShowLess()}>
             <QuietRow
               indent={childIndent()}
-              label={hasMoreLoaded() ? tr("history.showMore") : tr("common.showLess")}
+              label={
+                loadingMore()
+                  ? tr("common.loading")
+                  : hasMore()
+                    ? unlisted() > 0 && !hasMoreLoaded()
+                      ? tr("allSessions.more", { count: unlisted() })
+                      : tr("history.showMore")
+                    : tr("common.showLess")
+              }
               accessibilityLabel={`sidebar-show-more-${props.workspace.workspaceId}`}
               onPress={() => {
-                const k = key();
-                if (hasMoreLoaded()) {
-                  workspaceVisibleCount.update(all => ({
-                    ...all,
-                    [k]: (all[k] ?? SESSION_PREVIEW) + SESSION_MORE_STEP,
-                  }));
-                } else {
-                  workspaceVisibleCount.update(all => {
-                    const next = { ...all };
-                    delete next[k];
-                    return next;
-                  });
+                if (loadingMore()) return;
+                if (hasMore()) {
+                  void showMore();
+                  return;
                 }
-              }}
-            />
-          </If>
-          <If when={unlisted() > 0 && !hasMoreLoaded()}>
-            <QuietRow
-              indent={childIndent()}
-              label={tr("allSessions.more", { count: unlisted() })}
-              accessibilityLabel={`sidebar-more-sessions-${props.workspace.workspaceId}`}
-              onPress={() => {
-                openAllSessions("by-device");
-                props.onNavigate?.();
+                const k = key();
+                workspaceVisibleCount.update(all => {
+                  const next = { ...all };
+                  delete next[k];
+                  return next;
+                });
               }}
             />
           </If>
@@ -510,10 +525,15 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
   const menuOpen = signal(false);
   const open = () => deviceExpanded(props.node);
   const offline = () => deviceException(props.node.state) === "offline";
-  const canCreate = () => {
-    const gate = fleetDeviceById(props.node.deviceId)?.actions?.createWorkspace;
-    return gate ? gate.allowed : !offline();
-  };
+  const canCreate = () => deviceCanCreateWorkspace(props.node).allowed;
+  // A device badge elsewhere asked to see this device: unfold it.
+  effect(() => {
+    if (revealedDevice() !== props.node.deviceId) return;
+    untracked(() => {
+      deviceFold.update(all => ({ ...all, [props.node.deviceId]: true }));
+      revealedDevice.set(null);
+    });
+  });
   const id = () => props.node.deviceId || "local";
   return (
     <View accessibilityLabel={`sidebar-device-${id()}`} style={{ gap: space.hair }}>
@@ -552,22 +572,11 @@ function DeviceSection(props: { node: DeviceTreeNode; onNavigate?: () => void })
                     surface="chrome"
                     tooltip={tr("nav.newWorkspace")}
                     accessibilityLabel={`sidebar-new-workspace-${id()}`}
-                    onPress={() => void newWorkspaceOn(props.node.deviceId)}
+                    onPress={() => void newWorkspaceOn(props.node)}
                   />
                 </If>
                 <RowMenuButton
-                  items={() => [
-                    {
-                      id: `sidebar-device-details-${id()}`,
-                      label: tr("tree.deviceDetails"),
-                      icon: "info",
-                      accessibilityLabel: `sidebar-device-details-${id()}`,
-                      onSelect: () => {
-                        openDevicePage(props.node.deviceId);
-                        props.onNavigate?.();
-                      },
-                    },
-                  ]}
+                  items={() => deviceMenuItems(props.node)}
                   accessibilityLabel={`sidebar-device-actions-${id()}`}
                   tooltip={tr("tree.deviceActions")}
                   onOpenChange={value => menuOpen.set(value)}
@@ -612,6 +621,7 @@ function WorkspaceList(props: { node: DeviceTreeNode; indent: number; onNavigate
           <WorkspaceBranch node={props.node} workspace={workspace()} indent={props.indent} onNavigate={props.onNavigate} />
         )}
       </Each>
+      <RecentlyClosed node={props.node} indent={props.indent} />
       {/* An empty device offers its New workspace row when it is the only one or this device;
           other devices keep the action on their header, so a long device list stays calm. */}
       <If when={props.node.workspaces.length === 0 && (props.indent === 0 || props.node.isClient)}>
@@ -620,10 +630,102 @@ function WorkspaceList(props: { node: DeviceTreeNode; indent: number; onNavigate
           icon="folder-plus"
           label={tr("nav.newWorkspace")}
           accessibilityLabel={`sidebar-empty-new-workspace-${props.node.deviceId || "local"}`}
-          onPress={() => void newWorkspaceOn(props.node.deviceId)}
+          onPress={() => void newWorkspaceOn(props.node)}
         />
       </If>
     </View>
+  );
+}
+
+const recentlyClosedOpen = signal(false);
+
+function recentLabel(record: { name?: string; rootPath?: string }): string {
+  if (record.name) return record.name;
+  const parts = (record.rootPath ?? "").split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? record.rootPath ?? "";
+}
+
+/**
+ * The workspaces this backend closed recently: a folded "Recently closed (n)"
+ * row under the device whose workspace list is loaded here (the only backend,
+ * or the device context). A row reopens its workspace; its ⋯ removes it from
+ * the list.
+ */
+function RecentlyClosed(props: { node: DeviceTreeNode; indent: number }) {
+  const rows = () => {
+    if (fleetActive() && props.node.deviceId !== deviceContext()) return [];
+    const open = new Set(props.node.workspaces.map(workspace => workspace.workspaceId));
+    return recentWorkspaces().filter(record => !open.has(record.id));
+  };
+  return (
+    <If when={rows().length > 0}>
+      <View style={{ gap: space.hair }}>
+        <TreeRow
+          indent={props.indent}
+          accessibilityLabel="sidebar-recently-closed"
+          expanded={recentlyClosedOpen()}
+          onPress={() => recentlyClosedOpen.update(open => !open)}
+          leading={
+            <View style={rotatingChevronStyle(recentlyClosedOpen())}>
+              <Icon name="chevron-right" size={12} color={palette().chromeTextMuted} />
+            </View>
+          }
+        >
+          <Text style={{ ...textStyle("caption", { color: palette().chromeTextMuted }), flex: 1, minWidth: 0, numberOfLines: 1 }}>
+            {tr("allSessions.recentlyClosed", { count: rows().length })}
+          </Text>
+        </TreeRow>
+        <If when={recentlyClosedOpen()}>
+          <Each of={rows()} key={record => record.id}>
+            {record => {
+              const hovered = signal(false);
+              const menuOpen = signal(false);
+              return (
+                <TreeRow
+                  indent={props.indent + INDENT}
+                  testID={`recent-workspace-${record().id}`}
+                  accessibilityLabel={`recent-workspace-reopen-${record().id}`}
+                  onHover={value => hovered.set(value)}
+                  onPress={() => void openRecentWorkspace(record())}
+                  leading={<Icon name="folder" size={14} color={palette().chromeTextMuted} />}
+                  trailing={
+                    <HoverActions visible={hovered() || menuOpen() || touchFirst}>
+                      <RowMenuButton
+                        items={() => [
+                          {
+                            id: `recent-workspace-open-${record().id}`,
+                            label: tr("allSessions.reopen"),
+                            icon: "folder-open",
+                            onSelect: () => void openRecentWorkspace(record()),
+                          },
+                          {
+                            id: `recent-workspace-remove-${record().id}`,
+                            label: tr("allSessions.removeRecent"),
+                            icon: "close",
+                            accessibilityLabel: `recent-workspace-remove-${record().id}`,
+                            onSelect: () => {
+                              const name = recentLabel(record());
+                              void forgetRecentWorkspace(record().id).then(() =>
+                                pushToast(tr("allSessions.recentRemoved", { name }), "info"),
+                              );
+                            },
+                          },
+                        ]}
+                        accessibilityLabel={`recent-workspace-actions-${record().id}`}
+                        tooltip={tr("workspace.actions")}
+                        onOpenChange={value => menuOpen.set(value)}
+                      />
+                    </HoverActions>
+                  }
+                >
+                  <RowLabel text={recentLabel(record())} weight="400" muted />
+                </TreeRow>
+              );
+            }}
+          </Each>
+        </If>
+      </View>
+    </If>
   );
 }
 
@@ -681,14 +783,30 @@ export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Eleme
         <SectionHeader
           label={tr("tree.workspaces")}
           action={
-            <IconButton
-              icon="folder-plus"
-              size="xs"
-              surface="chrome"
-              tooltip={tr("nav.newWorkspace")}
-              accessibilityLabel="sidebar-new-workspace"
-              onPress={() => void newWorkspaceOn(nodes()[0]?.deviceId ?? "")}
-            />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
+              <IconButton
+                icon="folder-plus"
+                size="xs"
+                surface="chrome"
+                tooltip={tr("nav.newWorkspace")}
+                accessibilityLabel="sidebar-new-workspace"
+                onPress={() => {
+                  const node = nodes()[0];
+                  if (node) void newWorkspaceOn(node);
+                }}
+              />
+              {/* The one device has no row of its own: its menu (terminal, SSH, settings) sits here. */}
+              <If when={nodes()[0]}>
+                {node => (
+                  <RowMenuButton
+                    items={() => deviceMenuItems(node())}
+                    accessibilityLabel={`sidebar-device-actions-${node().deviceId || "local"}`}
+                    tooltip={tr("tree.deviceActions")}
+                    onOpenChange={() => {}}
+                  />
+                )}
+              </If>
+            </View>
           }
         />
         <If when={nodes()[0]}>{node => <WorkspaceList node={node()} indent={0} onNavigate={props.onNavigate} />}</If>

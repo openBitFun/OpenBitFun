@@ -318,7 +318,6 @@ export function chooseCatalogProvider(id: string): void {
       ...current,
       provider: endpoint.format,
       baseUrl: endpoint.baseUrl,
-      name: current.name || provider.name,
     }));
   }
 }
@@ -330,13 +329,18 @@ export function chooseCatalogModel(modelId: string): void {
   // The catalog's own output limit may exceed what the host accepts for that
   // window; the host clamps it on save and says so.
   const output = model.output;
-  modelDraft.update(current => ({
-    ...current,
-    modelName: model.id,
-    name: current.name || model.label,
-    contextWindow: model.context ? String(model.context) : current.contextWindow,
-    maxTokens: output ? String(output) : current.maxTokens,
-  }));
+  modelDraft.update(current => {
+    // The name follows the picked model until the user types one of their own.
+    const previous = provider?.models.find(entry => entry.id === current.modelName);
+    const autoName = !current.name.trim() || (previous !== undefined && current.name === previous.label);
+    return {
+      ...current,
+      modelName: model.id,
+      name: autoName ? model.label : current.name,
+      contextWindow: model.context ? String(model.context) : current.contextWindow,
+      maxTokens: output ? String(output) : current.maxTokens,
+    };
+  });
 }
 
 export async function loadModels(): Promise<void> {
@@ -545,9 +549,11 @@ export async function saveModelDraft(): Promise<void> {
     return;
   }
   const hasHeaders = Object.keys(headers).length > 0;
+  // An empty name defaults to the model id, so the folded Name field is optional.
+  const name = draft.name.trim() || draft.modelName.trim();
   const intent: ModelUpsert = {
     ...(draft.editingId ? { id: draft.editingId } : {}),
-    name: draft.name,
+    name,
     provider: draft.provider,
     modelName: draft.modelName,
     baseUrl: draft.baseUrl,
@@ -559,7 +565,6 @@ export async function saveModelDraft(): Promise<void> {
     customHeadersMode: hasHeaders ? draft.customHeadersMode : null,
     skipSslVerify: draft.skipSslVerify,
   };
-  const name = draft.name.trim();
   await runStep(async () => {
     const saved = await upsertModels([intent], () => (draft.editingId ? `Saved ${name}` : `Added ${name}`));
     if (saved) closeModelForm();

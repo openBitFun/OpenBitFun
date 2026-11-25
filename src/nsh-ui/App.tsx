@@ -149,9 +149,7 @@ import {
   type AuxPaneSide,
   type AuxPaneTab,
   type SceneId,
-  devicePageId,
   resolveSceneAlias,
-  allSessionsView,
   landingScene,
   navHistory,
   resetNavigation,
@@ -272,8 +270,8 @@ import {
 import { OpenBitFunScene } from "./src/scenes/OpenBitFunScene";
 import { SessionsScene } from "./src/scenes/SessionsScene";
 import { InboxScene, InboxSheet } from "./src/scenes/InboxScene";
-import { AllSessionsScene } from "./src/scenes/AllSessionsScene";
-import { DeviceScene } from "./src/scenes/DeviceScene";
+import { SessionListScene } from "./src/scenes/SessionListScene";
+import { DeviceActionDialogs } from "./src/deviceActions";
 import { LibraryScene, LibraryScopeChip } from "./src/scenes/LibraryScene";
 import { ConversationHistory, BitMatrixGlyph } from "./src/ui/jobs";
 import {
@@ -285,7 +283,7 @@ import {
 } from "./src/superagentStore";
 import { inboxSheetOpen, startAttentionStore, toggleInboxSheet } from "./src/attentionStore";
 import { inboxBadgeCount } from "./src/localInboxStore";
-import { fleetDeviceById, fleetUnavailable } from "./src/fleetStore";
+import { fleetUnavailable } from "./src/fleetStore";
 import { InboxCountPill, PhoneTabBar, type PhoneTab } from "./src/ui/fleet";
 import { FilesScene } from "./src/scenes/FilesScene";
 import { GitScene } from "./src/scenes/GitScene";
@@ -303,7 +301,7 @@ import type { SettingsPageId } from "./src/settingsStore";
 // wave23-E: Super Agent gated off; the sidebar is the account's device → workspace → session tree.
 import { superAgentUi } from "./src/productGates";
 import { DeviceSidebarTree } from "./src/ui/deviceSidebar";
-import { newSessionHere } from "./src/scenes/AllSessionsScene";
+import { newSessionHere } from "./src/deviceTree";
 
 // A page served by a backend connects back to it over OBP (before any command runs).
 installServedBackend();
@@ -329,8 +327,8 @@ interface SceneMeta {
 const SCENE_META: Record<SceneId, SceneMeta> = {
   openbitfun: { labelKey: "nav.superAgent", icon: "sparkles" },
   inbox: { labelKey: "nav.inbox", icon: "inbox" },
-  "all-sessions": { labelKey: "nav.allSessions", icon: "layers" },
-  device: { labelKey: "nav.allSessions", icon: "laptop" },
+  "all-sessions": { labelKey: "nav.sessions", icon: "layers" },
+  device: { labelKey: "nav.sessions", icon: "laptop" },
   library: { labelKey: "nav.library", icon: "package" },
   home: { labelKey: "nav.superAgent", icon: "home" },
   sessions: { labelKey: "nav.sessions", icon: "chat" },
@@ -646,9 +644,9 @@ function sceneGroupKey(): string {
       return "inbox";
     case "all-sessions":
     case "devices":
-      return "all-sessions";
     case "device":
-      return "device";
+      // The phone's session list; a wide window lists sessions in its sidebar.
+      return compactShell() ? "all-sessions" : "sessions";
     case "library":
     case "assistants":
     case "agents":
@@ -678,9 +676,7 @@ function sceneElementForGroup(group: string) {
     case "inbox":
       return <InboxScene />;
     case "all-sessions":
-      return <AllSessionsScene />;
-    case "device":
-      return <DeviceScene />;
+      return <SessionListScene />;
     case "library":
       return <LibraryScene />;
     case "files":
@@ -1080,6 +1076,7 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
         />
       </View>
       <Scroll
+        smoothWheel
         scrollbar={true}
         accessibilityLabel="sidebar-tree-scroll"
         style={{ flex: 1, minHeight: 0, marginTop: space.lg }}
@@ -1101,7 +1098,10 @@ function DeviceNavPanel(props: { onNavigate?: () => void }) {
   );
 }
 
-/** The Super Agent sidebar (shown only while that gate is on, `productGates.ts`). */
+/**
+ * The Super Agent sidebar (shown only while that gate is on, `productGates.ts`):
+ * the cloud conversations, then the account's device tree.
+ */
 function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
   return (
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
@@ -1153,6 +1153,7 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
         />
       </View>
       <Scroll
+        smoothWheel
         scrollbar={true}
         accessibilityLabel="sidebar-history"
         style={{ flex: 1, minHeight: 0, marginTop: space.lg }}
@@ -1161,6 +1162,10 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
         <If when={showCloudHistory()}>
           <ConversationHistory onOpen={props.onNavigate} />
         </If>
+        {/* The account's devices → workspaces → sessions, under the cloud conversations. */}
+        <View style={{ marginTop: showCloudHistory() ? space.lg : 0 }}>
+          <DeviceSidebarTree onNavigate={props.onNavigate} />
+        </View>
       </Scroll>
       <View
         style={{
@@ -1172,16 +1177,6 @@ function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
         }}
       >
         <View style={{ paddingHorizontal: space.sm, gap: space.hair }}>
-          <SidebarRow
-            label={tr("nav.allSessions")}
-            icon="layers"
-            active={activeScene() === "all-sessions" || activeScene() === "device"}
-            accessibilityLabel="nav-all-sessions"
-            onPress={() => {
-              navigateScene("all-sessions");
-              props.onNavigate?.();
-            }}
-          />
           <SidebarRow
             label={tr("nav.library")}
             icon="package"
@@ -2303,6 +2298,7 @@ function SearchPanel() {
         {/* Scope chips: horizontal strip so a long set never creates a multi-row pill wall */}
         <If when={availableKinds().length > 1}>
           <Scroll
+            smoothWheel
             horizontal
             scrollbar={false}
             style={{
@@ -2388,6 +2384,7 @@ function SearchPanel() {
         {/* Grouped Results */}
         <If when={flatResults().length > 0}>
           <Scroll
+            smoothWheel
             scrollbar={true}
             style={{ flexShrink: 1, minHeight: 0 }}
             contentStyle={{ paddingHorizontal: space.sm, paddingVertical: space.sm, gap: space.md }}
@@ -2813,13 +2810,11 @@ function phoneTitle(scene: SceneId): string {
     case "inbox":
       return tr("nav.inbox");
     case "all-sessions":
-      return superAgentUi() ? tr("nav.allSessions") : tr("nav.sessions");
+      return tr("nav.sessions");
     case "library":
       return tr("nav.library");
     case "settings":
       return tr("nav.settings");
-    case "device":
-      return fleetDeviceById(devicePageId())?.name ?? tr("device.thisDevice");
     case "files":
       return tr("nav.files");
     case "git":
@@ -2953,7 +2948,7 @@ function PhoneTabs() {
       id: "all-sessions",
       label: tr("nav.sessions"),
       icon: "layers",
-      active: activeScene() === "all-sessions" || activeScene() === "device",
+      active: activeScene() === "all-sessions",
       onPress: () => navigateScene("all-sessions"),
     },
     {
@@ -2990,9 +2985,9 @@ function PhoneTabs() {
     },
     {
       id: "all-sessions",
-      label: tr("nav.allSessions"),
+      label: tr("nav.sessions"),
       icon: "layers",
-      active: activeScene() === "all-sessions" || activeScene() === "device",
+      active: activeScene() === "all-sessions",
       onPress: () => navigateScene("all-sessions"),
     },
     {
@@ -3074,7 +3069,7 @@ function CompactDrawer() {
               style={{ width: layout.touchTarget, height: layout.touchTarget }}
             />
           </View>
-          <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.lg }}>
+          <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.lg }}>
             <If when={showCloudHistory()}>
               <ConversationHistory onOpen={() => drawerOpen.set(false)} />
             </If>
@@ -3362,22 +3357,28 @@ function StudioApp() {
     cleanup(stop);
   });
 
-  // wave23-E: a phone opens on its first screen, the device tree (Sessions ›
-  // By device), instead of the desktop's session view; only while nothing was
-  // opened yet.
+  // Set first: routing to the session list reads it (a phone page, else the sidebar).
+  effect(() => compactLayout.set(compactShell()));
+
+  // wave23-E: a phone opens on its first screen, the session list (the
+  // account's device tree), instead of the desktop's session view; only at
+  // start (a desktop window narrowed later keeps what it shows).
+  let landingDecided = false;
   effect(() => {
-    if (!compactShell() || superAgentUi()) return;
+    const compact = compactShell();
+    // Decided once, when the window first has a width.
+    if (landingDecided || shellWidth() <= 0) return;
+    landingDecided = true;
+    if (!compact || superAgentUi()) return;
     untracked(() => {
       const history = navHistory();
       if (history.length !== 1 || history[0] !== landingScene() || activeScene() !== landingScene()) return;
-      allSessionsView.set("by-device");
       resetNavigation("all-sessions");
     });
   });
 
   // Entering a compact layout folds the sidebar away; picking a scene there closes it again.
   let wasOverlay = false;
-  effect(() => compactLayout.set(compactShell()));
   effect(() => {
     const overlay = compactShell() || overlayNav();
     if (overlay && !wasOverlay) untracked(() => drawerOpen.set(false));
@@ -3659,6 +3660,7 @@ function StudioApp() {
       <SshWorkspaceModals />
       <AccountAuthModal />
       <SessionActionDialogs />
+      <DeviceActionDialogs />
       <WorkspaceActionDialogs />
       <AboutDialog />
       <CloseAskDialog />

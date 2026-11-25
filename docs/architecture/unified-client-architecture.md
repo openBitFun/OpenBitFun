@@ -254,9 +254,9 @@ any of them can be the entry, there is no home device, and the user never picks 
   {sinceRevision?}` (devices, workspaces, sessions, totals and per-device action gates, all ordered and counted
   by the backend), `fleet_prompts`, `fleet_attention` / `fleet_attention_mark_read` (the Inbox: every device's
   prompts, the cloud agent's blocked, done and failed jobs, and failed sessions; read state per entry;
-  `fleet://attention-changed`), `fleet_recent_sessions {limit?, cursor?}` (All sessions › Recent: every runtime
+  `fleet://attention-changed`), `fleet_recent_sessions {limit?, cursor?}` (a flat recent list: every runtime
   device's top-level sessions newest first, with device and workspace labels, paged by an opaque cursor over the
-  index window), `fleet_device_detail {deviceId}` (the device page: the navigator row, user and dispatch sessions
+  index window), `fleet_device_detail {deviceId}` (a device's details, which the UI reads for the update a stale device needs: the navigator row, user and dispatch sessions
   running now, jobs waiting to start or waiting on the user from the device's dispatch sessions and prompts and the
   cloud agent's queued jobs, capability ids, and the update line of an `update_required` device),
   `fleet_models {deviceId?}` (the account-wide model catalog, below), `fleet_subscribe {follow}`, `fleet_events`

@@ -57,9 +57,8 @@ test("welcome empty state also renders when no sessions exist yet", async () => 
 
   // With no session, the new shell reaches one through All sessions › By device › "New session here".
   await showAllSessions(app);
-  await app.press("all-sessions-tab-by-device");
-  await app.hover("workspace-row-workspace-1");
-  await app.press("new-session-here-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-new-session-workspace-1");
   await app.waitFor("How can I help today?");
   expect(app.shows("OpenBitFun")).toBe(true);
   expect(app.shows("starter-card-plan-feature")).toBe(false);
@@ -1191,9 +1190,8 @@ test("assistant workspace exposes only Claw, locks composer switcher, and does n
 
   // Switch to the assistant workspace and create a new session from All sessions › By device.
   await showAllSessions(app, "Project thread");
-  await app.press("all-sessions-tab-by-device");
-  await app.hover("workspace-row-asst-1");
-  await app.press("new-session-here-asst-1");
+  await app.hover("id:sidebar-workspace-row-asst-1");
+  await app.press("sidebar-new-session-asst-1");
   await app.waitUntil(() =>
     backend.calls.some(
       call => call.action === "create_session" && (call.request as Record<string, unknown>)?.workspaceId === "asst-1",
@@ -1218,9 +1216,8 @@ test("assistant workspace exposes only Claw, locks composer switcher, and does n
 
   // Switching back to the project workspace and starting a new session keeps Creative (not Claw).
   await showAllSessions(app);
-  await app.press("all-sessions-tab-by-device");
-  await app.hover("workspace-row-workspace-1");
-  await app.press("new-session-here-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-new-session-workspace-1");
   await app.waitUntil(() =>
     backend.calls.some(
       call =>
@@ -1239,9 +1236,8 @@ test("assistant workspace exposes only Claw, locks composer switcher, and does n
 
   // Re-open the assistant session on a compact viewport: the `+` menu keeps Agent: Claw disabled.
   await showAllSessions(app);
-  await app.press("all-sessions-tab-by-device");
-  await app.hover("workspace-row-asst-1");
-  await app.press("new-session-here-asst-1");
+  await app.hover("id:sidebar-workspace-row-asst-1");
+  await app.press("sidebar-new-session-asst-1");
   await app.waitFor("label:agent-picker >> text:Claw");
   await app.setViewport(480, 900);
   await app.waitFor("composer-plus");

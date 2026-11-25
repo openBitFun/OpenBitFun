@@ -10,7 +10,7 @@ import { cleanup, Clipboard, signal, Text, View, WebView, type WebViewRef } from
 import { localizeHostError, tr } from "../i18n";
 import { fleetActive } from "../bridge";
 import { fleetDeviceById } from "../fleetStore";
-import { openDevicePage } from "../state";
+import { showDevice } from "../state";
 import {
   compactLayout,
   concentricRadius,
@@ -625,7 +625,7 @@ export function SpacePage(props: { permissionLabel: (id: string) => string }) {
                       name={name()}
                       kind={dev()?.hostKind}
                       exception={dev() ? deviceException(dev()!.state) : undefined}
-                      onPress={dev() ? () => openDevicePage(current().deviceId) : undefined}
+                      onPress={dev() ? () => showDevice(current().deviceId) : undefined}
                     />
                   </View>
                 );

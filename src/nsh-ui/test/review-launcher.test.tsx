@@ -115,7 +115,9 @@ test("a remote workspace and an older host each say why there is no review", asy
     createBackend({ currentWorkspaceId: "workspace-2" }),
   );
   const first = await open("../App.tsx", { ...DESKTOP, host: { handlers: remote.handlers } });
+  // The session of the remote workspace (each workspace of the fixture lists the same titles).
   await openSessionRowOf(first, "NSH skeleton");
+  await first.press("label:sidebar-workspace-workspace-2 >> NSH skeleton");
   await first.press("thread-actions-trigger");
   await first.press("review-launch-open");
   await first.waitFor(

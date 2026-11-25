@@ -650,7 +650,7 @@ function SpaceInspectorModal() {
 
               {/* Syntax-highlighted Read-Only Source Bundle Viewer */}
               <View style={{ gap: space.sm }}>
-                <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
                   <SegmentedTabs
                     size="sm"
                     options={sourceTabs()}
@@ -831,7 +831,7 @@ export function SpacesScene(props: { embedded?: boolean }) {
     </View>
   );
   const spaceViewTabs = () => (
-    <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+    <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
       <SegmentedTabs size="sm" options={viewTabs()} value={spacesView()} onChange={next => spacesView.set(next)} />
     </Scroll>
   );
@@ -874,7 +874,7 @@ export function SpacesScene(props: { embedded?: boolean }) {
         <SpacePage permissionLabel={localizePermission} />
       </If>
       <If when={!openSpace()}>
-      <Scroll style={{ flex: 1, minHeight: 0 }}>
+      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
         <If
           when={props.embedded}
           else={

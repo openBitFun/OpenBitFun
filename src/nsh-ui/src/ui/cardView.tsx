@@ -29,7 +29,7 @@ import {
 import { fleetDeviceById } from "../fleetStore";
 import { formatCount, formatDate, formatRelativeTime, formatTime } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { navigateScene, openDevicePage, selectSession } from "../state";
+import { navigateScene, showDevice, selectSession } from "../state";
 import { compactLayout, layout, palette, radii, space, textStyle, touchSlop, type Palette } from "../theme";
 import { DeviceBadge, deviceException, stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
@@ -556,7 +556,7 @@ function CardBody(props: { deviceId: string; card: DesktopCard; placement: "wind
         </View>
       }
     >
-      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: space.sm }}>
+      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: space.sm }}>
         <CardBodyContent deviceId={props.deviceId} card={props.card} />
       </Scroll>
     </If>
@@ -822,7 +822,7 @@ export function CardView(props: CardViewProps) {
                   name={name()}
                   kind={fleetDevice()?.hostKind}
                   exception={deviceException(fleetDevice()?.state)}
-                  onPress={props.deviceId ? () => openDevicePage(props.deviceId) : undefined}
+                  onPress={props.deviceId ? () => showDevice(props.deviceId) : undefined}
                 />
               )}
             </If>

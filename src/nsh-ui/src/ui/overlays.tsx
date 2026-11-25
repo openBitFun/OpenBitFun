@@ -336,6 +336,7 @@ export interface ModalBodyProps {
 export function ModalBody(props: ModalBodyProps) {
   return (
     <Scroll
+      smoothWheel
       style={[{ flexShrink: 1, minHeight: 0 }, props.style]}
       contentStyle={{
         paddingHorizontal: compactLayout() ? space.lg : space.xxl,
@@ -671,6 +672,7 @@ function MenuSurface(props: {
       ]}
     >
       <Scroll
+        smoothWheel
         style={{
           flexShrink: 1,
           minHeight: 0,
@@ -1195,6 +1197,7 @@ function SelectPopoverSurface<T extends string>(props: {
         </View>
       </If>
       <Scroll
+        smoothWheel
         style={{ flexShrink: 1, minHeight: 0, maxHeight: listMaxHeight() }}
         scrollbar={true}
       >

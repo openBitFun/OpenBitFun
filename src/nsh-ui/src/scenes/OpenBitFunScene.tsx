@@ -296,6 +296,7 @@ function NewConversation(props: { height: number }) {
     workingNow().working.length === 0;
   return (
     <Scroll
+      smoothWheel
       testID="sa-new-conversation"
       style={{ flex: 1, minHeight: 0 }}
       contentStyle={{
@@ -628,6 +629,7 @@ function Thread(props: { height: number }) {
       <ConversationHeader />
       <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <Scroll
+          smoothWheel
           ref={scrollRef}
           testID="sa-thread"
           style={{ flex: 1, minHeight: 0 }}

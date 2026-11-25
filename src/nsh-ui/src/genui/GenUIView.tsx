@@ -455,7 +455,7 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
       );
     case "Carousel":
       return (
-        <Scroll horizontal style={{ minHeight: 0 }}>
+        <Scroll smoothWheel horizontal style={{ minHeight: 0 }}>
           <View style={{ flexDirection: "row", gap: space(p().gap, 12) }}>
             <Each of={childrenOf(p().children, key())} key={child => `${child.key}|${child.kind}`}>
               {child => (
@@ -901,7 +901,7 @@ function GenCode(props: { node: GenElement }) {
           }}
         />
       </View>
-      <Scroll horizontal style={{ minHeight: 0 }}>
+      <Scroll smoothWheel horizontal style={{ minHeight: 0 }}>
         <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.55), userSelect: "text" }}>
           {display(props.node.props.code)}
         </Text>
@@ -1346,7 +1346,7 @@ function GenTable(props: { node: GenElement; ctx: GenContext }) {
   });
   return (
     <View style={{ borderRadius: radii.md, borderCurve: "continuous", borderWidth: 1, borderColor: palette().borderSubtle, overflow: "hidden" }}>
-      <Scroll horizontal style={{ minHeight: 0 }} contentStyle={{ minWidth: "100%" }}>
+      <Scroll smoothWheel horizontal style={{ minHeight: 0 }} contentStyle={{ minWidth: "100%" }}>
         <View style={{ minWidth: "100%" }}>
           <View style={{ flexDirection: "row", backgroundColor: palette().surfaceSubtle }}>
             <Each of={columns().map((name, index) => ({ name, index }))} key={column => `${column.index}`}>

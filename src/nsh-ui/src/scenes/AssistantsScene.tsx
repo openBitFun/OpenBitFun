@@ -496,7 +496,7 @@ function CompanionsRail() {
         </If>
       </View>
 
-      <Scroll style={{ flex: 1, minHeight: 0 }}>
+      <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
         <View
           style={{
             paddingHorizontal: studioCompact() ? studioGutter() : space.sm,
@@ -570,7 +570,7 @@ function CompanionsRail() {
 function AssistantLibraryList() {
   const phone = () => compactLayout();
   return (
-    <Scroll style={{ flex: 1, minHeight: 0 }}>
+    <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
       <LibraryToolbar
         accessibilityLabel="assistants-toolbar"
         leading={
@@ -1046,6 +1046,7 @@ function StudioTabs() {
 function AssistantSessionsPane(props: { assistant: AssistantWorkspaceView }) {
   return (
     <Scroll
+      smoothWheel
       style={{ flex: 1, minHeight: 0 }}
       contentStyle={{ paddingHorizontal: studioGutter(), paddingTop: 20, paddingBottom: 16, alignItems: "center" }}
     >
@@ -1434,7 +1435,7 @@ function PersonaStudioPane() {
                             gap: space.sm,
                           }}
                         >
-                          <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                          <Scroll smoothWheel horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
                             <SegmentedTabs
                               size="sm"
                               options={PERSONA_TAB_OPTIONS}
@@ -1659,6 +1660,7 @@ function PersonaStudioPane() {
                         }
                       >
                         <Scroll
+                          smoothWheel
                           style={{ flex: 1, minHeight: 0 }}
                           contentStyle={{ paddingHorizontal: studioGutter(), paddingVertical: space.xl, alignItems: "center" }}
                         >

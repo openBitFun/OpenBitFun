@@ -279,6 +279,7 @@ function Launcher() {
   const topShare = () => (signingIn() || controllerPhase() === "devices" ? SIGN_IN_TOP_SHARE : OPENING_TOP_SHARE);
   return (
     <Scroll
+      smoothWheel
       onLayout={event => {
         const width = event.bounds.size.width;
         if (width > 0 && Math.abs(width - shellWidth()) > 1) {

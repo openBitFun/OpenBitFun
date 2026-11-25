@@ -333,12 +333,14 @@ export function ImageViewerSurface(props: ImageViewerSurfaceProps) {
           }
         >
           <Scroll
+            smoothWheel
             horizontal={false}
             scrollbar={props.zoom() !== "fit"}
             style={{ flex: 1, width: "100%", minHeight: 0 }}
             contentStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}
           >
             <Scroll
+              smoothWheel
               horizontal
               scrollbar={props.zoom() !== "fit"}
               style={{ flex: 1, minWidth: 0 }}

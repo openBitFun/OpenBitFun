@@ -18,8 +18,8 @@ test("Android's back returns to the previous scene", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { width: 400, height: 860, platform: "android", host: { handlers: backend.handlers } });
   await showAllSessions(app, "NSH skeleton");
-  await app.press("label:all-sessions-scene >> NSH skeleton >> nth=0");
-  await app.waitUntil(() => !app.shows("label:all-sessions-scene"));
+  await app.press("label:sidebar-device-tree >> NSH skeleton >> nth=0");
+  await app.waitUntil(() => !app.shows("label:sidebar-device-tree"));
   await app.back();
-  await app.waitFor("label:all-sessions-scene");
+  await app.waitFor("label:sidebar-device-tree");
 });

@@ -358,7 +358,7 @@ function JobForm() {
       </ConfigRow>
       <View style={{ gap: space.chip }}>
         <FieldLabel text={tr("devices.approvalPolicy")} />
-        <Scroll horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
+        <Scroll smoothWheel horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
           <SegmentedTabs
             size="sm"
             value={dispatchApprovalPolicy()}
@@ -575,7 +575,7 @@ function JobLog() {
         <If
           when={phone()}
           else={
-            <Scroll style={{ maxHeight: 320, minHeight: 0 }}>
+            <Scroll smoothWheel style={{ maxHeight: 320, minHeight: 0 }}>
               <View style={{ gap: space.md }}>
                 <If when={observedRows().length === 0}>
                   <Text style={textStyle("caption")}>{tr("deviceJobs.noEvents")}</Text>
@@ -669,39 +669,38 @@ function SheetFooter() {
   );
 }
 
-/**
- * The device page's "Jobs sent from this device" row and its sheet. The caller
- * mounts it only for the device this UI runs on, on a desktop.
- */
-export function DeviceJobsEntry(props: { first?: boolean }) {
+/** Opens the jobs this device sent (Detached Dispatch), from the device's ⋯ menu. */
+export function openDeviceJobs(): void {
   ensureDispatch();
+  openSheet();
+}
+
+/** Whether this host can send jobs at all (`null` until asked). */
+export function deviceJobsAvailable(): boolean {
+  ensureDispatch();
+  return dispatchSupported() !== false;
+}
+
+/**
+ * The sheet of jobs this device sent. Mounted once by the shell, for the
+ * device this UI runs on, on a desktop (the commands are controller local).
+ */
+export function DeviceJobsSheet() {
   cleanup(() => closeSheet());
   return (
-    <If when={dispatchSupported() !== false}>
-      <InsetGroup accessibilityLabel="dispatch-section">
-        <InsetRow
-          first={props.first ?? true}
-          label={tr("deviceJobs.title")}
-          value={dispatchJobs().length > 0 ? String(dispatchJobs().length) : undefined}
-          chevron
-          accessibilityLabel="device-jobs"
-          onPress={openSheet}
-        />
-      </InsetGroup>
-      <ModalDialog
-        open={sheetOpen()}
-        size="lg"
-        title={dispatchFormOpen() ? tr("deviceJobs.sendTitle") : tr("deviceJobs.title")}
-        accessibilityLabel="device-jobs-sheet"
-        onClose={closeSheet}
-        footer={observedJobId() ? undefined : <SheetFooter />}
-      >
-        <View style={{ minWidth: 0, maxWidth: layout.pageWidth }}>
-          <If when={dispatchFormOpen()} else={<If when={observedJobId()} else={<JobList />}><JobLog /></If>}>
-            <JobForm />
-          </If>
-        </View>
-      </ModalDialog>
-    </If>
+    <ModalDialog
+      open={sheetOpen()}
+      size="lg"
+      title={dispatchFormOpen() ? tr("deviceJobs.sendTitle") : tr("deviceJobs.title")}
+      accessibilityLabel="device-jobs-sheet"
+      onClose={closeSheet}
+      footer={observedJobId() ? undefined : <SheetFooter />}
+    >
+      <View style={{ minWidth: 0, maxWidth: layout.pageWidth }}>
+        <If when={dispatchFormOpen()} else={<If when={observedJobId()} else={<JobList />}><JobLog /></If>}>
+          <JobForm />
+        </If>
+      </View>
+    </ModalDialog>
   );
 }

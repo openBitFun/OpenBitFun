@@ -554,6 +554,8 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.press("Devices and chat apps");
   await app.waitFor("label:channels-section");
   await app.waitFor("Not connected");
+  // Detailed replies are a chat-app setting: without a connected bot they say what they need.
+  expect(app.shows("text:Available once a chat app is connected.")).toBe(true);
 
   // Open Telegram channel modal, configure & start, then close modal.
   await app.press("channel-toggle-telegram");
@@ -563,17 +565,20 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.waitFor("remote-disclaimer-agree");
   expect(backend.configuredBots.length).toBe(0);
   await app.press("remote-disclaimer-agree");
-  await app.waitFor("Connected: Telegram(@openbitfun_bot)");
+  await app.waitFor("Connected · @openbitfun_bot");
   expect(backend.configuredBots.at(-1)).toMatchObject({
     bot_type: "telegram",
     bot_token: "tg-bot-token-123",
   });
   expect(backend.startedConnections).toContainEqual({ method: "bot_telegram" });
   await app.press("text:Done");
+  // The connected app's row offers Disconnect instead of Connect; the others keep Connect.
+  expect(app.shows("channel-toggle-telegram")).toBe(false);
+  expect(app.shows("channel-toggle-feishu")).toBe(true);
 
-  // Stop bot
+  // Stop bot from the connected app's own row; the confirmation is a toast, not a banner.
   await app.press("connector-bot-stop");
-  await app.waitFor("Not connected");
+  await app.waitFor("channel-toggle-telegram");
   expect(backend.stopBotCount()).toBe(1);
 
   // Open Feishu channel modal, configure & start, then close modal.
@@ -581,7 +586,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.type("connector-feishu-app-id", "cli_app_1");
   await app.type("connector-feishu-app-secret", "sec_feishu_1");
   await app.press("connector-feishu-connect");
-  await app.waitFor("Connected: Feishu(cli_feishu_1)");
+  await app.waitFor("Connected · cli_feishu_1");
   expect(backend.configuredBots.at(-1)).toMatchObject({
     bot_type: "feishu",
     app_id: "cli_app_1",
@@ -612,8 +617,10 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.waitUntil(() => backend.allowedWrites.length === 1);
   expect(backend.allowedWrites).toEqual([false]);
 
-  // Verbose bot mode toggle
+  // Detailed replies toggle (a bot is connected now); its confirmation is a toast.
+  expect(app.shows("text:Besides the answer, bots also send a short summary of the agent's thinking.")).toBe(true);
   await app.press("connector-bot-verbose");
+  await app.waitUntil(() => backend.verboseWrites.length === 1);
   expect(backend.verboseWrites).toEqual([true]);
 
   // The 1.x mobile web relay is retired in 2.0, and the OBP paired-client card stays hidden when no paired clients exist.
@@ -754,14 +761,27 @@ test("typed text that is not saved holds a page change until it is saved or disc
   expect(prefixWrite.value).toBe("team/");
 
   // Discard drops the typed value and changes the page without a write.
-  await app.clear("editor-tab-size");
-  await app.type("editor-tab-size", "7");
+  await app.press("nav-settings-page-workspace");
+  await app.clear("worktree-branch-prefix");
+  await app.type("worktree-branch-prefix", "tmp/");
   await app.press("nav-settings-page-terminal");
   await app.waitFor("Unsaved changes");
   await app.press("settings-unsaved-discard");
   await app.waitFor("Maximum lines preserved in terminal scroll history");
+  await app.press("nav-settings-page-workspace");
+  expect(app.value("worktree-branch-prefix")).toBe("team/");
+
+  // A typed number saves itself when the field loses focus, so leaving asks nothing.
   await app.press("nav-settings-page-editor");
-  expect(app.value("editor-tab-size")).toBe("4");
+  await app.clear("editor-tab-size");
+  await app.type("editor-tab-size", "7");
+  await app.keyboard.press("tab");
+  await app.waitUntil(() =>
+    backend.settingsWrites.some(write => write.path === "editor.tab_size" && write.value === 7),
+  );
+  await app.press("nav-settings-page-terminal");
+  await app.waitFor("Maximum lines preserved in terminal scroll history");
+  expect(app.shows("Unsaved changes")).toBe(false);
 });
 
 test("subscription quotas are read per account slot and drawn from the host's meters", async () => {

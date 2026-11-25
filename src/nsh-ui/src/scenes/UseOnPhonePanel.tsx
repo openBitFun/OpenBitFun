@@ -1,9 +1,10 @@
-// Devices › Use on phone or in a browser.
+// Settings › Devices and chat apps › Open on your phone.
 //
 // A phone or any browser opens the OpenBitFun web controller (or the phone
 // app), signs in with this account's email and picks this computer from the
 // account's devices; the connection runs through the server gateway and is
-// end-to-end encrypted to this backend. The panel shows the address and its QR
+// end-to-end encrypted to this backend. The sheet is the QR of the address, the
+// address with Copy and Open, who is signed in now, and one security line
 // (the address only: nothing to pair, no network values).
 
 import { Clipboard, openUrl, Text, View } from "nsh";
@@ -14,11 +15,11 @@ import {
   WEB_CONTROLLER_URL,
   webControllerLabel,
 } from "../phoneStore";
-import { compactLayout, palette, radii, space, textStyle } from "../theme";
+import { compactLayout, controlHeight, palette, radii, space, textStyle } from "../theme";
 import { Icon } from "../ui/icons";
 import { pushToast } from "../ui/overlays";
 import { Button } from "../ui/primitives";
-import { InsetGroup, InsetRow, QrCodeView, StudioSection } from "../ui/studio";
+import { QrCodeView } from "../ui/studio";
 
 async function copy(text: string): Promise<void> {
   try {
@@ -33,198 +34,128 @@ function open(url: string): void {
   void openUrl(url).catch(() => pushToast(tr("phone.openFailed", { url }), "danger"));
 }
 
-/** Phones and browsers signed in to this account now (never listed as unreachable devices). */
-function SignedInControllers(props: { embedded?: boolean }) {
+/** The address in one quiet field with its two actions. */
+function AddressRow() {
+  return (
+    <View
+      accessibilityLabel="phone-web-controller"
+      style={{
+        boxSizing: "border-box",
+        width: "100%",
+        maxWidth: 360,
+        minHeight: controlHeight.md,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.xs,
+        paddingLeft: space.md,
+        paddingRight: space.xs,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().inputBg,
+      }}
+    >
+      <Text
+        accessibilityLabel="phone-url"
+        style={{
+          ...textStyle("mono", { color: palette().text }),
+          flex: 1,
+          minWidth: 0,
+          userSelect: "text",
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {WEB_CONTROLLER_URL}
+      </Text>
+      <Button
+        label={tr("phone.copy")}
+        variant="ghost"
+        size="sm"
+        leadingIcon="copy"
+        accessibilityLabel="phone-copy-url"
+        onPress={() => void copy(WEB_CONTROLLER_URL)}
+      />
+      <Button
+        label={tr("phone.open")}
+        variant="ghost"
+        size="sm"
+        leadingIcon="external-link"
+        accessibilityLabel="phone-open-url"
+        onPress={() => open(WEB_CONTROLLER_URL)}
+      />
+    </View>
+  );
+}
+
+/** Phones and browsers signed in to this account now, as one status line (never as unreachable devices). */
+function SignedInLine() {
   return (
     <If when={signedInControllers()?.length ? signedInControllers() : null}>
       {controllers => (
-        <View style={{ gap: space.xs, minWidth: 0 }}>
-          <Text style={{ ...textStyle("caption", { color: palette().textElevatedMuted }), fontWeight: "600" }}>
-            {tr("phone.signedInNow")}
-          </Text>
-          <If
-            when={Boolean(props.embedded)}
-            else={
-              <InsetGroup accessibilityLabel="phone-controllers">
-                <Each of={controllers()} key={controller => controller.deviceId}>
-                  {(controller, index) => (
-                    <InsetRow
-                      first={index() === 0}
-                      icon="smartphone"
-                      label={controller().name ?? tr("phone.controllerUnnamed")}
-                      detail={tr("phone.controllerSignedIn")}
-                      accessibilityLabel={`phone-controller-${controller().deviceId}`}
-                    />
-                  )}
-                </Each>
-              </InsetGroup>
-            }
-          >
-            <View
-              accessibilityLabel="phone-controllers"
-              style={{
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().surfaceTertiary,
-                overflow: "hidden",
-              }}
-            >
-              <Each of={controllers()} key={controller => controller.deviceId}>
-                {(controller, index) => (
-                  <View
-                    accessibilityLabel={`phone-controller-${controller().deviceId}`}
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: space.md,
-                      paddingHorizontal: space.md,
-                      paddingVertical: space.sm,
-                      borderTopWidth: index() === 0 ? 0 : 1,
-                      borderColor: palette().borderSubtle,
-                    }}
-                  >
-                    <Icon name="smartphone" size={15} color={palette().textMuted} />
-                    <Text
-                      style={{
-                        ...textStyle("label", { color: palette().text }),
-                        flex: 1,
-                        minWidth: 0,
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {controller().name ?? tr("phone.controllerUnnamed")}
-                    </Text>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.chip, flexShrink: 0 }}>
-                      <View
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: radii.pill,
-                          backgroundColor: palette().success,
-                        }}
-                      />
-                      <Text style={textStyle("caption", { color: palette().textMuted })}>
-                        {tr("phone.controllerSignedIn")}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-              </Each>
-            </View>
-          </If>
+        <View
+          accessibilityLabel="phone-controllers"
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "center",
+            columnGap: space.chip,
+            rowGap: space.xs,
+            maxWidth: "100%",
+          }}
+        >
+          <View style={{ width: 6, height: 6, borderRadius: radii.pill, backgroundColor: palette().success }} />
+          <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("phone.signedInNow")}</Text>
+          <Each of={controllers()} key={controller => controller.deviceId}>
+            {(controller, index) => (
+              <Text
+                accessibilityLabel={`phone-controller-${controller().deviceId}`}
+                style={{
+                  ...textStyle("caption", { color: palette().textSecondary }),
+                  maxWidth: 200,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {`${index() > 0 ? "· " : ""}${controller().name ?? tr("phone.controllerUnnamed")}`}
+              </Text>
+            )}
+          </Each>
         </View>
       )}
     </If>
   );
 }
 
-function PhoneQrBlock(props: { embedded?: boolean }) {
+/** The body of the "Open on your phone" sheet. */
+export function UseOnPhonePanel() {
+  void loadSignedInControllers();
   return (
-    <View style={{ gap: space.md, minWidth: 0 }}>
-      <Text style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "400" }}>
-        {tr("phone.intro", { url: webControllerLabel() })}
-      </Text>
-      <View
-        accessibilityLabel="phone-web-controller"
+    <View
+      accessibilityLabel="use-on-phone"
+      style={{ alignItems: "center", gap: space.lg, minWidth: 0, paddingVertical: space.xs }}
+    >
+      <Text
         style={{
-          flexDirection: "row",
-          flexWrap: "wrap",
-          gap: space.lg,
-          alignItems: "center",
-          ...(props.embedded
-            ? {
-                padding: space.md,
-                borderRadius: radii.lg,
-                borderCurve: "continuous" as const,
-                borderWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().surfaceTertiary,
-              }
-            : {}),
+          ...textStyle("label", { color: palette().textSecondary }),
+          fontWeight: "400",
+          textAlign: "center",
+          maxWidth: 360,
         }}
       >
-        <QrCodeView value={WEB_CONTROLLER_URL} size={136} accessibilityLabel="phone-qr" />
-        <View style={{ flex: 1, minWidth: 180, gap: space.sm, justifyContent: "center" }}>
-          <Text style={textStyle("caption", { color: palette().textElevatedMuted })}>{tr("phone.qrHint")}</Text>
-          <View
-            style={{
-              paddingHorizontal: space.md,
-              paddingVertical: space.sm,
-              borderRadius: radii.sm,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().inputBg,
-            }}
-          >
-            <Text
-              accessibilityLabel="phone-url"
-              style={{
-                ...textStyle("mono", { color: palette().text }),
-                userSelect: "text",
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {WEB_CONTROLLER_URL}
-            </Text>
-          </View>
-          <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap", paddingTop: space.hair }}>
-            <Button
-              label={tr("phone.copy")}
-              variant="secondary"
-              size={compactLayout() ? "md" : "sm"}
-              leadingIcon="copy"
-              accessibilityLabel="phone-copy-url"
-              onPress={() => void copy(WEB_CONTROLLER_URL)}
-            />
-            <Button
-              label={tr("phone.open")}
-              variant="secondary"
-              size={compactLayout() ? "md" : "sm"}
-              leadingIcon="external-link"
-              accessibilityLabel="phone-open-url"
-              onPress={() => open(WEB_CONTROLLER_URL)}
-            />
-          </View>
-        </View>
+        {tr("phone.intro", { url: webControllerLabel() })}
+      </Text>
+      <QrCodeView value={WEB_CONTROLLER_URL} size={compactLayout() ? 176 : 192} accessibilityLabel="phone-qr" />
+      <AddressRow />
+      <SignedInLine />
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.xs, maxWidth: 360 }}>
+        <Icon name="shield" size={12} color={palette().textMuted} />
+        <Text style={{ ...textStyle("caption", { color: palette().textMuted }), flexShrink: 1, textAlign: "center" }}>
+          {tr("phone.footnote")}
+        </Text>
       </View>
     </View>
-  );
-}
-
-/** Devices › Use on phone or in a browser. */
-export function UseOnPhonePanel(props: { embedded?: boolean } = {}) {
-  void loadSignedInControllers();
-  if (props.embedded) {
-    return (
-      <View accessibilityLabel="use-on-phone" style={{ gap: space.lg, minWidth: 0 }}>
-        <PhoneQrBlock embedded />
-        <SignedInControllers embedded />
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm, minWidth: 0 }}>
-          <View style={{ paddingTop: 2, flexShrink: 0 }}>
-            <Icon name="shield" size={13} color={palette().textMuted} />
-          </View>
-          <Text style={{ ...textStyle("caption", { color: palette().textMuted }), flex: 1, minWidth: 0 }}>
-            {tr("phone.footnote")}
-          </Text>
-        </View>
-      </View>
-    );
-  }
-  return (
-    <StudioSection title={tr("phone.title")} footnote={tr("phone.footnote")} accessibilityLabel="use-on-phone">
-      <View style={{ gap: space.lg, minWidth: 0 }}>
-        <InsetGroup accessibilityLabel="phone-panel">
-          <View style={{ padding: space.lg }}>
-            <PhoneQrBlock />
-          </View>
-        </InsetGroup>
-        <SignedInControllers />
-      </View>
-    </StudioSection>
   );
 }

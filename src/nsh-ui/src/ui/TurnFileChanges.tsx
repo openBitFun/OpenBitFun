@@ -463,6 +463,7 @@ export function TurnChangesDiffModal(props: {
         {state => (
           <View style={{ gap: space.sm, height: 520, minHeight: 0 }}>
             <Scroll
+              smoothWheel
               horizontal
               scrollbar={false}
               style={{ flexShrink: 0 }}

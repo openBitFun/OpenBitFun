@@ -231,7 +231,7 @@ export function ReviewLauncherDialog() {
               overflow: "hidden",
             }}
           >
-            <Scroll style={{ maxHeight: 216, minHeight: 0 }} scrollbar={true}>
+            <Scroll smoothWheel style={{ maxHeight: 216, minHeight: 0 }} scrollbar={true}>
               <Each of={reviewAllFiles()} key={file => file.path}>
                 {(file, index) => <FileRow file={file} first={() => index() === 0} />}
               </Each>

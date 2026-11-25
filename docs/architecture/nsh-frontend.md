@@ -198,7 +198,7 @@ all 12 scenes:
      and Working now, and the conversation with live job cards
      (`src/superagentStore.ts`, `src/ui/jobs.tsx`). The usage totals, heatmap and
      AI Insights stay in `src/homeStore.ts` for Settings › Account › Activity.
-4. **Remote SSH, Capabilities, Workbench & Settings (`SshWorkspaceModals.tsx`, `AgentsScene.tsx`, `SkillsScene.tsx`, `RoutinesScene.tsx`, `FilesScene.tsx`, `GitScene.tsx`, `TerminalScene.tsx`, `DeviceScene.tsx` + `AccountDevicesPage.tsx`, `SettingsScene.tsx`)**:
+4. **Remote SSH, Capabilities, Workbench & Settings (`SshWorkspaceModals.tsx`, `AgentsScene.tsx`, `SkillsScene.tsx`, `RoutinesScene.tsx`, `FilesScene.tsx`, `GitScene.tsx`, `TerminalScene.tsx`, `deviceActions.tsx` (a device's ⋯ in the session tree) + `AccountDevicesPage.tsx`, `SettingsScene.tsx`)**:
    - `SshWorkspaceModals` mounts `NewWorkspaceModal` (Assistant vs Local/SSH/Docker/WSL
      Project), `SshConnectionModal` (`~/.ssh/config` import, hop test stages,
      Docker/WSL, saved profiles), `SshAuthPromptModal`,

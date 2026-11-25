@@ -958,6 +958,7 @@ function InlineAiPanel(props: {
               }
             >
               <Scroll
+                smoothWheel
                 style={{
                   flexShrink: 1,
                   minHeight: 0,

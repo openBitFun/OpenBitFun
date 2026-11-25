@@ -126,9 +126,9 @@ test("deleting a session drops its row and the catalog count with it", async () 
     session_id: "session-1",
     workspace_id: "workspace-1",
   });
-  // The row leaves All sessions with it.
+  // The row leaves its workspace in the session tree with it.
   await showAllSessions(app, "Terminal migration");
-  expect(app.shows("label:all-sessions-scene >> NSH skeleton")).toBe(false);
+  await app.waitUntil(() => !app.shows("label:sidebar-workspace-workspace-1 >> NSH skeleton"));
 });
 
 test("session header actions archive, rename and send a turn", async () => {
@@ -572,9 +572,8 @@ test("the session list asks the host for a new session", async () => {
 
   // A direct session starts where it was asked for: All sessions › By device › the workspace.
   await showAllSessions(app, "NSH skeleton");
-  await app.press("all-sessions-tab-by-device");
-  await app.hover("workspace-row-workspace-1");
-  await app.press("new-session-here-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-new-session-workspace-1");
   await app.waitUntil(() => backend.calls.some(call => call.action === "create_session"));
   expect(backend.calls.find(call => call.action === "create_session")?.request).toMatchObject({
     sessionName: "New session",
@@ -599,9 +598,8 @@ test("the composer's agent comes from the host catalogue and the shared preferen
   // "New session here"; it starts as the agent the composer is on (the shared
   // preference), and that pick is remembered where the desktop keeps it.
   await showAllSessions(app);
-  await app.press("all-sessions-tab-by-device");
-  await app.hover("workspace-row-workspace-1");
-  await app.press("new-session-here-workspace-1");
+  await app.hover("id:sidebar-workspace-row-workspace-1");
+  await app.press("sidebar-new-session-workspace-1");
   await app.waitUntil(() => backend.calls.some(call => call.action === "create_session"));
   expect(backend.calls.find(call => call.action === "create_session")?.request).toMatchObject({
     sessionName: "New session",
@@ -1290,11 +1288,12 @@ test("settings scene writes toggles, selects and numbers", async () => {
   await app.press("editor-word-wrap-on");
   expect(backend.settingsWrites).toContainEqual({ path: "editor.word_wrap", value: "on" });
 
-  // Save only appears once the typed value differs from the stored one.
+  // A typed number saves on Return (or when the field loses focus); no Save button moves the row.
   expect(app.shows("editor-font-size-save")).toBe(false);
   await app.clear("editor-font-size");
   await app.type("editor-font-size", "16");
-  await app.press("Save Font size >> nth=0");
+  expect(app.shows("editor-font-size-save")).toBe(false);
+  await app.submit("editor-font-size");
   expect(backend.settingsWrites).toContainEqual({ path: "editor.font_size", value: 16 });
 
   // The stepper saves at once and clamps to the field's range.
@@ -1304,6 +1303,11 @@ test("settings scene writes toggles, selects and numbers", async () => {
   await app.type("editor-tab-size", "99");
   await app.submit("editor-tab-size");
   expect(backend.settingsWrites).toContainEqual({ path: "editor.tab_size", value: 8 });
+  // A step after typing starts from the typed value instead of throwing it away.
+  await app.clear("editor-tab-size");
+  await app.type("editor-tab-size", "2");
+  await app.press("editor-tab-size-increase");
+  expect(backend.settingsWrites).toContainEqual({ path: "editor.tab_size", value: 3 });
   expect(backend.settingsWrites.some(write => write.path === "editor")).toBe(false);
 });
 
@@ -1507,6 +1511,8 @@ test("settings scene lists the configured models and appends one", async () => {
   await app.waitFor("Configured model");
 
   await app.press("add-model");
+  // The name is a folded, optional field (it defaults to the model id).
+  await app.press("model-more-options");
   await app.type("model-name", "Work model");
   await app.press("model-format-anthropic");
   await app.type("model-model-name", "claude-sonnet-4");
@@ -1555,6 +1561,7 @@ test("a host older than the typed settings commands says so instead of writing w
   await app.press("nav-settings-page-models");
   await app.waitFor("Configured model");
   await app.press("add-model");
+  await app.press("model-more-options");
   await app.type("model-name", "Work model");
   await app.type("model-model-name", "gpt-4.1-mini");
   await app.type("model-base-url", "https://api.openai.com/v1");
@@ -1602,6 +1609,9 @@ test("an existing model opens in the form, prefilled, and saves in place", async
   await app.press("model-edit-model-1");
   await app.waitFor("Edit Configured model");
   expect(app.value("model-model-name")).toBe("gpt-4.1-mini");
+  // An edited entry already has its protocol, so it sits in the folded part.
+  expect(app.shows("model-format-responses")).toBe(false);
+  await app.press("model-more-options");
   await app.press("model-format-responses");
   await app.press("save-model");
   await app.waitFor("Saved Configured model");
@@ -1702,12 +1712,13 @@ test("the model form fills itself from this machine's catalog", async () => {
   // the form does not have to be typed twice.
   await app.press("model-catalog-model-claude-sonnet-4");
   await app.press("save-model");
-  await app.waitFor("Added Anthropic");
+  // The (folded) name follows the picked model, not the provider.
+  await app.waitFor("Added Claude Sonnet 4");
   const write = backend.settingsWrites.filter(entry => entry.path === "ai.models").pop()?.value as Array<
     Record<string, unknown>
   >;
   expect(write[1]).toMatchObject({
-    name: "Anthropic",
+    name: "Claude Sonnet 4",
     provider: "anthropic",
     model_name: "claude-sonnet-4",
     base_url: "https://api.anthropic.com/v1",
@@ -1728,6 +1739,7 @@ test("a host without a model catalog still takes a model by hand", async () => {
   await app.waitFor("Base URL");
   expect(app.texts().some(text => text.startsWith("Discover a model"))).toBe(false);
 
+  await app.press("model-more-options");
   await app.type("model-name", "Hand written");
   await app.type("model-model-name", "gpt-4.1-mini");
   await app.type("model-base-url", "https://api.openai.com/v1");
@@ -1819,7 +1831,9 @@ test("session memory takes its models and its window from this page", async () =
   // not draw stay where they were.
   await app.press("memory-extract-model");
   await app.press("memory-extract-model-model-1");
-  await app.waitFor("Saved Model that extracts memories");
+  // A landed write is a passing check beside the control, never a banner that moves the page.
+  await app.waitFor("settings-field-saved");
+  expect(app.texts()).not.toContain("Saved Model that extracts memories");
   expect(backend.settingsWrites).toContainEqual({ path: "memories.extract_model", value: "model-1" });
 
   // "Follow" is a null, not an empty string the host would read as a model id.
@@ -1833,7 +1847,7 @@ test("session memory takes its models and its window from this page", async () =
   const before = backend.settingsWrites.length;
   await app.clear("memory-max-unused-days");
   await app.type("memory-max-unused-days", "5");
-  await app.press("memory-max-unused-days-save");
+  await app.submit("memory-max-unused-days");
   await app.waitFor(
     "The extraction window cannot be longer than the retention window: raise the retention first",
   );
@@ -1844,13 +1858,14 @@ test("session memory takes its models and its window from this page", async () =
   await app.clear("memory-max-unused-days");
   await app.clear("memory-rollout-age-days");
   await app.type("memory-rollout-age-days", "40");
-  await app.press("memory-rollout-age-days-save");
+  await app.submit("memory-rollout-age-days");
   expect(backend.settingsWrites.some(entry => entry.path === "memories.max_rollout_age_days")).toBe(false);
   await app.clear("memory-rollout-age-days");
   await app.type("memory-rollout-age-days", "30");
-  await app.press("memory-rollout-age-days-save");
-  await app.waitFor("Saved Extract from sessions no older than (days)");
-  expect(backend.settingsWrites).toContainEqual({ path: "memories.max_rollout_age_days", value: 30 });
+  await app.submit("memory-rollout-age-days");
+  await app.waitUntil(() =>
+    backend.settingsWrites.some(entry => entry.path === "memories.max_rollout_age_days" && entry.value === 30),
+  );
 });
 
 test("a connected MCP server's resources are browsed and read through the host", async () => {
@@ -2223,7 +2238,7 @@ test("settings exposes the AI execution scalars the host reconciles", async () =
 
   await app.clear("subagent-concurrency");
   await app.type("subagent-concurrency", "8");
-  await app.press("Save Parallel subagents >> nth=0");
+  await app.submit("subagent-concurrency");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.subagent_max_concurrency", value: 8 });
 
   // A timeout the host keeps as `Option` clears to null ("no limit").
@@ -2356,7 +2371,7 @@ test("automatic approval picks a model, its fallbacks, and the decision model ke
 
   // Timeouts clamp to what the host accepts, and the fallbacks are stored as enums.
   await app.type("approval-timeout", "600");
-  await app.press("save-approval-timeout");
+  await app.submit("approval-timeout");
   const timeout = backend.settingsWrites.filter(write => write.path === "tool_permissions").pop();
   expect(timeout?.value).toMatchObject({ approval: { timeout_ms: 300000 } });
   await app.press("approval-on-ask-reject");
@@ -2642,8 +2657,10 @@ test("log files show the run's folder, the crash hint, and pack a bundle on requ
   await app.press("Settings");
   await app.press("nav-settings-page-diagnostics");
   await app.waitFor("Log files");
-  await app.waitFor("Effective level debug");
   await app.waitFor("/tmp/openbitfun/logs/session-7");
+  // The level is the select above; the section repeats neither it nor the app.log path.
+  expect(app.texts().some(text => text.startsWith("Effective level"))).toBe(false);
+  expect(app.texts()).not.toContain("/tmp/openbitfun/logs/session-7/app.log");
   // A bad previous ending is stated with the folder that still holds its log.
   await app.waitFor(
     "The previous run ended without shutting down (panic). Its last log is in /tmp/openbitfun/logs/session-6.",
@@ -2673,7 +2690,8 @@ test("a host that reports no log folder says so and offers no actions", async ()
   await app.press("nav-settings-page-diagnostics");
   await app.waitFor("Log files");
   await app.waitFor("This device reports no log location.");
-  expect(app.texts()).not.toContain("Effective level");
+  expect(app.shows("logging-export")).toBe(false);
+  expect(app.shows("logging-open-folder")).toBe(false);
 });
 
 
@@ -2741,7 +2759,7 @@ test("settings reaches the session-memory switches", async () => {
 
   await app.clear("memory-max-unused-days");
   await app.type("memory-max-unused-days", "90");
-  await app.press("Save Forget after (days) >> nth=0");
+  await app.submit("memory-max-unused-days");
   expect(backend.settingsWrites).toContainEqual({ path: "memories.max_unused_days", value: 90 });
 });
 

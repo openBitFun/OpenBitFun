@@ -1084,8 +1084,8 @@ test("SkillsScene marketplace lists, searches, shows Installed badge, downloads,
   // Switch to remote workspace and verify explicit degradation for local-only folder installs & custom agents
   // The place a session runs is where it was asked for: New session here on the remote workspace.
   await showDevices(app);
-  await app.hover("workspace-row-workspace-2");
-  await app.press("new-session-here-workspace-2");
+  await app.hover("id:sidebar-workspace-row-workspace-2");
+  await app.press("sidebar-new-session-workspace-2");
   await openLibraryTab(app, "skills");
   await app.waitFor("Remote workspace active: installing skills from a local folder path is unsupported.");
   await app.press("skills-install-folder-toggle");

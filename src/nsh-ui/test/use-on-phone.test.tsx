@@ -17,9 +17,8 @@ test("the web controller address and its QR, no join values or pairing", async (
   await app.waitFor("label:use-on-phone");
   await app.waitFor("label:phone-qr");
   await app.waitFor("text:https://super.openbitfun.com/");
-  await app.waitFor(
-    "text:On your phone or any computer, open super.openbitfun.com (or the OpenBitFun app) and sign in with the email of this account. Your devices are listed there; pick this computer to use it.",
-  );
+  await app.waitFor("text:Scan with your phone, or open super.openbitfun.com, and sign in with this account's email.");
+  await app.waitFor("text:End-to-end encrypted to this computer. Nothing to pair.");
   // No EasyTier steps, network values or pairing offer any more.
   expect(app.shows("text:obf-0123456789abcdef")).toBe(false);
   expect(app.shows("label:phone-secret-toggle")).toBe(false);
@@ -32,6 +31,12 @@ test("the web controller address and its QR, no join values or pairing", async (
   await app.waitUntil(() => app.clipboard() === "https://super.openbitfun.com/");
   await app.press("label:phone-open-url");
   await app.waitUntil(() => app.openedUrls().includes("https://super.openbitfun.com/"));
+
+  // At phone width the same sheet keeps the QR, the address and its two actions.
+  await app.setViewport(390, 844);
+  await app.waitFor("label:phone-qr");
+  expect(app.shows("label:phone-copy-url")).toBe(true);
+  expect(app.shows("label:phone-open-url")).toBe(true);
 });
 
 test("phones and browsers signed in now are listed as signed-in clients, never as unreachable devices", async () => {
@@ -48,12 +53,12 @@ test("phones and browsers signed in now are listed as signed-in clients, never a
   await app.waitFor("label:phone-controllers");
   await app.waitFor("label:phone-controller-phone-1");
   await app.waitFor("Alice's iPhone");
-  await app.waitFor("text:Signed in to this account");
+  await app.waitFor("text:Signed in now:");
   // Internal transport/relay labels never leak into the signed-in controller list.
   expect(app.shows("text:Relayed via OpenBitFun server")).toBe(false);
   // A controller without a directory name is still a signed-in client.
   await app.waitFor("label:phone-controller-obf-gateway-lwb");
-  await app.waitFor("Phone or browser");
+  await app.waitFor("· Phone or browser");
   // Devices (hosts) are not listed here.
   expect(app.shows("label:phone-controller-desk-2")).toBe(false);
 });

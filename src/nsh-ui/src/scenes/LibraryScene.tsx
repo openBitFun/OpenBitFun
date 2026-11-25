@@ -112,7 +112,6 @@ export function LibraryScopeChip() {
           borderWidth: 1,
           borderColor: palette().borderSubtle,
           backgroundColor: palette().panelRaised,
-          boxShadow: palette().innerHighlight,
           flexDirection: "row",
           alignItems: "center",
           gap: space.chip,
@@ -198,6 +197,7 @@ function LibraryHeader() {
           else={<LibraryTabs />}
         >
           <Scroll
+            smoothWheel
             horizontal
             scrollbar={false}
             accessibilityLabel="library-tabs-scroll"

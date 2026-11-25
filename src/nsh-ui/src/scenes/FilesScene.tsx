@@ -999,7 +999,7 @@ function ChangedFiles(props: { compact?: boolean }) {
         </Text>
       </View>
       <If when={gitListOpen()}>
-        <Scroll style={{ maxHeight: props.compact ? 120 : 176, minHeight: 0 }}>
+        <Scroll smoothWheel style={{ maxHeight: props.compact ? 120 : 176, minHeight: 0 }}>
           <View style={{ paddingHorizontal: space.xs, paddingBottom: space.xs, gap: 2 }}>
             <Each of={changedPaths()} key={path => path}>
               {path => <ChangedFileRow path={path()} />}
@@ -1224,7 +1224,7 @@ function SearchResults(props: { compact?: boolean }) {
           }}
         />
       </View>
-      <Scroll style={{ maxHeight: props.compact ? 160 : 280, minHeight: 0 }}>
+      <Scroll smoothWheel style={{ maxHeight: props.compact ? 160 : 280, minHeight: 0 }}>
         <View style={{ paddingHorizontal: space.xs, paddingBottom: space.xs, paddingTop: 2, gap: 2 }}>
           <Each of={searchGroups()} key={group => group.path}>
             {group => (
@@ -2058,6 +2058,7 @@ function OpenFileTabStrip(props: { compact?: boolean }) {
       }
     >
       <Scroll
+        smoothWheel
         horizontal
         style={{ flex: 1, minWidth: 0, alignSelf: "stretch" }}
         scrollbar={false}
@@ -2650,7 +2651,7 @@ function PreviewBody(props: { compact?: boolean }) {
             </If>
           </If>
           <If when={markdownMode() === "preview"}>
-            <Scroll style={{ flex: 1, minHeight: 0 }}>
+            <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
               <View style={{ padding: props.compact ? space.lg : space.x3l, alignItems: "center" }}>
                 <View style={{ width: "100%", maxWidth: layout.conversationWidth }}>
                   <MarkdownPreview
@@ -2732,7 +2733,7 @@ function PreviewBody(props: { compact?: boolean }) {
             </If>
           </If>
           <If when={file().kind === "text" && editingContent() === null}>
-            <Scroll style={{ flex: 1, minHeight: 0 }}>
+            <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
               <View style={{ padding: props.compact ? space.md : space.xl }}>
                 <Text
                   style={{
@@ -3123,7 +3124,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
               ...paintTransition(MOTION_DURATION.fast),
             }}
           >
-            <Scroll horizontal style={{ flex: 1, minWidth: 120 }} scrollbar={false}>
+            <Scroll smoothWheel horizontal style={{ flex: 1, minWidth: 120 }} scrollbar={false}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
                 <Each of={buildBreadcrumbs(file().path, activeWorkspaceRoot())} key={seg => seg.path}>
                   {(seg, index) => (

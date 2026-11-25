@@ -748,6 +748,8 @@ test("assistants switch to the compact single-column layout at phone width", asy
   // Phone width: the shell's sidebar is put away.
   await app.setViewport(390, 844);
   if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
+  // The open conversation stays as the phone's pushed page; its back control leads to the tabs.
+  if (app.shows("session-back")) await app.press("session-back");
 
   // Assistants: the list is the landing; a row opens the persona studio with a back control.
   await openAssistants(app);

@@ -1,6 +1,6 @@
 // Account settings sync (wave 21): the Preferences caption shows only while the
-// backend reports sync as active, Account › Profile draws the switch and the
-// state the backend reports, and an applied account change repaints the theme
+// backend reports sync as active, Account › Profile draws the switch and one
+// plain line only for a state the user can act on, and an applied account change repaints the theme
 // without the page doing anything itself.
 
 import { expect, open, test } from "nsh/test";
@@ -39,33 +39,38 @@ test("the Preferences caption follows the backend's sync state", async () => {
   expect(old.app.shows("settings-synced")).toBe(false);
 });
 
-test("Account › Profile switches sync off and on and shows the reported state", async () => {
+test("Account › Profile switches sync off and on", async () => {
   const { app } = await openSettings();
   await app.press("nav-settings-page-profile");
   await app.waitFor("account-sync-toggle");
-  expect(app.shows("text:Synced")).toBe(true);
+  // A healthy sync says nothing beyond the switch.
+  expect(app.shows("account-sync-state")).toBe(false);
 
   await app.press("account-sync-toggle");
-  await app.waitFor("text:Off on this device");
   await app.press("nav-settings-page-general");
   await app.waitFor("Interface language");
   expect(app.shows("settings-synced")).toBe(false);
 
   await app.press("nav-settings-page-profile");
+  await app.waitFor("account-sync-toggle");
+  expect(app.shows("account-sync-state")).toBe(false);
   await app.press("account-sync-toggle");
-  await app.waitFor("text:Synced");
+  await app.press("nav-settings-page-general");
+  await app.waitFor("settings-synced");
 });
 
-test("an offline device says changes wait, the only device says so, and an old host asks for an update", async () => {
+test("only a state the user can act on gets a line, and an old host asks for an update", async () => {
+  // Waiting for another device, pending changes or being the only device are not problems: no line.
   const { app } = await openSettings({ enabled: true, phase: "offline", active: true, pending: 2, peers: 2, peersOnline: 0 });
   await app.press("nav-settings-page-profile");
-  await app.waitFor("text:Waiting for your other devices. Changes sync when one is online.");
-  expect(app.shows("text:Devices online: 0 of 2 · Changes waiting: 2")).toBe(true);
+  await app.waitFor("account-sync-toggle");
+  expect(app.shows("account-sync-state")).toBe(false);
+  expect(app.texts().some(text => text.includes("Changes waiting"))).toBe(false);
 
-  // The account's only device is in sync with itself.
-  const only = await openSettings({ enabled: true, phase: "synced", active: true, pending: 0, peers: 0, peersOnline: 0 });
-  await only.app.press("nav-settings-page-profile");
-  await only.app.waitFor("text:Synced (no other devices yet)");
+  // Signed out: the one plain line says what to do.
+  const signedOut = await openSettings({ enabled: true, phase: "signed_out", active: false, pending: 0 });
+  await signedOut.app.press("nav-settings-page-profile");
+  await signedOut.app.waitFor("text:Sign in to sync your settings.");
 
   const old = await openSettings(null);
   await old.app.press("nav-settings-page-profile");

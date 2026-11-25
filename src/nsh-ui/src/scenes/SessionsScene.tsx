@@ -257,8 +257,8 @@ import {
   canGoBack,
   goBackScene,
   navigateScene,
-  openAllSessions,
-  openDevicePage,
+  openSessionList,
+  showDevice,
   activeWorkspaceId,
   agentTypeOf,
   archiveSessionRow,
@@ -1159,7 +1159,7 @@ const sessionDeviceLabel = computed<AttentionDevice | null>(() => {
     name: device.name,
     kind: device.hostKind,
     exception: deviceException(device.state),
-    onPress: () => openDevicePage(device.deviceId),
+    onPress: () => showDevice(device.deviceId),
   };
 });
 
@@ -1330,7 +1330,7 @@ function SessionBreadcrumb(props: {
             <View
               role="button"
               accessibilityLabel={props.workspaceAccessibilityLabel}
-              onPress={() => openAllSessions("by-device")}
+              onPress={() => openSessionList()}
               style={{
                 minWidth: 0,
                 flexShrink: 1,
@@ -2772,7 +2772,7 @@ function ThinkingBlock(props: {
                 reveal.style,
               ]}
             >
-              <Scroll ref={tailRef} style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+              <Scroll smoothWheel ref={tailRef} style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
                 <TextView
                   markdown={resolvedText()}
                   selectable
@@ -4557,7 +4557,7 @@ function TurnJumpRail(props: {
           }}
         >
           <If when={props.rows().length > 32} else={renderTicks()}>
-            <Scroll style={{ maxHeight: 360 }} scrollbar={false}>
+            <Scroll smoothWheel style={{ maxHeight: 360 }} scrollbar={false}>
               {renderTicks()}
             </Scroll>
           </If>
@@ -5008,6 +5008,7 @@ function Transcript() {
       empty={isTranscriptEmpty}
       emptyView={
         <Scroll
+          smoothWheel
           style={{ flex: 1, minHeight: 0 }}
           contentStyle={{
             flexGrow: 1,
@@ -5281,7 +5282,7 @@ function SlashCommandSurface(props: { placement: Placement }) {
         motion.style,
       ]}
     >
-      <Scroll style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
+      <Scroll smoothWheel style={{ maxHeight: 300, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <If when={cmdCount() > 0}>
             <PopoverSectionHeader label={tr("chat.slash.title")} />
@@ -7935,7 +7936,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         </Text>
       </If>
       <If when={mentionHits().length > 0}>
-        <Scroll style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
+        <Scroll smoothWheel style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
           <View style={{ gap: space.hair }}>
             <Each of={mentionHits()} key={hit => hit.path}>
               {(hit, idx) => (
@@ -8123,7 +8124,7 @@ function AgentPickerSurface(props: { placement: Placement }) {
         motion.style,
       ]}
     >
-      <Scroll style={{ maxHeight: 332, minHeight: 0 }} scrollbar={true}>
+      <Scroll smoothWheel style={{ maxHeight: 332, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.xs }}>
           <If when={agentProfiles().length > 0}>
             <View style={{ gap: space.hair }}>
@@ -8234,7 +8235,7 @@ function ModelPickerSurface(props: { placement: Placement }) {
         {groups => <FleetModelList groups={groups()} />}
       </If>
       <If when={!fleetModelGroups()}>
-        <Scroll style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
+        <Scroll smoothWheel style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
           <View style={{ gap: space.hair }}>
             <Each of={chatModels()} key="index">
               {option => (
@@ -8279,7 +8280,7 @@ function deviceModelsNote(device: FleetModelsDevice): string {
 /** Every device's models in the entry's order, one header per device. */
 function FleetModelList(props: { groups: FleetModelsDevice[] }) {
   return (
-    <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
+    <Scroll smoothWheel style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
       <View style={{ gap: space.hair }}>
         <Each of={props.groups} key="index">
           {(device, idx) => (
@@ -8414,7 +8415,7 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
       ]}
     >
       <PopoverSectionHeader label={tr("sessions.reasoning")} />
-      <Scroll style={{ maxHeight: 208, minHeight: 0 }} scrollbar={true}>
+      <Scroll smoothWheel style={{ maxHeight: 208, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <View
             role="button"
@@ -8815,7 +8816,7 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
       </View>
 
       {/* Question & Clean Grouped Option Menu */}
-      <Scroll style={{ maxHeight: 420, minHeight: 0 }} scrollbar={true}>
+      <Scroll smoothWheel style={{ maxHeight: 420, minHeight: 0 }} scrollbar={true}>
         <View style={{ paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.md }}>
           <Each of={prompt().questions} key="index">
             {(question, index) => (
@@ -9183,7 +9184,7 @@ function QueuedPanel() {
           </View>
         </View>
         <If when={!queueCollapsed()}>
-          <Scroll style={{ maxHeight: 168, minHeight: 0 }} scrollbar={true}>
+          <Scroll smoothWheel style={{ maxHeight: 168, minHeight: 0 }} scrollbar={true}>
             <View>
               <Each of={queuedForActive()} key={item => item.id}>
                 {(item, index) => (
@@ -9504,7 +9505,7 @@ const secondaryDeviceLabel = computed<AttentionDevice | null>(() => {
     name: device.name,
     kind: device.hostKind,
     exception: deviceException(device.state),
-    onPress: () => openDevicePage(device.deviceId),
+    onPress: () => showDevice(device.deviceId),
   };
 });
 
@@ -9621,6 +9622,7 @@ function SecondaryEmptyPicker() {
   });
   return (
     <Scroll
+      smoothWheel
       style={{ flex: 1, minHeight: 0 }}
       contentStyle={{
         flexGrow: 1,
@@ -10337,6 +10339,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
       transcript={
         <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
           <Scroll
+            smoothWheel
             ref={el => {
               scrollRef = el;
             }}

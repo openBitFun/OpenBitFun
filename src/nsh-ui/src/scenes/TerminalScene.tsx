@@ -621,7 +621,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             backgroundColor: palette().canvas,
           }}
         >
-          <Scroll horizontal scrollbar={false} style={{ flex: 1, minWidth: 140 }}>
+          <Scroll smoothWheel horizontal scrollbar={false} style={{ flex: 1, minWidth: 140 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
                 {(tab, index) => (
@@ -736,7 +736,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             backgroundColor: palette().canvas,
           }}
         >
-          <Scroll horizontal scrollbar={false} style={{ flex: 1, minWidth: 0 }}>
+          <Scroll smoothWheel horizontal scrollbar={false} style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
                 {(tab, index) => (

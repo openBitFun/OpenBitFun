@@ -463,12 +463,8 @@ export async function choosePermissionMode(mode: PermissionMode): Promise<void> 
   }
   pendingFullAccess.set(false);
   await runStep(async () => {
-    await runPolicyIntent(
-      "set_permission_mode",
-      { mode },
-      `Saved ${PERMISSION_MODES.find(entry => entry.value === mode)?.label ?? mode}`,
-      text => permissionsNotice.set(text),
-    );
+    // The selected mode is its own confirmation; only a refusal needs words.
+    await runPolicyIntent("set_permission_mode", { mode }, "", text => permissionsNotice.set(text));
   });
 }
 
@@ -612,9 +608,8 @@ export async function saveApproval(change: Partial<ApprovalSettings>): Promise<v
   if (change.onAsk !== undefined) request.onAsk = change.onAsk;
   if (change.onError !== undefined) request.onError = change.onError;
   await runStep(async () => {
-    await runPolicyIntent("set_approval_settings", request, "Saved automatic approval", text =>
-      approvalNotice.set(text),
-    );
+    // The controls show what was stored; only a refusal needs words.
+    await runPolicyIntent("set_approval_settings", request, "", text => approvalNotice.set(text));
   });
 }
 

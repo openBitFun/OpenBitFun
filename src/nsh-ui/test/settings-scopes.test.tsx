@@ -207,12 +207,24 @@ test("Account › Activity states the host's six months in one sentence above th
   expect(summary).toMatch(/tokens across \d+ active days in the last 6 months/);
 });
 
-test("Account › Devices and chat apps lists the account's devices and one phone row", async () => {
+test("Account › Devices and chat apps lists the account's devices, this device's switch and one phone row", async () => {
   const { app } = await openSettings();
   await app.press("nav-settings-page-devices");
   await app.waitFor("account-device-dev-b");
   expect(app.shows("text:linux-box")).toBe(true);
   expect(app.shows("text:Offline")).toBe(true);
+  // Device rows are informative: what the device is, and no page to open.
+  expect(app.shows("text:This device")).toBe(true);
+  expect(app.shows("text:Server · OpenBitFun 9.9.9")).toBe(true);
+  let opensPage = true;
+  try {
+    await app.press("account-device-dev-b");
+  } catch {
+    opensPage = false;
+  }
+  expect(opensPage).toBe(false);
+  // The switch that hides this device from the others is a device setting, not a chat-app one.
+  expect(app.shows("text:Allow other devices to control this device")).toBe(true);
   await app.press("account-open-on-phone");
   await app.waitFor("account-phone-sheet");
 });

@@ -589,6 +589,7 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
         }}
       >
         <Scroll
+          smoothWheel
           style={{ maxHeight: Math.min(props.maxHeight ?? 240, 240), minHeight: 0 }}
           scrollbar={true}
           contentStyle={{ paddingHorizontal: space.md, paddingVertical: space.sm }}
@@ -886,7 +887,7 @@ function ListBody(props: { call: ToolCallView; cardId: string; openFiles: boolea
       <SectionLabel label={tr("chat.tool.matches", { count: rows().length })}>
         <SmallCopyButton copyKey={`${props.cardId}-list`} text={rows().join("\n")} />
       </SectionLabel>
-      <Scroll style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
+      <Scroll smoothWheel style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: space.hair }}>
           <Each of={visible()} key="index">
             {row => (

@@ -49,8 +49,7 @@ test("a phone opens on Sessions, the device tree, with Inbox and Library as the 
   expect(app.shows("phone-tab-openbitfun")).toBe(false);
   expect(app.shows("phone-history")).toBe(false);
   // The first screen is the tree: this device, its workspace, then its sessions.
-  await app.waitFor("all-sessions-by-device");
-  await app.press("workspace-row-workspace-1");
+  await app.waitFor("label:session-list-scene");
   await app.waitFor("NSH skeleton");
   expect(app.texts().some(text => text.includes("Super Agent"))).toBe(false);
   await app.waitFor("inbox-count-2");
@@ -78,7 +77,7 @@ test("with Super Agent on, a phone gets its four tabs and the top bar instead of
   await app.press("phone-tab-library");
   await app.waitFor("library-tab-assistants");
   await app.press("phone-tab-all-sessions");
-  await app.waitFor("all-sessions-scene");
+  await app.waitFor("label:session-list-scene");
   await app.press("phone-tab-inbox");
   await app.waitUntil(() => app.texts().includes("Inbox"));
 });
@@ -100,7 +99,6 @@ test("a session opened on a phone is a pushed page without the tab bar", async (
   const entry = host();
   const app = await open("./fixtures/obpApp.tsx", { ...PHONE, host: { handlers: entry.handlers } });
   await app.press("phone-tab-all-sessions");
-  await app.press("workspace-row-workspace-1");
   await app.press("label:NSH skeleton");
   await app.waitUntil(() => !app.shows("phone-tab-bar"));
   expect(app.shows("phone-top-bar")).toBe(false);
