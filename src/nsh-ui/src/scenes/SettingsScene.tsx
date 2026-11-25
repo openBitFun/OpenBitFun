@@ -1,5 +1,6 @@
 import {
   cleanup,
+  Clipboard,
   computed,
   context,
   effect,
@@ -847,8 +848,8 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         labelKey: "settings.page.desktopControl",
         descriptionKey: "settings.page.desktopControlDesc",
         icon: "monitor",
-        keywords: ["computer use", "browser", "desktop", "chrome"],
-        anchors: [],
+        keywords: ["computer use", "browser", "desktop", "chrome", "HTTP", "token"],
+        anchors: [{ id: "external-control", labelKey: "externalControl.title" }],
       },
       {
         id: "external-import",
@@ -1475,6 +1476,7 @@ function RowText(props: { label: string; description?: string; tabular?: boolean
  * wraps under the text when both do not fit.
  */
 function SettingsRow(props: {
+  wrap?: boolean;
   label: string;
   description?: string;
   first?: boolean;
@@ -1487,7 +1489,7 @@ function SettingsRow(props: {
       style={{
         position: "relative",
         flexDirection: props.stacked ? "column" : "row",
-        flexWrap: props.stacked ? undefined : "wrap",
+        flexWrap: props.stacked || props.wrap === false ? undefined : "wrap",
         alignItems: props.stacked ? "stretch" : "center",
         columnGap: space.lg,
         rowGap: space.sm,
@@ -10046,6 +10048,9 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
         <ComputerUseSection />
         {/* wave22-p2: the user's own Chrome or Edge. */}
         <ExternalBrowserSection />
+        <If when={windowShellId() === "nsh-desktop" && !isRemotePeerContext()}>
+          <ExternalControlSection />
+        </If>
       </View>
     );
   }
@@ -10861,6 +10866,145 @@ function ComputerPermissionRowView(props: { row: () => ComputerPermissionRow; fi
         </If>
       </View>
     </SettingsRow>
+  );
+}
+
+interface ExternalControlSettings {
+  enabled: boolean;
+  listening: boolean;
+  port: number;
+  endpoint: string;
+  error: string | null;
+  token: string | null;
+  grants: { id: string; name: string; workspaceIds: string[]; origin: string | null }[];
+  workspaces: { id: string; name: string }[];
+}
+
+type ExternalControlRequest =
+  | { operation: "status" }
+  | { operation: "setEnabled"; enabled: boolean; port: number }
+  | { operation: "issue"; name: string; workspaceIds: string[]; origin?: string }
+  | { operation: "revoke"; id: string };
+
+function ExternalControlSection() {
+  const settings = signal<ExternalControlSettings | null>(null);
+  const busy = signal(false);
+  const notice = signal("");
+  const port = signal("");
+  const name = signal("");
+  const origin = signal("");
+  const selected = signal<string[]>([]);
+  const menuOpen = signal(false);
+  let menuAnchor: ViewRef | null = null;
+  const workspaces = () => settings()?.workspaces ?? [];
+  const allSelected = () => workspaces().length > 0 && selected().length === workspaces().length;
+  const selectionLabel = () => {
+    if (workspaces().length === 0) return tr("externalControl.noWorkspaces");
+    if (selected().length === 0) return tr("common.selectEllipsis");
+    if (selected().length === 1) return workspaces().find(ws => ws.id === selected()[0])!.name;
+    return tr("externalControl.selectedCount", { count: formatCount(selected().length) });
+  };
+  let mounted = true;
+  cleanup(() => { mounted = false; });
+  const validPort = () => /^\d+$/.test(port()) && Number(port()) >= 1 && Number(port()) <= 65535;
+
+  async function run(request: ExternalControlRequest) {
+    if (busy()) return;
+    busy.set(true);
+    notice.set("");
+    try {
+      const result = await invokeCommand<ExternalControlSettings>("desktop_external_control", request);
+      if (!mounted) return;
+      selected.update(ids => ids.filter(id => result.workspaces.some(ws => ws.id === id)));
+      settings.set(result);
+      port.set(String(result.port));
+      if (request.operation === "issue") {
+        name.set("");
+        origin.set("");
+        selected.set([]);
+      }
+    } catch (error) {
+      if (mounted) notice.set(isCommandUnavailable(error, "desktop_external_control")
+        ? tr("settings.notice.hostUpdateRequired") : errorMessageOf(error));
+    } finally {
+      if (mounted) busy.set(false);
+    }
+  }
+
+  void run({ operation: "status" });
+  return (
+    <SettingsGroup id="external-control" title={tr("externalControl.title")}
+      description={tr("externalControl.description")} notice={notice() || settings()?.error || ""}>
+      <SettingsRow first label={tr("externalControl.enable")}>
+        <ToggleSwitch accessibilityLabel="external-control-enabled" value={settings()?.enabled === true}
+          disabled={!settings() || busy() || !validPort()}
+          onChange={enabled => void run({ operation: "setEnabled", enabled, port: Number(port()) })} />
+      </SettingsRow>
+      <If when={settings() && !settings()?.listening}>
+        <SettingsRow wrap={false} label={tr("externalControl.port")}>
+          <TextField size="sm" style={{ width: 96, maxWidth: "100%" }} value={port()} onChange={value => port.set(value)} accessibilityLabel="external-control-port" />
+        </SettingsRow>
+      </If>
+      <If when={notice() || settings()?.error}>
+        <SettingsRow label={tr("common.retry")}>
+          <Button label={tr("common.retry")} disabled={busy() || (!!settings()?.enabled && !validPort())}
+            onPress={() => void run(settings()?.enabled && !settings()?.listening
+              ? { operation: "setEnabled", enabled: true, port: Number(port()) } : { operation: "status" })} />
+        </SettingsRow>
+      </If>
+      <If when={settings()?.listening}>
+        <View>
+          <SettingsRow wrap={false} label={tr("externalControl.endpoint")}>
+            <Text style={textStyle("mono")}>{settings()?.endpoint}</Text>
+          </SettingsRow>
+          <SettingsRow wrap={false} label={tr("externalControl.name")}>
+            <TextField size="sm" style={{ width: 220, maxWidth: "100%" }} value={name()} onChange={value => name.set(value)} accessibilityLabel="external-control-name" />
+          </SettingsRow>
+          <SettingsRow wrap={false} label={tr("externalControl.workspaces")}>
+            <View ref={el => { menuAnchor = el; }} style={{ maxWidth: "100%" }}>
+              <Button label={selectionLabel()} variant="outline" size="sm" trailingIcon="chevron-down"
+                accessibilityLabel="external-control-workspaces" disabled={busy() || !workspaces().length}
+                onPress={() => menuOpen.set(!menuOpen())} />
+            </View>
+            <DropdownMenu open={menuOpen()} anchor={menuAnchor} align="end" onClose={() => menuOpen.set(false)}
+              items={[
+                {
+                  id: "all", label: tr("shell.menu.selectAll"), active: allSelected(), keepOpenOnSelect: true,
+                  onSelect: () => selected.set(allSelected() ? [] : workspaces().map(ws => ws.id)),
+                },
+                ...workspaces().map((ws, index) => ({
+                  id: `workspace-${ws.id}`, label: ws.name, separator: index === 0,
+                  active: selected().includes(ws.id), keepOpenOnSelect: true,
+                  onSelect: () => selected.update(ids => ids.includes(ws.id)
+                    ? ids.filter(id => id !== ws.id) : [...ids, ws.id]),
+                })),
+              ]} />
+          </SettingsRow>
+          <SettingsRow stacked label={tr("externalControl.origin")} description={tr("externalControl.originHint")}>
+            <TextField value={origin()} onChange={value => origin.set(value)} accessibilityLabel="external-control-origin" />
+          </SettingsRow>
+          <SettingsRow label={tr("externalControl.issue")}>
+            <Button label={tr("externalControl.issue")} accessibilityLabel="external-control-issue"
+              disabled={busy() || !name().trim() || selected().length === 0}
+              onPress={() => void run({ operation: "issue", name: name().trim(), workspaceIds: selected(), origin: origin().trim() || undefined })} />
+          </SettingsRow>
+          <If when={settings()?.token}>
+            {token => <SettingsRow stacked label={tr("externalControl.token")} description={tr("externalControl.tokenHint")}>
+              <Text accessibilityLabel="external-control-token" style={textStyle("body")}>{token()}</Text>
+              <Button label={tr("common.copy")} onPress={() => void Clipboard.writeText(token()).then(
+                () => pushToast(tr("common.copied"), "success"), error => notice.set(errorMessageOf(error)))} />
+            </SettingsRow>}
+          </If>
+        </View>
+      </If>
+      <Each of={settings()?.grants ?? []} key={grant => grant.id}>
+        {grant => <SettingsRow label={grant().name}
+          description={grant().workspaceIds.map(id => settings()?.workspaces.find(ws => ws.id === id)?.name ?? id).join(", ")}>
+          <Button label={tr("externalControl.revoke")} disabled={busy()}
+            onPress={() => void run({ operation: "revoke", id: grant().id })} />
+        </SettingsRow>}
+      </Each>
+    </SettingsGroup>
   );
 }
 

@@ -1136,3 +1136,30 @@ directory together with `workspace_data.json` in a full backup. A workspace meta
 export does not embed image bytes; missing assets display the default icon with a load warning
 and preserve the saved reference. Unreferenced assets are retained; resetting an icon does
 not delete another record's shared image. Unknown icon versions remain intact.
+
+## Control Desktop from a local application
+
+In **Settings → Device → Browser and desktop control → Local HTTP task control**, enable local HTTP access. Choose a listening port (default 38371), name the integration, select its local project workspaces and create a token. Copy the token while it is displayed. Enter a browser origin only for a web page connecting directly. For a task board with its own backend, keep the token in that backend. Each integration can access only the sessions it creates. Revoke its token in the same settings section.
+
+Send requests to the API address shown in Settings with an `Authorization: Bearer <token>` header. The listener binds to IPv4 loopback. The workspace ID comes from the catalog on this desktop. The following example uses a token supplied through the environment.
+
+```sh
+base=http://127.0.0.1:38371/v1
+curl -sS -H "Authorization: Bearer $OBF_TOKEN" "$base/workspaces"
+
+curl -sS -H "Authorization: Bearer $OBF_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"workspaceId":"WORKSPACE_ID","title":"Review issue 17","prompt":"Summarize the affected code","idempotencyKey":"issue-17-attempt-1"}' \
+  "$base/turns"
+```
+
+| Request | Behavior |
+| --- | --- |
+| `GET /v1/capabilities` | Read the API version, execution host and supported operations. |
+| `GET /v1/workspaces` | List eligible local projects granted to this token. |
+| `POST /v1/turns` | Create a regular desktop session and start its first turn. Returns HTTP 202 with `sessionId`, `turnId`, `workspaceId` and admission state. To continue a session, send its `sessionId` and a fresh idempotency key, omitting the title. |
+| `GET /v1/turns/{turnId}` | Read current status, waiting reason through `awaiting_approval` or `awaiting_input`, and the terminal reply or error when available. |
+| `GET /v1/turns/{turnId}/events` | Subscribe to SSE `snapshot` events with the same bearer header. Use streaming fetch in a browser. Reconnect to receive the current snapshot. |
+| `POST /v1/turns/{turnId}/cancel` | Request cancellation of this turn. Read status to observe settlement. |
+| `POST /v1/turns/{turnId}/open` | Bring the desktop window forward and request navigation to the owning session. |
+
+Repeat a submission with the same key and payload after a lost response. Reusing the key for different content returns HTTP 409. A busy session also returns 409. A browser disconnect leaves an accepted turn running in Desktop. If Desktop exits during handoff, `outcome_unknown` preserves the original IDs for inspection. Desktop does not replay the prompt automatically. Busy work retains Desktop's normal tool and question handling. Remote workspaces, peer hosts and detached workers are outside this listener's execution scope.

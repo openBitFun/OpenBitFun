@@ -607,6 +607,8 @@ export interface DropdownMenuItem {
   trailingHint?: string;
   shortcut?: string;
   active?: boolean;
+  /** Allow several selections without reopening the menu. */
+  keepOpenOnSelect?: boolean;
   danger?: boolean;
   disabled?: boolean;
   /** Renders a subtle hairline divider above this item. */
@@ -731,7 +733,7 @@ function MenuSurface(props: {
                             confirmingId.set(item().id);
                             return;
                           }
-                          props.onClose();
+                          if (!item().keepOpenOnSelect) props.onClose();
                           item().onSelect?.();
                         }}
                         style={{

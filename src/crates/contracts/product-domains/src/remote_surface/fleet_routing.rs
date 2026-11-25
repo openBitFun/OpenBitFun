@@ -315,6 +315,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("desktop_card_set_bounds"),
     target("desktop_card_set_checklist_item"),
     target("desktop_card_set_visible"),
+    local("desktop_external_control"),
     target("device_records_overview"),
     local("dispatch_answer"),
     local("dispatch_append"),

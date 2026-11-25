@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "0819b4d1d5c0c8eb7c3435284f56a677cc8d6ec3bd13c6875204e25763b3b508",
+  "digest": "db8892a2546bfc5814c1a52085f61548b07a938704dafba6146274870ca4bd34",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -178,11 +178,11 @@
     "features": 23,
     "settings": 24,
     "userFacing": 47,
-    "documentedItems": 352,
+    "documentedItems": 353,
     "controlCoverage": {
       "direct": 63,
       "delegated": 67,
-      "interactive": 222,
+      "interactive": 223,
       "unsupported": 0
     }
   },
@@ -18103,6 +18103,7 @@
       "id": "setting.tools.desktop-control:query",
       "capabilityId": "setting.tools.desktop-control",
       "itemIds": [
+        "external-control",
         "permissions",
         "safety-posture"
       ],
@@ -18140,6 +18141,52 @@
       "valueSource": {
         "kind": "static"
       },
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.desktop-control"
+      }
+    },
+    {
+      "id": "setting.tools.desktop-control:open:external-control",
+      "capabilityId": "setting.tools.desktop-control",
+      "itemIds": [
+        "external-control"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "visualSelection",
       "presentationTarget": {
         "kind": "settings",
         "pageId": "tools.desktop-control"
@@ -29238,8 +29285,8 @@
       "items": [
         {
           "id": "voice-enabled",
-          "titleZh": "在聊天输入框启用或停用语音输入按钮",
-          "titleEn": "Enable or disable the voice-input button in the chat composer",
+          "titleZh": "为支持听写的客户端配置语音输入",
+          "titleEn": "Configure voice input for clients with dictation support",
           "destination": {
             "kind": "settings",
             "pageId": "application.voice"
@@ -29307,8 +29354,8 @@
         },
         {
           "id": "microphone-test",
-          "titleZh": "选择输入麦克风设备并现场测试语音转写效果与耗时",
-          "titleEn": "Select a microphone device and run a live speech-recognition test",
+          "titleZh": "在支持麦克风输入的客户端测试转写",
+          "titleEn": "Test transcription on a client with microphone input",
           "destination": {
             "kind": "settings",
             "pageId": "application.voice"
@@ -29316,8 +29363,8 @@
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“选择输入麦克风设备并现场测试语音转写效果与耗时”需要枚举当前在线音频硬件并由你亲自说话试音；智能体会直达语音诊断测试入口。",
-            "reasonEn": "“Select a microphone device and run a live speech-recognition test” requires enumerating live audio input hardware and speaking a test phrase; the Agent opens the microphone diagnostic section directly."
+            "reasonZh": "“在支持麦克风输入的客户端测试转写”需要用户选择输入设备并录制一段用于测试的音频。",
+            "reasonEn": "Test transcription on a client with microphone input by choosing a device and recording a short sample in that client."
           }
         },
         {
@@ -29496,16 +29543,16 @@
         "Mid-turn message policy: Send Immediately (default live steering) vs Queue Until Turn Finishes",
         "Confirmation prompt before closing a `/btw` side question whose messages are not saved",
         "Automatic floating action bar (Annotate & Ask in Side Panel) on text selection, plus the Keyboard Shortcuts section at the bottom of the same page",
-        "在聊天输入框启用或停用语音输入按钮",
-        "Enable or disable the voice-input button in the chat composer",
+        "为支持听写的客户端配置语音输入",
+        "Configure voice input for clients with dictation support",
         "下载、选择、验证、修复或删除本地语音模型（SenseVoice Small 与 Qwen3-ASR）",
         "Download, select, verify, repair, or delete local speech models (SenseVoice Small & Qwen3-ASR)",
         "设置默认语音识别语言（自动检测或按所选模型指定语种）",
         "Choose automatic language detection or a fixed recognition language supported by the active model",
         "设置单次语音输入允许的最长录音秒数（10–600 秒）",
         "Set the maximum duration of a single voice recording (10–600 seconds)",
-        "选择输入麦克风设备并现场测试语音转写效果与耗时",
-        "Select a microphone device and run a live speech-recognition test",
+        "在支持麦克风输入的客户端测试转写",
+        "Test transcription on a client with microphone input",
         "配置智能体执行期间发送消息的默认行为（立即发送纠偏 vs 排队等待）",
         "Choose whether messages sent during an active turn steer immediately or wait in queue",
         "开启或关闭在对话中划选文字后自动弹出快捷操作栏",
@@ -32736,6 +32783,17 @@
       ],
       "items": [
         {
+          "id": "external-control",
+          "titleZh": "为本机集成授权工作区",
+          "titleEn": "Authorize workspaces for local integrations",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
+            "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation."
+          }
+        },
+        {
           "id": "permissions",
           "titleZh": "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
           "titleEn": "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
@@ -32812,6 +32870,8 @@
         "Shows live grant status for both Accessibility (mouse/keyboard input) and Screen Recording (visual capture)",
         "One-click permission request or direct jump into your operating system’s Privacy & Security settings",
         "Works alongside single-window App Sharing, live control status cards, and immediate stop controls",
+        "为本机集成授权工作区",
+        "Authorize workspaces for local integrations",
         "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
         "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
         "结合应用级总开关、单窗口共享与主机边界安全管控桌面操作",

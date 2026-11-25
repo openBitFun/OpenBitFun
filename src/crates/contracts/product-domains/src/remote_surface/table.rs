@@ -93,8 +93,6 @@ const FRONTEND_HOT_UPDATE_RETIRED: &str =
     "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle";
 const WEBVIEW_DEVTOOLS_RETIRED: &str =
     "WebView devtools and the element inspector were retired with the Tauri desktop shell";
-const DESKTOP_EXTERNAL_CONTROL_RETIRED: &str =
-    "local HTTP task control was retired with the Tauri desktop shell";
 const TAURI_WEBVIEW_RETIRED: &str =
     "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell";
 const SHELL_OWNS_WINDOW_RETIRED: &str =
@@ -338,7 +336,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("desktop_card_set_bounds",                                    Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
     op("desktop_card_set_checklist_item",                            Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
     op("desktop_card_set_visible",                                   Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
-    retired("desktop_external_control", DESKTOP_EXTERNAL_CONTROL_RETIRED),
+    op("desktop_external_control",                                   Agnostic,    ControllerLocal,  REFUSED),
     op("device_records_overview",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("dispatch_answer",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_append",                                            Agnostic,    ControllerLocal,  REFUSED),

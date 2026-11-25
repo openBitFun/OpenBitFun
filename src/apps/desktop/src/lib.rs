@@ -31,6 +31,7 @@ pub mod backend_protocol;
 pub mod computer_use;
 pub mod crash_diagnostics;
 pub mod desktop_cards;
+mod external_control;
 pub mod fleet;
 pub mod host;
 pub mod logging;
@@ -709,6 +710,7 @@ backend_commands![
     backend_protocol::native_commands::show_agent_companion_desktop_pet,
     backend_protocol::native_commands::hide_agent_companion_desktop_pet,
     backend_protocol::native_commands::resize_agent_companion_desktop_pet,
+    external_control::desktop_external_control,
     desktop_cards::desktop_card_api::desktop_card_list,
     desktop_cards::desktop_card_api::desktop_card_get,
     desktop_cards::desktop_card_api::desktop_card_set_visible,

@@ -296,3 +296,57 @@ test("the native shell attaches to the backend and answers its shell requests", 
   expect((refused?.args.request as { ok?: boolean }).ok).toBe(false);
   expect(String((refused?.args.request as { error?: string }).error)).toContain("unsupported_in_native_host");
 });
+
+test("local HTTP task control issues a scoped token, revokes it, and opens its session in the native shell", async () => {
+  const backend = createBackend();
+  const base = backend.handlers["openbitfun.invoke"];
+  const grant = { id: "grant-1", name: "Task board", workspaceIds: ["workspace-1"], origin: null };
+  let grants: (typeof grant)[] = [];
+  let enabled = false;
+  const requests: unknown[] = [];
+  backend.handlers["openbitfun.invoke"] = data => {
+    const { action, request } = data as { action: string; request: { operation: string; enabled?: boolean } };
+    if (action !== "desktop_external_control") return base(data);
+    requests.push(request);
+    if (request.operation === "setEnabled") enabled = request.enabled === true;
+    if (request.operation === "issue") grants = [grant];
+    if (request.operation === "revoke") grants = [];
+    return { ok: true, value: {
+      enabled, listening: enabled, port: 38371, endpoint: "http://127.0.0.1:38371/v1",
+      error: null, token: request.operation === "issue" ? "test-token" : null, grants,
+      workspaces: [{ id: "workspace-1", name: "Test project" }, { id: "workspace-2", name: "Docs project" }],
+    } };
+  };
+  const wire = wireHost(backend);
+  const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
+  await app.waitFor("Settings");
+  await app.press("Settings");
+  await app.press("nav-settings-page-desktop-control");
+  await app.waitFor("external-control-port");
+  await app.press("external-control-enabled");
+  await app.waitFor("external-control-name");
+  await app.type("external-control-name", "Task board");
+  await app.press("external-control-workspaces");
+  await app.press("label:Test project");
+  await app.press("Select All");
+  await app.waitFor("2 selected");
+  await app.press("Select All");
+  await app.waitFor("Select…");
+  await app.press("Select All");
+  await app.press("label:Docs project");
+  await app.keyboard.press("Escape");
+  await app.press("external-control-issue");
+  await app.waitFor("test-token");
+  expect(requests).toContainEqual({ operation: "issue", name: "Task board", workspaceIds: ["workspace-1"] });
+  await app.press("Revoke access");
+  await app.waitUntil(() => !app.shows("test-token"));
+  expect(requests).toContainEqual({ operation: "revoke", id: "grant-1" });
+
+  await app.host.send("openbitfun.wireEvents", wire.batch([{
+    event: "host://shell-request",
+    payload: { id: 51, op: "session.openLocal", args: { sessionId: "session-1", workspaceId: "workspace-1" } },
+  }]));
+  await app.waitFor("Message");
+  const reply = wire.invokes.find(call => call.command === "host_shell_respond" && (call.args.request as { id: number }).id === 51);
+  expect(reply?.args.request).toEqual({ id: 51, ok: true, value: null });
+});

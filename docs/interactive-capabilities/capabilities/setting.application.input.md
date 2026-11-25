@@ -26,26 +26,26 @@ Configure on-device speech-to-text dictation (SenseVoice & Qwen3-ASR local model
 
 ## 完整功能清单 / Everything included
 
-- **智能体可直接控制 / Direct Agent control** · 在聊天输入框启用或停用语音输入按钮
-  - Enable or disable the voice-input button in the chat composer
-  - 说明：开启后聊天输入框会显示麦克风录音入口，录音在本机离线转成可编辑文本放回输入框，确认无误再发送。
-  - Why & how: Shows the microphone button in the chat composer so spoken audio is transcribed locally into editable text before you send.
+- **智能体可直接控制 / Direct Agent control** · 为支持听写的客户端配置语音输入
+  - Configure voice input for clients with dictation support
+  - 说明：宿主为提供麦克风输入的客户端保留听写偏好。
+  - Why & how: The host preserves the dictation preference for clients that provide microphone input.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 下载、选择、验证、修复或删除本地语音模型（SenseVoice Small 与 Qwen3-ASR）
   - Download, select, verify, repair, or delete local speech models (SenseVoice Small & Qwen3-ASR)
   - 说明：提供两款纯本地模型：默认轻量的 `SenseVoice Small INT8`（支持自动检测及中、粤、英、日、韩）与更高精度的 `Qwen3-ASR 0.6B INT8`（支持 30+ 语言），均可在此一键校验修复或删除释放空间。
   - Why & how: Choose between lightweight `SenseVoice Small INT8` (default: `auto`, Chinese, Cantonese, English, Japanese, Korean) and higher-accuracy `Qwen3-ASR 0.6B INT8` (unlocking 30+ languages), with built-in verify, repair, and delete controls.
 - **智能体可直接控制 / Direct Agent control** · 设置默认语音识别语言（自动检测或按所选模型指定语种）
   - Choose automatic language detection or a fixed recognition language supported by the active model
-  - 说明：默认“自动检测（auto）”省心应对中英混说；固定单一语种时，`SenseVoice Small` 支持中/粤/英/日/韩，切换为 `Qwen3-ASR 0.6B` 则可在设置界面中选择 30+ 种细分语言。
-  - Why & how: Defaults to Auto-Detect (`auto`) for mixed speech; pinning a language offers Chinese, Cantonese, English, Japanese, and Korean on `SenseVoice Small`, or 30+ selectable languages in the UI when `Qwen3-ASR 0.6B` is selected (Agent direct control supports `auto`/`zh`/`en`/`ja`/`yue`).
+  - 说明：为支持听写的客户端设置识别语言。直接控制支持 auto、zh、en、ja 和 yue。
+  - Why & how: Set the saved recognition language for clients with dictation support. Direct control accepts auto, zh, en, ja and yue.
 - **智能体可直接控制 / Direct Agent control** · 设置单次语音输入允许的最长录音秒数（10–600 秒）
   - Set the maximum duration of a single voice recording (10–600 seconds)
   - 说明：默认上限为 60 秒，既防忘关麦克风空录太久，也允许你在口述长段背景思路时调高到最多 600 秒（10 分钟）。
   - Why & how: Defaults to 60 seconds to prevent accidental open-mic recordings, and can be raised up to 600 seconds (10 minutes) when dictating detailed specs.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 选择输入麦克风设备并现场测试语音转写效果与耗时
-  - Select a microphone device and run a live speech-recognition test
-  - 说明：外接了耳机、声卡或会议麦时，可在此指定录音设备并当场录几秒话验证收音音量、转写文本和本地推理耗时。
-  - Why & how: Pick the right input device when headsets or USB mics are connected, then record a short sample to check transcript quality and local inference latency.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在支持麦克风输入的客户端测试转写
+  - Test transcription on a client with microphone input
+  - 说明：支持录音的客户端向桌面语音服务发送音频并接收转写结果。原生 NSH 桌面未提供录音入口。
+  - Why & how: A recording client supplies audio to the desktop speech service and receives the transcript. The native NSH desktop has no recording control.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 配置智能体执行期间发送消息的默认行为（立即发送纠偏 vs 排队等待）
   - Choose whether messages sent during an active turn steer immediately or wait in queue
   - 说明：默认“立即发送”会把新消息实时注入当前原生智能体回合，方便中途纠偏或补充条件；改为“排队发送”则会暂存消息等本轮结束后再发出（注：ACP 外部智能体会话始终等待当前回合完成）。

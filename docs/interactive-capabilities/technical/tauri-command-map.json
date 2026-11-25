@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "0819b4d1d5c0c8eb7c3435284f56a677cc8d6ec3bd13c6875204e25763b3b508",
-  "commandCount": 727,
+  "catalogDigest": "db8892a2546bfc5814c1a52085f61548b07a938704dafba6146274870ca4bd34",
+  "commandCount": 728,
   "coverage": {
-    "commandCount": 727,
-    "documentedCommandCount": 625,
+    "commandCount": 728,
+    "documentedCommandCount": 626,
     "implementationCommandCount": 102,
     "implementationDigest": "4954073be0636de6ca1ef4d75ade342a2450cbc396030322c116e2973299eb4e"
   },
@@ -1682,7 +1682,7 @@
       "visibility": "documented",
       "rustPath": "api::agentic_api::create_session",
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
-      "signature": "fn create_session( coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, mut request: CreateSessionRequest, ) -> Result<CreateSessionResponse, String>",
+      "signature": "fn create_session( coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, request: CreateSessionRequest, ) -> Result<CreateSessionResponse, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
@@ -2084,6 +2084,22 @@
       "rustPath": "desktop_cards::desktop_card_api::desktop_card_set_visible",
       "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
       "signature": "fn desktop_card_set_visible( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardSetVisibleRequest, ) -> Result<DesktopCardRecord, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_external_control",
+      "moduleId": "external_control",
+      "capabilityId": "setting.tools.desktop-control",
+      "capabilityIds": [
+        "setting.tools.desktop-control"
+      ],
+      "documentedItemIds": [
+        "setting.tools.desktop-control:external-control"
+      ],
+      "visibility": "documented",
+      "rustPath": "external_control::desktop_external_control",
+      "sourceFile": "src/apps/desktop/src/external_control.rs",
+      "signature": "fn desktop_external_control( app: HostHandle, request: ControllerSettingsRequest, ) -> Result<Value, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -9906,13 +9922,15 @@
     {
       "id": "speech_finish_input_session",
       "moduleId": "speech",
-      "capabilityId": "feature.voice-input",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.voice-input"
+        "feature.voice-input",
+        "setting.application.input"
       ],
       "documentedItemIds": [
         "feature.voice-input:composer-recording",
-        "feature.voice-input:edit-transcript"
+        "feature.voice-input:edit-transcript",
+        "setting.application.input:microphone-test"
       ],
       "visibility": "documented",
       "rustPath": "speech_finish_input_session",
@@ -10007,12 +10025,14 @@
     {
       "id": "speech_start_input_session",
       "moduleId": "speech",
-      "capabilityId": "feature.voice-input",
+      "capabilityId": null,
       "capabilityIds": [
-        "feature.voice-input"
+        "feature.voice-input",
+        "setting.application.input"
       ],
       "documentedItemIds": [
-        "feature.voice-input:composer-recording"
+        "feature.voice-input:composer-recording",
+        "setting.application.input:microphone-test"
       ],
       "visibility": "documented",
       "rustPath": "speech_start_input_session",
