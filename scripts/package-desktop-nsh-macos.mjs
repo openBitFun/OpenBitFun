@@ -22,7 +22,7 @@
 // package, listed in the release manifest as `platforms["darwin-<arch>-nsh"]`
 // (`src/apps/desktop/src/backend_protocol/native_commands/update.rs`). Release builds pass
 // TAURI_UPDATER_PUBKEY so the backend verifies packages with the release key.
-// Requires rustc >= 1.97 for the NSH crates (RUSTUP_TOOLCHAIN=1.98.1 works).
+// Requires Rust 1.97 or newer for the NSH crates.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

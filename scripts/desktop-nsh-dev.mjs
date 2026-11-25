@@ -10,61 +10,12 @@
 //                    `.openbitfun/desktop-dev/` instead of the installed app's data
 //   --shared-data    the default: the installed app's data
 // Explicit OPENBITFUN_USER_ROOT / OPENBITFUN_HOME values take precedence.
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const MIN_DESKTOP_RUST_VERSION = [1, 97];
-export const DEFAULT_DESKTOP_RUSTUP_TOOLCHAIN = '1.98.1';
-
-export function parseRustcVersion(output) {
-  const match = String(output ?? '').match(/\brustc\s+(\d+)\.(\d+)\.(\d+)/);
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-}
-
-export function meetsMinRustVersion(parsed, min = MIN_DESKTOP_RUST_VERSION) {
-  if (!parsed) return false;
-  if (parsed[0] !== min[0]) return parsed[0] > min[0];
-  return parsed[1] >= min[1];
-}
-
-function defaultReadCommandStdout(command, args) {
-  try {
-    return execFileSync(command, args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
-export function resolveDesktopDevRustEnvironment(
-  env = process.env,
-  {
-    readRustcVersion = () => defaultReadCommandStdout('rustc', ['--version']),
-    readRustupToolchains = () => defaultReadCommandStdout('rustup', ['toolchain', 'list']),
-  } = {},
-) {
-  if (env.RUSTUP_TOOLCHAIN) return {};
-  const rustcOut = readRustcVersion();
-  if (meetsMinRustVersion(parseRustcVersion(rustcOut))) return {};
-  const toolchains = String(readRustupToolchains() ?? '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (toolchains.some((line) => line.startsWith(DEFAULT_DESKTOP_RUSTUP_TOOLCHAIN))) {
-    return { RUSTUP_TOOLCHAIN: DEFAULT_DESKTOP_RUSTUP_TOOLCHAIN };
-  }
-  const minText = MIN_DESKTOP_RUST_VERSION.join('.');
-  throw new Error(
-    `Native desktop requires Rust >= ${minText} (default rustc: ${rustcOut ?? 'not found'}). ` +
-      `Run "rustup toolchain install ${DEFAULT_DESKTOP_RUSTUP_TOOLCHAIN}" or set RUSTUP_TOOLCHAIN.`,
-  );
-}
 
 /**
  * Stamps the dev NSH bundle (`target/desktop-nsh/nsh`) with OpenBitFun's app
@@ -125,18 +76,11 @@ function main(args) {
   }
   const dataMode = resolveDesktopDevDataMode(args);
   if (!args.includes('--no-build')) {
-    const rustEnv = resolveDesktopDevRustEnvironment(process.env);
-    if (rustEnv.RUSTUP_TOOLCHAIN) {
-      console.log(
-        `[desktop-dev] Using RUSTUP_TOOLCHAIN=${rustEnv.RUSTUP_TOOLCHAIN} (native desktop requires Rust >= ${MIN_DESKTOP_RUST_VERSION.join('.')})`,
-      );
-    }
     const build = spawnSync('pnpm', ['run', 'desktop-nsh:build:dev'], {
       cwd: ROOT,
       stdio: 'inherit',
       shell: process.platform === 'win32',
       windowsHide: true,
-      env: { ...process.env, ...rustEnv },
     });
     if (build.status !== 0) process.exit(build.status ?? 1);
   }

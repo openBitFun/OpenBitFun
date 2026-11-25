@@ -14,7 +14,7 @@
 
 - Node.js 22.12+（建议 LTS 版本）
 - pnpm 10.15.0（建议通过 Corepack 使用）
-- Rust toolchain（通过 rustup 安装）；原生桌面应用需 Rust 1.97+（若默认 `rustc` 更低，请执行 `rustup toolchain install 1.98.1`）
+- Rust toolchain（通过 rustup 安装），原生桌面应用需要 Rust 1.97 或更新版本
 - Linux 构建原生桌面另需 GTK4、libadwaita 和 WebKitGTK 6.0 开发包
 - 锁定版本的 [NSH CLI](docs/architecture/nsh-frontend.md)（`v0.7.0`）会在 `pnpm install` 时自动安装到 `~/.nsh/bin` 并链接至 `node_modules/.bin/nsh`（也可手动执行 `pnpm run nsh:install`，或设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过）
 
@@ -74,7 +74,7 @@ pnpm run e2e:ui                     # 无界面 NSH UI 测试（cd src/nsh-ui &&
 pnpm run e2e:smoke                  # 在临时配置下启动已构建的应用，并通过 OBP 驱动
 ```
 
-> `pnpm install` 会自动准备锁定版本的 NSH CLI（`v0.7.0`），默认 `rustc` 低于 1.97 时 `desktop:dev` / `desktop:build` 会自动选用 `RUSTUP_TOOLCHAIN=1.98.1`，详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)。`desktop:dev` 每次启动前都会重新构建；只迭代界面时可用 `pnpm exec nsh run src/nsh-ui --target web` 获得热更新。
+> `pnpm install` 会自动准备锁定版本的 NSH CLI（`v0.7.0`）。`desktop:dev` 每次启动前都会重新构建。只迭代界面时可用 `pnpm exec nsh run src/nsh-ui --target web` 获得热更新。详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)。
 
 两种启动器默认使用安装版的日常数据，包括已有模型设置、工作区和会话。
 需要独立测试数据时，显式添加 `--isolated-data`，数据保存在当前仓库的

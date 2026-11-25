@@ -144,14 +144,14 @@ Get the Windows, macOS, or Linux package from the [official download page](https
 use the [OpenBitFun Data Tools](src/apps/data-tools/README.md), currently available
 for stable releases 0.2.17–0.2.19.
 
-To run from source, install [Node.js](https://nodejs.org/) 22.12+, [pnpm](https://pnpm.io/) 10.15.0, and the [Rust toolchain](https://rustup.rs/) (native desktop requires Rust 1.97+; if your default `rustc` is older, install `rustup toolchain install 1.98.1`). Linux also requires GTK4, libadwaita, and WebKitGTK 6.0 development packages. Clone the repository, then run:
+To run from source, install [Node.js](https://nodejs.org/) 22.12+, [pnpm](https://pnpm.io/) 10.15.0, and the [Rust toolchain](https://rustup.rs/) (native desktop requires Rust 1.97+). Linux also requires GTK4, libadwaita, and WebKitGTK 6.0 development packages. Clone the repository, then run:
 
 ```bash
 pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` automatically downloads and verifies (SHA-256) the pinned NSH CLI (`v0.7.0`) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)). `desktop:dev` automatically selects `RUSTUP_TOOLCHAIN=1.98.1` when the default `rustc` is older than 1.97 and rebuilds before launch; use `pnpm run desktop:preview:debug` to relaunch the last debug build, or `pnpm exec nsh run src/nsh-ui --target web` for UI-only hot reload. See the [CLI guide](./src/apps/cli/README.md) for the command-line workflow.
+`pnpm install` automatically downloads and verifies (SHA-256) the pinned NSH CLI (`v0.7.0`) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)). `desktop:dev` rebuilds with the active Rust toolchain before launch. Use `pnpm run desktop:preview:debug` to relaunch the last debug build, or `pnpm exec nsh run src/nsh-ui --target web` for UI-only hot reload. See the [CLI guide](./src/apps/cli/README.md) for the command-line workflow.
 
 </details>
 

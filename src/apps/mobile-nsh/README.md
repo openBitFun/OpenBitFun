@@ -84,11 +84,11 @@ UI maps codes to copy. Device commands keep the device backend's own errors.
 
 ## Build and run
 
-NSH needs rustc >= 1.97 (`RUSTUP_TOOLCHAIN=1.98.1`, which the scripts set).
+NSH requires Rust 1.97 or newer. Add the targets to the toolchain you use to build the app.
 
 ```bash
-rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim
-rustup target add --toolchain 1.98.1 aarch64-linux-android armv7-linux-androideabi
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+rustup target add aarch64-linux-android armv7-linux-androideabi
 pnpm run mobile-nsh:check                 # TS (with the shared UI) and the native crate
 pnpm run mobile-nsh:test                  # native unit tests (handshake, sign-in parsing, device rows, keystore)
 pnpm run mobile-nsh:package:ios-sim -- --run

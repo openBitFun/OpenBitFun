@@ -209,43 +209,13 @@ test('install-nsh ensure/postinstall reuses existing versions, skips in CI/opt-o
   assert.equal(skippedSelf, null, 'must ignore repo node_modules/.bin when probing existing nsh');
 });
 
-test('desktop:dev resolves RUSTUP_TOOLCHAIN=1.98.1 automatically when default rustc < 1.97', async () => {
-  const {
-    meetsMinRustVersion,
-    parseRustcVersion,
-    resolveDesktopDevRustEnvironment,
-  } = await import('../desktop-nsh-dev.mjs');
-
-  assert.deepEqual(parseRustcVersion('rustc 1.98.1 (abc 2026-01-01)'), [1, 98, 1]);
-  assert.equal(meetsMinRustVersion([1, 96, 0]), false);
-  assert.equal(meetsMinRustVersion([1, 97, 0]), true);
-  assert.equal(meetsMinRustVersion([2, 0, 0]), true);
-
-  assert.deepEqual(
-    resolveDesktopDevRustEnvironment({ RUSTUP_TOOLCHAIN: 'nightly' }, {
-      readRustcVersion: () => { throw new Error('must not probe rustc when RUSTUP_TOOLCHAIN is set'); },
-    }),
-    {},
-  );
-  assert.deepEqual(
-    resolveDesktopDevRustEnvironment({}, {
-      readRustcVersion: () => 'rustc 1.98.1 (abc)',
-      readRustupToolchains: () => '',
-    }),
-    {},
-  );
-  assert.deepEqual(
-    resolveDesktopDevRustEnvironment({}, {
-      readRustcVersion: () => 'rustc 1.93.0 (abc)',
-      readRustupToolchains: () => '1.93.0-aarch64-apple-darwin (default)\n1.98.1-aarch64-apple-darwin\n',
-    }),
-    { RUSTUP_TOOLCHAIN: '1.98.1' },
-  );
-  assert.throws(
-    () => resolveDesktopDevRustEnvironment({}, {
-      readRustcVersion: () => 'rustc 1.93.0 (abc)',
-      readRustupToolchains: () => '1.93.0-aarch64-apple-darwin (default)\n',
-    }),
-    /rustup toolchain install 1\.98\.1/,
-  );
+test('mobile NSH commands use the active Rust toolchain', async () => {
+  const { mobilePackageCommand } = await import('../package-mobile-nsh.mjs');
+  const { scripts } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.doesNotMatch(scripts['mobile-nsh:check'], /RUSTUP_TOOLCHAIN=/);
+  assert.match(scripts['mobile-nsh:test'], /^cargo test /);
+  assert.deepEqual(mobilePackageCommand(['ios-simulator'], {}).env, {});
+  assert.deepEqual(mobilePackageCommand(['android'], { RUSTUP_TOOLCHAIN: 'stable' }).env, {
+    RUSTUP_TOOLCHAIN: 'stable',
+  });
 });

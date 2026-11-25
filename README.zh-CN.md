@@ -143,14 +143,14 @@ OpenBitFun 仍在演进，我们希望继续探索三个方向：
 **数据迁移提醒：** OpenBitFun 1.0.0 与 0.2.x 旧版数据不互通。需要迁移旧版数据时，请使用
 [OpenBitFun 数据工具](src/apps/data-tools/README.zh-CN.md)，当前支持 0.2.17～0.2.19 正式版。
 
-从源码运行需准备 [Node.js](https://nodejs.org/) 22.12+、[pnpm](https://pnpm.io/) 10.15.0 和 [Rust 工具链](https://rustup.rs/)（原生桌面应用需 Rust 1.97+；若默认 `rustc` 版本更低，请先执行 `rustup toolchain install 1.98.1`）。Linux 另需 GTK4、libadwaita 和 WebKitGTK 6.0 开发包。克隆本仓库后运行：
+从源码运行需准备 [Node.js](https://nodejs.org/) 22.12+、[pnpm](https://pnpm.io/) 10.15.0 和 [Rust 工具链](https://rustup.rs/)（原生桌面应用需要 Rust 1.97 或更新版本）。Linux 另需 GTK4、libadwaita 和 WebKitGTK 6.0 开发包。克隆本仓库后运行：
 
 ```bash
 pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` 会自动下载并校验（SHA-256）锁定版本的 NSH CLI（`v0.7.0`）到 `~/.nsh/bin`，并链接至 `node_modules/.bin/nsh` 供所有 `pnpm` 脚本直接使用（可设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过；详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)）。当默认 `rustc` 低于 1.97 时，`desktop:dev` 会自动使用 `RUSTUP_TOOLCHAIN=1.98.1` 并在启动前重编译；跳过重编译直接启动上次构建请用 `pnpm run desktop:preview:debug`，仅迭代前端热更新请用 `pnpm exec nsh run src/nsh-ui --target web`。CLI 入口见 [CLI 使用说明](./src/apps/cli/README.md)。
+`pnpm install` 会自动下载并校验（SHA-256）锁定版本的 NSH CLI（`v0.7.0`）到 `~/.nsh/bin`，并链接至 `node_modules/.bin/nsh` 供所有 `pnpm` 脚本直接使用（可设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过；详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)）。`desktop:dev` 会在启动前用当前 Rust 工具链重新构建。跳过重编译直接启动上次构建请用 `pnpm run desktop:preview:debug`，仅迭代前端热更新请用 `pnpm exec nsh run src/nsh-ui --target web`。CLI 入口见 [CLI 使用说明](./src/apps/cli/README.md)。
 
 </details>
 

@@ -139,7 +139,7 @@ function resolveLaunch(options) {
   const cargoProfile = options.profile === 'debug' ? '' : ` --profile ${options.profile}`;
   if (!fs.existsSync(runner)) {
     fail(
-      `Runner not found: ${runner}\nBuild it with: RUSTUP_TOOLCHAIN=1.98.1 cargo build --manifest-path src/apps/desktop-nsh/native/Cargo.toml --features runner --target-dir target${cargoProfile}`,
+      `Runner not found: ${runner}\nBuild it with: cargo build --manifest-path src/apps/desktop-nsh/native/Cargo.toml --features runner --target-dir target${cargoProfile}`,
     );
   }
   const lib = path.join(dir, backendLibName());

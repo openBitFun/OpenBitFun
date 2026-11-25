@@ -21,7 +21,7 @@
 //
 // Usage: node scripts/package-desktop-nsh-windows.mjs [--profile release|release-fast]
 //          [--target x86_64-pc-windows-msvc] [--skip-build] [--product-config <product.jsonc>]
-// Requires rustc >= 1.97 for the NSH crates (RUSTUP_TOOLCHAIN=1.98.1 works) and
+// Requires Rust 1.97 or newer for the NSH crates and
 // the WebView2 runtime on the machine that runs the app. In-place updates of this
 // layout are a later step: the native updater refuses to install on Windows and
 // points to the download page instead.

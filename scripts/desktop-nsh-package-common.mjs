@@ -130,12 +130,10 @@ export function backendEnv(productEnv = {}, base = process.env) {
  * shell carry no product identity, so they stay in the regular target dir.
  */
 export async function buildAll({ profile, target, nshOut, webOut, productEnv = {} }) {
-  // NSH builds the `openbitfun/native` module, which needs rustc >= 1.97.
-  const nshEnv = { ...process.env, RUSTUP_TOOLCHAIN: process.env.RUSTUP_TOOLCHAIN ?? "1.98.1" };
   // The app ships its own copy of the shared UI's document renderers.
   const { syncVendorAssets } = await import("./sync-nsh-vendor-assets.mjs");
   syncVendorAssets();
-  run("nsh", ["build", "src/apps/desktop-nsh", "--release", "--out", nshOut], { env: nshEnv });
+  run("nsh", ["build", "src/apps/desktop-nsh", "--release", "--out", nshOut]);
   rmSync(webOut, { recursive: true, force: true });
   run("nsh", ["package", "src/nsh-ui/WebApp.tsx", "--target", "web", "-o", webOut]);
   const targetArgs = target ? ["--target", target] : [];
@@ -153,7 +151,7 @@ export async function buildAll({ profile, target, nshOut, webOut, productEnv = {
     "--profile",
     profile,
     ...targetArgs,
-  ], { env: nshEnv });
+  ]);
   const { prepareMiniAppShell } = await import("./prepare-miniapp-shell.mjs");
   prepareMiniAppShell({ target, profile: profile === "dev" ? "debug" : profile });
   // The DeepSeek Harness bridge (a TypeScript compile; fails the build unless

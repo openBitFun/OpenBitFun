@@ -745,7 +745,7 @@ Run `pnpm run desktop:dev` from the repository root. It builds the UI bundle
 (`cargo build -p openbitfun-desktop --lib --profile desktop-dev`) and the runner
 (`src/apps/desktop-nsh/native`, `--features runner`), then starts
 `target/desktop-dev/openbitfun-nsh` with `NSH_APP_DIR=target/desktop-nsh/nsh`. The NSH
-crates need rustc 1.97 or newer (`RUSTUP_TOOLCHAIN=1.98.1`).
+crates require Rust 1.97 or newer.
 
 Development shares the installed app's existing settings, workspaces and sessions
 by default:

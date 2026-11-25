@@ -144,14 +144,14 @@ OpenBitFun はまだ進化の途中です。探っていきたい 3 つの方向
 [OpenBitFun Data Tools](src/apps/data-tools/README.md) を使ってください。現在、安定版のリリース 0.2.17〜0.2.19 で
 使えます。
 
-ソースから実行するには、[Node.js](https://nodejs.org/) 22.12+、[pnpm](https://pnpm.io/) 10.15.0、[Rust のツールチェーン](https://rustup.rs/)（ネイティブデスクトップアプリには Rust 1.97+ が必要です。デフォルトの `rustc` が古い場合は `rustup toolchain install 1.98.1` を実行してください）をインストールしてください。Linux では GTK4、libadwaita、WebKitGTK 6.0 の開発パッケージも必要です。リポジトリをクローンしてから、次を実行します：
+ソースから実行するには、[Node.js](https://nodejs.org/) 22.12+、[pnpm](https://pnpm.io/) 10.15.0、[Rust のツールチェーン](https://rustup.rs/)（ネイティブデスクトップアプリには Rust 1.97 以降が必要です）をインストールしてください。Linux では GTK4、libadwaita、WebKitGTK 6.0 の開発パッケージも必要です。リポジトリをクローンしてから、次を実行します：
 
 ```bash
 pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` は固定バージョンの NSH CLI（`v0.7.0`）を自動的にダウンロード・SHA-256 検証して `~/.nsh/bin` に配置し、`node_modules/.bin/nsh` にリンクします（スキップする場合は `OPENBITFUN_SKIP_NSH_INSTALL=1` を設定。詳細は [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）。`desktop:dev` はデフォルトの `rustc` が 1.97 未満の場合に自動的に `RUSTUP_TOOLCHAIN=1.98.1` を選択して起動前にビルドします。再ビルドせずに前回のデバッグビルドを起動するには `pnpm run desktop:preview:debug`、UI のみのホットリロードには `pnpm exec nsh run src/nsh-ui --target web` を使用してください。コマンドラインでの作業の流れについては [CLI のガイド](./src/apps/cli/README.md)を参照してください。
+`pnpm install` は固定バージョンの NSH CLI（`v0.7.0`）を自動的にダウンロード・SHA-256 検証して `~/.nsh/bin` に配置し、`node_modules/.bin/nsh` にリンクします（スキップする場合は `OPENBITFUN_SKIP_NSH_INSTALL=1` を設定。詳細は [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）。`desktop:dev` は起動前に現在の Rust ツールチェーンでビルドします。再ビルドせずに前回のデバッグビルドを起動するには `pnpm run desktop:preview:debug`、UI のみのホットリロードには `pnpm exec nsh run src/nsh-ui --target web` を使用してください。コマンドラインでの作業の流れについては [CLI のガイド](./src/apps/cli/README.md)を参照してください。
 
 </details>
 

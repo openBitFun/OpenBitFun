@@ -160,14 +160,6 @@ jobs:
           path: ${{ steps.bun-cache-target.outputs.path }}
           key: ${{ steps.bun-cache-target.outputs.key }}
 
-      # NSH (the UI bundle's native module and the runner) needs a newer rustc
-      # than the workspace; the packaging scripts select it with RUSTUP_TOOLCHAIN.
-      - name: Setup NSH Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.98.1"
-          targets: ${{ env.PACKAGE_TARGET }}
-
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

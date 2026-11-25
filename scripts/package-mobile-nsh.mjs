@@ -9,8 +9,7 @@
 //   android        an `.apk` (`--keystore`, `--key-alias` for release; the debug key otherwise);
 //                  needs the Android SDK (platform 35), the NDK (ANDROID_NDK_HOME), a JDK and
 //                  the Rust targets of its ABIs (default arm64-v8a and armeabi-v7a; `--abi`)
-// Output: target/mobile-nsh/<target>/, or `-o <dir>`. NSH needs rustc >= 1.97
-// (RUSTUP_TOOLCHAIN defaults to 1.98.1 here).
+// Output: target/mobile-nsh/<target>/, or `-o <dir>`. NSH needs Rust 1.97 or newer.
 import { spawnSync } from 'node:child_process';
 import { syncVendorAssets } from './sync-nsh-vendor-assets.mjs';
 import path from 'node:path';
@@ -38,7 +37,7 @@ export function mobilePackageCommand(args, env = process.env) {
   return {
     command: 'nsh',
     args: ['package', APP_DIR, '--target', target, '-o', out, ...flags],
-    env: { ...env, RUSTUP_TOOLCHAIN: env.RUSTUP_TOOLCHAIN ?? '1.98.1' },
+    env,
     out,
   };
 }

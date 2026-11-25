@@ -421,10 +421,9 @@ is installed automatically by `pnpm install`:
   opt out during `pnpm install` (for offline or non-NSH work); CI postinstall
   skips downloading automatically because CI jobs that need NSH invoke
   `node scripts/ci/install-nsh.mjs` in their own step.
-- If your default `rustc` is older than `1.97`, install the matching toolchain
-  once with `rustup toolchain install 1.98.1`. Both `pnpm run desktop:dev` and
-  `pnpm run desktop:build` automatically select `RUSTUP_TOOLCHAIN=1.98.1` when
-  needed (an explicit `RUSTUP_TOOLCHAIN` env var always takes precedence).
+- Development and packaging use the active Rust toolchain. Cargo enforces the
+  minimum version declared in the native crate manifests. To update an older
+  stable toolchain, run `rustup update stable`.
 
 ## Verification
 

@@ -14,7 +14,7 @@ Be respectful, kind, and constructive. We welcome contributors of all background
 
 - Node.js 22.12+ (LTS recommended)
 - pnpm 10.15.0 via Corepack
-- Rust toolchain (install via [rustup](https://rustup.rs/)); the native desktop app requires Rust 1.97+ (install `rustup toolchain install 1.98.1` if your default `rustc` is older)
+- Rust toolchain (install via [rustup](https://rustup.rs/)). The native desktop app requires Rust 1.97 or newer.
 - Linux desktop builds also require GTK4, libadwaita, and WebKitGTK 6.0 development packages
 - The pinned [NSH CLI](docs/architecture/nsh-frontend.md) (`v0.7.0`) is installed automatically during `pnpm install` into `~/.nsh/bin` and linked into `node_modules/.bin/nsh` (run `pnpm run nsh:install` manually if needed, or set `OPENBITFUN_SKIP_NSH_INSTALL=1` to opt out)
 
@@ -77,7 +77,7 @@ pnpm run e2e:ui                     # headless NSH UI suites (cd src/nsh-ui && n
 pnpm run e2e:smoke                  # launches the built app on a scratch profile and drives it over OBP
 ```
 
-> `pnpm install` provisions the pinned NSH CLI (`v0.7.0`), and `desktop:dev` / `desktop:build` automatically select `RUSTUP_TOOLCHAIN=1.98.1` when the default `rustc` is older than 1.97; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md). `desktop:dev` rebuilds before every launch; UI-only iteration can use `pnpm exec nsh run src/nsh-ui --target web` with hot reload.
+> `pnpm install` provisions the pinned NSH CLI (`v0.7.0`) for local builds. `desktop:dev` rebuilds before every launch. For UI-only hot reload, use `pnpm exec nsh run src/nsh-ui --target web`. See [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md).
 
 Both launchers use the installed app's data by default, including existing model
 settings, workspaces, and sessions. Use `--isolated-data` for persistent test data

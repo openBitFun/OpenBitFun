@@ -91,8 +91,7 @@ pnpm run prepare:dsh-profile      # optional: local DeepSeek Harness sessions
 
 `desktop:dev --isolated-data` keeps settings, workspaces and sessions in the
 checkout's `.openbitfun/desktop-dev/` (`OPENBITFUN_USER_ROOT`/`OPENBITFUN_HOME`);
-the default uses the installed app's data. The NSH crates need
-`RUSTUP_TOOLCHAIN=1.98.1` (rustc >= 1.97).
+the default uses the installed app's data. The NSH crates require Rust 1.97 or newer.
 
 Data Tools runs independently. Desktop development launchers do not build,
 launch, or supervise the tool; use its own development and release entry

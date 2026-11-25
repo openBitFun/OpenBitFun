@@ -75,8 +75,8 @@ pnpm run prepare:dsh-profile      # 可选：本地 DeepSeek Harness 会话
 ```
 
 `desktop:dev --isolated-data` 把设置、工作区和会话放在本仓库的 `.openbitfun/desktop-dev/`
-（`OPENBITFUN_USER_ROOT`/`OPENBITFUN_HOME`）；默认使用已安装应用的数据。NSH crate 需要
-`RUSTUP_TOOLCHAIN=1.98.1`（rustc >= 1.97）。
+（`OPENBITFUN_USER_ROOT`/`OPENBITFUN_HOME`），默认使用已安装应用的数据。NSH crate 需要
+Rust 1.97 或更新版本。
 
 Data Tools 独立运行；桌面开发启动器不会构建、启动或监管它，请使用 `src/apps/data-tools`
 自己的开发和发布入口。
