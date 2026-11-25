@@ -230,6 +230,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("desktop_card_set_always_on_top",                             LocalOnly,   ControllerLocal,  REFUSED),
     op("desktop_card_set_checklist_item",                            LocalOnly,   ControllerLocal,  REFUSED),
     op("desktop_card_set_visible",                                   LocalOnly,   ControllerLocal,  REFUSED),
+    op("desktop_external_control",                                   Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_answer",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_append",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_cancel",                                            Agnostic,    ControllerLocal,  REFUSED),

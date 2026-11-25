@@ -605,6 +605,7 @@
             "title": "Desktop control (Computer Use)",
             "summary": "Manage the Allow desktop control master switch for native desktop GUI automation, inspect Accessibility and Screen Recording OS grants, and jump straight to system privacy settings.",
             "items": {
+              "external-control": "Authorize workspaces for local integrations",
               "permissions": "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
               "safety-posture": "Keep desktop automation bounded with the in-app toggle, per-window sharing, and host isolation"
             }

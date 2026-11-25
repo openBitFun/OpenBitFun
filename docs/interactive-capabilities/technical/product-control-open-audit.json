@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "f592c3304b41651db62ca8afeff8bb8e3d56a3e49d6420eff960b3cfe9eb9294",
-  "count": 232,
+  "catalogDigest": "6a6de5f67359bdd2aead1692c4afd1b748e601045004dc140dd73b92342dd2bc",
+  "count": 233,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
     "unstructuredInteraction": 195,
-    "visualSelection": 27
+    "visualSelection": 28
   },
   "entries": [
     {
@@ -3423,6 +3423,22 @@
       "evidence": [
         "command:browser_control_list_browsers",
         "command:browser_control_enable_default_cdp"
+      ]
+    },
+    {
+      "capabilityId": "setting.tools.desktop-control",
+      "itemId": "external-control",
+      "titleZh": "为本机集成授权工作区",
+      "titleEn": "Authorize workspaces for local integrations",
+      "reasonCode": "visualSelection",
+      "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
+      "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.desktop-control"
+      },
+      "evidence": [
+        "command:desktop_external_control"
       ]
     },
     {

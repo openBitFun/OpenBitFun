@@ -415,6 +415,7 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
       phrase('settings/runtime', 'computerUse.sectionTitle'),
       phrase('settings/runtime', 'computerUse.accessibility'),
       phrase('settings/runtime', 'computerUse.screenCapture'),
+      phrase('settings/runtime', 'externalControl.title'),
       phrase('settings/runtime', 'browserLinks.sectionTitle'),
       phrase('settings/runtime', 'browserLinks.defaultTarget'),
       phrase('settings/runtime', 'browserLinks.builtin'),

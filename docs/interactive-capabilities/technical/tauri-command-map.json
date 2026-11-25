@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "f592c3304b41651db62ca8afeff8bb8e3d56a3e49d6420eff960b3cfe9eb9294",
-  "commandCount": 703,
+  "catalogDigest": "6a6de5f67359bdd2aead1692c4afd1b748e601045004dc140dd73b92342dd2bc",
+  "commandCount": 704,
   "coverage": {
-    "commandCount": 703,
-    "documentedCommandCount": 637,
+    "commandCount": 704,
+    "documentedCommandCount": 638,
     "implementationCommandCount": 66,
     "implementationDigest": "22a8353380694e1246a4b15ec83c4f5a10c781fd5dfb0a0fb9d2a135e53380b6"
   },
@@ -1716,7 +1716,7 @@
       "visibility": "documented",
       "rustPath": "api::agentic_api::create_session",
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
-      "signature": "fn create_session( coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, mut request: CreateSessionRequest, ) -> Result<CreateSessionResponse, String>",
+      "signature": "fn create_session( coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, request: CreateSessionRequest, ) -> Result<CreateSessionResponse, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
@@ -2154,6 +2154,22 @@
       "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
       "signature": "fn desktop_card_set_visible( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardSetVisibleRequest, ) -> Result<DesktopCardRecord, String>",
       "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "desktop_external_control",
+      "moduleId": "external_control",
+      "capabilityId": "setting.tools.desktop-control",
+      "capabilityIds": [
+        "setting.tools.desktop-control"
+      ],
+      "documentedItemIds": [
+        "setting.tools.desktop-control:external-control"
+      ],
+      "visibility": "documented",
+      "rustPath": "external_control::desktop_external_control",
+      "sourceFile": "src/apps/desktop/src/external_control.rs",
+      "signature": "fn desktop_external_control( webview: tauri::Webview, app: AppHandle, request: ControllerSettingsRequest, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "dispatch_answer",

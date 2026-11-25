@@ -11534,6 +11534,22 @@
       ],
       "items": [
         {
+          "id": "external-control",
+          "titleZh": "为本机集成授权工作区",
+          "titleEn": "Authorize workspaces for local integrations",
+          "descriptionZh": "启用本机 HTTP 接口，为每个集成创建或撤销令牌。外部任务在桌面会话中运行。",
+          "descriptionEn": "Enable local HTTP access and issue or revoke workspace-scoped integration tokens. Submitted tasks run in desktop sessions.",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
+            "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation."
+          },
+          "evidence": [
+            "command:desktop_external_control"
+          ]
+        },
+        {
           "id": "permissions",
           "titleZh": "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
           "titleEn": "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
@@ -13776,6 +13792,9 @@
     },
     "agentic": {
       "capabilityId": "feature.ai-assistant"
+    },
+    "external_control": {
+      "capabilityId": "setting.tools.desktop-control"
     },
     "frontend_workbench": {
       "capabilityId": "feature.ai-assistant"
