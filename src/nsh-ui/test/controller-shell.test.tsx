@@ -259,10 +259,19 @@ async function start(host: ReturnType<typeof controllerHost>, params: Record<str
 /**
  * Waits for `selector` in short steps: the page realm's socket events
  * (`app.host.send`) reach the app between steps, not during one long
- * `waitFor`.
+ * `waitFor`. Each look is an awaited `waitFor`, never the synchronous
+ * `app.shows`: while a synchronous look runs, this realm cannot answer the
+ * app's `openbitfun.controller.*` calls, and each one in flight then waits out
+ * the host call timeout (2 s) before the look returns.
  */
 async function until(app: App, selector: string) {
-  for (let step = 0; step < 100 && !app.shows(selector); step += 1) await app.wait(50);
+  for (let step = 0; step < 100; step += 1) {
+    const shown = await app.waitFor(selector, { timeout: 50 }).then(
+      () => true,
+      () => false,
+    );
+    if (shown) return;
+  }
   await app.waitFor(selector);
 }
 
