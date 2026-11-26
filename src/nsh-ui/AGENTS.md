@@ -36,8 +36,10 @@ switcher in the main flow.
 ## Information architecture
 
 - **Sidebar and landing** (wave 23, owner decision): the sidebar is the account's
-  runtime devices → workspaces → sessions, every device at once (`ui/deviceSidebar.tsx`
-  over the `deviceTree()` projection in `src/deviceTree.ts`; one device draws no device
+  online runtime devices → workspaces → sessions, every reachable device at once
+  (`ui/deviceSidebar.tsx` over the `deviceTree()` projection in `src/deviceTree.ts`;
+  offline/unreachable/stale peer devices stay out of the sidebar and remain in
+  `fleetDevices()` / Settings › Account › Devices; one visible device draws no device
   header, its ⋯ sits beside "Workspaces"), under Search and Library, with the account
   row below. A workspace's "Show more" pages further sessions in from the device that
   owns it; a device's ⋯ (`src/deviceActions.tsx`) holds its own actions (new

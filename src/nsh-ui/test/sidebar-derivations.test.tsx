@@ -63,11 +63,17 @@ function scriptedEntry(fleet: FleetHelloAnswer | null, answer: (command: string,
 const ENTRY: FleetHelloAnswer = { protocol: 1, cursorState: {}, deviceId: "dev-a" };
 const tick = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms));
 
-function device(id: string, name: string, sessions: Array<[string, string]>): FleetNavigator["devices"][number] {
+function device(
+  id: string,
+  name: string,
+  sessions: Array<[string, string]>,
+  extra: Record<string, unknown> = {},
+): FleetNavigator["devices"][number] {
   return fleetDeviceRow(
     id,
     name,
     [{ workspaceId: "ws-1", name: "repo", rootPath: `/${id}/repo`, sessions: sessions.map(([s, title]) => fleetSessionRow(id, "ws-1", s, title)) }],
+    extra,
   ) as unknown as FleetNavigator["devices"][number];
 }
 
@@ -141,7 +147,46 @@ test("the device tree reuses unchanged rows across navigator reads; the index an
   await tick();
   // A new navigator view with the same content keeps the tree as it was.
   expect(deviceTree()).toBe(tree2);
+});
 
+test("deviceTree omits offline, stale and unreachable peer devices and reacts when a peer changes state", async () => {
+  let fullReads = 0;
+  const entry = scriptedEntry(ENTRY, (command, request) => {
+    if (command === "fleet_prompts") return { revision: 1, prompts: [] };
+    if (command !== "fleet_navigator") return null;
+    if (request.sinceRevision === undefined) {
+      fullReads += 1;
+      return fullReads === 1
+        ? view(10, [
+            device("dev-a", "Studio", [["s1", "Local"]], { isClientDevice: true }),
+            device("dev-b", "builder", [["s2", "Offline peer"]], { state: "offline" }),
+            device("dev-c", "stale-pc", [["s3", "Cached peer"]], { state: "stale" }),
+            device("dev-d", "unreach-pc", [["s4", "Unreachable peer"]], { state: "unreachable" }),
+            device("dev-e", "old-pc", [], { state: "update_required" }),
+          ])
+        : view(11, [
+            device("dev-a", "Studio", [["s1", "Local"]], { isClientDevice: true }),
+            device("dev-b", "builder", [["s2", "Back online"]], { state: "online" }),
+            device("dev-c", "stale-pc", [["s3", "Cached peer"]], { state: "stale" }),
+            device("dev-d", "unreach-pc", [["s4", "Unreachable peer"]], { state: "unreachable" }),
+            device("dev-e", "old-pc", [], { state: "update_required" }),
+          ]);
+    }
+    return view(11, [device("dev-b", "builder", [["s2", "Back online"]], { state: "online" })], false);
+  });
+  installBackendConnection(entry);
+  await entry.ready();
+  resetFleetStore();
+  startFleetStore();
+  await refreshFleetNavigator({ full: true });
+
+  expect(deviceTree().map(node => node.deviceId)).toEqual(["dev-a", "dev-e"]);
+  // Offline peers remain indexed in the fleet store for session/owner lookups.
+  expect(fleetSessionOwner("s2")).toBe("dev-b");
+
+  entry.push([{ event: "fleet://index-changed", payload: { revision: 11, deviceIds: ["dev-b"] } }]);
+  await tick();
+  expect(deviceTree().map(node => node.deviceId)).toEqual(["dev-a", "dev-b", "dev-e"]);
 });
 
 test("the shell layout is written once it holds still, with the last value", async () => {

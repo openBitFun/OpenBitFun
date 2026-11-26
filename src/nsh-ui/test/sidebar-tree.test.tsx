@@ -44,7 +44,21 @@ function navigator(extraDevices: Array<Record<string, unknown>> = []) {
       ], { hostKind: "cli", ui: { rollup: "needs_you" } }),
       fleetDeviceRow("dev-c", "win-pc", [], { state: "update_required", stateReason: "Needs OpenBitFun 1.3 or later" }),
       ...extraDevices,
-      fleetDeviceRow("dev-d", "old-laptop", [], { state: "offline" }),
+      fleetDeviceRow(
+        "dev-d",
+        "old-laptop",
+        [
+          {
+            workspaceId: "workspace-offline",
+            name: "offline-repo",
+            rootPath: "/offline/repo",
+            sessions: [fleetSessionRow("dev-d", "workspace-offline", "session-offline", "Cached offline thread")],
+          },
+        ],
+        { state: "offline" },
+      ),
+      fleetDeviceRow("dev-e", "stale-box", [], { state: "stale" }),
+      fleetDeviceRow("dev-f", "unreachable-box", [], { state: "unreachable" }),
     ],
   };
 }
@@ -62,21 +76,68 @@ async function deviceMenu(app: Awaited<ReturnType<typeof open>>, deviceId: strin
   await app.press(`sidebar-device-actions-${deviceId}`);
 }
 
-test("the sidebar lists every device with its workspaces and sessions at once", async () => {
+test("the sidebar lists reachable devices with their workspaces and sessions, omitting offline ones", async () => {
   const { app, host } = await openFleet();
   // This device is unfolded; another healthy device is too, with its sessions.
   await app.waitFor("id:sidebar-session-session-1");
   expect(app.shows("id:sidebar-session-session-5")).toBe(true);
   expect(app.shows("text:This device")).toBe(true);
-  // A device that cannot answer folds and says why in words.
+  // An outdated device folds and says why in words; offline / stale / unreachable peers stay out of the sidebar.
   expect(app.shows("text:Update needed")).toBe(true);
-  expect(app.shows("id:sidebar-device-row-dev-d")).toBe(true);
+  expect(app.shows("id:sidebar-device-row-dev-d")).toBe(false);
+  expect(app.shows("id:sidebar-workspace-row-workspace-offline")).toBe(false);
+  expect(app.shows("id:sidebar-device-row-dev-e")).toBe(false);
+  expect(app.shows("id:sidebar-device-row-dev-f")).toBe(false);
 
   // Pressing a row of another device opens that session there.
   await app.press("id:sidebar-session-session-5");
   await app.waitUntil(() =>
     host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_session_transcript_view"),
   );
+});
+
+test("when every other device is offline the sidebar collapses to this device's Workspaces header", async () => {
+  const nav = {
+    revision: 3,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "workspace-1",
+            name: "openbitfun",
+            rootPath: "/repo",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "Local thread")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+      fleetDeviceRow(
+        "dev-d",
+        "BOBPC",
+        [
+          {
+            workspaceId: "workspace-offline",
+            name: "offline-repo",
+            rootPath: "/offline/repo",
+            sessions: [fleetSessionRow("dev-d", "workspace-offline", "session-offline", "Old thread")],
+          },
+        ],
+        { state: "offline" },
+      ),
+    ],
+  };
+  const { app } = await openFleet(nav);
+  await app.waitFor("id:sidebar-session-session-1");
+  expect(app.shows("text:Workspaces")).toBe(true);
+  expect(app.shows("id:sidebar-device-row-dev-a")).toBe(false);
+  expect(app.shows("id:sidebar-device-row-dev-d")).toBe(false);
+  expect(app.shows("text:BOBPC")).toBe(false);
 });
 
 test("New session on a workspace starts it on the workspace's own device", async () => {

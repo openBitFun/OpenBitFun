@@ -35,7 +35,7 @@ import {
   splitPaneOpen,
   workspaces,
 } from "./state";
-import { localSessionMarkState, rollupMarkState, sessionMarkState, type MarkState } from "./ui/fleet";
+import { deviceException, localSessionMarkState, rollupMarkState, sessionMarkState, type MarkState } from "./ui/fleet";
 import type { SessionActionTarget } from "./ui/sessionActions";
 import type { WorkspaceActionTarget } from "./ui/workspaceActions";
 
@@ -79,6 +79,16 @@ const NON_RUNTIME_HOST_KINDS = new Set(["cloud", "mobile", "phone", "browser", "
 /** Runtime devices (this desktop included); the cloud node and frontend-only phones and browsers are not. */
 export function isRuntimeFleetDevice(device: FleetDevice): boolean {
   return !NON_RUNTIME_HOST_KINDS.has(device.hostKind.toLowerCase());
+}
+
+/**
+ * Devices listed in the session tree (sidebar and phone Sessions tab): runtime
+ * devices that are not offline/unreachable/stale, plus this client device.
+ * Offline devices remain in `fleetDevices()` for Settings › Account › Devices
+ * and open-session offline notices.
+ */
+export function isSidebarFleetDevice(device: FleetDevice): boolean {
+  return isRuntimeFleetDevice(device) && (device.isClientDevice || deviceException(device.state) !== "offline");
 }
 
 /**
@@ -183,7 +193,7 @@ function buildDeviceTree(): DeviceTreeNode[] {
   const status = statusOfSession();
   if (fleetActive()) {
     return fleetDevices()
-      .filter(isRuntimeFleetDevice)
+      .filter(isSidebarFleetDevice)
       .map(device => {
         const hint = deviceUiHint(device);
         return {

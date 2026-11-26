@@ -1,8 +1,9 @@
-// The sidebar's device tree (wave 23, owner direction): every runtime device
-// of the account → its workspaces → their sessions, the way the Tauri client's
+// The sidebar's device tree (wave 23, owner direction): online runtime devices
+// of the account → their workspaces → their sessions, the way the Tauri client's
 // navigation panel laid them out, drawn in the NSH chrome language (visual
-// spec §3 "Sidebar row", "Device rows"). A signed-out or single-device user
-// sees this device's workspaces with no device header.
+// spec §3 "Sidebar row", "Device rows"). Offline devices stay out of the
+// sidebar (they remain listed in Settings › Account › Devices). A signed-out or
+// single-online-device user sees this device's workspaces with no device header.
 //
 // Display only. The rows, their order (newest session first), states and the
 // action gates are the backend's: the fleet navigator through `deviceTree()`,
@@ -770,10 +771,10 @@ function SectionHeader(props: { label: string; action?: JSX.Element }) {
 }
 
 /**
- * The account's runtime devices → workspaces → sessions. With one device its
- * workspaces sit directly under a "Workspaces" header; with several, each
- * device's name (upper case, no glyph) heads its workspaces at the same indent,
- * folds them, and carries its own new-workspace action and ⋯.
+ * The account's online runtime devices → workspaces → sessions. With one
+ * visible device its workspaces sit directly under a "Workspaces" header; with
+ * several, each device's name (upper case, no glyph) heads its workspaces at
+ * the same indent, folds them, and carries its own new-workspace action and ⋯.
  */
 export function DeviceSidebarTree(props: { onNavigate?: () => void }): JSX.Element {
   const nodes = deviceTree;
