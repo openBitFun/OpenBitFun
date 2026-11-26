@@ -19,7 +19,7 @@ export interface MobileTextFieldProps
 
 export const MobileTextField = forwardRef<HTMLInputElement, MobileTextFieldProps>(
   function MobileTextField({
-    appearance = "soft",
+    appearance = "surface",
     "aria-invalid": ariaInvalid,
     className,
     disabled,

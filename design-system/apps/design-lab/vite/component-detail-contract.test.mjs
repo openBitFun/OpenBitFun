@@ -517,6 +517,8 @@ test("form previews preserve specimen width and their simulated field states", a
   assert.match(styles, /\.component-field-group-example\s*\{[^}]*min-inline-size:\s*440px/);
   assert.match(styles, /\.component-textarea-example\s*\{[^}]*inline-size:\s*280px/);
   assert.match(styles, /\.component-textarea-example\.lab-state-hover textarea[^{}]*\{[^}]*--openbitfun-color-field-border-hover/);
-  assert.match(styles, /\.component-textarea-example\.lab-state-focus-visible textarea[^{}]*\{[^}]*--openbitfun-color-focus-ring/);
+  // Text entry focus is border-only in the component, so the simulated state mirrors that.
+  assert.match(styles, /\.component-textarea-example\.lab-state-focus-visible textarea[^{}]*\{[^}]*--openbitfun-color-field-border-focus/);
+  assert.match(styles, /\.component-choice-example\.lab-state-focus-visible \[data-openbitfun-part="circle"\][^{}]*\{[^}]*outline:[^}]*--openbitfun-color-focus-ring/);
   assert.match(styles, /\.component-preview-matrix\[data-state-count="7"\]\s*\{[^}]*repeat\(7,/);
 });

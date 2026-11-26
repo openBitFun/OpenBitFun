@@ -28,7 +28,9 @@
   "color": {
     "composer": {
       "border": { "$type": "color", "$value": "{color.field.border}" },
-      "contextBackground": { "$type": "color", "$value": "rgba(0, 0, 0, 0.03)" }
+      "contextBackground": { "$type": "color", "$value": "rgba(0, 0, 0, 0.03)" },
+      "mobileSurface": { "$description": "Frosted pill of the mobile ComposerBar (80% surface over a blur).", "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 80%, transparent)" },
+      "mobileBorder": { "$description": "Hairline around the mobile ComposerBar; the demo's line color.", "$type": "color", "$value": "{ref.color.neutral.200}" }
     },
     "numberBadge": {
       "background": { "$type": "color", "$value": "{color.action.neutral.surfaceHover}" }
@@ -65,6 +67,28 @@
         "$type": "color",
         "$value": "rgba(16, 26, 39, 0.03)"
       }
+    },
+    "sidebar": {
+      "$description": "Fluid Functionalism mobile sidebar surface and ink ramps.",
+      "bg": { "$type": "color", "$value": "{ref.color.neutral.70}" },
+      "raised": { "$type": "color", "$value": "{ref.color.neutral.0}" },
+      "line": { "$type": "color", "$value": "{color.border.subtle}" },
+      "hover": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 6%, {ref.color.neutral.0})" },
+      "selection": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 6%, transparent)" },
+      "ink": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 80%, transparent)" },
+      "deep": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 72%, transparent)" },
+      "muted": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 50%, transparent)" },
+      "subtle": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 35%, transparent)" }
+    },
+    "device": {
+      "$description": "Phone preview hardware in Design Lab: bezel and home indicator of the mobile demo.",
+      "bezel": { "$type": "color", "$value": "{ref.color.gray.750}" },
+      "homeIndicator": { "$type": "color", "$value": "rgba(0, 0, 0, 0.20)" }
+    },
+    "icon": {
+      "$description": "Two-level icon ink from the OpenBitFun mobile demo. Icons take one of these colors directly and never stack opacity on top.",
+      "default": { "$description": "Primary action icons: sidebar toggle, tools, settings, back, view switch, add, microphone.", "$type": "color", "$value": "{color.content.secondary}" },
+      "subtle": { "$description": "Indicator icons: disclosure chevrons, group add, collapse.", "$type": "color", "$value": "{color.sidebar.subtle}" }
     },
     "overlay": {
       "scrim": {
@@ -314,6 +338,8 @@
     "xl": { "$value": "0 12px 24px rgba(16, 26, 39, 0.11)" },
     "raised": { "$value": "{shadow.sm}" },
     "composer": { "$value": "0 2px 12px rgba(0, 0, 0, 0.08)" },
+    "mobileComposer": { "$value": "0 6px 18px rgba(0, 0, 0, 0.07)" },
+    "device": { "$description": "Phone preview bezel shadow in Design Lab.", "$value": "0 24px 64px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.25)" },
     "menu": { "$value": "0 4px 20px rgba(0, 0, 0, 0.12)" },
     "overlay": { "$value": "0 4px 20px rgba(0, 0, 0, 0.12)" },
     "accentGlow": {

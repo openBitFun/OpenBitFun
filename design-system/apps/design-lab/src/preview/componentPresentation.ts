@@ -28,9 +28,12 @@ const presentations: Record<string, ComponentPresentation> = {
   MobileAvatar: "compact", MobileCheckbox: "compact", MobileSwitch: "compact", MobileTag: "compact",
   MobileTextField: "fields", MobileTextarea: "fields",
   MobileSelect: "fields", MobileStepper: "fields",
-  MobileCard: "cards", MobileStatus: "cards",
+  MobileCard: "cards", MobileMiniAppCard: "cards", MobileStatus: "cards",
   MobileBanner: "stack", MobilePageHeader: "stack", MobileSection: "stack", MobileListRow: "stack",
   MobileRadioGroup: "stack", MobileToolbar: "stack",
+  MobileSidebar: "stack", MobileSidebarChildRow: "stack", MobileSidebarEntryRow: "stack",
+  MobileSidebarHeader: "stack", MobileSidebarSectionLabel: "stack", MobileSidebarSessionRow: "stack",
+  MobileSidebarToolsFooter: "stack", MobileSidebarWorkspaceRow: "stack",
   MobileActionSheet: "interactive", MobileChoiceSheet: "interactive",
   MobileConfirmSheet: "interactive", MobileSheet: "interactive",
   MobileDisclosure: "composition", MobileComposer: "composition", MobileFloatingActions: "composition",
@@ -44,7 +47,8 @@ const initialStates: Record<string, string> = {
   StatusPill: "success", Toolbar: "with-center", TabGroup: "selected", SegmentedControl: "selected",
   Listbox: "selected-option", NavigationPanel: "selected-item", ScrollArea: "auto",
   RollingText: "replacing", VoiceCallPanel: "live", MobileDisclosure: "open",
-  MobileComposer: "expanded", MobileMessage: "assistant", MobilePageHeader: "with-subtitle",
+  MobileComposer: "collapsed", MobileMessage: "assistant", MobilePageHeader: "with-subtitle",
+  MobileSidebarWorkspaceRow: "expanded",
 };
 
 export function getComponentPresentation(component: Pick<ComponentMeta, "name" | "category">): ComponentPresentation {

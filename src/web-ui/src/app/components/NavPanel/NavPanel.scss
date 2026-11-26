@@ -1080,12 +1080,21 @@ $_section-header-height: 22px;
   &__item-icon {
     display: flex;
     align-items: center;
+    justify-content: center;
     flex-shrink: 0;
     inline-size: var(--_nav-icon-size);
     block-size: var(--_nav-icon-size);
     color: var(--_nav-icon-color);
     transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
                 color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+
+    /* Lucide glyphs have varying optical sizes within their viewBox; constrain
+     * the inner svg to the token size so different glyphs read as one row. */
+    > svg {
+      inline-size: 100%;
+      block-size: 100%;
+      flex-shrink: 0;
+    }
 
     .openbitfun-nav-panel__item:hover & {
       opacity: 1;

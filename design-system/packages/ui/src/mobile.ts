@@ -1,4 +1,5 @@
 import "./styles/layers.css";
+import "./styles/mobile-icons.css";
 
 export {
   MobileActionSheet,
@@ -87,6 +88,11 @@ export {
   type MobileMessageRole,
 } from "./mobile/MobileMessage";
 export {
+  MobileMiniAppCard,
+  type MobileMiniAppCardProps,
+  type MobileMiniAppCardSize,
+} from "./mobile/MobileMiniAppCard";
+export {
   MobilePageHeader,
   type MobilePageHeaderProps,
 } from "./mobile/MobilePageHeader";
@@ -120,6 +126,39 @@ export {
   type MobileSheetCloseReason,
   type MobileSheetProps,
 } from "./mobile/MobileSheet";
+export {
+  MobileSidebar,
+  type MobileSidebarProps,
+} from "./mobile/MobileSidebar";
+export {
+  MobileSidebarChildRow,
+  type MobileSidebarChildRowProps,
+} from "./mobile/MobileSidebarChildRow";
+export {
+  MobileSidebarEntryRow,
+  type MobileSidebarEntryRowProps,
+} from "./mobile/MobileSidebarEntryRow";
+export {
+  MobileSidebarHeader,
+  type MobileSidebarHeaderProps,
+} from "./mobile/MobileSidebarHeader";
+export {
+  MobileSidebarSectionLabel,
+  type MobileSidebarSectionLabelProps,
+} from "./mobile/MobileSidebarSectionLabel";
+export {
+  MobileSidebarSessionRow,
+  type MobileSidebarSessionRowProps,
+  type MobileSidebarSessionStatus,
+} from "./mobile/MobileSidebarSessionRow";
+export {
+  MobileSidebarToolsFooter,
+  type MobileSidebarToolsFooterProps,
+} from "./mobile/MobileSidebarToolsFooter";
+export {
+  MobileSidebarWorkspaceRow,
+  type MobileSidebarWorkspaceRowProps,
+} from "./mobile/MobileSidebarWorkspaceRow";
 export {
   MobileStatus,
   type MobileStatusProps,

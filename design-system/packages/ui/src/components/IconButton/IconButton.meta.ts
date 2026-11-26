@@ -16,6 +16,7 @@ export const iconButtonMeta = {
   ],
   states: ["default", "hover", "active", "focus-visible", "disabled", "loading"],
   tokens: [
+    "color.icon.default",
     "color.surface.raised",
     "color.border.subtle",
     "effect.blur.subtle",

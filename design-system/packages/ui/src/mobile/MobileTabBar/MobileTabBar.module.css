@@ -22,7 +22,7 @@
   .item:disabled { color: var(--openbitfun-color-content-disabled); cursor: not-allowed; }
 
   .icon { position: relative; display: grid; box-sizing: border-box; inline-size: 64px; block-size: 32px; place-items: center; border-radius: var(--openbitfun-radius-pill); transition: background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard); }
-  .icon > :where(svg, img) { inline-size: 20px; block-size: 20px; }
+  .icon > :where(svg, img) { inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); }
   .badge { position: absolute; inset-block-start: 0; inset-inline-start: 50%; margin-inline-start: 4px; }
   .label { display: block; max-inline-size: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--openbitfun-type-label-sm-font-size); font-weight: var(--openbitfun-type-label-md-font-weight); }
 

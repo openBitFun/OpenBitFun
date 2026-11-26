@@ -186,7 +186,7 @@
   position: absolute;
   inset-inline: 0;
   block-size: 78%;
-  background: radial-gradient(58% 100% at 50% 50%, var(--openbitfun-color-surface-subtle), transparent);
+  background: var(--openbitfun-color-surface-canvas);
 }
 
 .design-morph-glasses-hud {

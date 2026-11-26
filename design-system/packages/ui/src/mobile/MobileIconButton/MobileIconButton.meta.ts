@@ -15,7 +15,8 @@ export const mobileIconButtonMeta = {
   ],
   states: ["default", "hover", "active", "focus-visible", "selected", "disabled", "loading"],
   tokens: [
-    "color.action.neutral.content",
+    "color.icon.default",
+    "control.mobileIcon.strokeWidth",
     "color.action.neutral.contentDisabled",
     "color.action.neutral.surface",
     "color.action.neutral.surfaceHover",

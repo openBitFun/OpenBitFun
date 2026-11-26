@@ -16,6 +16,7 @@ export const buttonMeta = {
   ],
   states: ["default", "hover", "active", "disabled"],
   tokens: [
+    "color.icon.subtle",
     "color.surface.raised",
     "color.border.subtle",
     "effect.blur.subtle",

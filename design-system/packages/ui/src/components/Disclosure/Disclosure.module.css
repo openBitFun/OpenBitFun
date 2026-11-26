@@ -19,7 +19,7 @@
 
   .root:not([data-disabled="true"]) .header:hover,
   .root:not([data-disabled="true"])[data-openbitfun-preview-state="hover"] .header {
-    background: var(--openbitfun-color-action-neutral-surface);
+    background: var(--openbitfun-color-action-neutral-surface-hover);
   }
 
   .root[data-open="true"]:not([data-disabled="true"]) .header {
@@ -66,7 +66,7 @@
   }
 
   .indicator {
-    color: var(--openbitfun-color-content-muted);
+    color: var(--openbitfun-color-icon-subtle);
     transform: rotate(0deg);
     transition: transform var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
   }

@@ -1,0 +1,15 @@
+/* Mobile icon rule from the OpenBitFun mobile demo: every stroked icon inside a mobile
+   component uses control.mobileIcon.strokeWidth (1.8). Icon reads its stroke from
+   --openbitfun-control-icon-stroke-width, so remapping it on mobile roots is enough.
+   Colors come from color.icon.default / color.icon.subtle and never stack opacity. */
+@layer openbitfun.components {
+  :where([data-openbitfun-component^="mobile-"]) {
+    --openbitfun-control-icon-stroke-width: var(--openbitfun-control-mobile-icon-stroke-width);
+  }
+
+  :where([data-openbitfun-component^="mobile-"]) :where(svg[stroke="currentColor"]) {
+    stroke-width: var(--openbitfun-control-mobile-icon-stroke-width);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+}

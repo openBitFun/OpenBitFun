@@ -27,6 +27,7 @@ export const disclosureMeta = {
   ],
   states: ["closed", "open", "hover", "focus-visible", "disabled"],
   tokens: [
+    "color.icon.subtle",
     "color.action.neutral.content",
     "color.action.neutral.contentDisabled",
     "color.action.neutral.surface",

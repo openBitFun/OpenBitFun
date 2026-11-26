@@ -12,5 +12,5 @@ export const mobileButtonMeta = {
     { defaultValue: "false", name: "loading", type: "boolean" },
   ],
   states: ["default", "hover", "active", "focus-visible", "disabled", "loading"],
-  tokens: ["color.action.primary.background", "color.action.neutral.surface", "color.status.danger.surface", "radius.pill", "shadow.xs", "space.2", "space.4"],
+  tokens: ["color.action.primary.background", "color.action.neutral.surface", "color.status.danger.surface", "radius.pill", "shadow.xs", "space.2", "control.mobileButton.heightSm", "control.mobileButton.heightMd", "control.mobileButton.heightLg", "control.mobileButton.paddingInlineSm", "control.mobileButton.paddingInlineMd", "control.mobileButton.paddingInlineLg", "control.mobileButton.minInlineSizeSm", "control.mobileButton.minInlineSizeMd", "control.mobileButton.minInlineSizeLg", "control.mobileButton.hitTarget"],
 } as const satisfies ComponentMeta;

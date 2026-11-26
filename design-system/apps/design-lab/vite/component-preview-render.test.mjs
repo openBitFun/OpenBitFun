@@ -206,7 +206,9 @@ test("navigation and mobile components open in usable compositions", () => {
   assert.match(render("TabGroup").preview, /role="tabpanel"/);
   assert.match(render("SegmentedControl").preview, /data-selected-content="chat"/);
   assert.match(render("MobileComposer").preview, /<textarea/);
-  assert.match(render("MobileComposer").preview, /data-openbitfun-component="mobile-message"/);
+  // The composer docks in the demo's recent-home shell; the demo has no chat thread to invent.
+  assert.match(render("MobileComposer").preview, /data-shell="home"[\s\S]*design-phone-dock[\s\S]*data-openbitfun-component="mobile-composer"/);
+  assert.doesNotMatch(render("MobileComposer").preview, /data-openbitfun-component="mobile-message"/);
   assert.doesNotMatch(render("Composer").preview.match(/<textarea[^>]*>/)?.[0] ?? "", /readonly/);
   assert.match(render("MobileScrim").preview, /design-scrim-example/);
 });

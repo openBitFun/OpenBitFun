@@ -14,7 +14,7 @@
     padding: 0;
     border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
     border-radius: var(--openbitfun-radius-pill);
-    color: var(--openbitfun-color-action-neutral-content);
+    color: var(--openbitfun-color-icon-default);
     background: var(--openbitfun-color-surface-panel);
     box-shadow: none;
     cursor: pointer;
@@ -47,10 +47,9 @@
   }
 
   @media (hover: hover) and (pointer: fine) {
+    /* Hover only lays a light fill; the icon keeps its ink and the button keeps its elevation. */
     .root:is(:hover, [data-openbitfun-preview-state="hover"]):not(:disabled) {
-      color: var(--openbitfun-color-content-primary);
       background: var(--openbitfun-color-action-neutral-surface-hover);
-      box-shadow: var(--openbitfun-shadow-sm);
     }
   }
 

@@ -51,6 +51,18 @@
       "default": { "$type": "color", "$value": "{ref.color.gray.650}" },
       "strong": { "$type": "color", "$value": "{ref.color.gray.1000}" }
     },
+    "sidebar": {
+      "$description": "Fluid Functionalism mobile sidebar surface and ink ramps.",
+      "bg": { "$type": "color", "$value": "{ref.color.neutral.70}" },
+      "raised": { "$type": "color", "$value": "{ref.color.neutral.0}" },
+      "line": { "$type": "color", "$value": "{color.border.subtle}" },
+      "hover": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 6%, {ref.color.neutral.0})" },
+      "selection": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 6%, transparent)" },
+      "ink": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 80%, transparent)" },
+      "deep": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 72%, transparent)" },
+      "muted": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 50%, transparent)" },
+      "subtle": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.1000} 35%, transparent)" }
+    },
     "action": {
       "neutral": {
         "border": { "$type": "color", "$value": "{ref.color.gray.1000}" },

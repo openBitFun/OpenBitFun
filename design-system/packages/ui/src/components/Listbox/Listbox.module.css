@@ -89,7 +89,7 @@
 
   /* Transient interaction must not override the persistent selected state. */
   .option:where(:not(:disabled):is(:hover, [data-active="true"])) {
-    background: var(--openbitfun-color-action-neutral-surface);
+    background: var(--openbitfun-color-action-neutral-surface-hover);
   }
 
   .option:where(:not(:disabled):active) {
@@ -101,7 +101,8 @@
   }
 
   .option:focus-visible {
-    box-shadow: 0 0 0 var(--openbitfun-focus-width) var(--openbitfun-color-focus-ring);
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
   }
 
   .option:disabled {

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <style>
+    .mascot-float { animation: bf-float 3.2s ease-in-out infinite; transform-origin: 60px 66px; }
+    .antenna-bob { animation: bf-bob 3.2s ease-in-out infinite; transform-origin: 60px 34px; }
+    .eye { animation: bf-blink 4.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+    @keyframes bf-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-3.5px); }
+    }
+    @keyframes bf-bob {
+      0%, 100% { transform: translateY(0) rotate(0deg); }
+      50% { transform: translateY(-2px) rotate(4deg); }
+    }
+    @keyframes bf-blink {
+      0%, 91%, 97%, 100% { transform: scaleY(1); }
+      94% { transform: scaleY(0.08); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .mascot-float, .antenna-bob, .eye { animation: none; }
+    }
+  </style>
+  <g class="mascot-float">
+    <g class="antenna-bob">
+      <line x1="60" y1="36" x2="60" y2="24" stroke="#4A5568" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="60" cy="19" r="10" fill="#6BBFA8"/>
+      <circle cx="56.5" cy="15.5" r="3" fill="rgba(255,255,255,.35)"/>
+    </g>
+    <path d="M60 33 C 92 33 106 46 106 68 C 106 90 92 101 60 101 C 28 101 14 90 14 68 C 14 46 28 33 60 33 Z" fill="#3A3F4B"/>
+    <ellipse class="eye" cx="47" cy="66" rx="6.5" ry="9.5" fill="#F5F3EC"/>
+    <ellipse class="eye" cx="73" cy="66" rx="6.5" ry="9.5" fill="#F5F3EC"/>
+  </g>
+</svg>

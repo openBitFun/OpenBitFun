@@ -11,11 +11,15 @@
 .design-example-content > * { max-width: 100%; }
 .design-component-overview:is([data-presentation="fields"], [data-presentation="cards"], [data-presentation="stack"]) .design-example-content > * { width: 100%; }
 .design-component-overview[data-mobile] .design-example-content { max-width: 390px; }
+/* A touch-sized pill hugs its label; when the label wraps, the pill closes into a dot and the
+   text overflows it. Specimens hold one line — ellipsis beats a second line inside a pill.
+   The button lives in a matrix cell (not .design-example-content), hence the second selector. */
+.design-component-overview[data-mobile] :is(.design-example-content, .design-example-grid) :is(a, button) { white-space: nowrap; }
 .design-component-overview :is(.component-field-group-example, .component-textarea-example, .component-toolbar-example) { min-inline-size: 0; }
 .design-component-overview .component-card-command-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
 .design-mobile-appearances .design-example-grid { margin-bottom: var(--openbitfun-space-6); }
 .design-mobile-appearances .design-example-grid > div { display: flex; flex-direction: column; align-items: flex-start; gap: var(--openbitfun-space-3); }
-.design-mobile-appearances span { color: var(--openbitfun-color-content-secondary); font-size: var(--openbitfun-type-body-xs-font-size); }
+.design-mobile-appearances .design-example-grid > div > span:first-child { color: var(--openbitfun-color-content-secondary); font-size: var(--openbitfun-type-body-xs-font-size); }
 .design-icon-directory { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--openbitfun-space-2); margin-top: var(--openbitfun-space-4); max-height: 480px; overflow-y: auto; padding: var(--openbitfun-space-1); }
 .design-icon-directory button { display: flex; flex-direction: column; align-items: center; gap: var(--openbitfun-space-3); min-width: 0; padding: var(--openbitfun-space-4) var(--openbitfun-space-2); border: 0; border-radius: var(--openbitfun-radius-md); background: transparent; color: var(--openbitfun-color-content-secondary); cursor: pointer; }
 .design-icon-directory button:hover, .design-icon-directory button[aria-pressed="true"] { background: var(--openbitfun-color-selection-surface); color: var(--openbitfun-color-content-primary); }
@@ -31,11 +35,134 @@
 .design-navigation-content { padding: var(--openbitfun-space-5); border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle); border-radius: var(--openbitfun-radius-md); background: var(--openbitfun-color-surface-canvas); }
 .design-navigation-content p { margin-bottom: 0; color: var(--openbitfun-color-content-secondary); }
 .design-mobile-conversation { display: grid; gap: var(--openbitfun-space-5); }
-.design-mobile-conversation textarea { width: 100%; min-height: var(--openbitfun-space-16); resize: vertical; border: 0; background: transparent; color: var(--openbitfun-color-content-primary); font: inherit; outline-offset: var(--openbitfun-focus-offset); }
+[data-openbitfun-component="mobile-composer"] textarea { width: 100%; min-height: var(--openbitfun-space-16); resize: vertical; border: 0; background: transparent; color: var(--openbitfun-color-content-primary); font: inherit; outline-offset: var(--openbitfun-focus-offset); }
 .design-mobile-footer-example { display: grid; gap: var(--openbitfun-space-8); min-height: 300px; align-content: space-between; }
 .design-scrim-example { position: relative; min-height: 220px; padding: var(--openbitfun-space-5); border-radius: var(--openbitfun-radius-lg); overflow: hidden; background: var(--openbitfun-color-surface-canvas); }
 .design-scrim-example > [data-openbitfun-component="mobile-scrim"] { position: absolute; }
+/* Phone-screen chrome for mobile detail previews. The screen keeps the real device proportions of
+   the 390pt design width the mobile kit is authored for (390×844, iPhone's standard logical
+   viewport), scaled down with `aspect-ratio` so the frame never invents a shape of its own.
+   Sheets and scrims mount inside the screen (their portal target and their scrim are scoped
+   here), so a demo sheet slides over the phone, not the Lab. */
+.design-phone-frame { display: flex; justify-content: center; inline-size: 100%; padding: var(--openbitfun-space-4) 0; }
+/* Slab geometry comes from layout.mobileDevice.* (iPhone 18 Pro, 402 × 874, screen radius 62).
+   aspect-ratio needs unitless numbers, so it repeats slabWidth / slabHeight. */
+.design-phone-screen { position: relative; display: flex; flex-direction: column; box-sizing: border-box; inline-size: min(calc(var(--openbitfun-layout-mobile-device-slab-width) + 2 * var(--openbitfun-layout-mobile-device-bezel)), 100%); aspect-ratio: 422 / 894; max-block-size: min(calc(var(--openbitfun-layout-mobile-device-slab-height) + 2 * var(--openbitfun-layout-mobile-device-bezel)), 78vh); overflow: hidden; border: var(--openbitfun-layout-mobile-device-bezel) solid var(--openbitfun-color-device-bezel); border-radius: var(--openbitfun-layout-mobile-device-frame-radius); background: var(--openbitfun-color-surface-raised); box-shadow: var(--openbitfun-shadow-device); }
+@supports (corner-shape: squircle) {
+  .design-phone-screen { corner-shape: squircle; }
+}
+/* Status bar: 54 tall, content starts below the 62 top safe area. Time and system icons are
+   centred on either side of the Dynamic Island, as the iOS status bar lays them out. */
+.design-phone-status { position: relative; z-index: 2; display: flex; flex: none; justify-content: space-between; align-items: flex-start; padding: 0 0 calc(var(--openbitfun-layout-mobile-device-safe-area-top) - var(--openbitfun-layout-mobile-device-status-bar-height)); color: var(--openbitfun-color-content-primary); font-size: var(--openbitfun-font-size-lg); font-weight: var(--openbitfun-font-weight-semibold); font-variant-numeric: tabular-nums; }
+.design-phone-status > span { display: flex; inline-size: calc((100% - var(--openbitfun-layout-mobile-device-island-width)) / 2); block-size: var(--openbitfun-layout-mobile-device-status-bar-height); align-items: center; justify-content: center; gap: 6px; }
+.design-phone-status svg { display: block; flex: none; }
+.design-phone-status > .design-phone-island { position: absolute; inset-block-start: var(--openbitfun-layout-mobile-device-island-top); inset-inline-start: 50%; inline-size: var(--openbitfun-layout-mobile-device-island-width); block-size: var(--openbitfun-layout-mobile-device-island-height); border-radius: var(--openbitfun-radius-pill); background: var(--openbitfun-color-content-on-light); transform: translateX(-50%); }
+.design-phone-body { position: relative; z-index: 0; flex: 1; display: flex; flex-direction: column; gap: var(--openbitfun-space-4); justify-content: center; min-block-size: 0; padding: var(--openbitfun-space-4); overflow: hidden; }
+.design-phone-body > .design-phone-portal-host { display: flex; flex: 1; min-block-size: 0; flex-direction: column; justify-content: center; gap: var(--openbitfun-space-4); }
+/* Bottom safe area (34): content above it, home indicator 8 from the screen edge. */
+/* Home indicator: 134 x 5, 8 above the screen edge, inside the 34 bottom safe area. */
+.design-phone-gesture { position: relative; flex: none; block-size: var(--openbitfun-layout-mobile-device-safe-area-bottom); }
+.design-phone-gesture::after { content: ""; position: absolute; inset-block-end: var(--openbitfun-layout-mobile-device-home-indicator-offset); inset-inline-start: 50%; inline-size: var(--openbitfun-layout-mobile-device-home-indicator-width); block-size: var(--openbitfun-layout-mobile-device-home-indicator-height); border-radius: var(--openbitfun-radius-pill); background: var(--openbitfun-color-device-home-indicator); transform: translateX(-50%); }
+/* Sheets portal into .design-phone-portal-host; their overlay is position:fixed for the real page,
+   so inside the screen it must re-anchor to the screen box instead of the viewport. A transform on
+   the screen makes fixed descendants resolve against the screen — that contains a demo sheet inside
+   the phone without touching the kit's page-level behavior. */
+.design-phone-screen { transform: translateZ(0); }
+/* MobileScrim is fixed on a real page; inside the screen it fills the phone instead of its own card.
+   The lab-class prefix wins over the kit's module-scoped .root (0,2,0) by specificity. */
+.design-phone-screen .lab-mobile-scrim { position: fixed; }
+/* The specimen (ThemeRoot) must fill the screen so a sheet anchored inside it spans the phone. */
+.design-phone-body > div { flex: 1; min-block-size: 0; }
+.design-phone-body > div > .design-phone-portal-host { flex: 1; }
+.design-phone-body > div > .design-phone-portal-host:has([data-openbitfun-component="mobile-scrim"]) { flex: none; }
+.design-phone-screen .design-selected-component { flex: 1; min-block-size: 0; }
+@media (max-width: 600px) {
+  .design-phone-screen { inline-size: min(320px, 100%); max-block-size: 64vh; }
+}
 @media (max-width: 600px) {
   .design-component-overview { padding: var(--openbitfun-space-4); }
   .design-component-overview:not([data-presentation="compact"]) .design-example-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Mobile sidebar scene: the phone screen hosts the sidebar directly so it fills the frame,
+   matching the Fluid Functionalism drawer surface from the native app and the HTML demo. */
+/* Scene 3 (demo RecentRemoteHome): brand mark + greeting centered, then a borderless
+   session list with hairline dividers, matching the native HarmonyOS page. */
+.design-mobile-sidebar-add { display: flex; align-items: center; justify-content: center; }
+/* Icon library page: one catalog, Web and Mobile rules side by side. */
+.icons-rule-table { inline-size: 100%; min-inline-size: 720px; border-collapse: collapse; }
+.icons-rule-table tbody th, .icons-rule-table thead th:first-child { inline-size: 6em; white-space: nowrap; }
+.icons-rule-table td:last-child { inline-size: 40%; }
+.icons-rule-table :is(th, td) { padding: var(--openbitfun-space-3) var(--openbitfun-space-4); border-block-start: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle); text-align: start; vertical-align: middle; color: var(--openbitfun-color-content-secondary); font-size: var(--openbitfun-type-body-sm-font-size); }
+.icons-rule-table thead th { color: var(--openbitfun-color-content-muted); font-size: var(--openbitfun-type-label-sm-font-size); }
+.icons-rule-table tbody th { color: var(--openbitfun-color-content-primary); }
+.icons-rule-sample { display: inline-flex; align-items: center; gap: var(--openbitfun-space-3); }
+.icons-catalog-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--openbitfun-space-3); }
+.icons-catalog-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--openbitfun-space-3); }
+.icons-catalog-grid { max-height: none; padding: var(--openbitfun-space-4); }
+.icons-catalog-item { display: flex; flex-direction: column; align-items: center; gap: var(--openbitfun-space-3); min-width: 0; padding: var(--openbitfun-space-4) var(--openbitfun-space-2); border-radius: var(--openbitfun-radius-md); }
+
+/* Demo page shells (layout.mobilePage.*). "page" = mini app page: 56px header with back, title and a
+   48px trailing slot over a body inset 20px. "home" = recent home: floating sidebar button and a
+   docked composer above the bottom safe area. */
+.design-phone-header { display: flex; flex: none; align-items: center; block-size: var(--openbitfun-layout-mobile-page-header-height); padding-inline: var(--openbitfun-layout-mobile-page-header-padding-inline); }
+.design-phone-header-title { flex: 1; min-inline-size: 0; overflow: hidden; color: var(--openbitfun-color-content-primary); font-size: var(--openbitfun-font-size-xl); font-weight: var(--openbitfun-font-weight-medium); line-height: normal; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.design-phone-header-spacer { flex: none; inline-size: var(--openbitfun-layout-mobile-page-header-action-size); }
+.design-phone-screen[data-shell="page"] .design-phone-body { justify-content: flex-start; padding: 0 var(--openbitfun-layout-mobile-page-body-padding-inline) var(--openbitfun-space-4); }
+.design-phone-fab { position: absolute; z-index: 1; inset-block-start: calc(var(--openbitfun-layout-mobile-device-safe-area-top) + (var(--openbitfun-layout-mobile-device-nav-bar-height) - var(--openbitfun-layout-mobile-page-fab-size)) / 2); inset-inline-start: var(--openbitfun-layout-mobile-device-nav-inset-inline); display: grid; inline-size: var(--openbitfun-layout-mobile-page-fab-size); block-size: var(--openbitfun-layout-mobile-page-fab-size); place-items: center; padding: 0; border: 0; border-radius: var(--openbitfun-radius-md); color: var(--openbitfun-color-icon-default); background: transparent; cursor: pointer; }
+.design-phone-fab:hover { background: var(--openbitfun-color-sidebar-hover); }
+/* The composer floats over the page bottom like the demo ComposerBar, above the 34 safe area. */
+.design-phone-dock { position: absolute; z-index: 1; inset-inline: 0; inset-block-end: var(--openbitfun-layout-mobile-device-safe-area-bottom); padding: var(--openbitfun-layout-mobile-page-composer-padding-block-start) var(--openbitfun-layout-mobile-page-composer-padding-inline) 0; }
+[data-openbitfun-component="mobile-composer"] textarea.design-composer-input { min-height: 0; block-size: var(--openbitfun-control-height-md); resize: none; line-height: var(--openbitfun-control-height-md); overflow: hidden; }
+.design-composer-input { inline-size: 100%; min-inline-size: 0; border: 0; outline: 0; padding: 0 var(--openbitfun-space-1); color: var(--openbitfun-color-content-primary); background: transparent; font-size: var(--openbitfun-font-size-xl); }
+.design-composer-input::placeholder { color: var(--openbitfun-color-content-muted); }
+.design-composer-send { display: grid; inline-size: var(--openbitfun-control-height-sm); block-size: var(--openbitfun-control-height-sm); place-items: center; border-radius: var(--openbitfun-radius-pill); color: var(--openbitfun-color-action-primary-content); background: var(--openbitfun-color-action-primary-background); }
+.design-mobile-home-scene { align-items: center; justify-content: center; padding: 0 var(--openbitfun-layout-mobile-page-home-gutter) calc(var(--openbitfun-layout-mobile-page-home-inset-block-end) - var(--openbitfun-layout-mobile-device-safe-area-bottom)); }
+.design-phone-body > .design-mobile-home-inner { display: flex; flex: none; flex-direction: column; align-items: center; }
+.design-mobile-home-mark { display: block; margin-block: var(--openbitfun-layout-mobile-page-home-mark-gap-before) var(--openbitfun-layout-mobile-page-home-mark-gap-after); }
+.design-mobile-home-title { margin-block-end: var(--openbitfun-layout-mobile-page-home-title-gap-after); color: var(--openbitfun-color-content-primary); font-size: var(--openbitfun-font-size-3xl); font-weight: var(--openbitfun-font-weight-regular); line-height: 32px; letter-spacing: -0.02em; text-align: center; }
+.design-mobile-miniapp-list { gap: var(--openbitfun-layout-mobile-mini-app-card-list-gap); overflow-y: auto; }
+/* Demo comparison page: the demo iframe and the Lab scene share one scale so the eye can compare
+   them, while measurements are normalised to the 402px screen on both sides. */
+.lab-page--demo-compare { --_compare-scale: 0.62; }
+.demo-compare-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--openbitfun-space-3); margin-block: var(--openbitfun-space-4); }
+.demo-compare-stage { display: grid; grid-template-columns: repeat(2, minmax(0, max-content)); justify-content: start; gap: var(--openbitfun-space-8); }
+.demo-compare-column h2 { margin: 0 0 var(--openbitfun-space-3); color: var(--openbitfun-color-content-secondary); font-size: var(--openbitfun-type-label-md-font-size); font-weight: var(--openbitfun-type-label-md-font-weight); }
+.demo-compare-viewport { inline-size: calc(422px * var(--_compare-scale)); block-size: calc(894px * var(--_compare-scale)); overflow: hidden; }
+.demo-compare-frame { display: block; inline-size: 422px; block-size: 894px; border: 0; transform: scale(var(--_compare-scale)); transform-origin: 0 0; }
+.demo-compare-lab > .design-phone-frame { inline-size: 422px; padding: 0; transform: scale(var(--_compare-scale)); transform-origin: 0 0; }
+.demo-compare-lab .design-phone-screen { inline-size: 422px; max-block-size: none; }
+.demo-compare-table-scroll { margin-block-start: var(--openbitfun-space-6); overflow-x: auto; }
+.demo-compare-table { inline-size: 100%; min-inline-size: 560px; border-collapse: collapse; font-size: var(--openbitfun-type-body-sm-font-size); font-variant-numeric: tabular-nums; }
+.demo-compare-table :is(th, td) { padding: var(--openbitfun-space-2) var(--openbitfun-space-3); border-block-end: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle); text-align: start; color: var(--openbitfun-color-content-secondary); }
+.demo-compare-table thead th { color: var(--openbitfun-color-content-muted); font-size: var(--openbitfun-type-label-sm-font-size); }
+.demo-compare-table tbody th { color: var(--openbitfun-color-content-primary); font-weight: var(--openbitfun-font-weight-medium); }
+.demo-compare-table tr[data-result="drift"] td:last-child { color: var(--openbitfun-color-status-danger-content); font-weight: var(--openbitfun-font-weight-medium); }
+.demo-compare-table tr[data-result="match"] td:last-child { color: var(--openbitfun-color-status-success-content); }
+/* Header actions of the demo page (view toggle): 36px, transparent until hover, like the sidebar button. */
+.design-phone-header-action { display: grid; flex: none; inline-size: var(--openbitfun-layout-mobile-page-fab-size); block-size: var(--openbitfun-layout-mobile-page-fab-size); margin-inline: calc((var(--openbitfun-layout-mobile-page-header-action-size) - var(--openbitfun-layout-mobile-page-fab-size)) / 2) 0; place-items: center; padding: 0; border: 0; border-radius: var(--openbitfun-radius-md); color: var(--openbitfun-color-icon-default); background: transparent; cursor: pointer; }
+.design-phone-header-action:hover { background: var(--openbitfun-color-action-neutral-surface-hover); }
+.demo-compare-table tr[data-result="demo-issue"] td:last-child { color: var(--openbitfun-color-status-warning-content); text-decoration: underline dotted; cursor: help; }
+/* Sidebar scene: the demo's slab drawer. The panel spans the full screen height under the status
+   bar; its top inset is the sidebar's own offset plus the device safe area below the status bar. */
+.design-phone-scrim { position: absolute; z-index: 1; inset: 0; background: var(--openbitfun-color-overlay-scrim); }
+.design-mobile-sidebar-drawer { position: absolute; z-index: 1; inset-block: 0; inset-inline-start: 0; display: flex; inline-size: var(--openbitfun-layout-mobile-sidebar-width); flex-direction: column; padding-block: calc(var(--openbitfun-layout-mobile-sidebar-panel-padding-block-start) + var(--openbitfun-layout-mobile-device-safe-area-top) - var(--openbitfun-layout-mobile-device-status-bar-height)) calc(var(--openbitfun-layout-mobile-device-safe-area-bottom) - var(--openbitfun-space-3)); background: var(--openbitfun-color-sidebar-bg); }
+.design-mobile-sidebar-drawer > [data-openbitfun-component="mobile-sidebar"] { flex: 1; min-block-size: 0; }
+.design-mobile-sidebar-drawer .design-mobile-sidebar-recent-label { margin-block: var(--openbitfun-layout-mobile-sidebar-recent-section-gap-before) var(--openbitfun-layout-mobile-sidebar-recent-section-gap-after); }
+/* Skill page */
+.lab-page--skill { max-inline-size: 960px; }
+.skill-section { display: grid; gap: var(--openbitfun-space-3); margin-block-start: var(--openbitfun-space-8); }
+.skill-section h2 { margin: 0; color: var(--openbitfun-color-content-primary); font-size: var(--openbitfun-type-heading-section-font-size); font-weight: var(--openbitfun-type-heading-section-font-weight); }
+.skill-section h3 { margin: var(--openbitfun-space-2) 0 0; color: var(--openbitfun-color-content-secondary); font-size: var(--openbitfun-type-label-md-font-size); font-weight: var(--openbitfun-font-weight-medium); }
+.skill-section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--openbitfun-space-3); }
+.skill-actions { display: flex; gap: var(--openbitfun-space-2); }
+.skill-note, .skill-steps { margin: 0; color: var(--openbitfun-color-content-secondary); font-size: var(--openbitfun-type-body-sm-font-size); line-height: var(--openbitfun-line-height-relaxed); }
+.skill-steps { display: grid; gap: var(--openbitfun-space-1); padding-inline-start: var(--openbitfun-space-5); }
+.skill-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--openbitfun-space-2) var(--openbitfun-space-6); margin: 0; font-size: var(--openbitfun-type-body-sm-font-size); }
+.skill-facts dt { color: var(--openbitfun-color-content-muted); }
+.skill-facts dd { margin: 0; color: var(--openbitfun-color-content-primary); }
+.skill-code { display: flex; align-items: flex-start; gap: var(--openbitfun-space-2); padding: var(--openbitfun-space-3) var(--openbitfun-space-4); border-radius: var(--openbitfun-radius-lg); background: var(--openbitfun-color-surface-subtle); }
+.skill-code pre, .skill-full { flex: 1; min-inline-size: 0; margin: 0; overflow-x: auto; color: var(--openbitfun-color-content-primary); font-family: var(--openbitfun-type-code-md-font-family); font-size: var(--openbitfun-type-code-md-font-size); line-height: var(--openbitfun-type-code-md-line-height); white-space: pre-wrap; }
+.skill-full { max-block-size: 640px; overflow-y: auto; padding: var(--openbitfun-space-4); border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle); border-radius: var(--openbitfun-radius-lg); }
+.skill-install { display: grid; gap: var(--openbitfun-space-2); }
+.skill-install-label { color: var(--openbitfun-color-content-primary); font-size: var(--openbitfun-type-body-sm-font-size); font-weight: var(--openbitfun-font-weight-medium); }

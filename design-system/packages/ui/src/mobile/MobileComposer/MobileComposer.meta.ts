@@ -13,7 +13,7 @@ export const mobileComposerMeta = {
     { name: "onActivate", type: "() => void" },
   ],
   states: ["collapsed", "expanded", "active", "focus-visible"],
-  tokens: [
+  tokens: ["color.composer.mobileSurface", "color.composer.mobileBorder", "shadow.mobileComposer", "effect.blur.medium", "border.width.hairline", 
     "color.border.subtle",
     "color.content.primary",
     "color.focus.ring",

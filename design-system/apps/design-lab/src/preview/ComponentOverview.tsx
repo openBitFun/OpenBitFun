@@ -11,6 +11,8 @@ interface ComponentOverviewProps {
   presentation: ComponentPresentation;
   states: readonly string[];
   renderPreview: (state: string) => ReactNode;
+  /** States left out of the overview grid (for example ones that open a page-wide modal). */
+  hiddenStates?: readonly string[];
   stateLabel: (state: string) => string;
   onInspect: (state: string) => void;
   iconName: IconName;
@@ -22,7 +24,7 @@ interface ComponentOverviewProps {
   tokenOverrides: TokenOverrides;
 }
 
-export function ComponentOverview({ component, presentation, states, renderPreview, stateLabel, onInspect, iconName, onSelectIcon, extraExamples, ...theme }: ComponentOverviewProps) {
+export function ComponentOverview({ component, presentation, states, renderPreview, hiddenStates = [], stateLabel, onInspect, iconName, onSelectIcon, extraExamples, ...theme }: ComponentOverviewProps) {
   const { t } = useI18n();
   const [iconQuery, setIconQuery] = useState("");
   const compactExamples = component.name === "NumberBadge"
@@ -68,7 +70,7 @@ export function ComponentOverview({ component, presentation, states, renderPrevi
             <h3>{t("preview.states")}</h3>
           </section>}
           <div className="design-example-grid">
-            {getOverviewStates(component).filter(state => states.includes(state)).map(state => <section className="design-component-example" key={state} data-state={state} data-featured={component.name === "Card" && state === "raised" || undefined}>
+            {getOverviewStates(component).filter(state => states.includes(state) && !hiddenStates.includes(state)).map(state => <section className="design-component-example" key={state} data-state={state} data-featured={component.name === "Card" && state === "raised" || undefined}>
               <h3><Button size="xs" variant="text" trailingIcon={<Icon name="arrow-up-right" size="sm" />} onClick={() => onInspect(state)} aria-label={t("preview.inspect", { component: component.name, state: stateLabel(state) })}>
                 {stateLabel(state)}
               </Button></h3>

@@ -32,7 +32,7 @@
 
   .root[data-selected="true"] {
     border-color: var(--openbitfun-color-border-strong);
-    background: var(--openbitfun-color-surface-tertiary);
+    background: var(--openbitfun-color-selection-surface);
   }
 
   @media (hover: hover) and (pointer: fine) {
@@ -71,7 +71,15 @@
     box-sizing: border-box;
     flex: 0 0 auto;
     place-items: center;
-    color: var(--openbitfun-color-content-secondary);
+    color: var(--openbitfun-color-icon-default);
+    inline-size: var(--openbitfun-control-icon-size-md);
+    block-size: var(--openbitfun-control-icon-size-md);
+  }
+
+  .leading > :where(svg, img),
+  .trailing > :where(svg, img) {
+    inline-size: 100%;
+    block-size: 100%;
   }
 
   .copy {

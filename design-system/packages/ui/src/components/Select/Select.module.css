@@ -199,6 +199,7 @@
 
   .indicator {
     margin-inline-start: auto;
+    color: var(--openbitfun-color-icon-subtle);
     transition: transform var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
   }
 

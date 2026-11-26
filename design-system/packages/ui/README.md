@@ -247,6 +247,42 @@ the product slider and text labels.
 Product consumers own capability filtering, translated names and
 availability; the icon catalog does not imply runtime support for these modes.
 
+Web and Mobile share one icon rule. Icons take `color.icon.default` (primary
+actions) or `color.icon.subtle` (chevrons, group add, collapse) directly and
+never stack opacity; `opacity.iconArtwork` is 1. Stroke width comes from
+`control.icon.strokeWidth`: 1.6 at compact and comfortable density, 1.8 at touch
+density. Mobile components pin 1.8 through `control.mobileIcon.strokeWidth`.
+
+## Focus
+
+Web and Mobile use three focus recipes. Pick by where the focused element sits,
+not by platform:
+
+- **Control ring** (default): `outline: focus.width solid color.focus.ring` with
+  `outline-offset: focus.offset`. Buttons, icon buttons, checkboxes, radios,
+  switches, tabs, links and standalone rows.
+- **Clipped-item ring**: `box-shadow: 0 0 0 focus.width color.focus.ring`, inset
+  when the item fills a scrolling or clipping parent (menus, listbox options,
+  sidebar rows). An outset outline would be cut off there.
+- **Field focus**: text entry changes only its border to `color.field.borderFocus`.
+  Picker triggers (Select, Combobox, MobileSelect) add the box-shadow ring on
+  `:focus-visible`, since they behave like buttons.
+
+Forced-colors mode keeps the same geometry with `Highlight`.
+
+## Hover and press
+
+- Neutral controls and rows lay `color.action.neutral.surfaceHover` on hover and
+  `color.action.neutral.surfacePressed` on press. Hover never changes icon ink,
+  elevation or size; icons keep `color.icon.*`.
+- Text fields use `color.field.backgroundHover`; status and primary actions use
+  their own hover tokens.
+- The mobile sidebar is its own opaque surface and uses `color.sidebar.hover` /
+  `color.sidebar.selection`. MobileMiniAppCard is the one lifting card (shadow and
+  2px rise), as in the mobile demo.
+- Mobile components gate hover behind `(hover: hover) and (pointer: fine)` so a
+  tap never leaves a sticky hover; press feedback stays on `:active`.
+
 ## Native scrollbars
 
 `styles.css` owns scrollbar presentation inside `ThemeRoot` (or

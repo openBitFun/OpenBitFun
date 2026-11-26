@@ -20,6 +20,8 @@ export const mobileStepperMeta = {
   ],
   states: ["default", "hover", "active", "focus-within", "invalid", "disabled"],
   tokens: [
+    "color.icon.default",
+    "control.mobileIcon.strokeWidth",
     "color.action.neutral.surface.hover",
     "color.action.neutral.surface.pressed",
     "color.content.disabled",

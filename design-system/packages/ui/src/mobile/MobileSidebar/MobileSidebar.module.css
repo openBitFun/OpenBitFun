@@ -1,0 +1,32 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    flex-direction: column;
+    padding-inline: var(--openbitfun-layout-mobile-sidebar-panel-padding-inline);
+    background: var(--openbitfun-color-sidebar-bg);
+    color: var(--openbitfun-color-sidebar-ink);
+  }
+
+  .header {
+    flex: none;
+  }
+
+  .scroll {
+    flex: 1 1 auto;
+    padding-block-start: var(--openbitfun-layout-mobile-sidebar-scroll-padding-block-start);
+    min-block-size: 0;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .scroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  .footer {
+    flex: none;
+  }
+}

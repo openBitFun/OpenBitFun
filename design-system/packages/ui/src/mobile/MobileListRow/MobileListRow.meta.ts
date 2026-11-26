@@ -16,6 +16,8 @@ export const mobileListRowMeta = {
   ],
   states: ["default", "hover", "active", "focus-visible", "selected", "disabled"],
   tokens: [
+    "color.icon.default",
+    "control.mobileIcon.strokeWidth",
     "color.action.neutral.surfaceHover",
     "color.action.neutral.surfacePressed",
     "color.border.strong",

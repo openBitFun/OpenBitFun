@@ -99,8 +99,8 @@
   }
 
   .imageButton:focus-visible {
-    outline: 2px solid var(--openbitfun-color-focus-ring);
-    outline-offset: 2px;
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
   }
 
   .imageButton img {

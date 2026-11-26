@@ -68,6 +68,45 @@
     opacity: var(--openbitfun-opacity-disabled);
   }
 
+  .labeled {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-3);
+    cursor: pointer;
+  }
+
+  .labeled[data-appearance="surface"] {
+    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
+    border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
+    border-radius: var(--openbitfun-radius-md);
+    background: var(--openbitfun-color-surface-panel);
+    box-shadow: var(--openbitfun-shadow-xs);
+  }
+
+  .labeled:has(.input:focus-visible) {
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
+  }
+
+  .copy {
+    display: flex;
+    min-inline-size: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+  }
+
+  .label {
+    color: var(--openbitfun-color-content-primary);
+    font-size: var(--openbitfun-type-body-md-font-size);
+    font-weight: var(--openbitfun-type-label-lg-font-weight);
+  }
+
+  .description {
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-body-xs-font-size);
+  }
+
   @media (forced-colors: active) {
     .track {
       border: var(--openbitfun-border-width-default) solid ButtonText;

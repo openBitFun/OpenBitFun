@@ -3,7 +3,7 @@
     --_icon-button-background: transparent;
     --_icon-button-background-hover: var(--openbitfun-color-action-neutral-surface-hover);
     --_icon-button-background-active: var(--openbitfun-color-action-neutral-surface-hover);
-    --_icon-button-content: var(--openbitfun-color-content-primary);
+    --_icon-button-content: var(--openbitfun-color-icon-default);
     --_icon-button-icon-size: var(--openbitfun-control-icon-size-sm);
     --_icon-button-size: var(--openbitfun-control-height-sm);
 

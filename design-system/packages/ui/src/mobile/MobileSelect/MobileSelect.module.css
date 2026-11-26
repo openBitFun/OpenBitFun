@@ -7,21 +7,21 @@
 
   /* The field is the MobileTextField surface: a select and a text field sit in the same column, so
      they must read as the same control until one of them is opened. */
-  .field { display: flex; box-sizing: border-box; inline-size: 100%; min-inline-size: 0; min-block-size: 44px; align-items: center; gap: var(--openbitfun-space-2); margin: 0; padding: 0 var(--openbitfun-space-4); border: var(--openbitfun-border-width-default) solid transparent; border-radius: var(--openbitfun-radius-md); color: var(--openbitfun-color-content-primary); background: var(--openbitfun-color-surface-tertiary); font: inherit; font-size: var(--openbitfun-type-body-md-font-size); text-align: start; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; transition: background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard), box-shadow var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard); }
-  .root[data-appearance="surface"] .field { border-color: var(--openbitfun-color-field-border); background: var(--openbitfun-color-field-background); box-shadow: var(--openbitfun-shadow-xs); }
+  .field { display: flex; box-sizing: border-box; inline-size: 100%; min-inline-size: 0; min-block-size: var(--openbitfun-control-mobile-field-height); align-items: center; gap: var(--openbitfun-space-2); margin: 0; padding: 0 var(--openbitfun-control-mobile-field-padding-inline); border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-field-border); border-radius: var(--openbitfun-control-mobile-field-radius); color: var(--openbitfun-color-content-primary); background: var(--openbitfun-color-field-background); font: inherit; font-size: var(--openbitfun-type-body-md-font-size); text-align: start; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; transition: background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard), box-shadow var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard); }
+  .root[data-appearance="soft"] .field { background: var(--openbitfun-color-field-group-background); }
   .root[data-invalid="true"] .field { border-color: var(--openbitfun-color-status-danger-border); }
   .root[data-disabled="true"] .field { color: var(--openbitfun-color-content-disabled); cursor: not-allowed; }
 
   @media (hover: hover) and (pointer: fine) {
-    .field:is(:hover, [data-openbitfun-preview-state="hover"]):not(:disabled) { background: var(--openbitfun-color-action-neutral-surface-hover); }
+    .field:is(:hover, [data-openbitfun-preview-state="hover"]):not(:disabled) { border-color: var(--openbitfun-color-field-border-hover); }
   }
   .field:is(:active, [data-openbitfun-preview-state="active"]):not(:disabled) { background: var(--openbitfun-color-action-neutral-surface-pressed); }
-  .field:is(:focus-visible, [data-openbitfun-preview-state="focus-visible"]) { outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring); outline-offset: var(--openbitfun-focus-offset); }
+  .field:is(:focus-visible, [data-openbitfun-preview-state="focus-visible"]) { outline: none; border-color: var(--openbitfun-color-field-border-focus); box-shadow: 0 0 0 var(--openbitfun-focus-width) var(--openbitfun-color-focus-ring); }
 
   .value { min-inline-size: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .value[data-placeholder="true"] { color: var(--openbitfun-color-content-muted); }
-  .chevron { inline-size: 18px; block-size: 18px; flex: 0 0 18px; color: var(--openbitfun-color-content-secondary); }
+  .value[data-placeholder="true"] { color: var(--openbitfun-color-field-placeholder); }
+  .chevron { inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); flex: 0 0 var(--openbitfun-control-icon-size-md); color: var(--openbitfun-color-icon-subtle); }
 
   @media (prefers-reduced-motion: reduce) { .field { transition: none; } }
-  @media (forced-colors: active) { .root[data-appearance="surface"] .field { border-color: ButtonText; } .field:focus-visible { outline-color: Highlight; } }
+  @media (forced-colors: active) { .field { border-color: ButtonText; } .field:focus-visible { border-color: Highlight; box-shadow: 0 0 0 var(--openbitfun-focus-width) Highlight; } }
 }

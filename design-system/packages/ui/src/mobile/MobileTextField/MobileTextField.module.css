@@ -4,29 +4,35 @@
     box-sizing: border-box;
     inline-size: 100%;
     min-inline-size: 0;
-    min-block-size: 44px;
+    min-block-size: var(--openbitfun-control-mobile-field-height);
     align-items: center;
     gap: var(--openbitfun-space-2);
-    padding-inline: var(--openbitfun-space-4);
-    border: var(--openbitfun-border-width-default) solid transparent;
-    border-radius: var(--openbitfun-radius-md);
+    padding-inline: var(--openbitfun-control-mobile-field-padding-inline);
+    /* Web field surface: 1px field border on the field background, radius base, no shadow. */
+    border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-field-border);
+    border-radius: var(--openbitfun-control-mobile-field-radius);
     color: var(--openbitfun-color-content-primary);
-    background: var(--openbitfun-color-surface-tertiary);
+    background: var(--openbitfun-color-field-background);
     transition:
       border-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
       background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
       box-shadow var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
   }
 
-  .root[data-appearance="surface"] {
-    border-color: var(--openbitfun-color-field-border);
-    background: var(--openbitfun-color-field-background);
-    box-shadow: var(--openbitfun-shadow-xs);
+  /* soft = the Web "filled" field: grouped background, same border. */
+  .root[data-appearance="soft"] {
+    background: var(--openbitfun-color-field-group-background);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .root:hover:where(:not([data-disabled="true"], :focus-within)) {
+      border-color: var(--openbitfun-color-field-border-hover);
+    }
   }
 
   .root:focus-within {
     border-color: var(--openbitfun-color-field-border-focus);
-    box-shadow: 0 0 0 var(--openbitfun-focus-width) var(--openbitfun-color-focus-ring);
+    box-shadow: none;
   }
 
   .root[data-invalid="true"] {
@@ -56,7 +62,7 @@
   }
 
   .input::placeholder {
-    color: var(--openbitfun-color-content-muted);
+    color: var(--openbitfun-color-field-placeholder);
     opacity: 1;
   }
 
@@ -65,11 +71,11 @@
   .slot {
     display: grid;
     box-sizing: border-box;
-    inline-size: 20px;
-    block-size: 20px;
-    flex: 0 0 20px;
+    inline-size: var(--openbitfun-control-icon-size-md);
+    block-size: var(--openbitfun-control-icon-size-md);
+    flex: 0 0 var(--openbitfun-control-icon-size-md);
     place-items: center;
-    color: var(--openbitfun-color-content-secondary);
+    color: var(--openbitfun-color-icon-default);
   }
 
   .slot > :where(svg, img) {

@@ -1,7 +1,7 @@
 {
   "$description": "Theme-independent system scales.",
   "opacity": {
-    "iconArtwork": { "$type": "number", "$value": 0.8 }
+    "iconArtwork": { "$description": "Icons take color.icon.* directly; artwork never stacks opacity on its ink.", "$type": "number", "$value": 1 }
   },
   "space": {
     "$type": "dimension",
@@ -577,6 +577,30 @@
         "$value": "7rem"
       }
     },
+    "mobileButton": {
+      "$description": "Mobile button geometry. Each size keeps about a 2:1 width-to-height ratio for short labels; the touch target never drops below hitTarget, which the button extends invisibly.",
+      "heightSm": { "$value": "32px" },
+      "heightMd": { "$value": "40px" },
+      "heightLg": { "$description": "Matches the 49px welcome button of the mobile demo, on the 4px grid.", "$value": "48px" },
+      "paddingInlineSm": { "$value": "{space.3}" },
+      "paddingInlineMd": { "$value": "{space.5}" },
+      "paddingInlineLg": { "$value": "{space.6}" },
+      "minInlineSizeSm": { "$value": "64px" },
+      "minInlineSizeMd": { "$value": "80px" },
+      "minInlineSizeLg": { "$value": "120px" },
+      "hitTarget": { "$value": "44px" }
+    },
+    "mobileField": {
+      "$description": "Mobile text field, select and textarea geometry. The surface, border, radius and focus are the Web field's; only the touch height and inset differ.",
+      "height": { "$value": "44px" },
+      "paddingInline": { "$value": "{space.4}" },
+      "radius": { "$value": "{radius.base}" },
+      "textareaMinBlockSize": { "$value": "88px" }
+    },
+    "mobileIcon": {
+      "$description": "Mobile icon rule from the OpenBitFun mobile demo: every stroked icon uses one width with round caps and joins.",
+      "strokeWidth": { "$type": "number", "$value": 1.8 }
+    },
     "icon": {
       "size2xs": { "$type": "dimension", "$value": "8px" },
       "sizeXs": { "$type": "dimension", "$value": "12px" },
@@ -749,6 +773,88 @@
   },
   "layout": {
     "$type": "dimension",
+    "mobileDevice": {
+      "$description": "Mobile device preview geometry from the OpenBitFun mobile demo. Logical px; frame = screen + 2 x bezel, frame radius = screen radius + bezel. Slab follows iPhone 18 Pro (third-party sources); duo and trifold radii are estimates.",
+      "bezel": { "$value": "10px" },
+      "frameRadius": { "$description": "Slab screen radius plus the bezel, concentric with the screen.", "$value": "72px" },
+      "slabWidth": { "$value": "402px" },
+      "slabHeight": { "$value": "874px" },
+      "slabScreenRadius": { "$value": "62px" },
+      "duoWidth": { "$description": "Must stay within the 600-839px duo container range.", "$value": "795px" },
+      "duoHeight": { "$value": "562px" },
+      "duoScreenRadius": { "$value": "28px" },
+      "trifoldWidth": { "$description": "Must stay at or above the 840px trifold container breakpoint.", "$value": "980px" },
+      "trifoldHeight": { "$value": "687px" },
+      "trifoldScreenRadius": { "$value": "24px" },
+      "statusBarHeight": { "$value": "54px" },
+      "safeAreaTop": { "$value": "62px" },
+      "safeAreaBottom": { "$value": "34px" },
+      "homeIndicatorOffset": { "$value": "{space.2}" },
+      "homeIndicatorWidth": { "$value": "134px" },
+      "homeIndicatorHeight": { "$value": "5px" },
+      "navBarHeight": { "$value": "44px" },
+      "navInsetInline": { "$value": "{space.4}" },
+      "islandWidth": { "$description": "Estimated from iPhone 17 Pro; iPhone 18 Pro may be narrower.", "$value": "124px" },
+      "islandHeight": { "$value": "36px" },
+      "islandTop": { "$value": "11px" }
+    },
+    "mobilePage": {
+      "$description": "Page shells of the OpenBitFun mobile demo: the mini app page header and the recent home with a docked composer.",
+      "headerHeight": { "$value": "56px" },
+      "headerPaddingInline": { "$value": "{space.3}" },
+      "headerActionSize": { "$value": "{space.12}" },
+      "bodyPaddingInline": { "$value": "{space.5}" },
+      "fabSize": { "$value": "36px" },
+      "composerPaddingBlockStart": { "$value": "{space.2}" },
+      "composerPaddingInline": { "$value": "{space.4}" },
+      "homeGutter": { "$value": "{space.6}" },
+      "homeMarkSize": { "$value": "160px" },
+      "homeMarkGapBefore": { "$value": "{space.5}" },
+      "homeMarkGapAfter": { "$value": "{space.4}" },
+      "homeTitleGapAfter": { "$value": "{space.12}" },
+      "homeInsetBlockEnd": { "$description": "Bottom inset of the recent home so the brand centres above the docked composer.", "$value": "140px" }
+    },
+    "mobileSidebar": {
+      "$description": "Mobile sidebar geometry shared by slab, duo and trifold forms.",
+      "width": { "$value": "295px" },
+      "sessionStatusInset": { "$description": "Status dot sits in a fixed trailing column so dots and times align across rows.", "$value": "{space.2}" },
+      "sessionStatusColumn": { "$value": "22px" },
+      "panelPaddingInline": { "$value": "10px" },
+      "panelPaddingBlockStart": { "$description": "Below the status bar; the device safe area is added on top.", "$value": "50px" },
+      "headerHeight": { "$value": "40px" },
+      "headerPaddingInline": { "$value": "{space.2}" },
+      "headerActionSize": { "$value": "32px" },
+      "headerActionGap": { "$value": "{space.2}" },
+      "controlRadius": { "$description": "Entry rows, tools pill and settings button: the demo's --ff-radius.", "$value": "10px" },
+      "rowRadius": { "$description": "Workspace, child and recent-session rows.", "$value": "{radius.base}" },
+      "entryRowHeight": { "$value": "40px" },
+      "entryRowGap": { "$value": "10px" },
+      "rowHeight": { "$value": "36px" },
+      "workspaceRowGap": { "$value": "6px" },
+      "childIndent": { "$value": "28px" },
+      "sectionHeight": { "$value": "28px" },
+      "sectionInset": { "$value": "{space.2}" },
+      "sectionGapBefore": { "$value": "20px" },
+      "sectionGapAfter": { "$value": "6px" },
+      "recentSectionGapBefore": { "$value": "{space.6}" },
+      "recentSectionGapAfter": { "$value": "{space.2}" },
+      "scrollPaddingBlockStart": { "$value": "{space.2}" }
+    },
+    "mobileMiniAppCard": {
+      "$description": "Mini app list card from the OpenBitFun mobile demo.",
+      "radius": { "$value": "{radius.2xl}" },
+      "minBlockSize": { "$value": "140px" },
+      "mediaSize": { "$value": "140px" },
+      "minBlockSizeWide": { "$value": "160px" },
+      "mediaSizeWide": { "$value": "160px" },
+      "paddingBlock": { "$value": "14px" },
+      "paddingInline": { "$value": "18px" },
+      "textGap": { "$value": "{space.1}" },
+      "listGap": { "$value": "{space.4}" },
+      "gridGap": { "$value": "{space.5}" },
+      "pageInset": { "$value": "{space.5}" },
+      "pageInsetWide": { "$value": "28px" }
+    },
     "searchDialog": {
       "width": { "$value": "744px" },
       "height": { "$value": "460px" },
@@ -858,7 +964,7 @@
       "itemHeight": { "$value": "30px" },
       "itemPaddingInline": { "$value": "{space.2}" },
       "itemGap": { "$value": "{space.2}" },
-      "itemRadius": { "$value": "{radius.base}" },
+      "itemRadius": { "$value": "{radius.md}" },
       "itemIconSize": { "$value": "14px" },
       "scrollbarGap": { "$value": "2px" },
       "footerHeight": { "$value": "40px" },
@@ -916,7 +1022,7 @@
       "itemHeight": { "$value": "30px" },
       "itemPaddingInline": { "$value": "{space.2}" },
       "itemGap": { "$value": "{space.2}" },
-      "itemRadius": { "$value": "{radius.base}" },
+      "itemRadius": { "$value": "{radius.md}" },
       "itemIconSize": { "$value": "14px" },
       "scrollbarGap": { "$value": "2px" }
     },
@@ -1024,7 +1130,7 @@
     "width": {
       "$type": "dimension",
       "default": { "$value": "1px" },
-      "strong": { "$value": "2px" }
+      "strong": { "$value": "2px" }, "hairline": { "$value": "0.5px" }
     }
   },
   "motion": {
@@ -1035,14 +1141,15 @@
     "duration": {
       "$type": "duration",
       "instant": { "$value": "80ms" },
-      "fast": { "$value": "140ms" },
-      "base": { "$value": "220ms" },
+      "fast": { "$value": "160ms" },
+      "base": { "$value": "240ms" },
       "normal": { "$value": "{motion.duration.base}" },
       "contentSwap": {
         "$value": "320ms",
         "$description": "Coordinated single-line content replacement and intrinsic-width changes."
       },
-      "slow": { "$value": "420ms" },
+      "slow": { "$value": "320ms" },
+      "exit": { "$value": "{motion.duration.fast}" },
       "lazy": { "$value": "1s" },
       "loop": { "$value": "720ms" }
     },

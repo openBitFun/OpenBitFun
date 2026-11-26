@@ -15,6 +15,8 @@ export const mobileRadioGroupMeta = {
   ],
   states: ["default", "selected", "hover", "active", "focus-visible", "disabled"],
   tokens: [
+    "color.icon.default",
+    "control.mobileIcon.strokeWidth",
     "color.action.neutral.surface.hover",
     "color.action.neutral.surface.pressed",
     "color.border.subtle",

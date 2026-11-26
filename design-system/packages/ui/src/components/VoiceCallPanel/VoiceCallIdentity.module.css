@@ -7,7 +7,7 @@
     flex: 0 0 auto;
     block-size: calc(var(--openbitfun-control-height-sm) + var(--openbitfun-space-6));
     min-block-size: 0;
-    transition: block-size 480ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: block-size var(--openbitfun-motion-duration-slow) var(--openbitfun-motion-easing-smooth);
   }
   .leading {
     position: absolute;
@@ -54,7 +54,7 @@
     block-size: var(--openbitfun-control-height-sm);
     min-block-size: 0;
     pointer-events: none;
-    transition: inline-size 480ms cubic-bezier(0.22, 1, 0.36, 1), block-size 480ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: inline-size var(--openbitfun-motion-duration-slow) var(--openbitfun-motion-easing-smooth), block-size var(--openbitfun-motion-duration-slow) var(--openbitfun-motion-easing-smooth);
   }
   .artwork .logo {
     color: inherit;

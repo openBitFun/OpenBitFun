@@ -2706,12 +2706,17 @@ body,
   background-color: var(--openbitfun-color-field-background-hover);
 }
 
+/* The simulated states mirror the components' own focus recipes: text entry changes only its
+   border; choice controls take the outset control ring. */
 .component-textarea-example.lab-state-focus-visible textarea,
-.component-number-input-example.lab-state-focus-visible > [data-openbitfun-part="control"],
+.component-number-input-example.lab-state-focus-visible > [data-openbitfun-part="control"] {
+  border-color: var(--openbitfun-color-field-border-focus);
+}
+
 .component-choice-example.lab-state-focus-visible [data-openbitfun-part="box"],
 .component-choice-example.lab-state-focus-visible [data-openbitfun-part="circle"] {
-  border-color: var(--openbitfun-color-field-border-focus);
-  box-shadow: 0 0 0 var(--openbitfun-focus-width) var(--openbitfun-color-focus-ring);
+  outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+  outline-offset: var(--openbitfun-focus-offset);
 }
 
 .component-icon-catalog {
@@ -3282,6 +3287,33 @@ body,
   line-height: var(--openbitfun-type-flow-support-line-height);
 }
 
+/* Token chips: name → CSS variable → resolved value, so a reader can trace a component's
+   style back to the token without leaving the detail page. */
+.component-token-chip {
+  display: grid;
+  gap: var(--openbitfun-space-1);
+  padding: var(--openbitfun-space-2);
+  border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
+  border-radius: var(--openbitfun-radius-md);
+  background: var(--openbitfun-color-surface-tertiary);
+}
+
+.component-token-chip-name {
+  color: var(--openbitfun-color-content-primary);
+  font-size: var(--openbitfun-type-code-sm-font-size);
+  font-weight: var(--openbitfun-type-label-selected-font-weight);
+}
+
+.component-token-chip-var {
+  color: var(--openbitfun-color-content-secondary);
+  font-size: var(--openbitfun-type-code-sm-font-size);
+}
+
+.component-token-chip-value {
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-label-sm-font-size);
+}
+
 .component-inspector-action {
   min-height: 36px;
   padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
@@ -3489,12 +3521,16 @@ body,
   width: 17%;
 }
 
+.semantic-color-table__platform {
+  width: 8%;
+}
+
 .semantic-color-table__mode {
-  width: 14%;
+  width: 12.5%;
 }
 
 .semantic-color-table__description {
-  width: 18%;
+  width: 16%;
 }
 
 .semantic-color-table th,
@@ -3598,6 +3634,14 @@ body,
 
 .semantic-color-group--status > i {
   background: var(--openbitfun-color-status-warning-content);
+}
+
+.semantic-color-group--icon > i {
+  background: var(--openbitfun-color-icon-default);
+}
+
+.semantic-color-group--sidebar > i {
+  background: var(--openbitfun-color-sidebar-bg);
 }
 
 .semantic-color-value {

@@ -12,6 +12,7 @@ import {
   referenceColorScales,
   type ReferenceColorScaleName,
 } from "@openbitfun/theme-openbitfun/authoring";
+import { componentRegistry, isComponentForPlatform } from "@openbitfun/ui/registry";
 import { useI18n, type MessageKey } from "../i18n";
 
 type ColorSection = "semantic" | "scale" | "palette" | "mapping";
@@ -24,7 +25,11 @@ type SemanticColorGroup =
   | "field"
   | "control"
   | "focus"
-  | "status";
+  | "status"
+  | "icon"
+  | "sidebar";
+
+type ColorPlatform = "all" | "web" | "mobile" | "shared";
 
 interface ColorsPageProps {
   density: DensityMode;
@@ -47,7 +52,36 @@ const semanticGroupOrder: readonly SemanticColorGroup[] = [
   "control",
   "focus",
   "status",
+  "icon",
+  "sidebar",
 ];
+
+/* Platform membership is derived from the tokens each registered component declares, so the
+   swatch book never claims a color for a surface whose components do not consume it. */
+function collectPlatformTokens(platform: "web" | "mobile"): ReadonlySet<string> {
+  return new Set(componentRegistry
+    .filter(component => isComponentForPlatform(component, platform))
+    .flatMap(component => component.tokens as readonly string[]));
+}
+
+const webColorTokens = collectPlatformTokens("web");
+const mobileColorTokens = collectPlatformTokens("mobile");
+
+function colorPlatform(name: string): Exclude<ColorPlatform, "all"> | undefined {
+  const web = webColorTokens.has(name);
+  const mobile = mobileColorTokens.has(name);
+  if (web && mobile) return "shared";
+  if (web) return "web";
+  if (mobile) return "mobile";
+  return undefined;
+}
+
+const platformLabelKeys: Readonly<Record<ColorPlatform, MessageKey>> = {
+  all: "colors.platform.all",
+  mobile: "colors.platform.mobile",
+  shared: "colors.platform.shared",
+  web: "colors.platform.web",
+};
 
 const coreSemanticNames = [
   "color.surface.canvas",
@@ -72,6 +106,8 @@ const groupLabelKeys: Readonly<Record<SemanticColorGroup, MessageKey>> = {
   control: "colors.group.control",
   field: "colors.group.field",
   focus: "colors.group.focus",
+  icon: "colors.group.icon",
+  sidebar: "colors.group.sidebar",
   status: "colors.group.status",
   surface: "colors.group.surface",
 };
@@ -84,6 +120,8 @@ const groupEnglishLabels: Readonly<Record<SemanticColorGroup, string>> = {
   control: "Control",
   field: "Field",
   focus: "Focus",
+  icon: "Icon",
+  sidebar: "Sidebar",
   status: "Status",
   surface: "Surface",
 };
@@ -101,6 +139,8 @@ const coreDescriptionKeys: Readonly<Partial<Record<string, MessageKey>>> = {
   "color.surface.panel": "colors.description.surfacePanel",
   "color.surface.raised": "colors.description.surfaceRaised",
   "color.surface.subtle": "colors.description.surfaceSubtle",
+  "color.icon.default": "colors.description.iconDefault",
+  "color.icon.subtle": "colors.description.iconSubtle",
 };
 
 const modeLabelKeys: Readonly<Record<ThemeDataName, MessageKey>> = {
@@ -167,13 +207,14 @@ export function ColorsPage({
   const { t } = useI18n();
   const [activeSection, setActiveSection] = useState<ColorSection>("semantic");
   const [category, setCategory] = useState<"all" | SemanticColorGroup>("all");
+  const [platform, setPlatform] = useState<ColorPlatform>("all");
   const [expanded, setExpanded] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedScale, setSelectedScale] = useState<ReferenceColorScaleName>("blue");
 
   const normalizedQuery = query.trim().toLowerCase();
   const visibleSemanticTokens = useMemo(() => {
-    if (category === "all" && normalizedQuery.length === 0 && !expanded) {
+    if (category === "all" && platform === "all" && normalizedQuery.length === 0 && !expanded) {
       return coreSemanticNames.flatMap((name) => {
         const token = semanticColorTokens.find((candidate) => candidate.name === name);
         return token ? [token] : [];
@@ -182,6 +223,11 @@ export function ColorsPage({
 
     return [...semanticColorTokens]
       .filter((token) => category === "all" || getSemanticGroup(token) === category)
+      .filter((token) => {
+        if (platform === "all") return true;
+        const owner = colorPlatform(token.name);
+        return platform === "shared" ? owner === "shared" : owner === platform || owner === "shared";
+      })
       .filter((token) => {
         if (!normalizedQuery) {
           return true;
@@ -200,7 +246,7 @@ export function ColorsPage({
           - semanticGroupOrder.indexOf(getSemanticGroup(right));
         return groupDelta || left.name.localeCompare(right.name);
       });
-  }, [category, expanded, normalizedQuery]);
+  }, [category, expanded, normalizedQuery, platform]);
 
   const groupedSemanticTokens = semanticGroupOrder.flatMap((group) => {
     const tokens = visibleSemanticTokens.filter((token) => getSemanticGroup(token) === group);
@@ -248,6 +294,9 @@ export function ColorsPage({
               onValueChange={value => setCategory(value as "all" | SemanticColorGroup)}
               options={[{ value: "all", label: t("colors.semantic.allCategories") },
                 ...semanticGroupOrder.map(group => ({ value: group, label: t(groupLabelKeys[group]) }))]} />
+            <Select aria-label={t("colors.platform.label")} size="sm" value={platform}
+              onValueChange={value => setPlatform(value as ColorPlatform)}
+              options={(["all", "web", "mobile", "shared"] as const).map(value => ({ value, label: t(platformLabelKeys[value]) }))} />
           </div>
         </header>
 
@@ -256,6 +305,7 @@ export function ColorsPage({
             <colgroup>
               <col className="semantic-color-table__category" />
               <col className="semantic-color-table__token" />
+              <col className="semantic-color-table__platform" />
               <col span={4} className="semantic-color-table__mode" />
               <col className="semantic-color-table__description" />
             </colgroup>
@@ -263,6 +313,7 @@ export function ColorsPage({
               <tr>
                 <th scope="col">{t("colors.column.category")}</th>
                 <th scope="col">{t("colors.column.token")}</th>
+                <th scope="col">{t("colors.platform.label")}</th>
                 <th scope="col">{t("colors.mode.light")}</th>
                 <th scope="col">{t("colors.mode.dark")}</th>
                 <th scope="col">{t("colors.mode.highContrastLight")}</th>
@@ -287,6 +338,7 @@ export function ColorsPage({
                           </th>
                         )}
                         <th scope="row"><code>{token.name}</code></th>
+                        <td>{(() => { const owner = colorPlatform(token.name); return owner ? t(platformLabelKeys[owner]) : "—"; })()}</td>
                         <td><ColorValue value={token.values.light} /></td>
                         <td><ColorValue value={token.values.dark} /></td>
                         <td><ColorValue value={token.values.highContrastLight} /></td>
@@ -305,14 +357,14 @@ export function ColorsPage({
               ))}
               {groupedSemanticTokens.length === 0 && (
                 <tr className="semantic-color-table__empty">
-                  <td colSpan={7}>{t("colors.empty")}</td>
+                  <td colSpan={8}>{t("colors.empty")}</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
 
-        {category === "all" && normalizedQuery.length === 0 && (
+        {category === "all" && platform === "all" && normalizedQuery.length === 0 && (
           <div className="colors-expand-action">
             <Button aria-expanded={expanded} onClick={() => setExpanded(current => !current)} variant="text" size="sm"
               trailingIcon={<Icon name={expanded ? "chevron-up" : "chevron-down"} size="sm" />}>

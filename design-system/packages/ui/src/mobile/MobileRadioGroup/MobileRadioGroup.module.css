@@ -31,7 +31,7 @@
   .label { font-size: var(--openbitfun-type-body-md-font-size); font-weight: var(--openbitfun-type-label-lg-font-weight); }
   .description { color: var(--openbitfun-color-content-muted); font-size: var(--openbitfun-type-body-xs-font-size); }
   .option[data-disabled="true"] .label, .option[data-disabled="true"] .description { color: inherit; }
-  .leading { display: grid; inline-size: 20px; block-size: 20px; flex: 0 0 20px; place-items: center; color: var(--openbitfun-color-content-secondary); }
+  .leading { display: grid; inline-size: 20px; block-size: 20px; flex: 0 0 20px; place-items: center; color: var(--openbitfun-color-icon-default); }
   .leading > :where(svg, img) { inline-size: 100%; block-size: 100%; }
 
   @media (prefers-reduced-motion: reduce) { .option, .circle, .dot { transition: none; } }

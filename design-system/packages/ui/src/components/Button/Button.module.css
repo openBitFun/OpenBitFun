@@ -303,11 +303,11 @@
   .trailingIcon {
     inline-size: var(--_button-trailing-icon-size);
     block-size: var(--_button-trailing-icon-size);
-    opacity: 0.5;
+    color: var(--openbitfun-color-icon-subtle);
   }
 
   .button:disabled .trailingIcon {
-    opacity: 1;
+    color: inherit;
   }
 
   .progress {

@@ -8,7 +8,7 @@
    Horizontal gaps stay where the grid puts them: widening the columns' gutters would change the
    composition, not the breathing room. Air is inherited, so the footer reads the same variable. */
 .lab-page.design-home {
-  --_lab-home-air: 2;
+  --_lab-home-air: 1.25;
 
   display: flex;
   flex-direction: column;
@@ -30,12 +30,15 @@
    of its own — the page's top padding is the single source of the air above it, so the nav
    to mark gap equals the gap the page uses between its blocks, and the copy comes out with
    the same distance above it (from the nav) as below it (to the showcase). */
+/* The hero is given a first-screen height of its own (on request: the copy read cramped), so the
+   headline, support line and actions sit in open air instead of packing against the showcase. */
 .design-home-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.4fr);
   align-items: center;
   gap: var(--openbitfun-space-12);
-  padding: 0;
+  min-block-size: min(48vh, 480px);
+  padding: calc(var(--openbitfun-space-8) * var(--_lab-home-air)) 0;
 }
 
 .design-home-heading {
@@ -81,7 +84,7 @@
      to the text if either one changes. It is a translate rather than a margin or padding on
      purpose: the lift must not add a single pixel of height to the hero, because the hero's
      height is what the first screen has left over for the picture. */
-  --_lab-hero-lift: calc((var(--openbitfun-control-height-md) + var(--openbitfun-space-8) * var(--_lab-home-air)) / 2);
+  --_lab-hero-lift: calc((var(--openbitfun-control-height-md) + var(--openbitfun-space-10) * var(--_lab-home-air)) / 2);
 
   justify-self: center;
   width: min(calc(100% * var(--_lab-hero-art)), calc(400px * var(--_lab-hero-art)));
@@ -106,10 +109,10 @@
    never runs the full width of the page. */
 .design-home-support {
   max-inline-size: 52rem;
-  margin: calc(var(--openbitfun-space-4) * var(--_lab-home-air)) 0 0;
+  margin: calc(var(--openbitfun-space-5) * var(--_lab-home-air)) 0 0;
   color: var(--openbitfun-color-content-secondary);
   font-size: var(--openbitfun-type-body-lg-font-size);
-  line-height: var(--openbitfun-type-body-lg-line-height);
+  line-height: var(--openbitfun-line-height-spacious);
   letter-spacing: var(--openbitfun-type-modifier-tracking-subtle-letter-spacing);
   text-wrap: pretty;
 }
@@ -119,7 +122,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--openbitfun-space-3);
-  margin-top: calc(var(--openbitfun-space-8) * var(--_lab-home-air));
+  margin-top: calc(var(--openbitfun-space-10) * var(--_lab-home-air));
 }
 
 /* The showcase is a picture of the product rather than a screenshot: one frame holding the app's
@@ -495,7 +498,7 @@
 
 @media (max-width: 860px) {
   .lab-page.design-home { gap: calc(var(--openbitfun-space-12) * var(--_lab-home-air)); }
-  .design-home-hero { grid-template-columns: minmax(0, 1fr); gap: var(--openbitfun-space-6); padding-block: 0 calc(var(--openbitfun-space-12) * var(--_lab-home-air)); }
+  .design-home-hero { grid-template-columns: minmax(0, 1fr); gap: var(--openbitfun-space-6); min-block-size: auto; padding-block: 0 calc(var(--openbitfun-space-12) * var(--_lab-home-air)); }
   .design-home-emblem { grid-column: 1; grid-row: 2; justify-self: start; width: min(calc(40% * var(--_lab-hero-art)), calc(var(--openbitfun-space-16) * 3 * var(--_lab-hero-art))); translate: 0; }
   .design-home-preview-shell { grid-template-columns: minmax(0, 1fr); }
   .design-home-preview-sidebar { display: none; }
@@ -508,7 +511,7 @@
 
 @media (max-width: 600px) {
   .lab-page.design-home { gap: calc(var(--openbitfun-space-10) * var(--_lab-home-air)); padding-block: calc(var(--openbitfun-space-8) * var(--_lab-home-air)) 0; }
-  .design-home-hero { gap: var(--openbitfun-space-6); padding-block: 0 calc(var(--openbitfun-space-10) * var(--_lab-home-air)); }
+  .design-home-hero { gap: var(--openbitfun-space-6); min-block-size: auto; padding-block: 0 calc(var(--openbitfun-space-10) * var(--_lab-home-air)); }
   .design-home-emblem { width: min(calc(35% * var(--_lab-hero-art)), calc(var(--openbitfun-space-16) * 2 * var(--_lab-hero-art))); }
   .design-home-footer-paths { grid-template-columns: minmax(0, 1fr); gap: calc(var(--openbitfun-space-8) * var(--_lab-home-air)); }
   .design-home-footer { --_lab-band-pad-block: calc(var(--openbitfun-space-6) * var(--_lab-home-air)); gap: calc(var(--openbitfun-space-8) * var(--_lab-home-air)); }

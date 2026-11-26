@@ -1,0 +1,113 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    min-block-size: var(--openbitfun-layout-mobile-mini-app-card-min-block-size);
+    align-items: stretch;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
+    border-radius: var(--openbitfun-layout-mobile-mini-app-card-radius);
+    background: var(--openbitfun-color-surface-raised);
+    color: var(--openbitfun-color-content-primary);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      box-shadow var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      transform var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  .root[data-size="wide"] {
+    min-block-size: var(--openbitfun-layout-mobile-mini-app-card-min-block-size-wide);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .root:hover {
+      background: var(--openbitfun-color-sidebar-hover);
+      box-shadow: var(--openbitfun-shadow-lg);
+      transform: translateY(calc(-1 * var(--openbitfun-motion-distance-sm) / 2));
+    }
+  }
+
+  .root:active {
+    background: var(--openbitfun-color-sidebar-selection);
+    transform: scale(0.98);
+  }
+
+  .root:focus-visible {
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
+  }
+
+  .media {
+    display: block;
+    flex: 0 0 auto;
+    position: relative;
+    inline-size: var(--openbitfun-layout-mobile-mini-app-card-media-size);
+    min-block-size: var(--openbitfun-layout-mobile-mini-app-card-media-size);
+    overflow: hidden;
+    background: var(--openbitfun-color-surface-subtle);
+  }
+
+  .root[data-size="wide"] .media {
+    inline-size: var(--openbitfun-layout-mobile-mini-app-card-media-size-wide);
+    min-block-size: var(--openbitfun-layout-mobile-mini-app-card-media-size-wide);
+  }
+
+  .media > img {
+    display: block;
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: cover;
+  }
+
+  .info {
+    display: flex;
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    align-items: center;
+    padding: var(--openbitfun-layout-mobile-mini-app-card-padding-block) var(--openbitfun-layout-mobile-mini-app-card-padding-inline);
+  }
+
+  .text {
+    display: flex;
+    inline-size: 100%;
+    flex-direction: column;
+    gap: var(--openbitfun-layout-mobile-mini-app-card-text-gap);
+  }
+
+  .title {
+    color: var(--openbitfun-color-content-primary);
+    font-size: var(--openbitfun-font-size-2xl);
+    font-weight: var(--openbitfun-font-weight-semibold);
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  .description {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--openbitfun-color-content-secondary);
+    font-size: var(--openbitfun-font-size-base);
+    font-weight: var(--openbitfun-font-weight-regular);
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .root { transition: none; }
+    .root:hover, .root:active { transform: none; }
+  }
+
+  @media (forced-colors: active) {
+    .root { border-color: CanvasText; }
+  }
+}

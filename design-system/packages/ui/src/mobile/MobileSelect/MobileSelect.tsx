@@ -37,7 +37,7 @@ export interface MobileSelectProps
 /** A choice field. Mobile has no room for a popup listbox, so the field opens the choice sheet the
     rest of the mobile set already uses; the selected option is read from the field's own text. */
 export function MobileSelect({
-  appearance = "soft",
+  appearance = "surface",
   cancelLabel,
   className,
   defaultValue,

@@ -84,12 +84,21 @@ import {
   MobileLink,
   MobileListRow,
   MobileMessage,
+  MobileMiniAppCard,
   MobilePageHeader,
   MobileRadioGroup,
   MobileScrim,
   MobileSection,
   MobileSegmentedControl,
   MobileSelect,
+  MobileSidebar,
+  MobileSidebarChildRow,
+  MobileSidebarEntryRow,
+  MobileSidebarHeader,
+  MobileSidebarSectionLabel,
+  MobileSidebarSessionRow,
+  MobileSidebarToolsFooter,
+  MobileSidebarWorkspaceRow,
   MobileStatus,
   MobileStepper,
   MobileSwitch,
@@ -155,6 +164,7 @@ const componentIcons = {
   MobileLink: <CatalogIcon name="link" style={{ width: 19, height: 19 }} />,
   MobileListRow: <Rows3 aria-hidden="true" size={19} />,
   MobileMessage: <CatalogIcon name="session" style={{ width: 19, height: 19 }} />,
+  MobileMiniAppCard: <AppWindow aria-hidden="true" size={19} />,
   MobilePageHeader: <Heading aria-hidden="true" size={19} />,
   MobileRadioGroup: <List aria-hidden="true" size={19} />,
   MobileScrim: <AppWindow aria-hidden="true" size={19} />,
@@ -162,6 +172,14 @@ const componentIcons = {
   MobileSegmentedControl: <ToggleLeft aria-hidden="true" size={19} />,
   MobileSelect: <Rows3 aria-hidden="true" size={19} />,
   MobileSheet: <AppWindow aria-hidden="true" size={19} />,
+  MobileSidebar: <CatalogIcon name="sidebar-left" style={{ width: 19, height: 19 }} />,
+  MobileSidebarChildRow: <Rows3 aria-hidden="true" size={19} />,
+  MobileSidebarEntryRow: <CatalogIcon name="session" style={{ width: 19, height: 19 }} />,
+  MobileSidebarHeader: <Heading aria-hidden="true" size={19} />,
+  MobileSidebarSectionLabel: <List aria-hidden="true" size={19} />,
+  MobileSidebarSessionRow: <Rows3 aria-hidden="true" size={19} />,
+  MobileSidebarToolsFooter: <PanelTop aria-hidden="true" size={19} />,
+  MobileSidebarWorkspaceRow: <Rows3 aria-hidden="true" size={19} />,
   MobileStatus: <AppWindow aria-hidden="true" size={19} />,
   MobileStepper: <CatalogIcon name="plus" style={{ width: 19, height: 19 }} />,
   MobileSwitch: <ToggleLeft aria-hidden="true" size={19} />,
@@ -361,12 +379,84 @@ export function ComponentCardPreview({ component }: { component: ComponentMeta }
       );
     case "MobileMessage":
       return <MobileMessage roleType="user">{t("components.preview.cardDescription")}</MobileMessage>;
+    case "MobileMiniAppCard":
+      return <MobileMiniAppCard description={t("scenes.mobile.miniApp.gomokuDesc")} media={<img src="/assets/gomoku.webp" alt="" draggable={false} />} tabIndex={-1} title={t("scenes.mobile.miniApp.gomoku")} />;
     case "MobilePageHeader":
       return <MobilePageHeader centered title={t("components.preview.session")} />;
     case "MobileScrim":
       return <MobileScrim aria-label={t("components.preview.close")} style={{ blockSize: 64, inlineSize: "100%", position: "relative" }} tabIndex={-1} />;
     case "MobileSection":
       return <MobileSection title={t("components.preview.appearance")}>{t("components.preview.fieldDescription")}</MobileSection>;
+    case "MobileSidebar":
+      return (
+        <MobileSidebar
+          footer={<MobileSidebarToolsFooter leading={t("scenes.mobile.sidebar.tools")} onSettingsClick={() => undefined} onToolsClick={() => undefined} settingsLabel={t("scenes.mobile.sidebar.settings")} />}
+          header={<MobileSidebarHeader brand={t("scenes.mobile.sidebar.brand")} trailing={<MobileIconButton aria-label={t("scenes.mobile.sidebar.search")} icon={<CatalogIcon name="search" aria-hidden="true" />} tabIndex={-1} />} />}
+          style={{ maxInlineSize: 320 }}
+        >
+          <MobileSidebarSectionLabel>{t("scenes.mobile.sidebar.workspace")}</MobileSidebarSectionLabel>
+          <MobileSidebarWorkspaceRow expanded={false} label={t("scenes.mobile.sidebar.workspace1")} onExpandChange={() => undefined}>
+            <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childRemote")} />
+          </MobileSidebarWorkspaceRow>
+          <MobileSidebarSectionLabel>{t("scenes.mobile.sidebar.recent")}</MobileSidebarSectionLabel>
+          <MobileSidebarSessionRow label={t("scenes.mobile.sidebar.session1")} status="running" time="2m" />
+        </MobileSidebar>
+      );
+    case "MobileSidebarChildRow":
+      return <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childRemote")} selected />;
+    case "MobileSidebarEntryRow":
+      return (
+        <MobileSidebarEntryRow
+          icon={<CatalogIcon name="session" aria-hidden="true" />}
+          label={t("scenes.mobile.sidebar.assistant")}
+        />
+      );
+    case "MobileSidebarHeader":
+      return (
+        <MobileSidebarHeader
+          brand={t("scenes.mobile.sidebar.brand")}
+          trailing={(
+            <>
+              <MobileIconButton aria-label={t("scenes.mobile.sidebar.search")} icon={<CatalogIcon name="search" aria-hidden="true" />} tabIndex={-1} />
+              <MobileIconButton aria-label={t("scenes.mobile.sidebar.collapse")} icon={<CatalogIcon name="sidebar-left" aria-hidden="true" />} tabIndex={-1} />
+            </>
+          )}
+        />
+      );
+    case "MobileSidebarSectionLabel":
+      return (
+        <MobileSidebarSectionLabel
+          action={(
+            <button type="button" aria-label={t("scenes.mobile.sidebar.addWorkspace")}>
+              <CatalogIcon name="plus" aria-hidden="true" />
+            </button>
+          )}
+        >
+          {t("scenes.mobile.sidebar.workspace")}
+        </MobileSidebarSectionLabel>
+      );
+    case "MobileSidebarSessionRow":
+      return <MobileSidebarSessionRow label={t("scenes.mobile.sidebar.session1")} status="running" time="2m" />;
+    case "MobileSidebarToolsFooter":
+      return (
+        <MobileSidebarToolsFooter
+          leading={t("scenes.mobile.sidebar.tools")}
+          onSettingsClick={() => undefined}
+          onToolsClick={() => undefined}
+          settingsLabel={t("scenes.mobile.sidebar.settings")}
+        />
+      );
+    case "MobileSidebarWorkspaceRow":
+      return (
+        <MobileSidebarWorkspaceRow
+          expanded
+          label={t("scenes.mobile.sidebar.workspace1")}
+          onExpandChange={() => undefined}
+        >
+          <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childRemote")} />
+          <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childLocal")} />
+        </MobileSidebarWorkspaceRow>
+      );
     case "MobileSegmentedControl":
       return <MobileSegmentedControl aria-label={t("components.preview.segmentedLabel")} onChange={() => undefined} options={[{ label: t("components.preview.segmentedChat"), value: "chat" }, { label: t("components.preview.segmentedAgent"), value: "agent" }]} value="chat" />;
     case "MobileStatus":
@@ -848,7 +938,7 @@ export function ComponentsPage({
   const selectedComponent = component ?? defaultComponent(category);
 
   return (
-    <main className="lab-page design-component-library" id="components">
+    <main className="lab-page design-component-library openbitfun-reveal" id="components">
       {/* The component directory is the rail's tree now, so this column is the preview alone:
           one index for the whole section instead of a second one inside the page. */}
       {selectedComponent && (
@@ -863,6 +953,11 @@ export function ComponentsPage({
                 <FlowChatToolGallery onOpenComponent={onOpenComponent} />
               </ThemeRoot>}
             </details>
+          )}
+          {selectedComponent.category === "mobile" && (
+            <div className="design-directory-footer">
+              <Button onClick={() => window.location.hash = "#mobile-patterns"} trailingIcon={<CatalogIcon name="arrow-right" size="sm" />}>{t("scenes.mobile.label")}</Button>
+            </div>
           )}
           <div className="design-directory-footer">
             <Button onClick={() => onInspectTokens(selectedComponent.name)} trailingIcon={<CatalogIcon name="arrow-right" size="sm" />}>{t("design.tokens")}</Button>

@@ -14,7 +14,7 @@
   .root:disabled { color: var(--openbitfun-color-content-disabled); cursor: not-allowed; }
 
   .label { display: block; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .leading, .trailing { display: grid; inline-size: 16px; block-size: 16px; flex: 0 0 16px; place-items: center; }
+  .leading, .trailing { display: grid; inline-size: var(--openbitfun-control-icon-size-sm); block-size: var(--openbitfun-control-icon-size-sm); flex: 0 0 var(--openbitfun-control-icon-size-sm); place-items: center; }
   .leading > :where(svg, img), .trailing > :where(svg, img) { inline-size: 100%; block-size: 100%; }
 
   @media (prefers-reduced-motion: reduce) { .root { transition: none; } }
