@@ -719,13 +719,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let path = temp_dir.path().join(EARLY_STARTUP_LOG_FILE_NAME);
         let logger = EarlyFileLogger::new(path.clone());
-        let record = log::Record::builder()
-            .level(log::Level::Error)
-            .target("openbitfun_desktop::startup")
-            .args(format_args!("Startup failed: code={}", 7))
-            .build();
-
-        logger.write_record(&record);
+        logger.write_record(
+            &log::Record::builder()
+                .level(log::Level::Error)
+                .target("openbitfun_desktop::startup")
+                .args(format_args!("Startup failed: code={}", 7))
+                .build(),
+        );
 
         let content = fs::read_to_string(path).expect("read early log");
         assert!(content.contains("[ERROR][openbitfun_desktop::startup]"));

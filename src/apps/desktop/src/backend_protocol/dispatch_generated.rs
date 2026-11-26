@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 #[allow(unused_imports)]
-use super::dispatch::{arg, unsupported, ResultKind as _, ValueKind as _};
+use super::dispatch::{arg, unsupported, CommandResponse, SerializeResponse as _};
 use super::DispatchFuture;
 use crate::host::{HostHandle, NativeHost};
 
@@ -1507,7 +1507,7 @@ fn command_accept_file(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("accept_file")?,
             arg(&args, "request", "accept_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1519,7 +1519,7 @@ fn command_accept_operation(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("accept_operation")?,
             arg(&args, "request", "accept_operation")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1531,7 +1531,7 @@ fn command_accept_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("accept_session")?,
             arg(&args, "request", "accept_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1541,7 +1541,7 @@ fn command_account_delete_device(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::remote_connect_api::account_delete_device(
             arg(&args, "targetDeviceId", "account_delete_device")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1551,7 +1551,7 @@ fn command_account_email_start(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::api::account_identity_api::account_email_start(
             arg(&args, "request", "account_email_start")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1562,7 +1562,7 @@ fn command_account_email_verify(host: &Arc<NativeHost>, args: Value) -> Dispatch
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "account_email_verify")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1570,7 +1570,7 @@ fn command_account_email_verify(host: &Arc<NativeHost>, args: Value) -> Dispatch
 fn command_account_get_credential_hint(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_get_credential_hint().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1581,7 +1581,7 @@ fn command_account_github_poll(host: &Arc<NativeHost>, args: Value) -> DispatchF
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "account_github_poll")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1589,7 +1589,7 @@ fn command_account_github_poll(host: &Arc<NativeHost>, args: Value) -> DispatchF
 fn command_account_github_start(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::account_identity_api::account_github_start().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1597,7 +1597,7 @@ fn command_account_github_start(host: &Arc<NativeHost>, args: Value) -> Dispatch
 fn command_account_identity(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::account_identity_api::account_identity().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1605,7 +1605,7 @@ fn command_account_identity(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
 fn command_account_list_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_list_devices().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1615,7 +1615,7 @@ fn command_account_login(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::api::remote_connect_api::account_login(
             arg(&args, "request", "account_login")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1625,7 +1625,7 @@ fn command_account_logout(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
         let result = crate::api::remote_connect_api::account_logout(
             HostHandle::new(Arc::clone(host)),
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1637,7 +1637,7 @@ fn command_account_settings_sync_set(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("account_settings_sync_set")?,
             arg(&args, "request", "account_settings_sync_set")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1648,7 +1648,7 @@ fn command_account_settings_sync_status(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("account_settings_sync_status")?,
             arg(&args, "request", "account_settings_sync_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1656,7 +1656,7 @@ fn command_account_settings_sync_status(host: &Arc<NativeHost>, args: Value) -> 
 fn command_account_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1664,7 +1664,7 @@ fn command_account_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
 fn command_account_token_expired(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_token_expired().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1674,7 +1674,7 @@ fn command_account_update_device_alias(host: &Arc<NativeHost>, args: Value) -> D
         let result = crate::api::remote_connect_api::account_update_device_alias(
             arg(&args, "request", "account_update_device_alias")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1684,7 +1684,7 @@ fn command_acknowledge_external_ecosystems_command(host: &Arc<NativeHost>, args:
         let result = crate::acknowledge_external_ecosystems_command(
             arg(&args, "request", "acknowledge_external_ecosystems_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1695,7 +1695,7 @@ fn command_activate_session_goal(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("activate_session_goal")?,
             arg(&args, "request", "activate_session_goal")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1712,7 +1712,7 @@ fn command_add_skill(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> 
             arg(&args, "targetName", "add_skill")?,
             arg(&args, "expectedSourceFingerprint", "add_skill")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1724,7 +1724,7 @@ fn command_ai_model_delete(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("ai_model_delete")?,
             arg(&args, "request", "ai_model_delete")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1735,7 +1735,7 @@ fn command_ai_model_upsert(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "ai_model_upsert")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1746,7 +1746,7 @@ fn command_append_flow_chat_diagnostics(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("append_flow_chat_diagnostics")?,
             arg(&args, "request", "append_flow_chat_diagnostics")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1756,7 +1756,7 @@ fn command_apply_external_hook_import_command(host: &Arc<NativeHost>, args: Valu
         let result = crate::apply_external_hook_import_command(
             arg(&args, "request", "apply_external_hook_import_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1766,7 +1766,7 @@ fn command_apply_external_mcp_import_command(host: &Arc<NativeHost>, args: Value
         let result = crate::apply_external_mcp_import_command(
             arg(&args, "request", "apply_external_mcp_import_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1776,7 +1776,7 @@ fn command_apply_external_source_control_action_command(host: &Arc<NativeHost>, 
         let result = crate::apply_external_source_control_action_command(
             arg(&args, "request", "apply_external_source_control_action_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1786,7 +1786,7 @@ fn command_apply_patch(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
         let result = crate::apply_patch(
             arg(&args, "request", "apply_patch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1797,7 +1797,7 @@ fn command_archive_all_sessions(host: &Arc<NativeHost>, args: Value) -> Dispatch
             arg(&args, "request", "archive_all_sessions")?,
             host.command_state("archive_all_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1808,7 +1808,7 @@ fn command_archive_session(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             arg(&args, "request", "archive_session")?,
             host.command_state("archive_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1818,7 +1818,7 @@ fn command_browser_control_disconnect(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::browser_control_api::browser_control_disconnect(
             arg(&args, "request", "browser_control_disconnect")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1828,7 +1828,7 @@ fn command_browser_control_enable_default_cdp(host: &Arc<NativeHost>, args: Valu
         let result = crate::api::browser_control_api::browser_control_enable_default_cdp(
             arg(&args, "request", "browser_control_enable_default_cdp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1838,7 +1838,7 @@ fn command_browser_control_get_status(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::browser_control_api::browser_control_get_status(
             arg(&args, "request", "browser_control_get_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1848,7 +1848,7 @@ fn command_browser_control_launch(host: &Arc<NativeHost>, args: Value) -> Dispat
         let result = crate::api::browser_control_api::browser_control_launch(
             arg(&args, "request", "browser_control_launch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1856,7 +1856,7 @@ fn command_browser_control_launch(host: &Arc<NativeHost>, args: Value) -> Dispat
 fn command_browser_control_list_browsers(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::browser_control_api::browser_control_list_browsers().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1866,7 +1866,7 @@ fn command_browser_control_restart_with_cdp(host: &Arc<NativeHost>, args: Value)
         let result = crate::api::browser_control_api::browser_control_restart_with_cdp(
             arg(&args, "request", "browser_control_restart_with_cdp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1877,7 +1877,7 @@ fn command_browser_webview_report_page_load(host: &Arc<NativeHost>, args: Value)
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "browser_webview_report_page_load")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1887,7 +1887,7 @@ fn command_browser_webview_set_agent_target_state(host: &Arc<NativeHost>, args: 
         let result = crate::api::browser_api::browser_webview_set_agent_target_state(
             arg(&args, "request", "browser_webview_set_agent_target_state")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1900,7 +1900,7 @@ fn command_btw_ask_stream(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("btw_ask_stream")?,
             arg(&args, "request", "btw_ask_stream")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1912,7 +1912,7 @@ fn command_btw_cancel(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>
             host.command_state("btw_cancel")?,
             arg(&args, "request", "btw_cancel")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1923,7 +1923,7 @@ fn command_cancel_acp_dialog_turn(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("cancel_acp_dialog_turn")?,
             arg(&args, "request", "cancel_acp_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1933,7 +1933,7 @@ fn command_cancel_app_update_download(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::update_api::cancel_app_update_download(
             arg(&args, "request", "cancel_app_update_download")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1945,7 +1945,7 @@ fn command_cancel_dialog_turn(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("cancel_dialog_turn")?,
             arg(&args, "request", "cancel_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1955,7 +1955,7 @@ fn command_cancel_insights_generation(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::insights_api::cancel_insights_generation(
             arg(&args, "request", "cancel_insights_generation")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1966,7 +1966,7 @@ fn command_cancel_mcp_remote_oauth(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("cancel_mcp_remote_oauth")?,
             arg(&args, "request", "cancel_mcp_remote_oauth")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1977,7 +1977,7 @@ fn command_cancel_search(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("cancel_search")?,
             arg(&args, "request", "cancel_search")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1988,7 +1988,7 @@ fn command_cancel_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("cancel_session")?,
             arg(&args, "request", "cancel_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -1998,7 +1998,7 @@ fn command_cancel_subscription_login(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::cancel_subscription_login(
             arg(&args, "request", "cancel_subscription_login")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2009,7 +2009,7 @@ fn command_cancel_tool(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("cancel_tool")?,
             arg(&args, "request", "cancel_tool")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2020,7 +2020,7 @@ fn command_cancel_transfer(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("cancel_transfer")?,
             arg(&args, "transferId", "cancel_transfer")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2030,7 +2030,7 @@ fn command_canonicalize_agent_profile_configs(host: &Arc<NativeHost>, args: Valu
         let result = crate::api::config_api::canonicalize_agent_profile_configs(
             host.command_state("canonicalize_agent_profile_configs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2040,7 +2040,7 @@ fn command_check_command_exists(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::check_command_exists(
             arg(&args, "command", "check_command_exists")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2050,7 +2050,7 @@ fn command_check_commands_exist(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::check_commands_exist(
             arg(&args, "commands", "check_commands_exist")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2060,7 +2060,7 @@ fn command_check_git_isolation(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::check_git_isolation(
             arg(&args, "request", "check_git_isolation")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2071,7 +2071,7 @@ fn command_check_path_exists(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("check_path_exists")?,
             arg(&args, "request", "check_path_exists")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2081,7 +2081,7 @@ fn command_choose_external_mcp_conflict_command(host: &Arc<NativeHost>, args: Va
         let result = crate::choose_external_mcp_conflict_command(
             arg(&args, "request", "choose_external_mcp_conflict_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2091,7 +2091,7 @@ fn command_choose_external_subagent_conflict_command(host: &Arc<NativeHost>, arg
         let result = crate::choose_external_subagent_conflict_command(
             arg(&args, "request", "choose_external_subagent_conflict_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2102,7 +2102,7 @@ fn command_clean_snapshot_storage(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("clean_snapshot_storage")?,
             arg(&args, "request", "clean_snapshot_storage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2114,7 +2114,7 @@ fn command_cleanup_invalid_workspaces(host: &Arc<NativeHost>, args: Value) -> Di
             HostHandle::new(Arc::clone(host)),
             host.command_state("cleanup_invalid_workspaces")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2125,7 +2125,7 @@ fn command_clear_decision_model_credential(host: &Arc<NativeHost>, args: Value) 
             host.command_state("clear_decision_model_credential")?,
             arg(&args, "request", "clear_decision_model_credential")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2136,7 +2136,7 @@ fn command_clear_mcp_remote_auth(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("clear_mcp_remote_auth")?,
             arg(&args, "request", "clear_mcp_remote_auth")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2148,7 +2148,7 @@ fn command_clear_project_permission_grants(host: &Arc<NativeHost>, args: Value) 
             host.command_state("clear_project_permission_grants")?,
             arg(&args, "request", "clear_project_permission_grants")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2159,7 +2159,7 @@ fn command_clear_session_thread_goal(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("clear_session_thread_goal")?,
             arg(&args, "request", "clear_session_thread_goal")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2170,7 +2170,7 @@ fn command_clear_web_search_credential(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("clear_web_search_credential")?,
             arg(&args, "request", "clear_web_search_credential")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2182,7 +2182,7 @@ fn command_close_workspace(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "close_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2193,7 +2193,7 @@ fn command_compact_session(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("compact_session")?,
             arg(&args, "request", "compact_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2203,7 +2203,7 @@ fn command_compile_workspace_latex(host: &Arc<NativeHost>, args: Value) -> Dispa
         let result = crate::api::latex_api::compile_workspace_latex(
             arg(&args, "request", "compile_workspace_latex")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2214,7 +2214,7 @@ fn command_compress_path(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("compress_path")?,
             arg(&args, "request", "compress_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2224,7 +2224,7 @@ fn command_compute_diff(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
         let result = crate::compute_diff(
             arg(&args, "request", "compute_diff")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2234,7 +2234,7 @@ fn command_computer_use_control_preview(host: &Arc<NativeHost>, args: Value) -> 
         let result = crate::computer_use_control_preview(
             arg(&args, "request", "computer_use_control_preview")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2244,7 +2244,7 @@ fn command_computer_use_control_status(host: &Arc<NativeHost>, args: Value) -> D
         let result = crate::computer_use_control_status(
             arg(&args, "request", "computer_use_control_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2254,7 +2254,7 @@ fn command_computer_use_control_stop(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::computer_use_control_stop(
             arg(&args, "request", "computer_use_control_stop")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2264,7 +2264,7 @@ fn command_computer_use_get_status(host: &Arc<NativeHost>, args: Value) -> Dispa
         let result = crate::computer_use_get_status(
             host.command_state("computer_use_get_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2274,7 +2274,7 @@ fn command_computer_use_open_system_settings(host: &Arc<NativeHost>, args: Value
         let result = crate::computer_use_open_system_settings(
             arg(&args, "request", "computer_use_open_system_settings")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2284,7 +2284,7 @@ fn command_computer_use_request_permission(host: &Arc<NativeHost>, args: Value) 
         let result = crate::computer_use_request_permission(
             arg(&args, "request", "computer_use_request_permission")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2292,7 +2292,7 @@ fn command_computer_use_request_permission(host: &Arc<NativeHost>, args: Value) 
 fn command_computer_use_request_permissions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::computer_use_request_permissions().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2303,7 +2303,7 @@ fn command_computer_use_share_control(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("computer_use_share_control")?,
             arg(&args, "request", "computer_use_share_control")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2314,7 +2314,7 @@ fn command_computer_use_share_forget_grant(host: &Arc<NativeHost>, args: Value) 
             host.command_state("computer_use_share_forget_grant")?,
             arg(&args, "request", "computer_use_share_forget_grant")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2324,7 +2324,7 @@ fn command_computer_use_share_grants(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::computer_use_share_grants(
             host.command_state("computer_use_share_grants")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2334,7 +2334,7 @@ fn command_computer_use_share_input(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::computer_use_share_input(
             arg(&args, "request", "computer_use_share_input")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2344,7 +2344,7 @@ fn command_computer_use_share_observe(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::computer_use_share_observe(
             arg(&args, "request", "computer_use_share_observe")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2354,7 +2354,7 @@ fn command_computer_use_share_request(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::computer_use_share_request(
             arg(&args, "request", "computer_use_share_request")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2365,7 +2365,7 @@ fn command_computer_use_share_start(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("computer_use_share_start")?,
             arg(&args, "request", "computer_use_share_start")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2373,7 +2373,7 @@ fn command_computer_use_share_start(host: &Arc<NativeHost>, args: Value) -> Disp
 fn command_computer_use_share_targets(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::computer_use_share_targets().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2384,7 +2384,7 @@ fn command_control_background_command(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("control_background_command")?,
             arg(&args, "request", "control_background_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2394,7 +2394,7 @@ fn command_control_deep_review_queue(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::api::agentic_api::control_deep_review_queue(
             arg(&args, "request", "control_deep_review_queue")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2405,7 +2405,7 @@ fn command_copy_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             arg(&args, "request", "copy_session")?,
             host.command_state("copy_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2417,7 +2417,7 @@ fn command_create_acp_flow_session(host: &Arc<NativeHost>, args: Value) -> Dispa
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "create_acp_flow_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2429,7 +2429,7 @@ fn command_create_assistant_workspace(host: &Arc<NativeHost>, args: Value) -> Di
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "create_assistant_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2440,7 +2440,7 @@ fn command_create_control_conversation(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("create_control_conversation")?,
             arg(&args, "request", "create_control_conversation")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2450,7 +2450,7 @@ fn command_create_cron_job(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::create_cron_job(
             arg(&args, "request", "create_cron_job")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2461,7 +2461,7 @@ fn command_create_custom_agent(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("create_custom_agent")?,
             arg(&args, "request", "create_custom_agent")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2472,7 +2472,7 @@ fn command_create_directory(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("create_directory")?,
             arg(&args, "request", "create_directory")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2483,7 +2483,7 @@ fn command_create_file(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("create_file")?,
             arg(&args, "request", "create_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2494,7 +2494,7 @@ fn command_create_miniapp(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("create_miniapp")?,
             arg(&args, "request", "create_miniapp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2507,7 +2507,7 @@ fn command_create_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("create_session")?,
             arg(&args, "request", "create_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2518,7 +2518,7 @@ fn command_create_subagent(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("create_subagent")?,
             arg(&args, "request", "create_subagent")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2529,7 +2529,7 @@ fn command_decompress_path(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("decompress_path")?,
             arg(&args, "request", "decompress_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2540,7 +2540,7 @@ fn command_delete_agent_companion_pet_package(host: &Arc<NativeHost>, args: Valu
             host.command_state("delete_agent_companion_pet_package")?,
             arg(&args, "request", "delete_agent_companion_pet_package")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2551,7 +2551,7 @@ fn command_delete_all_archived_sessions(host: &Arc<NativeHost>, args: Value) -> 
             arg(&args, "request", "delete_all_archived_sessions")?,
             host.command_state("delete_all_archived_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2563,7 +2563,7 @@ fn command_delete_assistant_workspace(host: &Arc<NativeHost>, args: Value) -> Di
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "delete_assistant_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2573,7 +2573,7 @@ fn command_delete_cron_job(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::delete_cron_job(
             arg(&args, "request", "delete_cron_job")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2584,7 +2584,7 @@ fn command_delete_custom_agent(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("delete_custom_agent")?,
             arg(&args, "request", "delete_custom_agent")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2595,7 +2595,7 @@ fn command_delete_directory(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("delete_directory")?,
             arg(&args, "request", "delete_directory")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2606,7 +2606,7 @@ fn command_delete_file(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("delete_file")?,
             arg(&args, "request", "delete_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2617,7 +2617,7 @@ fn command_delete_mcp_server(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("delete_mcp_server")?,
             arg(&args, "request", "delete_mcp_server")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2628,7 +2628,7 @@ fn command_delete_miniapp(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("delete_miniapp")?,
             arg(&args, "appId", "delete_miniapp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2638,7 +2638,7 @@ fn command_delete_model_pool(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::api::model_pool_api::delete_model_pool(
             arg(&args, "request", "delete_model_pool")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2649,7 +2649,7 @@ fn command_delete_permission_rule(host: &Arc<NativeHost>, args: Value) -> Dispat
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "delete_permission_rule")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2660,7 +2660,7 @@ fn command_delete_persisted_session(host: &Arc<NativeHost>, args: Value) -> Disp
             arg(&args, "request", "delete_persisted_session")?,
             host.command_state("delete_persisted_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2671,7 +2671,7 @@ fn command_delete_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("delete_session")?,
             arg(&args, "request", "delete_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2685,7 +2685,7 @@ fn command_delete_skill(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             arg(&args, "workspacePath", "delete_skill")?,
             arg(&args, "expectedImportId", "delete_skill")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2696,7 +2696,7 @@ fn command_delete_subagent(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("delete_subagent")?,
             arg(&args, "request", "delete_subagent")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2707,7 +2707,7 @@ fn command_delete_terminal_profile(host: &Arc<NativeHost>, args: Value) -> Dispa
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "delete_terminal_profile")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2718,7 +2718,7 @@ fn command_desktop_card_delete(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("desktop_card_delete")?,
             arg(&args, "request", "desktop_card_delete")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2729,7 +2729,7 @@ fn command_desktop_card_get(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("desktop_card_get")?,
             arg(&args, "request", "desktop_card_get")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2740,7 +2740,7 @@ fn command_desktop_card_list(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("desktop_card_list")?,
             arg(&args, "request", "desktop_card_list")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2751,7 +2751,7 @@ fn command_desktop_card_refresh(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("desktop_card_refresh")?,
             arg(&args, "request", "desktop_card_refresh")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2762,7 +2762,7 @@ fn command_desktop_card_set_always_on_top(host: &Arc<NativeHost>, args: Value) -
             host.command_state("desktop_card_set_always_on_top")?,
             arg(&args, "request", "desktop_card_set_always_on_top")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2773,7 +2773,7 @@ fn command_desktop_card_set_bounds(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("desktop_card_set_bounds")?,
             arg(&args, "request", "desktop_card_set_bounds")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2784,7 +2784,7 @@ fn command_desktop_card_set_checklist_item(host: &Arc<NativeHost>, args: Value) 
             host.command_state("desktop_card_set_checklist_item")?,
             arg(&args, "request", "desktop_card_set_checklist_item")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2795,7 +2795,7 @@ fn command_desktop_card_set_visible(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("desktop_card_set_visible")?,
             arg(&args, "request", "desktop_card_set_visible")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2806,7 +2806,7 @@ fn command_desktop_external_control(host: &Arc<NativeHost>, args: Value) -> Disp
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "desktop_external_control")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2817,7 +2817,7 @@ fn command_device_records_overview(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("device_records_overview")?,
             arg(&args, "request", "device_records_overview")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2829,7 +2829,7 @@ fn command_dispatch_answer(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("dispatch_answer")?,
             arg(&args, "request", "dispatch_answer")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2841,7 +2841,7 @@ fn command_dispatch_append(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("dispatch_append")?,
             arg(&args, "request", "dispatch_append")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2853,7 +2853,7 @@ fn command_dispatch_cancel(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("dispatch_cancel")?,
             arg(&args, "request", "dispatch_cancel")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2865,7 +2865,7 @@ fn command_dispatch_continue(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("dispatch_continue")?,
             arg(&args, "request", "dispatch_continue")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2877,7 +2877,7 @@ fn command_dispatch_list_jobs(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("dispatch_list_jobs")?,
             arg(&args, "request", "dispatch_list_jobs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2888,7 +2888,7 @@ fn command_dispatch_list_targets(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("dispatch_list_targets")?,
             arg(&args, "request", "dispatch_list_targets")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2899,7 +2899,7 @@ fn command_dispatch_load_transcript(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("dispatch_load_transcript")?,
             arg(&args, "request", "dispatch_load_transcript")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2910,7 +2910,7 @@ fn command_dispatch_probe_target(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("dispatch_probe_target")?,
             arg(&args, "request", "dispatch_probe_target")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2922,7 +2922,7 @@ fn command_dispatch_query(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("dispatch_query")?,
             arg(&args, "request", "dispatch_query")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2933,7 +2933,7 @@ fn command_dispatch_save_transcript(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("dispatch_save_transcript")?,
             arg(&args, "request", "dispatch_save_transcript")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2945,7 +2945,7 @@ fn command_dispatch_status(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("dispatch_status")?,
             arg(&args, "request", "dispatch_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2957,7 +2957,7 @@ fn command_dispatch_submit(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("dispatch_submit")?,
             arg(&args, "request", "dispatch_submit")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2968,7 +2968,7 @@ fn command_dispatch_sync_model_config(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("dispatch_sync_model_config")?,
             arg(&args, "request", "dispatch_sync_model_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2980,7 +2980,7 @@ fn command_dispatch_sync_result(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("dispatch_sync_result")?,
             arg(&args, "request", "dispatch_sync_result")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -2991,7 +2991,7 @@ fn command_download_skill_market(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("download_skill_market")?,
             arg(&args, "request", "download_skill_market")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3002,7 +3002,7 @@ fn command_editor_ai_cancel(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("editor_ai_cancel")?,
             arg(&args, "request", "editor_ai_cancel")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3014,7 +3014,7 @@ fn command_editor_ai_stream(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("editor_ai_stream")?,
             arg(&args, "request", "editor_ai_stream")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3026,7 +3026,7 @@ fn command_ensure_assistant_bootstrap(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("ensure_assistant_bootstrap")?,
             arg(&args, "request", "ensure_assistant_bootstrap")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3036,7 +3036,7 @@ fn command_ensure_control_conversation(host: &Arc<NativeHost>, args: Value) -> D
         let result = crate::api::agentic_api::ensure_control_conversation(
             host.command_state("ensure_control_conversation")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3047,7 +3047,7 @@ fn command_ensure_coordinator_session(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("ensure_coordinator_session")?,
             arg(&args, "request", "ensure_coordinator_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3059,7 +3059,7 @@ fn command_execute_session_command(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("execute_session_command")?,
             arg(&args, "request", "execute_session_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3069,7 +3069,7 @@ fn command_execute_tool(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
         let result = crate::execute_tool(
             arg(&args, "request", "execute_tool")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3079,7 +3079,7 @@ fn command_expand_external_prompt_command_command(host: &Arc<NativeHost>, args: 
         let result = crate::expand_external_prompt_command_command(
             arg(&args, "request", "expand_external_prompt_command_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3090,7 +3090,7 @@ fn command_explorer_get_children(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("explorer_get_children")?,
             arg(&args, "request", "explorer_get_children")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3101,7 +3101,7 @@ fn command_explorer_get_children_paginated(host: &Arc<NativeHost>, args: Value) 
             host.command_state("explorer_get_children_paginated")?,
             arg(&args, "request", "explorer_get_children_paginated")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3112,7 +3112,7 @@ fn command_explorer_get_file_tree(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("explorer_get_file_tree")?,
             arg(&args, "request", "explorer_get_file_tree")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3122,7 +3122,7 @@ fn command_export_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::export_config(
             host.command_state("export_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3133,7 +3133,7 @@ fn command_export_diagnostics_bundle(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("export_diagnostics_bundle")?,
             arg(&args, "request", "export_diagnostics_bundle")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3143,7 +3143,7 @@ fn command_export_local_file_to_path(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::export_local_file_to_path(
             arg(&args, "request", "export_local_file_to_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3154,7 +3154,7 @@ fn command_export_session_transcript(host: &Arc<NativeHost>, args: Value) -> Dis
             arg(&args, "request", "export_session_transcript")?,
             host.command_state("export_session_transcript")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3165,7 +3165,7 @@ fn command_fetch_mcp_app_resource(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("fetch_mcp_app_resource")?,
             arg(&args, "request", "fetch_mcp_app_resource")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3175,7 +3175,7 @@ fn command_fleet_attention(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::fleet::fleet_api::fleet_attention(
             arg(&args, "request", "fleet_attention")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3185,7 +3185,7 @@ fn command_fleet_attention_mark_read(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::fleet::fleet_api::fleet_attention_mark_read(
             arg(&args, "request", "fleet_attention_mark_read")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3195,7 +3195,7 @@ fn command_fleet_call(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>
         let result = crate::fleet::fleet_api::fleet_call(
             arg(&args, "request", "fleet_call")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3205,7 +3205,7 @@ fn command_fleet_device_detail(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::fleet::fleet_api::fleet_device_detail(
             arg(&args, "request", "fleet_device_detail")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3215,7 +3215,7 @@ fn command_fleet_events(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
         let result = crate::fleet::fleet_api::fleet_events(
             arg(&args, "request", "fleet_events")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3225,7 +3225,7 @@ fn command_fleet_models(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
         let result = crate::fleet::fleet_api::fleet_models(
             arg(&args, "request", "fleet_models")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3235,7 +3235,7 @@ fn command_fleet_navigator(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::fleet::fleet_api::fleet_navigator(
             arg(&args, "request", "fleet_navigator")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3245,7 +3245,7 @@ fn command_fleet_prompts(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::fleet::fleet_api::fleet_prompts(
             arg(&args, "request", "fleet_prompts")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3255,7 +3255,7 @@ fn command_fleet_recent_sessions(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::fleet::fleet_api::fleet_recent_sessions(
             arg(&args, "request", "fleet_recent_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3265,7 +3265,7 @@ fn command_fleet_subscribe(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::fleet::fleet_api::fleet_subscribe(
             arg(&args, "request", "fleet_subscribe")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3275,7 +3275,7 @@ fn command_fleet_ui_bundle(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::fleet::fleet_api::fleet_ui_bundle(
             arg(&args, "request", "fleet_ui_bundle")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3286,7 +3286,7 @@ fn command_fork_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             arg(&args, "request", "fork_session")?,
             host.command_state("fork_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3297,7 +3297,7 @@ fn command_generate_commit_message(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("generate_commit_message")?,
             arg(&args, "request", "generate_commit_message")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3307,7 +3307,7 @@ fn command_generate_insights(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::api::insights_api::generate_insights(
             arg(&args, "request", "generate_insights")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3318,7 +3318,7 @@ fn command_generate_session_title(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("generate_session_title")?,
             arg(&args, "request", "generate_session_title")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3328,7 +3328,7 @@ fn command_get_acp_clients(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::get_acp_clients(
             host.command_state("get_acp_clients")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3339,7 +3339,7 @@ fn command_get_acp_session_commands(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("get_acp_session_commands")?,
             arg(&args, "request", "get_acp_session_commands")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3350,7 +3350,7 @@ fn command_get_acp_session_options(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("get_acp_session_options")?,
             arg(&args, "request", "get_acp_session_options")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3361,7 +3361,7 @@ fn command_get_agent_profile_config(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("get_agent_profile_config")?,
             arg(&args, "agentId", "get_agent_profile_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3371,7 +3371,7 @@ fn command_get_agent_profile_configs(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::get_agent_profile_configs(
             host.command_state("get_agent_profile_configs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3379,7 +3379,7 @@ fn command_get_agent_profile_configs(host: &Arc<NativeHost>, args: Value) -> Dis
 fn command_get_ai_model_catalog(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_ai_model_catalog().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3390,7 +3390,7 @@ fn command_get_all_modified_files(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("get_all_modified_files")?,
             arg(&args, "request", "get_all_modified_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3398,7 +3398,7 @@ fn command_get_all_modified_files(host: &Arc<NativeHost>, args: Value) -> Dispat
 fn command_get_all_tools_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_all_tools_info().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3408,7 +3408,7 @@ fn command_get_app_state(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::get_app_state(
             host.command_state("get_app_state")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3419,7 +3419,7 @@ fn command_get_app_version(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "get_app_version")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3429,7 +3429,7 @@ fn command_get_assistant_workspaces(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::get_assistant_workspaces(
             host.command_state("get_assistant_workspaces")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3442,7 +3442,7 @@ fn command_get_available_modes(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("get_available_modes")?,
             arg(&args, "request", "get_available_modes")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3452,7 +3452,7 @@ fn command_get_available_tools(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::get_available_tools(
             host.command_state("get_available_tools")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3462,7 +3462,7 @@ fn command_get_baseline_snapshot_diff(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::get_baseline_snapshot_diff(
             arg(&args, "request", "get_baseline_snapshot_diff")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3472,7 +3472,7 @@ fn command_get_chat_mcp_catalog(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::get_chat_mcp_catalog(
             arg(&args, "request", "get_chat_mcp_catalog")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3484,7 +3484,7 @@ fn command_get_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>
             host.command_state("get_config")?,
             arg(&args, "request", "get_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3496,7 +3496,7 @@ fn command_get_configs(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("get_configs")?,
             arg(&args, "request", "get_configs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3507,7 +3507,7 @@ fn command_get_current_workspace(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_current_workspace")?,
             host.command_state("get_current_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3518,7 +3518,7 @@ fn command_get_custom_agent_detail(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("get_custom_agent_detail")?,
             arg(&args, "request", "get_custom_agent_detail")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3529,7 +3529,7 @@ fn command_get_decision_model_credential_status(host: &Arc<NativeHost>, args: Va
             host.command_state("get_decision_model_credential_status")?,
             arg(&args, "request", "get_decision_model_credential_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3537,7 +3537,7 @@ fn command_get_decision_model_credential_status(host: &Arc<NativeHost>, args: Va
 fn command_get_default_review_team_definition(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::agentic_api::get_default_review_team_definition().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3548,7 +3548,7 @@ fn command_get_directory_children(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("get_directory_children")?,
             arg(&args, "request", "get_directory_children")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3559,7 +3559,7 @@ fn command_get_directory_children_paginated(host: &Arc<NativeHost>, args: Value)
             host.command_state("get_directory_children_paginated")?,
             arg(&args, "request", "get_directory_children_paginated")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3569,7 +3569,7 @@ fn command_get_external_ecosystem_awareness_command(host: &Arc<NativeHost>, args
         let result = crate::get_external_ecosystem_awareness_command(
             arg(&args, "request", "get_external_ecosystem_awareness_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3579,7 +3579,7 @@ fn command_get_external_hook_catalog(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::get_external_hook_catalog(
             arg(&args, "request", "get_external_hook_catalog")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3589,7 +3589,7 @@ fn command_get_external_hook_import_snapshot(host: &Arc<NativeHost>, args: Value
         let result = crate::get_external_hook_import_snapshot(
             arg(&args, "request", "get_external_hook_import_snapshot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3599,7 +3599,7 @@ fn command_get_external_source_control_snapshot(host: &Arc<NativeHost>, args: Va
         let result = crate::get_external_source_control_snapshot(
             arg(&args, "request", "get_external_source_control_snapshot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3609,7 +3609,7 @@ fn command_get_external_source_discovery_snapshot(host: &Arc<NativeHost>, args: 
         let result = crate::get_external_source_discovery_snapshot(
             arg(&args, "request", "get_external_source_discovery_snapshot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3619,7 +3619,7 @@ fn command_get_external_source_snapshot(host: &Arc<NativeHost>, args: Value) -> 
         let result = crate::get_external_source_snapshot(
             arg(&args, "request", "get_external_source_snapshot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3630,7 +3630,7 @@ fn command_get_file_change_history(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("get_file_change_history")?,
             arg(&args, "request", "get_file_change_history")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3641,7 +3641,7 @@ fn command_get_file_diff(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("get_file_diff")?,
             arg(&args, "request", "get_file_diff")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3652,7 +3652,7 @@ fn command_get_file_editor_sync_hash(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("get_file_editor_sync_hash")?,
             arg(&args, "request", "get_file_editor_sync_hash")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3663,7 +3663,7 @@ fn command_get_file_metadata(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("get_file_metadata")?,
             arg(&args, "request", "get_file_metadata")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3674,7 +3674,7 @@ fn command_get_file_tree(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("get_file_tree")?,
             arg(&args, "request", "get_file_tree")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3682,7 +3682,7 @@ fn command_get_file_tree(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
 fn command_get_file_watch_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_file_watch_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3690,7 +3690,7 @@ fn command_get_file_watch_status(host: &Arc<NativeHost>, args: Value) -> Dispatc
 fn command_get_global_config_health(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_global_config_health().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3698,7 +3698,7 @@ fn command_get_global_config_health(host: &Arc<NativeHost>, args: Value) -> Disp
 fn command_get_global_config_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_global_config_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3708,7 +3708,7 @@ fn command_get_global_skill_settings(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::get_global_skill_settings(
             arg(&args, "request", "get_global_skill_settings")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3718,7 +3718,7 @@ fn command_get_health_status(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::get_health_status(
             host.command_state("get_health_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3728,7 +3728,7 @@ fn command_get_instruction_source_catalog(host: &Arc<NativeHost>, args: Value) -
         let result = crate::get_instruction_source_catalog(
             arg(&args, "request", "get_instruction_source_catalog")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3736,7 +3736,7 @@ fn command_get_instruction_source_catalog(host: &Arc<NativeHost>, args: Value) -
 fn command_get_latest_insights(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::insights_api::get_latest_insights().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3744,7 +3744,7 @@ fn command_get_latest_insights(host: &Arc<NativeHost>, args: Value) -> DispatchF
 fn command_get_local_models_dev_catalogs(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_local_models_dev_catalogs().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3755,7 +3755,7 @@ fn command_get_mcp_prompt(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("get_mcp_prompt")?,
             arg(&args, "request", "get_mcp_prompt")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3766,7 +3766,7 @@ fn command_get_mcp_remote_oauth_session(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("get_mcp_remote_oauth_session")?,
             arg(&args, "request", "get_mcp_remote_oauth_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3777,7 +3777,7 @@ fn command_get_mcp_server_status(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_mcp_server_status")?,
             arg(&args, "serverId", "get_mcp_server_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3787,7 +3787,7 @@ fn command_get_mcp_servers(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::get_mcp_servers(
             host.command_state("get_mcp_servers")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3798,7 +3798,7 @@ fn command_get_mcp_tool_ui_uri(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("get_mcp_tool_ui_uri")?,
             arg(&args, "toolName", "get_mcp_tool_ui_uri")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3808,7 +3808,7 @@ fn command_get_memory_paths(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
         let result = crate::api::agentic_api::get_memory_paths(
             host.command_state("get_memory_paths")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3819,7 +3819,7 @@ fn command_get_miniapp(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("get_miniapp")?,
             arg(&args, "request", "get_miniapp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3830,7 +3830,7 @@ fn command_get_miniapp_draft_storage(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("get_miniapp_draft_storage")?,
             arg(&args, "request", "get_miniapp_draft_storage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3842,7 +3842,7 @@ fn command_get_miniapp_storage(host: &Arc<NativeHost>, args: Value) -> DispatchF
             arg(&args, "appId", "get_miniapp_storage")?,
             arg(&args, "key", "get_miniapp_storage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3853,7 +3853,7 @@ fn command_get_miniapp_versions(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("get_miniapp_versions")?,
             arg(&args, "appId", "get_miniapp_versions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3869,7 +3869,7 @@ fn command_get_mode_skill_configs(host: &Arc<NativeHost>, args: Value) -> Dispat
             arg(&args, "workspacePath", "get_mode_skill_configs")?,
             arg(&args, "summaryModeIds", "get_mode_skill_configs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3879,7 +3879,7 @@ fn command_get_model_configs(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::get_model_configs(
             host.command_state("get_model_configs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3890,7 +3890,7 @@ fn command_get_model_pool_status(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_model_pool_status")?,
             arg(&args, "request", "get_model_pool_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3898,7 +3898,7 @@ fn command_get_model_pool_status(host: &Arc<NativeHost>, args: Value) -> Dispatc
 fn command_get_model_pools(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::model_pool_api::get_model_pools().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3909,7 +3909,7 @@ fn command_get_model_routing_status(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("get_model_routing_status")?,
             arg(&args, "request", "get_model_routing_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3917,7 +3917,7 @@ fn command_get_model_routing_status(host: &Arc<NativeHost>, args: Value) -> Disp
 fn command_get_models_dev_catalog_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_models_dev_catalog_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3927,7 +3927,7 @@ fn command_get_native_prompt_command_conflicts_command(host: &Arc<NativeHost>, a
         let result = crate::get_native_prompt_command_conflicts_command(
             arg(&args, "request", "get_native_prompt_command_conflicts_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3938,7 +3938,7 @@ fn command_get_opened_workspaces(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_opened_workspaces")?,
             host.command_state("get_opened_workspaces")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3949,7 +3949,7 @@ fn command_get_operation_diff(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("get_operation_diff")?,
             arg(&args, "request", "get_operation_diff")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3960,7 +3960,7 @@ fn command_get_operation_summary(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_operation_summary")?,
             arg(&args, "request", "get_operation_summary")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3970,7 +3970,7 @@ fn command_get_permission_settings(host: &Arc<NativeHost>, args: Value) -> Dispa
         let result = crate::api::settings_mutation_api::get_permission_settings(
             host.command_state("get_permission_settings")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3981,7 +3981,7 @@ fn command_get_personal_overview(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_personal_overview")?,
             arg(&args, "request", "get_personal_overview")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -3993,7 +3993,7 @@ fn command_get_prevent_sleep_enabled(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("get_prevent_sleep_enabled")?,
             arg(&args, "request", "get_prevent_sleep_enabled")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4004,7 +4004,7 @@ fn command_get_primary_assistant_workspace(host: &Arc<NativeHost>, args: Value) 
             host.command_state("get_primary_assistant_workspace")?,
             arg(&args, "request", "get_primary_assistant_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4015,7 +4015,7 @@ fn command_get_project_permission_rules(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("get_project_permission_rules")?,
             arg(&args, "request", "get_project_permission_rules")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4023,7 +4023,7 @@ fn command_get_project_permission_rules(host: &Arc<NativeHost>, args: Value) -> 
 fn command_get_readonly_tools_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_readonly_tools_info().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4034,7 +4034,7 @@ fn command_get_recent_workspaces(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_recent_workspaces")?,
             host.command_state("get_recent_workspaces")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4044,7 +4044,7 @@ fn command_get_runtime_capabilities(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::get_runtime_capabilities(
             host.command_state("get_runtime_capabilities")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4056,7 +4056,7 @@ fn command_get_runtime_logging_info(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("get_runtime_logging_info")?,
             arg(&args, "request", "get_runtime_logging_info")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4067,7 +4067,7 @@ fn command_get_session_file_diff_stats(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("get_session_file_diff_stats")?,
             arg(&args, "request", "get_session_file_diff_stats")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4078,7 +4078,7 @@ fn command_get_session_files(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("get_session_files")?,
             arg(&args, "request", "get_session_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4089,7 +4089,7 @@ fn command_get_session_interaction_mailbox(host: &Arc<NativeHost>, args: Value) 
             host.command_state("get_session_interaction_mailbox")?,
             arg(&args, "request", "get_session_interaction_mailbox")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4100,7 +4100,7 @@ fn command_get_session_lineage(host: &Arc<NativeHost>, args: Value) -> DispatchF
             arg(&args, "request", "get_session_lineage")?,
             host.command_state("get_session_lineage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4114,7 +4114,7 @@ fn command_get_session_mode_catalog(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("get_session_mode_catalog")?,
             arg(&args, "request", "get_session_mode_catalog")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4125,7 +4125,7 @@ fn command_get_session_model_target(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("get_session_model_target")?,
             arg(&args, "request", "get_session_model_target")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4136,7 +4136,7 @@ fn command_get_session_operations(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("get_session_operations")?,
             arg(&args, "request", "get_session_operations")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4148,7 +4148,7 @@ fn command_get_session_permission_mode(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("get_session_permission_mode")?,
             arg(&args, "request", "get_session_permission_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4159,7 +4159,7 @@ fn command_get_session_stats(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("get_session_stats")?,
             arg(&args, "request", "get_session_stats")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4171,7 +4171,7 @@ fn command_get_session_thread_goal(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("get_session_thread_goal")?,
             arg(&args, "request", "get_session_thread_goal")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4182,7 +4182,7 @@ fn command_get_session_transcript_view(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("get_session_transcript_view")?,
             arg(&args, "request", "get_session_transcript_view")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4193,7 +4193,7 @@ fn command_get_session_turns(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("get_session_turns")?,
             arg(&args, "request", "get_session_turns")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4204,7 +4204,7 @@ fn command_get_session_usage_report(host: &Arc<NativeHost>, args: Value) -> Disp
             arg(&args, "request", "get_session_usage_report")?,
             host.command_state("get_session_usage_report")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4214,7 +4214,7 @@ fn command_get_settings_schema(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::api::settings_mutation_api::get_settings_schema(
             arg(&args, "request", "get_settings_schema")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4228,7 +4228,7 @@ fn command_get_skill_configs(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             arg(&args, "workspaceId", "get_skill_configs")?,
             arg(&args, "workspacePath", "get_skill_configs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4238,7 +4238,7 @@ fn command_get_snapshot_sessions(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::get_snapshot_sessions(
             arg(&args, "request", "get_snapshot_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4248,7 +4248,7 @@ fn command_get_snapshot_system_stats(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::get_snapshot_system_stats(
             arg(&args, "request", "get_snapshot_system_stats")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4258,7 +4258,7 @@ fn command_get_startup_native_trace(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::get_startup_native_trace(
             host.command_state("get_startup_native_trace")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4268,7 +4268,7 @@ fn command_get_statistics(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
         let result = crate::get_statistics(
             host.command_state("get_statistics")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4279,7 +4279,7 @@ fn command_get_subagent_detail(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("get_subagent_detail")?,
             arg(&args, "request", "get_subagent_detail")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4290,7 +4290,7 @@ fn command_get_subscription_account_quota(host: &Arc<NativeHost>, args: Value) -
             host.command_state("get_subscription_account_quota")?,
             arg(&args, "request", "get_subscription_account_quota")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4300,7 +4300,7 @@ fn command_get_subscription_login_status(host: &Arc<NativeHost>, args: Value) ->
         let result = crate::get_subscription_login_status(
             arg(&args, "request", "get_subscription_login_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4308,7 +4308,7 @@ fn command_get_subscription_login_status(host: &Arc<NativeHost>, args: Value) ->
 fn command_get_system_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_system_info().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4319,7 +4319,7 @@ fn command_get_terminal_profiles(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("get_terminal_profiles")?,
             arg(&args, "request", "get_terminal_profiles")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4330,7 +4330,7 @@ fn command_get_token_usage_activity(host: &Arc<NativeHost>, args: Value) -> Disp
             arg(&args, "request", "get_token_usage_activity")?,
             host.command_state("get_token_usage_activity")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4341,7 +4341,7 @@ fn command_get_token_usage_statistics(host: &Arc<NativeHost>, args: Value) -> Di
             arg(&args, "request", "get_token_usage_statistics")?,
             host.command_state("get_token_usage_statistics")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4351,7 +4351,7 @@ fn command_get_tool_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::get_tool_info(
             arg(&args, "request", "get_tool_info")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4362,7 +4362,7 @@ fn command_get_turn_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("get_turn_files")?,
             arg(&args, "request", "get_turn_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4370,7 +4370,7 @@ fn command_get_turn_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
 fn command_get_watched_paths(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::get_watched_paths().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4381,7 +4381,7 @@ fn command_get_web_search_credential_status(host: &Arc<NativeHost>, args: Value)
             host.command_state("get_web_search_credential_status")?,
             arg(&args, "request", "get_web_search_credential_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4392,7 +4392,7 @@ fn command_get_workspace_icon(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("get_workspace_icon")?,
             arg(&args, "request", "get_workspace_icon")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4403,7 +4403,7 @@ fn command_get_workspace_navigator(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("get_workspace_navigator")?,
             arg(&args, "request", "get_workspace_navigator")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4414,7 +4414,7 @@ fn command_get_workspace_reference_snapshot(host: &Arc<NativeHost>, args: Value)
             host.command_state("get_workspace_reference_snapshot")?,
             arg(&args, "request", "get_workspace_reference_snapshot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4425,7 +4425,7 @@ fn command_git_add_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("git_add_files")?,
             arg(&args, "request", "git_add_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4436,7 +4436,7 @@ fn command_git_add_worktree(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("git_add_worktree")?,
             arg(&args, "request", "git_add_worktree")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4447,7 +4447,7 @@ fn command_git_checkout_branch(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("git_checkout_branch")?,
             arg(&args, "request", "git_checkout_branch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4458,7 +4458,7 @@ fn command_git_cherry_pick(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("git_cherry_pick")?,
             arg(&args, "request", "git_cherry_pick")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4469,7 +4469,7 @@ fn command_git_cherry_pick_abort(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("git_cherry_pick_abort")?,
             arg(&args, "request", "git_cherry_pick_abort")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4480,7 +4480,7 @@ fn command_git_cherry_pick_continue(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("git_cherry_pick_continue")?,
             arg(&args, "request", "git_cherry_pick_continue")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4491,7 +4491,7 @@ fn command_git_commit(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>
             host.command_state("git_commit")?,
             arg(&args, "request", "git_commit")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4502,7 +4502,7 @@ fn command_git_commit_and_checkout(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("git_commit_and_checkout")?,
             arg(&args, "request", "git_commit_and_checkout")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4513,7 +4513,7 @@ fn command_git_create_branch(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("git_create_branch")?,
             arg(&args, "request", "git_create_branch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4524,7 +4524,7 @@ fn command_git_delete_branch(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("git_delete_branch")?,
             arg(&args, "request", "git_delete_branch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4535,7 +4535,7 @@ fn command_git_discard_files(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("git_discard_files")?,
             arg(&args, "request", "git_discard_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4546,7 +4546,7 @@ fn command_git_get_branches(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("git_get_branches")?,
             arg(&args, "request", "git_get_branches")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4557,7 +4557,7 @@ fn command_git_get_changed_files(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("git_get_changed_files")?,
             arg(&args, "request", "git_get_changed_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4568,7 +4568,7 @@ fn command_git_get_commits(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("git_get_commits")?,
             arg(&args, "request", "git_get_commits")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4579,7 +4579,7 @@ fn command_git_get_diff(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             host.command_state("git_get_diff")?,
             arg(&args, "request", "git_get_diff")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4590,7 +4590,7 @@ fn command_git_get_enhanced_branches(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("git_get_enhanced_branches")?,
             arg(&args, "request", "git_get_enhanced_branches")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4601,7 +4601,7 @@ fn command_git_get_file_content(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("git_get_file_content")?,
             arg(&args, "request", "git_get_file_content")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4615,7 +4615,7 @@ fn command_git_get_graph(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             arg(&args, "maxCount", "git_get_graph")?,
             arg(&args, "branchName", "git_get_graph")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4626,7 +4626,7 @@ fn command_git_get_repository(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("git_get_repository")?,
             arg(&args, "request", "git_get_repository")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4638,7 +4638,7 @@ fn command_git_get_repository_basic(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("git_get_repository_basic")?,
             arg(&args, "request", "git_get_repository_basic")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4649,7 +4649,7 @@ fn command_git_get_repository_trust(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("git_get_repository_trust")?,
             arg(&args, "request", "git_get_repository_trust")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4660,7 +4660,7 @@ fn command_git_get_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("git_get_status")?,
             arg(&args, "request", "git_get_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4671,7 +4671,7 @@ fn command_git_get_tracked_change_count(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("git_get_tracked_change_count")?,
             arg(&args, "request", "git_get_tracked_change_count")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4683,7 +4683,7 @@ fn command_git_is_repository(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("git_is_repository")?,
             arg(&args, "request", "git_is_repository")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4694,7 +4694,7 @@ fn command_git_list_worktrees(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("git_list_worktrees")?,
             arg(&args, "request", "git_list_worktrees")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4705,7 +4705,7 @@ fn command_git_pull(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
             host.command_state("git_pull")?,
             arg(&args, "request", "git_pull")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4716,7 +4716,7 @@ fn command_git_push(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
             host.command_state("git_push")?,
             arg(&args, "request", "git_push")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4727,7 +4727,7 @@ fn command_git_remove_worktree(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("git_remove_worktree")?,
             arg(&args, "request", "git_remove_worktree")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4738,7 +4738,7 @@ fn command_git_reset_files(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("git_reset_files")?,
             arg(&args, "request", "git_reset_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4749,7 +4749,7 @@ fn command_git_reset_to_commit(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("git_reset_to_commit")?,
             arg(&args, "request", "git_reset_to_commit")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4760,7 +4760,7 @@ fn command_git_resolve_revision(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("git_resolve_revision")?,
             arg(&args, "request", "git_resolve_revision")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4771,7 +4771,7 @@ fn command_git_trust_repository(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("git_trust_repository")?,
             arg(&args, "request", "git_trust_repository")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4781,7 +4781,7 @@ fn command_git_unwatch_status(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::git_unwatch_status(
             arg(&args, "request", "git_unwatch_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4792,7 +4792,7 @@ fn command_git_watch_status(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("git_watch_status")?,
             arg(&args, "request", "git_watch_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4804,7 +4804,7 @@ fn command_grant_miniapp_path(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             arg(&args, "appId", "grant_miniapp_path")?,
             arg(&args, "path", "grant_miniapp_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4815,7 +4815,7 @@ fn command_grant_miniapp_workspace(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("grant_miniapp_workspace")?,
             arg(&args, "appId", "grant_miniapp_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4825,7 +4825,7 @@ fn command_has_insights_data(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::api::insights_api::has_insights_data(
             arg(&args, "request", "has_insights_data")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4836,7 +4836,7 @@ fn command_host_shell_attach(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "host_shell_attach")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4847,7 +4847,7 @@ fn command_host_shell_respond(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "host_shell_respond")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4858,7 +4858,7 @@ fn command_html_preview_create(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("html_preview_create")?,
             arg(&args, "request", "html_preview_create")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4868,7 +4868,7 @@ fn command_html_preview_read_resource(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::html_preview_api::html_preview_read_resource(
             arg(&args, "request", "html_preview_read_resource")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4878,7 +4878,7 @@ fn command_html_preview_release(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::api::html_preview_api::html_preview_release(
             arg(&args, "request", "html_preview_release")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4888,7 +4888,7 @@ fn command_i18n_get_config(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::i18n_get_config(
             host.command_state("i18n_get_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4898,7 +4898,7 @@ fn command_i18n_get_current_language(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::i18n_get_current_language(
             host.command_state("i18n_get_current_language")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4906,7 +4906,7 @@ fn command_i18n_get_current_language(host: &Arc<NativeHost>, args: Value) -> Dis
 fn command_i18n_get_supported_languages(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::i18n_get_supported_languages().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4918,7 +4918,7 @@ fn command_i18n_set_config(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             HostHandle::new(Arc::clone(host)),
             arg(&args, "config", "i18n_set_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4930,7 +4930,7 @@ fn command_i18n_set_language(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "i18n_set_language")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4941,7 +4941,7 @@ fn command_import_agent_companion_pet_package(host: &Arc<NativeHost>, args: Valu
             host.command_state("import_agent_companion_pet_package")?,
             arg(&args, "request", "import_agent_companion_pet_package")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4952,7 +4952,7 @@ fn command_import_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("import_config")?,
             arg(&args, "request", "import_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4963,7 +4963,7 @@ fn command_import_terminal_profiles(host: &Arc<NativeHost>, args: Value) -> Disp
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "import_terminal_profiles")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4974,7 +4974,7 @@ fn command_initialize_acp_clients(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("initialize_acp_clients")?,
             host.command_state("initialize_acp_clients")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4984,7 +4984,7 @@ fn command_initialize_ai(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::initialize_ai(
             host.command_state("initialize_ai")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -4995,7 +4995,7 @@ fn command_initialize_mcp_servers(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("initialize_mcp_servers")?,
             host.command_state("initialize_mcp_servers")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5006,7 +5006,7 @@ fn command_initialize_mcp_servers_non_destructive(host: &Arc<NativeHost>, args: 
             host.command_state("initialize_mcp_servers_non_destructive")?,
             host.command_state("initialize_mcp_servers_non_destructive")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5018,7 +5018,7 @@ fn command_initialize_workspace_startup_state(host: &Arc<NativeHost>, args: Valu
             HostHandle::new(Arc::clone(host)),
             host.command_state("initialize_workspace_startup_state")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5028,7 +5028,7 @@ fn command_inspect_snapshot_storage(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::inspect_snapshot_storage(
             arg(&args, "request", "inspect_snapshot_storage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5039,7 +5039,7 @@ fn command_install_acp_client_cli(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("install_acp_client_cli")?,
             arg(&args, "request", "install_acp_client_cli")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5050,7 +5050,7 @@ fn command_interrupt_dialog_turn(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("interrupt_dialog_turn")?,
             arg(&args, "request", "interrupt_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5064,7 +5064,7 @@ fn command_launch_review(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("launch_review")?,
             arg(&args, "request", "launch_review")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5075,7 +5075,7 @@ fn command_list_agent_companion_pets(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("list_agent_companion_pets")?,
             arg(&args, "request", "list_agent_companion_pets")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5085,7 +5085,7 @@ fn command_list_agent_tool_names(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::list_agent_tool_names(
             host.command_state("list_agent_tool_names")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5096,7 +5096,7 @@ fn command_list_ai_models_by_config(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("list_ai_models_by_config")?,
             arg(&args, "request", "list_ai_models_by_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5107,7 +5107,7 @@ fn command_list_archived_sessions(host: &Arc<NativeHost>, args: Value) -> Dispat
             arg(&args, "request", "list_archived_sessions")?,
             host.command_state("list_archived_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5117,7 +5117,7 @@ fn command_list_background_command_activities(host: &Arc<NativeHost>, args: Valu
         let result = crate::api::agentic_api::list_background_command_activities(
             arg(&args, "request", "list_background_command_activities")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5127,7 +5127,7 @@ fn command_list_cron_jobs(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
         let result = crate::list_cron_jobs(
             arg(&args, "request", "list_cron_jobs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5138,7 +5138,7 @@ fn command_list_directory_files(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("list_directory_files")?,
             arg(&args, "request", "list_directory_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5149,7 +5149,7 @@ fn command_list_manageable_subagents(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("list_manageable_subagents")?,
             arg(&args, "request", "list_manageable_subagents")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5160,7 +5160,7 @@ fn command_list_mcp_prompts(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("list_mcp_prompts")?,
             arg(&args, "request", "list_mcp_prompts")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5171,7 +5171,7 @@ fn command_list_mcp_resources(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("list_mcp_resources")?,
             arg(&args, "request", "list_mcp_resources")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5182,7 +5182,7 @@ fn command_list_miniapps(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("list_miniapps")?,
             host.command_state("list_miniapps")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5192,7 +5192,7 @@ fn command_list_pending_permission_requests(host: &Arc<NativeHost>, args: Value)
         let result = crate::api::agentic_api::list_pending_permission_requests(
             host.command_state("list_pending_permission_requests")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5203,7 +5203,7 @@ fn command_list_persisted_sessions(host: &Arc<NativeHost>, args: Value) -> Dispa
             arg(&args, "request", "list_persisted_sessions")?,
             host.command_state("list_persisted_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5215,7 +5215,7 @@ fn command_list_persisted_sessions_page(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("list_persisted_sessions_page")?,
             host.command_state("list_persisted_sessions_page")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5227,7 +5227,7 @@ fn command_list_project_permission_audit(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("list_project_permission_audit")?,
             arg(&args, "request", "list_project_permission_audit")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5239,7 +5239,7 @@ fn command_list_project_permission_grants(host: &Arc<NativeHost>, args: Value) -
             host.command_state("list_project_permission_grants")?,
             arg(&args, "request", "list_project_permission_grants")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5249,7 +5249,7 @@ fn command_list_removed_external_sessions(host: &Arc<NativeHost>, args: Value) -
         let result = crate::list_removed_external_sessions(
             arg(&args, "request", "list_removed_external_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5260,7 +5260,7 @@ fn command_list_session_commands(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("list_session_commands")?,
             arg(&args, "request", "list_session_commands")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5272,7 +5272,7 @@ fn command_list_sessions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             host.command_state("list_sessions")?,
             arg(&args, "request", "list_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5283,7 +5283,7 @@ fn command_list_skill_market(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("list_skill_market")?,
             arg(&args, "request", "list_skill_market")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5294,7 +5294,7 @@ fn command_list_subagents(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("list_subagents")?,
             arg(&args, "request", "list_subagents")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5302,7 +5302,7 @@ fn command_list_subagents(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
 fn command_list_subscription_account_instances(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::list_subscription_account_instances().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5310,7 +5310,7 @@ fn command_list_subscription_account_instances(host: &Arc<NativeHost>, args: Val
 fn command_list_subscription_accounts(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::list_subscription_accounts().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5321,7 +5321,7 @@ fn command_list_visible_subagents(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("list_visible_subagents")?,
             arg(&args, "request", "list_visible_subagents")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5331,7 +5331,7 @@ fn command_load_acp_json_config(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::load_acp_json_config(
             host.command_state("load_acp_json_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5342,7 +5342,7 @@ fn command_load_agent_companion_pet_spritesheet(host: &Arc<NativeHost>, args: Va
             host.command_state("load_agent_companion_pet_spritesheet")?,
             arg(&args, "request", "load_agent_companion_pet_spritesheet")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5353,7 +5353,7 @@ fn command_load_agent_companion_pet_still(host: &Arc<NativeHost>, args: Value) -
             host.command_state("load_agent_companion_pet_still")?,
             arg(&args, "request", "load_agent_companion_pet_still")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5363,7 +5363,7 @@ fn command_load_git_repo_history(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::load_git_repo_history(
             host.command_state("load_git_repo_history")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5373,7 +5373,7 @@ fn command_load_insights_report(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::api::insights_api::load_insights_report(
             arg(&args, "request", "load_insights_report")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5383,7 +5383,7 @@ fn command_load_mcp_json_config(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::load_mcp_json_config(
             host.command_state("load_mcp_json_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5395,7 +5395,7 @@ fn command_load_persisted_session_metadata(host: &Arc<NativeHost>, args: Value) 
             host.command_state("load_persisted_session_metadata")?,
             host.command_state("load_persisted_session_metadata")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5406,7 +5406,7 @@ fn command_load_session_event_backfill(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("load_session_event_backfill")?,
             arg(&args, "request", "load_session_event_backfill")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5417,7 +5417,7 @@ fn command_load_session_trajectory(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("load_session_trajectory")?,
             arg(&args, "request", "load_session_trajectory")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5429,7 +5429,7 @@ fn command_load_session_turn_window(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("load_session_turn_window")?,
             arg(&args, "request", "load_session_turn_window")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5441,7 +5441,7 @@ fn command_load_session_turns(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("load_session_turns")?,
             host.command_state("load_session_turns")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5451,7 +5451,7 @@ fn command_logout_subscription_account(host: &Arc<NativeHost>, args: Value) -> D
         let result = crate::logout_subscription_account(
             arg(&args, "request", "logout_subscription_account")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5461,7 +5461,7 @@ fn command_logout_subscription_account_instance(host: &Arc<NativeHost>, args: Va
         let result = crate::logout_subscription_account_instance(
             arg(&args, "request", "logout_subscription_account_instance")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5472,7 +5472,7 @@ fn command_manage_dialog_queue(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("manage_dialog_queue")?,
             arg(&args, "request", "manage_dialog_queue")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5482,7 +5482,7 @@ fn command_mark_miniapp_web_surface_ready(host: &Arc<NativeHost>, args: Value) -
         let result = crate::miniapp_web_host::mark_miniapp_web_surface_ready(
             arg(&args, "request", "mark_miniapp_web_surface_ready")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5492,7 +5492,7 @@ fn command_mark_openbitfun_control_surface_ready(host: &Arc<NativeHost>, args: V
         let result = crate::openbitfun_control_host::mark_openbitfun_control_surface_ready(
             arg(&args, "request", "mark_openbitfun_control_surface_ready")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5500,7 +5500,7 @@ fn command_mark_openbitfun_control_surface_ready(host: &Arc<NativeHost>, args: V
 fn command_mark_openbitfun_control_surface_unready(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::openbitfun_control_host::mark_openbitfun_control_surface_unready();
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5511,7 +5511,7 @@ fn command_mark_session_seen(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("mark_session_seen")?,
             arg(&args, "request", "mark_session_seen")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5519,7 +5519,7 @@ fn command_mark_session_seen(host: &Arc<NativeHost>, args: Value) -> DispatchFut
 fn command_mesh_list_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::mesh::mesh_api::mesh_list_devices().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5527,7 +5527,7 @@ fn command_mesh_list_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFut
 fn command_mesh_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::mesh::mesh_api::mesh_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5537,7 +5537,7 @@ fn command_miniapp_account_catalog(host: &Arc<NativeHost>, args: Value) -> Dispa
         let result = crate::miniapp_desktop::catalog::miniapp_account_catalog(
             arg(&args, "request", "miniapp_account_catalog")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5549,7 +5549,7 @@ fn command_miniapp_agent_cancel(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("miniapp_agent_cancel")?,
             arg(&args, "request", "miniapp_agent_cancel")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5561,7 +5561,7 @@ fn command_miniapp_agent_cancel_stale_runs(host: &Arc<NativeHost>, args: Value) 
             host.command_state("miniapp_agent_cancel_stale_runs")?,
             arg(&args, "request", "miniapp_agent_cancel_stale_runs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5573,7 +5573,7 @@ fn command_miniapp_agent_ensure_session(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("miniapp_agent_ensure_session")?,
             arg(&args, "request", "miniapp_agent_ensure_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5586,7 +5586,7 @@ fn command_miniapp_agent_run(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("miniapp_agent_run")?,
             arg(&args, "request", "miniapp_agent_run")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5598,7 +5598,7 @@ fn command_miniapp_agent_turn_text(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("miniapp_agent_turn_text")?,
             arg(&args, "request", "miniapp_agent_turn_text")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5609,7 +5609,7 @@ fn command_miniapp_ai_cancel(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("miniapp_ai_cancel")?,
             arg(&args, "request", "miniapp_ai_cancel")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5621,7 +5621,7 @@ fn command_miniapp_ai_chat(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("miniapp_ai_chat")?,
             arg(&args, "request", "miniapp_ai_chat")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5632,7 +5632,7 @@ fn command_miniapp_ai_complete(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("miniapp_ai_complete")?,
             arg(&args, "request", "miniapp_ai_complete")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5643,7 +5643,7 @@ fn command_miniapp_ai_list_models(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("miniapp_ai_list_models")?,
             arg(&args, "request", "miniapp_ai_list_models")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5654,7 +5654,7 @@ fn command_miniapp_apply_draft(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("miniapp_apply_draft")?,
             arg(&args, "request", "miniapp_apply_draft")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5665,7 +5665,7 @@ fn command_miniapp_create_draft(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("miniapp_create_draft")?,
             arg(&args, "request", "miniapp_create_draft")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5676,7 +5676,7 @@ fn command_miniapp_decline_builtin_update(host: &Arc<NativeHost>, args: Value) -
             host.command_state("miniapp_decline_builtin_update")?,
             arg(&args, "request", "miniapp_decline_builtin_update")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5688,7 +5688,7 @@ fn command_miniapp_dialog_message(host: &Arc<NativeHost>, args: Value) -> Dispat
             arg(&args, "appId", "miniapp_dialog_message")?,
             arg(&args, "options", "miniapp_dialog_message")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5699,7 +5699,7 @@ fn command_miniapp_discard_draft(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("miniapp_discard_draft")?,
             arg(&args, "request", "miniapp_discard_draft")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5710,7 +5710,7 @@ fn command_miniapp_draft_host_call(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("miniapp_draft_host_call")?,
             arg(&args, "request", "miniapp_draft_host_call")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5721,7 +5721,7 @@ fn command_miniapp_draft_worker_call(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("miniapp_draft_worker_call")?,
             arg(&args, "request", "miniapp_draft_worker_call")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5732,7 +5732,7 @@ fn command_miniapp_draft_worker_stop(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("miniapp_draft_worker_stop")?,
             arg(&args, "request", "miniapp_draft_worker_stop")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5743,7 +5743,7 @@ fn command_miniapp_get_customization_metadata(host: &Arc<NativeHost>, args: Valu
             host.command_state("miniapp_get_customization_metadata")?,
             arg(&args, "appId", "miniapp_get_customization_metadata")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5754,7 +5754,7 @@ fn command_miniapp_get_draft(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("miniapp_get_draft")?,
             arg(&args, "request", "miniapp_get_draft")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5765,7 +5765,7 @@ fn command_miniapp_host_call(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("miniapp_host_call")?,
             arg(&args, "request", "miniapp_host_call")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5776,7 +5776,7 @@ fn command_miniapp_import_from_path(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("miniapp_import_from_path")?,
             arg(&args, "request", "miniapp_import_from_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5787,7 +5787,7 @@ fn command_miniapp_inline(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "miniapp_inline")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5798,7 +5798,7 @@ fn command_miniapp_install_deps(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("miniapp_install_deps")?,
             arg(&args, "appId", "miniapp_install_deps")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5808,7 +5808,7 @@ fn command_miniapp_market_browse(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::miniapp_market_api::miniapp_market_browse(
             arg(&args, "request", "miniapp_market_browse")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5818,7 +5818,7 @@ fn command_miniapp_market_get_listing(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::miniapp_market_api::miniapp_market_get_listing(
             arg(&args, "request", "miniapp_market_get_listing")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5829,7 +5829,7 @@ fn command_miniapp_market_import_package(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("miniapp_market_import_package")?,
             arg(&args, "request", "miniapp_market_import_package")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5839,7 +5839,7 @@ fn command_miniapp_market_inspect_package(host: &Arc<NativeHost>, args: Value) -
         let result = crate::api::miniapp_market_api::miniapp_market_inspect_package(
             arg(&args, "request", "miniapp_market_inspect_package")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5850,7 +5850,7 @@ fn command_miniapp_market_install(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("miniapp_market_install")?,
             arg(&args, "request", "miniapp_market_install")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5860,7 +5860,7 @@ fn command_miniapp_market_installed_origins(host: &Arc<NativeHost>, args: Value)
         let result = crate::api::miniapp_market_api::miniapp_market_installed_origins(
             host.command_state("miniapp_market_installed_origins")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5871,7 +5871,7 @@ fn command_miniapp_market_installed_status(host: &Arc<NativeHost>, args: Value) 
             host.command_state("miniapp_market_installed_status")?,
             arg(&args, "request", "miniapp_market_installed_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5879,7 +5879,7 @@ fn command_miniapp_market_installed_status(host: &Arc<NativeHost>, args: Value) 
 fn command_miniapp_market_list_submissions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::miniapp_market_api::miniapp_market_list_submissions().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5889,7 +5889,7 @@ fn command_miniapp_market_set_favorite(host: &Arc<NativeHost>, args: Value) -> D
         let result = crate::api::miniapp_market_api::miniapp_market_set_favorite(
             arg(&args, "request", "miniapp_market_set_favorite")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5899,7 +5899,7 @@ fn command_miniapp_market_set_rating(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::api::miniapp_market_api::miniapp_market_set_rating(
             arg(&args, "request", "miniapp_market_set_rating")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5909,7 +5909,7 @@ fn command_miniapp_market_withdraw_submission(host: &Arc<NativeHost>, args: Valu
         let result = crate::api::miniapp_market_api::miniapp_market_withdraw_submission(
             arg(&args, "request", "miniapp_market_withdraw_submission")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5920,7 +5920,7 @@ fn command_miniapp_permission_diff_for_draft(host: &Arc<NativeHost>, args: Value
             host.command_state("miniapp_permission_diff_for_draft")?,
             arg(&args, "request", "miniapp_permission_diff_for_draft")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5931,7 +5931,7 @@ fn command_miniapp_recompile(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("miniapp_recompile")?,
             arg(&args, "request", "miniapp_recompile")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5941,7 +5941,7 @@ fn command_miniapp_runtime_status(host: &Arc<NativeHost>, args: Value) -> Dispat
         let result = crate::api::miniapp_api::miniapp_runtime_status(
             host.command_state("miniapp_runtime_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5952,7 +5952,7 @@ fn command_miniapp_set_draft_permissions(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("miniapp_set_draft_permissions")?,
             arg(&args, "request", "miniapp_set_draft_permissions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5962,7 +5962,7 @@ fn command_miniapp_shell_call(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::api::miniapp_api::miniapp_shell_call(
             arg(&args, "request", "miniapp_shell_call")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5973,7 +5973,7 @@ fn command_miniapp_sync_draft_from_fs(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("miniapp_sync_draft_from_fs")?,
             arg(&args, "request", "miniapp_sync_draft_from_fs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5984,7 +5984,7 @@ fn command_miniapp_sync_from_fs(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("miniapp_sync_from_fs")?,
             arg(&args, "request", "miniapp_sync_from_fs")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -5995,7 +5995,7 @@ fn command_miniapp_worker_call(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("miniapp_worker_call")?,
             arg(&args, "request", "miniapp_worker_call")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6006,7 +6006,7 @@ fn command_miniapp_worker_list_running(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("miniapp_worker_list_running")?,
             host.command_state("miniapp_worker_list_running")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6017,7 +6017,7 @@ fn command_miniapp_worker_stop(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("miniapp_worker_stop")?,
             arg(&args, "appId", "miniapp_worker_stop")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6027,7 +6027,7 @@ fn command_mutate_external_hook_import_command(host: &Arc<NativeHost>, args: Val
         let result = crate::mutate_external_hook_import_command(
             arg(&args, "request", "mutate_external_hook_import_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6035,7 +6035,7 @@ fn command_mutate_external_hook_import_command(host: &Arc<NativeHost>, args: Val
 fn command_notify_cron_host_ready(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::notify_cron_host_ready().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6045,7 +6045,7 @@ fn command_obp_create_pairing(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::backend_protocol::ws::obp_create_pairing(
             arg(&args, "request", "obp_create_pairing")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6053,7 +6053,7 @@ fn command_obp_create_pairing(host: &Arc<NativeHost>, args: Value) -> DispatchFu
 fn command_obp_get_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::backend_protocol::ws::obp_get_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6063,7 +6063,7 @@ fn command_obp_revoke_paired_client(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::backend_protocol::ws::obp_revoke_paired_client(
             arg(&args, "request", "obp_revoke_paired_client")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6075,7 +6075,7 @@ fn command_open_remote_workspace(host: &Arc<NativeHost>, args: Value) -> Dispatc
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "open_remote_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6087,7 +6087,7 @@ fn command_open_workspace(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "open_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6097,7 +6097,7 @@ fn command_paste_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
         let result = crate::paste_files(
             arg(&args, "request", "paste_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6107,7 +6107,7 @@ fn command_peer_link_call(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
         let result = crate::mesh::peer_link::peer_link_call(
             arg(&args, "request", "peer_link_call")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6117,7 +6117,7 @@ fn command_peer_link_connect(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::mesh::peer_link::peer_link_connect(
             arg(&args, "request", "peer_link_connect")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6127,7 +6127,7 @@ fn command_peer_link_disconnect(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::mesh::peer_link::peer_link_disconnect(
             arg(&args, "request", "peer_link_disconnect")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6137,7 +6137,7 @@ fn command_peer_link_events(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
         let result = crate::mesh::peer_link::peer_link_events(
             arg(&args, "request", "peer_link_events")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6147,7 +6147,7 @@ fn command_plan_external_hook_import_command(host: &Arc<NativeHost>, args: Value
         let result = crate::plan_external_hook_import_command(
             arg(&args, "request", "plan_external_hook_import_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6157,7 +6157,7 @@ fn command_plan_external_mcp_import_command(host: &Arc<NativeHost>, args: Value)
         let result = crate::plan_external_mcp_import_command(
             arg(&args, "request", "plan_external_mcp_import_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6168,7 +6168,7 @@ fn command_predownload_acp_client_adapter(host: &Arc<NativeHost>, args: Value) -
             host.command_state("predownload_acp_client_adapter")?,
             arg(&args, "request", "predownload_acp_client_adapter")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6179,7 +6179,7 @@ fn command_preview_commit_message(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("preview_commit_message")?,
             arg(&args, "request", "preview_commit_message")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6189,7 +6189,7 @@ fn command_preview_cron_occurrences(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::api::cron_api::preview_cron_occurrences(
             arg(&args, "request", "preview_cron_occurrences")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6201,7 +6201,7 @@ fn command_probe_acp_client_requirements(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("probe_acp_client_requirements")?,
             arg(&args, "request", "probe_acp_client_requirements")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6212,7 +6212,7 @@ fn command_probe_magpie_gateway(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("probe_magpie_gateway")?,
             arg(&args, "request", "probe_magpie_gateway")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6223,7 +6223,7 @@ fn command_product_control_invoke(host: &Arc<NativeHost>, args: Value) -> Dispat
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "product_control_invoke")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6233,7 +6233,7 @@ fn command_project_ai_model_reasoning_catalog(host: &Arc<NativeHost>, args: Valu
         let result = crate::project_ai_model_reasoning_catalog(
             arg(&args, "request", "project_ai_model_reasoning_catalog")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6244,7 +6244,7 @@ fn command_quick_commit_message(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("quick_commit_message")?,
             arg(&args, "request", "quick_commit_message")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6254,7 +6254,7 @@ fn command_read_background_command_output(host: &Arc<NativeHost>, args: Value) -
         let result = crate::api::agentic_api::read_background_command_output(
             arg(&args, "request", "read_background_command_output")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6265,7 +6265,7 @@ fn command_read_file_content(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("read_file_content")?,
             arg(&args, "request", "read_file_content")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6276,7 +6276,7 @@ fn command_read_mcp_resource(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("read_mcp_resource")?,
             arg(&args, "request", "read_mcp_resource")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6287,7 +6287,7 @@ fn command_record_voice_exchange(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("record_voice_exchange")?,
             arg(&args, "request", "record_voice_exchange")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6298,7 +6298,7 @@ fn command_recover_interrupted_dialog_turn(host: &Arc<NativeHost>, args: Value) 
             host.command_state("recover_interrupted_dialog_turn")?,
             arg(&args, "request", "recover_interrupted_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6309,7 +6309,7 @@ fn command_refresh_model_client(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("refresh_model_client")?,
             arg(&args, "modelId", "refresh_model_client")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6317,7 +6317,7 @@ fn command_refresh_model_client(host: &Arc<NativeHost>, args: Value) -> Dispatch
 fn command_refresh_models_dev_catalog_now(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::refresh_models_dev_catalog_now().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6328,7 +6328,7 @@ fn command_refresh_subscription_account(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("refresh_subscription_account")?,
             arg(&args, "request", "refresh_subscription_account")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6339,7 +6339,7 @@ fn command_refresh_subscription_account_instance(host: &Arc<NativeHost>, args: V
             host.command_state("refresh_subscription_account_instance")?,
             arg(&args, "request", "refresh_subscription_account_instance")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6351,7 +6351,7 @@ fn command_reject_file(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("reject_file")?,
             arg(&args, "request", "reject_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6363,7 +6363,7 @@ fn command_reject_operation(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("reject_operation")?,
             arg(&args, "request", "reject_operation")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6373,7 +6373,7 @@ fn command_reload_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::reload_config(
             host.command_state("reload_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6384,7 +6384,7 @@ fn command_reload_custom_agents(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("reload_custom_agents")?,
             arg(&args, "request", "reload_custom_agents")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6395,7 +6395,7 @@ fn command_reload_session_context(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("reload_session_context")?,
             arg(&args, "request", "reload_session_context")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6406,7 +6406,7 @@ fn command_reload_subagents(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("reload_subagents")?,
             arg(&args, "request", "reload_subagents")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6416,7 +6416,7 @@ fn command_remote_close_workspace(host: &Arc<NativeHost>, args: Value) -> Dispat
         let result = crate::api::ssh_api::remote_close_workspace(
             host.command_state("remote_close_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6426,7 +6426,7 @@ fn command_remote_connect_configure_bot(host: &Arc<NativeHost>, args: Value) -> 
         let result = crate::api::remote_connect_api::remote_connect_configure_bot(
             arg(&args, "request", "remote_connect_configure_bot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6434,7 +6434,7 @@ fn command_remote_connect_configure_bot(host: &Arc<NativeHost>, args: Value) -> 
 fn command_remote_connect_get_bot_verbose_mode(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_get_bot_verbose_mode().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6442,7 +6442,7 @@ fn command_remote_connect_get_bot_verbose_mode(host: &Arc<NativeHost>, args: Val
 fn command_remote_connect_get_device_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_get_device_info().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6450,7 +6450,7 @@ fn command_remote_connect_get_device_info(host: &Arc<NativeHost>, args: Value) -
 fn command_remote_connect_get_form_state(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_get_form_state().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6458,7 +6458,7 @@ fn command_remote_connect_get_form_state(host: &Arc<NativeHost>, args: Value) ->
 fn command_remote_connect_get_methods(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_get_methods().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6468,7 +6468,7 @@ fn command_remote_connect_set_allowed(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::remote_connect_api::remote_connect_set_allowed(
             arg(&args, "request", "remote_connect_set_allowed")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6478,7 +6478,7 @@ fn command_remote_connect_set_bot_verbose_mode(host: &Arc<NativeHost>, args: Val
         let result = crate::api::remote_connect_api::remote_connect_set_bot_verbose_mode(
             arg(&args, "verbose", "remote_connect_set_bot_verbose_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6488,7 +6488,7 @@ fn command_remote_connect_set_form_state(host: &Arc<NativeHost>, args: Value) ->
         let result = crate::api::remote_connect_api::remote_connect_set_form_state(
             arg(&args, "request", "remote_connect_set_form_state")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6498,7 +6498,7 @@ fn command_remote_connect_start(host: &Arc<NativeHost>, args: Value) -> Dispatch
         let result = crate::api::remote_connect_api::remote_connect_start(
             arg(&args, "request", "remote_connect_start")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6506,7 +6506,7 @@ fn command_remote_connect_start(host: &Arc<NativeHost>, args: Value) -> Dispatch
 fn command_remote_connect_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_status().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6516,7 +6516,7 @@ fn command_remote_connect_stop(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::api::remote_connect_api::remote_connect_stop(
             arg(&args, "request", "remote_connect_stop")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6524,7 +6524,7 @@ fn command_remote_connect_stop(host: &Arc<NativeHost>, args: Value) -> DispatchF
 fn command_remote_connect_stop_bot(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_stop_bot().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6534,7 +6534,7 @@ fn command_remote_connect_weixin_qr_poll(host: &Arc<NativeHost>, args: Value) ->
         let result = crate::api::remote_connect_api::remote_connect_weixin_qr_poll(
             arg(&args, "request", "remote_connect_weixin_qr_poll")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6544,7 +6544,7 @@ fn command_remote_connect_weixin_qr_start(host: &Arc<NativeHost>, args: Value) -
         let result = crate::api::remote_connect_api::remote_connect_weixin_qr_start(
             arg(&args, "request", "remote_connect_weixin_qr_start")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6557,7 +6557,7 @@ fn command_remote_create_dir(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             arg(&args, "path", "remote_create_dir")?,
             arg(&args, "recursive", "remote_create_dir")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6572,7 +6572,7 @@ fn command_remote_download_to_local_path(host: &Arc<NativeHost>, args: Value) ->
             arg(&args, "localPath", "remote_download_to_local_path")?,
             arg(&args, "transferId", "remote_download_to_local_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6584,7 +6584,7 @@ fn command_remote_execute(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             arg(&args, "connectionId", "remote_execute")?,
             arg(&args, "command", "remote_execute")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6596,7 +6596,7 @@ fn command_remote_exists(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             arg(&args, "connectionId", "remote_exists")?,
             arg(&args, "path", "remote_exists")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6609,7 +6609,7 @@ fn command_remote_get_tree(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             arg(&args, "path", "remote_get_tree")?,
             arg(&args, "depth", "remote_get_tree")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6620,7 +6620,7 @@ fn command_remote_get_workspace_info(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("remote_get_workspace_info")?,
             host.command_state("remote_get_workspace_info")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6632,7 +6632,7 @@ fn command_remote_open_workspace(host: &Arc<NativeHost>, args: Value) -> Dispatc
             arg(&args, "connectionId", "remote_open_workspace")?,
             arg(&args, "remotePath", "remote_open_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6644,7 +6644,7 @@ fn command_remote_read_dir(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             arg(&args, "connectionId", "remote_read_dir")?,
             arg(&args, "path", "remote_read_dir")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6656,7 +6656,7 @@ fn command_remote_read_file(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             arg(&args, "connectionId", "remote_read_file")?,
             arg(&args, "path", "remote_read_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6669,7 +6669,7 @@ fn command_remote_remove(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             arg(&args, "path", "remote_remove")?,
             arg(&args, "recursive", "remote_remove")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6681,7 +6681,7 @@ fn command_remote_remove_workspace(host: &Arc<NativeHost>, args: Value) -> Dispa
             arg(&args, "connectionId", "remote_remove_workspace")?,
             arg(&args, "remotePath", "remote_remove_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6694,7 +6694,7 @@ fn command_remote_rename(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
             arg(&args, "oldPath", "remote_rename")?,
             arg(&args, "newPath", "remote_rename")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6709,7 +6709,7 @@ fn command_remote_upload_from_local_path(host: &Arc<NativeHost>, args: Value) ->
             arg(&args, "remotePath", "remote_upload_from_local_path")?,
             arg(&args, "transferId", "remote_upload_from_local_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6721,7 +6721,7 @@ fn command_remote_workspace_ensure_connected(host: &Arc<NativeHost>, args: Value
             host.command_state("remote_workspace_ensure_connected")?,
             arg(&args, "request", "remote_workspace_ensure_connected")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6732,7 +6732,7 @@ fn command_remote_workspace_link_states(host: &Arc<NativeHost>, args: Value) -> 
             HostHandle::new(Arc::clone(host)),
             host.command_state("remote_workspace_link_states")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6745,7 +6745,7 @@ fn command_remote_write_file(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             arg(&args, "path", "remote_write_file")?,
             arg(&args, "content", "remote_write_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6757,7 +6757,7 @@ fn command_remove_project_permission_grant(host: &Arc<NativeHost>, args: Value) 
             host.command_state("remove_project_permission_grant")?,
             arg(&args, "request", "remove_project_permission_grant")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6768,7 +6768,7 @@ fn command_remove_recent_workspace(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("remove_recent_workspace")?,
             arg(&args, "request", "remove_recent_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6779,7 +6779,7 @@ fn command_rename_file(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("rename_file")?,
             arg(&args, "request", "rename_file")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6790,7 +6790,7 @@ fn command_reorder_opened_workspaces(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("reorder_opened_workspaces")?,
             arg(&args, "request", "reorder_opened_workspaces")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6801,7 +6801,7 @@ fn command_replace_mode_skill_selection(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("replace_mode_skill_selection")?,
             arg(&args, "request", "replace_mode_skill_selection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6811,7 +6811,7 @@ fn command_report_ide_control_result(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::report_ide_control_result(
             arg(&args, "request", "report_ide_control_result")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6821,7 +6821,7 @@ fn command_report_miniapp_web_result(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::miniapp_web_host::report_miniapp_web_result(
             arg(&args, "request", "report_miniapp_web_result")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6831,7 +6831,7 @@ fn command_report_openbitfun_control_result(host: &Arc<NativeHost>, args: Value)
         let result = crate::openbitfun_control_host::report_openbitfun_control_result(
             arg(&args, "request", "report_openbitfun_control_result")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6842,7 +6842,7 @@ fn command_reset_agent_profile_config(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("reset_agent_profile_config")?,
             arg(&args, "agentId", "reset_agent_profile_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6854,7 +6854,7 @@ fn command_reset_assistant_workspace(host: &Arc<NativeHost>, args: Value) -> Dis
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "reset_assistant_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6865,7 +6865,7 @@ fn command_reset_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             host.command_state("reset_config")?,
             arg(&args, "request", "reset_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6875,7 +6875,7 @@ fn command_reset_memory(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
         let result = crate::api::agentic_api::reset_memory(
             host.command_state("reset_memory")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6886,7 +6886,7 @@ fn command_reset_mode_skill_selection(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("reset_mode_skill_selection")?,
             arg(&args, "request", "reset_mode_skill_selection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6897,7 +6897,7 @@ fn command_reset_workspace_persona_files(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("reset_workspace_persona_files")?,
             arg(&args, "request", "reset_workspace_persona_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6907,7 +6907,7 @@ fn command_resolve_ai_model_request_url(host: &Arc<NativeHost>, args: Value) -> 
         let result = crate::api::settings_mutation_api::resolve_ai_model_request_url(
             arg(&args, "request", "resolve_ai_model_request_url")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6918,7 +6918,7 @@ fn command_respond_permission(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("respond_permission")?,
             arg(&args, "request", "respond_permission")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6929,7 +6929,7 @@ fn command_respond_permission_batch(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("respond_permission_batch")?,
             arg(&args, "request", "respond_permission_batch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6940,7 +6940,7 @@ fn command_restart_mcp_server(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("restart_mcp_server")?,
             arg(&args, "serverId", "restart_mcp_server")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6950,7 +6950,7 @@ fn command_restore_removed_external_session(host: &Arc<NativeHost>, args: Value)
         let result = crate::restore_removed_external_session(
             arg(&args, "request", "restore_removed_external_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6961,7 +6961,7 @@ fn command_restore_session(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("restore_session")?,
             arg(&args, "request", "restore_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6973,7 +6973,7 @@ fn command_restore_session_view(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("restore_session_view")?,
             arg(&args, "request", "restore_session_view")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6984,7 +6984,7 @@ fn command_restore_session_with_turns(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("restore_session_with_turns")?,
             arg(&args, "request", "restore_session_with_turns")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -6992,7 +6992,7 @@ fn command_restore_session_with_turns(host: &Arc<NativeHost>, args: Value) -> Di
 fn command_retry_file_watch(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::retry_file_watch().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7003,7 +7003,7 @@ fn command_retry_model_pool_member(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("retry_model_pool_member")?,
             arg(&args, "request", "retry_model_pool_member")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7013,7 +7013,7 @@ fn command_reveal_external_source_location(host: &Arc<NativeHost>, args: Value) 
         let result = crate::reveal_external_source_location(
             arg(&args, "request", "reveal_external_source_location")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7024,7 +7024,7 @@ fn command_reveal_in_explorer(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("reveal_in_explorer")?,
             arg(&args, "request", "reveal_in_explorer")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7032,7 +7032,7 @@ fn command_reveal_in_explorer(host: &Arc<NativeHost>, args: Value) -> DispatchFu
 fn command_reveal_models_dev_cache_directory(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::reveal_models_dev_cache_directory().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7043,7 +7043,7 @@ fn command_reveal_session_storage_directory(host: &Arc<NativeHost>, args: Value)
             host.command_state("reveal_session_storage_directory")?,
             arg(&args, "request", "reveal_session_storage_directory")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7054,7 +7054,7 @@ fn command_review_platform_clear_auth_token(host: &Arc<NativeHost>, args: Value)
             host.command_state("review_platform_clear_auth_token")?,
             arg(&args, "request", "review_platform_clear_auth_token")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7065,7 +7065,7 @@ fn command_review_platform_get_issue(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("review_platform_get_issue")?,
             arg(&args, "request", "review_platform_get_issue")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7076,7 +7076,7 @@ fn command_review_platform_get_pull_request_ci_log(host: &Arc<NativeHost>, args:
             host.command_state("review_platform_get_pull_request_ci_log")?,
             arg(&args, "request", "review_platform_get_pull_request_ci_log")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7087,7 +7087,7 @@ fn command_review_platform_get_pull_request_detail(host: &Arc<NativeHost>, args:
             host.command_state("review_platform_get_pull_request_detail")?,
             arg(&args, "request", "review_platform_get_pull_request_detail")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7098,7 +7098,7 @@ fn command_review_platform_get_pull_request_detail_page(host: &Arc<NativeHost>, 
             host.command_state("review_platform_get_pull_request_detail_page")?,
             arg(&args, "request", "review_platform_get_pull_request_detail_page")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7109,7 +7109,7 @@ fn command_review_platform_get_pull_request_review_target(host: &Arc<NativeHost>
             host.command_state("review_platform_get_pull_request_review_target")?,
             arg(&args, "request", "review_platform_get_pull_request_review_target")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7120,7 +7120,7 @@ fn command_review_platform_get_pull_request_review_target_by_identity(host: &Arc
             host.command_state("review_platform_get_pull_request_review_target_by_identity")?,
             arg(&args, "request", "review_platform_get_pull_request_review_target_by_identity")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7131,7 +7131,7 @@ fn command_review_platform_get_workspace_context(host: &Arc<NativeHost>, args: V
             host.command_state("review_platform_get_workspace_context")?,
             arg(&args, "request", "review_platform_get_workspace_context")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7142,7 +7142,7 @@ fn command_review_platform_get_workspace_snapshot(host: &Arc<NativeHost>, args: 
             host.command_state("review_platform_get_workspace_snapshot")?,
             arg(&args, "request", "review_platform_get_workspace_snapshot")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7153,7 +7153,7 @@ fn command_review_platform_update_auth_token(host: &Arc<NativeHost>, args: Value
             host.command_state("review_platform_update_auth_token")?,
             arg(&args, "request", "review_platform_update_auth_token")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7165,7 +7165,7 @@ fn command_rollback_miniapp(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             arg(&args, "appId", "rollback_miniapp")?,
             arg(&args, "version", "rollback_miniapp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7177,7 +7177,7 @@ fn command_rollback_session(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("rollback_session")?,
             arg(&args, "request", "rollback_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7188,7 +7188,7 @@ fn command_rollback_session_to_turn(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("rollback_session_to_turn")?,
             arg(&args, "request", "rollback_session_to_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7200,7 +7200,7 @@ fn command_run_init_agents_md(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("run_init_agents_md")?,
             arg(&args, "request", "run_init_agents_md")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7210,7 +7210,7 @@ fn command_run_system_command(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::run_system_command(
             arg(&args, "request", "run_system_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7221,7 +7221,7 @@ fn command_save_acp_json_config(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("save_acp_json_config")?,
             arg(&args, "jsonConfig", "save_acp_json_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7232,7 +7232,7 @@ fn command_save_cloud_speech_config(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("save_cloud_speech_config")?,
             arg(&args, "request", "save_cloud_speech_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7243,7 +7243,7 @@ fn command_save_decision_model_credential(host: &Arc<NativeHost>, args: Value) -
             host.command_state("save_decision_model_credential")?,
             arg(&args, "request", "save_decision_model_credential")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7254,7 +7254,7 @@ fn command_save_git_repo_history(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("save_git_repo_history")?,
             arg(&args, "request", "save_git_repo_history")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7266,7 +7266,7 @@ fn command_save_mcp_json_config(host: &Arc<NativeHost>, args: Value) -> Dispatch
             arg(&args, "jsonConfig", "save_mcp_json_config")?,
             arg(&args, "expectedFingerprint", "save_mcp_json_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7276,7 +7276,7 @@ fn command_save_merged_diff_content(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::save_merged_diff_content(
             arg(&args, "request", "save_merged_diff_content")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7286,7 +7286,7 @@ fn command_save_model_pool(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::api::model_pool_api::save_model_pool(
             arg(&args, "request", "save_model_pool")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7297,7 +7297,7 @@ fn command_save_project_permission_rules(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("save_project_permission_rules")?,
             arg(&args, "request", "save_project_permission_rules")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7308,7 +7308,7 @@ fn command_save_session_metadata(host: &Arc<NativeHost>, args: Value) -> Dispatc
             arg(&args, "request", "save_session_metadata")?,
             host.command_state("save_session_metadata")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7319,7 +7319,7 @@ fn command_save_session_turn(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             arg(&args, "request", "save_session_turn")?,
             host.command_state("save_session_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7330,7 +7330,7 @@ fn command_save_web_search_credential(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("save_web_search_credential")?,
             arg(&args, "request", "save_web_search_credential")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7341,7 +7341,7 @@ fn command_scan_workspace_info(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("scan_workspace_info")?,
             arg(&args, "request", "scan_workspace_info")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7352,7 +7352,7 @@ fn command_search_build_index(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("search_build_index")?,
             arg(&args, "request", "search_build_index")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7363,7 +7363,7 @@ fn command_search_file_contents(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("search_file_contents")?,
             arg(&args, "request", "search_file_contents")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7374,7 +7374,7 @@ fn command_search_filenames(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("search_filenames")?,
             arg(&args, "request", "search_filenames")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7385,7 +7385,7 @@ fn command_search_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             host.command_state("search_files")?,
             arg(&args, "request", "search_files")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7396,7 +7396,7 @@ fn command_search_get_repo_status(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("search_get_repo_status")?,
             arg(&args, "request", "search_get_repo_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7407,7 +7407,7 @@ fn command_search_rebuild_index(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("search_rebuild_index")?,
             arg(&args, "request", "search_rebuild_index")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7419,7 +7419,7 @@ fn command_search_referenceable_sessions(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("search_referenceable_sessions")?,
             host.command_state("search_referenceable_sessions")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7430,7 +7430,7 @@ fn command_search_session_content(host: &Arc<NativeHost>, args: Value) -> Dispat
             arg(&args, "request", "search_session_content")?,
             host.command_state("search_session_content")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7441,7 +7441,7 @@ fn command_search_skill_market(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("search_skill_market")?,
             arg(&args, "request", "search_skill_market")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7452,7 +7452,7 @@ fn command_send_background_command_input(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("send_background_command_input")?,
             arg(&args, "request", "send_background_command_input")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7463,7 +7463,7 @@ fn command_send_mcp_app_message(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("send_mcp_app_message")?,
             arg(&args, "request", "send_mcp_app_message")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7474,7 +7474,7 @@ fn command_set_acp_client_permission_mode(host: &Arc<NativeHost>, args: Value) -
             host.command_state("set_acp_client_permission_mode")?,
             arg(&args, "request", "set_acp_client_permission_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7485,7 +7485,7 @@ fn command_set_acp_session_config_option(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("set_acp_session_config_option")?,
             arg(&args, "request", "set_acp_session_config_option")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7496,7 +7496,7 @@ fn command_set_acp_session_model(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("set_acp_session_model")?,
             arg(&args, "request", "set_acp_session_model")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7508,7 +7508,7 @@ fn command_set_active_workspace(host: &Arc<NativeHost>, args: Value) -> Dispatch
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_active_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7520,7 +7520,7 @@ fn command_set_agent_profile_config(host: &Arc<NativeHost>, args: Value) -> Disp
             arg(&args, "agentId", "set_agent_profile_config")?,
             arg(&args, "config", "set_agent_profile_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7531,7 +7531,7 @@ fn command_set_approval_settings(host: &Arc<NativeHost>, args: Value) -> Dispatc
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_approval_settings")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7543,7 +7543,7 @@ fn command_set_assistant_identity(host: &Arc<NativeHost>, args: Value) -> Dispat
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_assistant_identity")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7556,7 +7556,7 @@ fn command_set_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>
             host.command_state("set_config")?,
             arg(&args, "request", "set_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7566,7 +7566,7 @@ fn command_set_external_mcp_server_decision_command(host: &Arc<NativeHost>, args
         let result = crate::set_external_mcp_server_decision_command(
             arg(&args, "request", "set_external_mcp_server_decision_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7576,7 +7576,7 @@ fn command_set_external_mcp_servers_enabled_command(host: &Arc<NativeHost>, args
         let result = crate::set_external_mcp_servers_enabled_command(
             arg(&args, "request", "set_external_mcp_servers_enabled_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7586,7 +7586,7 @@ fn command_set_external_source_conflict_choice_command(host: &Arc<NativeHost>, a
         let result = crate::set_external_source_conflict_choice_command(
             arg(&args, "request", "set_external_source_conflict_choice_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7596,7 +7596,7 @@ fn command_set_external_source_enabled_command(host: &Arc<NativeHost>, args: Val
         let result = crate::set_external_source_enabled_command(
             arg(&args, "request", "set_external_source_enabled_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7606,7 +7606,7 @@ fn command_set_external_subagent_activation_command(host: &Arc<NativeHost>, args
         let result = crate::set_external_subagent_activation_command(
             arg(&args, "request", "set_external_subagent_activation_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7616,7 +7616,7 @@ fn command_set_external_subagent_model_binding_command(host: &Arc<NativeHost>, a
         let result = crate::set_external_subagent_model_binding_command(
             arg(&args, "request", "set_external_subagent_model_binding_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7626,7 +7626,7 @@ fn command_set_external_subagents_enabled_command(host: &Arc<NativeHost>, args: 
         let result = crate::set_external_subagents_enabled_command(
             arg(&args, "request", "set_external_subagents_enabled_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7636,7 +7636,7 @@ fn command_set_external_tool_conflict_choice_command(host: &Arc<NativeHost>, arg
         let result = crate::set_external_tool_conflict_choice_command(
             arg(&args, "request", "set_external_tool_conflict_choice_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7646,7 +7646,7 @@ fn command_set_external_tool_target_decision_command(host: &Arc<NativeHost>, arg
         let result = crate::set_external_tool_target_decision_command(
             arg(&args, "request", "set_external_tool_target_decision_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7656,7 +7656,7 @@ fn command_set_external_tool_targets_enabled_command(host: &Arc<NativeHost>, arg
         let result = crate::set_external_tool_targets_enabled_command(
             arg(&args, "request", "set_external_tool_targets_enabled_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7666,7 +7666,7 @@ fn command_set_global_skill_disabled(host: &Arc<NativeHost>, args: Value) -> Dis
         let result = crate::set_global_skill_disabled(
             arg(&args, "request", "set_global_skill_disabled")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7677,7 +7677,7 @@ fn command_set_miniapp_draft_storage(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("set_miniapp_draft_storage")?,
             arg(&args, "request", "set_miniapp_draft_storage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7690,7 +7690,7 @@ fn command_set_miniapp_storage(host: &Arc<NativeHost>, args: Value) -> DispatchF
             arg(&args, "key", "set_miniapp_storage")?,
             arg(&args, "value", "set_miniapp_storage")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7705,7 +7705,7 @@ fn command_set_mode_skill_disabled(host: &Arc<NativeHost>, args: Value) -> Dispa
             arg(&args, "workspaceId", "set_mode_skill_disabled")?,
             arg(&args, "workspacePath", "set_mode_skill_disabled")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7715,7 +7715,7 @@ fn command_set_native_prompt_command_conflict_choice_command(host: &Arc<NativeHo
         let result = crate::set_native_prompt_command_conflict_choice_command(
             arg(&args, "request", "set_native_prompt_command_conflict_choice_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7726,7 +7726,7 @@ fn command_set_permission_mode(host: &Arc<NativeHost>, args: Value) -> DispatchF
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_permission_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7737,7 +7737,7 @@ fn command_set_prevent_sleep_enabled(host: &Arc<NativeHost>, args: Value) -> Dis
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_prevent_sleep_enabled")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7748,7 +7748,7 @@ fn command_set_primary_assistant_workspace(host: &Arc<NativeHost>, args: Value) 
             host.command_state("set_primary_assistant_workspace")?,
             arg(&args, "request", "set_primary_assistant_workspace")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7759,7 +7759,7 @@ fn command_set_session_memory_mode(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("set_session_memory_mode")?,
             arg(&args, "request", "set_session_memory_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7770,7 +7770,7 @@ fn command_set_session_thread_goal_status(host: &Arc<NativeHost>, args: Value) -
             host.command_state("set_session_thread_goal_status")?,
             arg(&args, "request", "set_session_thread_goal_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7781,7 +7781,7 @@ fn command_set_subagent_timeout(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("set_subagent_timeout")?,
             arg(&args, "request", "set_subagent_timeout")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7791,7 +7791,7 @@ fn command_set_subscription_account_enabled(host: &Arc<NativeHost>, args: Value)
         let result = crate::set_subscription_account_enabled(
             arg(&args, "request", "set_subscription_account_enabled")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7802,7 +7802,7 @@ fn command_set_superagent_settings(host: &Arc<NativeHost>, args: Value) -> Dispa
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_superagent_settings")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7813,7 +7813,7 @@ fn command_set_task_model(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_task_model")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7824,7 +7824,7 @@ fn command_set_web_search_provider(host: &Arc<NativeHost>, args: Value) -> Dispa
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "set_web_search_provider")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7835,7 +7835,7 @@ fn command_set_workspace_icon(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("set_workspace_icon")?,
             arg(&args, "request", "set_workspace_icon")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7846,7 +7846,7 @@ fn command_speech_append_audio_chunk(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("speech_append_audio_chunk")?,
             arg(&args, "request", "speech_append_audio_chunk")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7857,7 +7857,7 @@ fn command_speech_append_realtime_audio(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("speech_append_realtime_audio")?,
             arg(&args, "request", "speech_append_realtime_audio")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7868,7 +7868,7 @@ fn command_speech_cancel_input_session(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("speech_cancel_input_session")?,
             arg(&args, "request", "speech_cancel_input_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7880,7 +7880,7 @@ fn command_speech_cancel_model_download(host: &Arc<NativeHost>, args: Value) -> 
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "speech_cancel_model_download")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7891,7 +7891,7 @@ fn command_speech_cancel_realtime_response(host: &Arc<NativeHost>, args: Value) 
             host.command_state("speech_cancel_realtime_response")?,
             arg(&args, "request", "speech_cancel_realtime_response")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7902,7 +7902,7 @@ fn command_speech_close_realtime_session(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("speech_close_realtime_session")?,
             arg(&args, "request", "speech_close_realtime_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7913,7 +7913,7 @@ fn command_speech_commit_realtime_audio(host: &Arc<NativeHost>, args: Value) -> 
             host.command_state("speech_commit_realtime_audio")?,
             arg(&args, "request", "speech_commit_realtime_audio")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7925,7 +7925,7 @@ fn command_speech_delete_model(host: &Arc<NativeHost>, args: Value) -> DispatchF
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "speech_delete_model")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7937,7 +7937,7 @@ fn command_speech_download_model(host: &Arc<NativeHost>, args: Value) -> Dispatc
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "speech_download_model")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7948,7 +7948,7 @@ fn command_speech_finish_input_session(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("speech_finish_input_session")?,
             arg(&args, "request", "speech_finish_input_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7959,7 +7959,7 @@ fn command_speech_get_realtime_config(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("speech_get_realtime_config")?,
             arg(&args, "request", "speech_get_realtime_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7969,7 +7969,7 @@ fn command_speech_list_models(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::speech_list_models(
             host.command_state("speech_list_models")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7980,7 +7980,7 @@ fn command_speech_save_realtime_config(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("speech_save_realtime_config")?,
             arg(&args, "request", "speech_save_realtime_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -7991,7 +7991,7 @@ fn command_speech_send_realtime_tool_result(host: &Arc<NativeHost>, args: Value)
             host.command_state("speech_send_realtime_tool_result")?,
             arg(&args, "request", "speech_send_realtime_tool_result")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8002,7 +8002,7 @@ fn command_speech_speak_realtime_text(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("speech_speak_realtime_text")?,
             arg(&args, "request", "speech_speak_realtime_text")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8013,7 +8013,7 @@ fn command_speech_start_input_session(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("speech_start_input_session")?,
             arg(&args, "request", "speech_start_input_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8025,7 +8025,7 @@ fn command_speech_start_realtime_session(host: &Arc<NativeHost>, args: Value) ->
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "speech_start_realtime_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8037,7 +8037,7 @@ fn command_speech_verify_model(host: &Arc<NativeHost>, args: Value) -> DispatchF
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "speech_verify_model")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8049,7 +8049,7 @@ fn command_ssh_connect(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
             host.command_state("ssh_connect")?,
             arg(&args, "config", "ssh_connect")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8060,7 +8060,7 @@ fn command_ssh_delete_connection(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("ssh_delete_connection")?,
             arg(&args, "connectionId", "ssh_delete_connection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8072,7 +8072,7 @@ fn command_ssh_disconnect(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("ssh_disconnect")?,
             arg(&args, "connectionId", "ssh_disconnect")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8083,7 +8083,7 @@ fn command_ssh_disconnect_all(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             HostHandle::new(Arc::clone(host)),
             host.command_state("ssh_disconnect_all")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8094,7 +8094,7 @@ fn command_ssh_get_config(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("ssh_get_config")?,
             arg(&args, "host", "ssh_get_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8105,7 +8105,7 @@ fn command_ssh_get_server_info(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("ssh_get_server_info")?,
             arg(&args, "connectionId", "ssh_get_server_info")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8116,7 +8116,7 @@ fn command_ssh_has_stored_password(host: &Arc<NativeHost>, args: Value) -> Dispa
             host.command_state("ssh_has_stored_password")?,
             arg(&args, "connectionId", "ssh_has_stored_password")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8127,7 +8127,7 @@ fn command_ssh_is_connected(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("ssh_is_connected")?,
             arg(&args, "connectionId", "ssh_is_connected")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8137,7 +8137,7 @@ fn command_ssh_list_config_hosts(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::ssh_api::ssh_list_config_hosts(
             host.command_state("ssh_list_config_hosts")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8148,7 +8148,7 @@ fn command_ssh_list_docker_containers(host: &Arc<NativeHost>, args: Value) -> Di
             host.command_state("ssh_list_docker_containers")?,
             arg(&args, "config", "ssh_list_docker_containers")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8159,7 +8159,7 @@ fn command_ssh_list_port_forwards(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("ssh_list_port_forwards")?,
             arg(&args, "connectionId", "ssh_list_port_forwards")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8170,7 +8170,7 @@ fn command_ssh_list_remote_listening_ports(host: &Arc<NativeHost>, args: Value) 
             host.command_state("ssh_list_remote_listening_ports")?,
             arg(&args, "connectionId", "ssh_list_remote_listening_ports")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8180,7 +8180,7 @@ fn command_ssh_list_saved_connections(host: &Arc<NativeHost>, args: Value) -> Di
         let result = crate::api::ssh_api::ssh_list_saved_connections(
             host.command_state("ssh_list_saved_connections")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8188,7 +8188,7 @@ fn command_ssh_list_saved_connections(host: &Arc<NativeHost>, args: Value) -> Di
 fn command_ssh_list_wsl_distributions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::ssh_api::ssh_list_wsl_distributions().await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8199,7 +8199,7 @@ fn command_ssh_save_connection(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("ssh_save_connection")?,
             arg(&args, "config", "ssh_save_connection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8210,7 +8210,7 @@ fn command_ssh_start_port_forward(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("ssh_start_port_forward")?,
             arg(&args, "request", "ssh_start_port_forward")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8221,7 +8221,7 @@ fn command_ssh_stop_port_forward(host: &Arc<NativeHost>, args: Value) -> Dispatc
             host.command_state("ssh_stop_port_forward")?,
             arg(&args, "forwardId", "ssh_stop_port_forward")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8232,7 +8232,7 @@ fn command_ssh_test_connection(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("ssh_test_connection")?,
             arg(&args, "config", "ssh_test_connection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8244,7 +8244,7 @@ fn command_start_acp_dialog_turn(host: &Arc<NativeHost>, args: Value) -> Dispatc
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "start_acp_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8256,7 +8256,7 @@ fn command_start_dialog_turn(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("start_dialog_turn")?,
             arg(&args, "request", "start_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8269,7 +8269,7 @@ fn command_start_file_watch(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             arg(&args, "path", "start_file_watch")?,
             arg(&args, "recursive", "start_file_watch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8280,7 +8280,7 @@ fn command_start_mcp_remote_oauth(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("start_mcp_remote_oauth")?,
             arg(&args, "request", "start_mcp_remote_oauth")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8291,7 +8291,7 @@ fn command_start_mcp_server(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("start_mcp_server")?,
             arg(&args, "serverId", "start_mcp_server")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8303,7 +8303,7 @@ fn command_start_search_file_contents_stream(host: &Arc<NativeHost>, args: Value
             host.command_state("start_search_file_contents_stream")?,
             arg(&args, "request", "start_search_file_contents_stream")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8315,7 +8315,7 @@ fn command_start_search_filenames_stream(host: &Arc<NativeHost>, args: Value) ->
             host.command_state("start_search_filenames_stream")?,
             arg(&args, "request", "start_search_filenames_stream")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8326,7 +8326,7 @@ fn command_start_subscription_account_login(host: &Arc<NativeHost>, args: Value)
             host.command_state("start_subscription_account_login")?,
             arg(&args, "request", "start_subscription_account_login")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8337,7 +8337,7 @@ fn command_start_subscription_login(host: &Arc<NativeHost>, args: Value) -> Disp
             host.command_state("start_subscription_login")?,
             arg(&args, "request", "start_subscription_login")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8348,7 +8348,7 @@ fn command_start_user_question_interaction(host: &Arc<NativeHost>, args: Value) 
             host.command_state("start_user_question_interaction")?,
             arg(&args, "request", "start_user_question_interaction")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8359,7 +8359,7 @@ fn command_steer_dialog_turn(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("steer_dialog_turn")?,
             arg(&args, "request", "steer_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8370,7 +8370,7 @@ fn command_stop_acp_client(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("stop_acp_client")?,
             arg(&args, "request", "stop_acp_client")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8383,7 +8383,7 @@ fn command_stop_dialog_turn(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             host.command_state("stop_dialog_turn")?,
             arg(&args, "request", "stop_dialog_turn")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8395,7 +8395,7 @@ fn command_stop_file_watch(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             arg(&args, "request", "stop_file_watch")?,
             arg(&args, "path", "stop_file_watch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8406,7 +8406,7 @@ fn command_stop_mcp_server(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("stop_mcp_server")?,
             arg(&args, "serverId", "stop_mcp_server")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8417,7 +8417,7 @@ fn command_submit_acp_permission_response(host: &Arc<NativeHost>, args: Value) -
             host.command_state("submit_acp_permission_response")?,
             arg(&args, "request", "submit_acp_permission_response")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8428,7 +8428,7 @@ fn command_submit_mcp_interaction_response(host: &Arc<NativeHost>, args: Value) 
             host.command_state("submit_mcp_interaction_response")?,
             arg(&args, "request", "submit_mcp_interaction_response")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8440,7 +8440,7 @@ fn command_submit_user_answers(host: &Arc<NativeHost>, args: Value) -> DispatchF
             arg(&args, "toolId", "submit_user_answers")?,
             arg(&args, "answers", "submit_user_answers")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8453,7 +8453,7 @@ fn command_submit_user_message(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("submit_user_message")?,
             arg(&args, "request", "submit_user_message")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8464,7 +8464,7 @@ fn command_subscribe_permission_requests(host: &Arc<NativeHost>, args: Value) ->
             HostHandle::new(Arc::clone(host)),
             host.command_state("subscribe_permission_requests")?,
         );
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8475,7 +8475,7 @@ fn command_terminal_ack(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             arg(&args, "request", "terminal_ack")?,
             host.command_state("terminal_ack")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8486,7 +8486,7 @@ fn command_terminal_close(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             arg(&args, "request", "terminal_close")?,
             host.command_state("terminal_close")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8499,7 +8499,7 @@ fn command_terminal_create(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("terminal_create")?,
             host.command_state("terminal_create")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8510,7 +8510,7 @@ fn command_terminal_execute(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
             arg(&args, "request", "terminal_execute")?,
             host.command_state("terminal_execute")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8521,7 +8521,7 @@ fn command_terminal_get(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
             arg(&args, "sessionId", "terminal_get")?,
             host.command_state("terminal_get")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8533,7 +8533,7 @@ fn command_terminal_get_history(host: &Arc<NativeHost>, args: Value) -> Dispatch
             arg(&args, "afterOffset", "terminal_get_history")?,
             host.command_state("terminal_get_history")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8543,7 +8543,7 @@ fn command_terminal_get_shells(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::api::terminal_api::terminal_get_shells(
             host.command_state("terminal_get_shells")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8554,7 +8554,7 @@ fn command_terminal_has_shell_integration(host: &Arc<NativeHost>, args: Value) -
             arg(&args, "sessionId", "terminal_has_shell_integration")?,
             host.command_state("terminal_has_shell_integration")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8564,7 +8564,7 @@ fn command_terminal_list(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::api::terminal_api::terminal_list(
             host.command_state("terminal_list")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8575,7 +8575,7 @@ fn command_terminal_resize(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             arg(&args, "request", "terminal_resize")?,
             host.command_state("terminal_resize")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8586,7 +8586,7 @@ fn command_terminal_send_command(host: &Arc<NativeHost>, args: Value) -> Dispatc
             arg(&args, "request", "terminal_send_command")?,
             host.command_state("terminal_send_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8596,7 +8596,7 @@ fn command_terminal_shutdown_all(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::terminal_api::terminal_shutdown_all(
             host.command_state("terminal_shutdown_all")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8607,7 +8607,7 @@ fn command_terminal_signal(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             arg(&args, "request", "terminal_signal")?,
             host.command_state("terminal_signal")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8618,7 +8618,7 @@ fn command_terminal_write(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             arg(&args, "request", "terminal_write")?,
             host.command_state("terminal_write")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8629,7 +8629,7 @@ fn command_test_ai_config_connection(host: &Arc<NativeHost>, args: Value) -> Dis
             host.command_state("test_ai_config_connection")?,
             arg(&args, "request", "test_ai_config_connection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8639,7 +8639,7 @@ fn command_test_ai_connection(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::test_ai_connection(
             host.command_state("test_ai_connection")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8649,7 +8649,7 @@ fn command_test_image_generation_service(host: &Arc<NativeHost>, args: Value) ->
         let result = crate::test_image_generation_service(
             arg(&args, "request", "test_image_generation_service")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8661,7 +8661,7 @@ fn command_touch_session_activity(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("touch_session_activity")?,
             host.command_state("touch_session_activity")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8671,7 +8671,7 @@ fn command_ui_bundle_manifest(host: &Arc<NativeHost>, args: Value) -> DispatchFu
         let result = crate::backend_protocol::ws::ui_bundle_manifest(
             arg(&args, "request", "ui_bundle_manifest")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8682,7 +8682,7 @@ fn command_unarchive_session(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             arg(&args, "request", "unarchive_session")?,
             host.command_state("unarchive_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8694,7 +8694,7 @@ fn command_update_active_turn_permission_mode(host: &Arc<NativeHost>, args: Valu
             host.command_state("update_active_turn_permission_mode")?,
             arg(&args, "request", "update_active_turn_permission_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8705,7 +8705,7 @@ fn command_update_app_status(host: &Arc<NativeHost>, args: Value) -> DispatchFut
             host.command_state("update_app_status")?,
             arg(&args, "request", "update_app_status")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8715,7 +8715,7 @@ fn command_update_cron_job(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::update_cron_job(
             arg(&args, "request", "update_cron_job")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8726,7 +8726,7 @@ fn command_update_custom_agent(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("update_custom_agent")?,
             arg(&args, "request", "update_custom_agent")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8736,7 +8736,7 @@ fn command_update_external_integration_policy_command(host: &Arc<NativeHost>, ar
         let result = crate::update_external_integration_policy_command(
             arg(&args, "request", "update_external_integration_policy_command")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8747,7 +8747,7 @@ fn command_update_mcp_remote_auth(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("update_mcp_remote_auth")?,
             arg(&args, "request", "update_mcp_remote_auth")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8759,7 +8759,7 @@ fn command_update_miniapp(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             arg(&args, "appId", "update_miniapp")?,
             arg(&args, "request", "update_miniapp")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8773,7 +8773,7 @@ fn command_update_session_mode(host: &Arc<NativeHost>, args: Value) -> DispatchF
             host.command_state("update_session_mode")?,
             arg(&args, "request", "update_session_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8784,7 +8784,7 @@ fn command_update_session_model(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("update_session_model")?,
             arg(&args, "request", "update_session_model")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8795,7 +8795,7 @@ fn command_update_session_model_target(host: &Arc<NativeHost>, args: Value) -> D
             host.command_state("update_session_model_target")?,
             arg(&args, "request", "update_session_model_target")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8807,7 +8807,7 @@ fn command_update_session_permission_mode(host: &Arc<NativeHost>, args: Value) -
             host.command_state("update_session_permission_mode")?,
             arg(&args, "request", "update_session_permission_mode")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8818,7 +8818,7 @@ fn command_update_session_thread_goal_objective(host: &Arc<NativeHost>, args: Va
             host.command_state("update_session_thread_goal_objective")?,
             arg(&args, "request", "update_session_thread_goal_objective")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8829,7 +8829,7 @@ fn command_update_session_title(host: &Arc<NativeHost>, args: Value) -> Dispatch
             host.command_state("update_session_title")?,
             arg(&args, "request", "update_session_title")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8840,7 +8840,7 @@ fn command_update_subagent(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
             host.command_state("update_subagent")?,
             arg(&args, "request", "update_subagent")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8851,7 +8851,7 @@ fn command_update_subagent_config(host: &Arc<NativeHost>, args: Value) -> Dispat
             host.command_state("update_subagent_config")?,
             arg(&args, "request", "update_subagent_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8863,7 +8863,7 @@ fn command_update_workspace_info(host: &Arc<NativeHost>, args: Value) -> Dispatc
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "update_workspace_info")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8873,7 +8873,7 @@ fn command_upload_image_contexts(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::context_upload_api::upload_image_contexts(
             arg(&args, "request", "upload_image_contexts")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8884,7 +8884,7 @@ fn command_upsert_permission_rule(host: &Arc<NativeHost>, args: Value) -> Dispat
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "upsert_permission_rule")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8895,7 +8895,7 @@ fn command_upsert_terminal_profile(host: &Arc<NativeHost>, args: Value) -> Dispa
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "upsert_terminal_profile")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8905,7 +8905,7 @@ fn command_validate_config(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::validate_config(
             host.command_state("validate_config")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8915,7 +8915,7 @@ fn command_validate_cron_job_draft(host: &Arc<NativeHost>, args: Value) -> Dispa
         let result = crate::api::cron_api::validate_cron_job_draft(
             arg(&args, "request", "validate_cron_job_draft")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8928,7 +8928,7 @@ fn command_validate_skill_path(host: &Arc<NativeHost>, args: Value) -> DispatchF
             arg(&args, "workspaceId", "validate_skill_path")?,
             arg(&args, "workspacePath", "validate_skill_path")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8938,7 +8938,7 @@ fn command_validate_tool_input(host: &Arc<NativeHost>, args: Value) -> DispatchF
         let result = crate::validate_tool_input(
             arg(&args, "request", "validate_tool_input")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8948,7 +8948,7 @@ fn command_workspace_file_upload(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::workspace_file_upload(
             arg(&args, "request", "workspace_file_upload")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8958,7 +8958,7 @@ fn command_worktree_bind_session(host: &Arc<NativeHost>, args: Value) -> Dispatc
         let result = crate::api::worktree_api::worktree_bind_session(
             arg(&args, "request", "worktree_bind_session")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8968,7 +8968,7 @@ fn command_worktree_create(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::api::worktree_api::worktree_create(
             arg(&args, "request", "worktree_create")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8978,7 +8978,7 @@ fn command_worktree_create_branch(host: &Arc<NativeHost>, args: Value) -> Dispat
         let result = crate::api::worktree_api::worktree_create_branch(
             arg(&args, "request", "worktree_create_branch")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8988,7 +8988,7 @@ fn command_worktree_list(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<
         let result = crate::api::worktree_api::worktree_list(
             arg(&args, "request", "worktree_list")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -8998,7 +8998,7 @@ fn command_worktree_list_projects(host: &Arc<NativeHost>, args: Value) -> Dispat
         let result = crate::api::worktree_api::worktree_list_projects(
             arg(&args, "request", "worktree_list_projects")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -9008,7 +9008,7 @@ fn command_worktree_promote(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
         let result = crate::api::worktree_api::worktree_promote(
             arg(&args, "request", "worktree_promote")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -9018,7 +9018,7 @@ fn command_worktree_recreate(host: &Arc<NativeHost>, args: Value) -> DispatchFut
         let result = crate::api::worktree_api::worktree_recreate(
             arg(&args, "request", "worktree_recreate")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -9028,7 +9028,7 @@ fn command_worktree_remove(host: &Arc<NativeHost>, args: Value) -> DispatchFutur
         let result = crate::api::worktree_api::worktree_remove(
             arg(&args, "request", "worktree_remove")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }
 
@@ -9039,6 +9039,6 @@ fn command_write_file_content(host: &Arc<NativeHost>, args: Value) -> DispatchFu
             host.command_state("write_file_content")?,
             arg(&args, "request", "write_file_content")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
+        CommandResponse(result).finish()
     })
 }

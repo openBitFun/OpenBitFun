@@ -326,7 +326,7 @@ export function buildDispatcher(libSource, files) {
   lines.push('use serde_json::Value;');
   lines.push('');
   lines.push('#[allow(unused_imports)]');
-  lines.push('use super::dispatch::{arg, unsupported, ResultKind as _, ValueKind as _};');
+  lines.push('use super::dispatch::{arg, unsupported, CommandResponse, SerializeResponse as _};');
   lines.push('use super::DispatchFuture;');
   lines.push('use crate::host::{HostHandle, NativeHost};');
   lines.push('');
@@ -385,7 +385,7 @@ export function buildDispatcher(libSource, files) {
     handlers.push(`fn command_${name}(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {`);
     handlers.push('    Box::pin(async move {');
     handlers.push(`        let result = ${call}${command.isAsync ? '.await' : ''};`);
-    handlers.push('        (&result).dispatch_kind().finish(result)');
+    handlers.push('        CommandResponse(result).finish()');
     handlers.push('    })');
     handlers.push('}');
   }

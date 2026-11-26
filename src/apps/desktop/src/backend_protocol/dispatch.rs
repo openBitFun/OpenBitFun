@@ -52,47 +52,28 @@ fn ok_value<T: Serialize>(value: T) -> Result<Value, String> {
         .map_err(|error| format!("failed to serialize command response: {error}"))
 }
 
-// Autoref specialization (the technique Tauri's IPC layer used) lets the
-// generated code finish any return type without naming it: a `Result`
-// resolves to `ResultTag`, every other serializable value to `ValueTag`.
+/// At each generated call site the concrete return type selects how to finish:
+/// the inherent method unwraps a Result, and the trait handles plain values.
+pub(super) struct CommandResponse<T>(pub(super) T);
 
-pub(super) struct ResultTag;
-
-impl ResultTag {
-    pub(super) fn finish<T: Serialize, E: Serialize>(
-        self,
-        result: Result<T, E>,
-    ) -> Result<Value, String> {
-        match result {
+impl<T: Serialize, E: Serialize> CommandResponse<Result<T, E>> {
+    pub(super) fn finish(self) -> Result<Value, String> {
+        match self.0 {
             Ok(value) => ok_value(value),
             Err(error) => Err(error_text(error)),
         }
     }
 }
 
-pub(super) trait ResultKind {
-    fn dispatch_kind(&self) -> ResultTag {
-        ResultTag
-    }
+pub(super) trait SerializeResponse {
+    fn finish(self) -> Result<Value, String>;
 }
 
-impl<T, E> ResultKind for Result<T, E> {}
-
-pub(super) struct ValueTag;
-
-impl ValueTag {
-    pub(super) fn finish<T: Serialize>(self, value: T) -> Result<Value, String> {
-        ok_value(value)
+impl<T: Serialize> SerializeResponse for CommandResponse<T> {
+    fn finish(self) -> Result<Value, String> {
+        ok_value(self.0)
     }
 }
-
-pub(super) trait ValueKind {
-    fn dispatch_kind(&self) -> ValueTag {
-        ValueTag
-    }
-}
-
-impl<T: Serialize> ValueKind for &T {}
 
 #[cfg(test)]
 mod tests {
@@ -101,21 +82,18 @@ mod tests {
     #[test]
     fn finishes_results_values_and_structured_errors() {
         let ok: Result<u32, String> = Ok(3);
-        assert_eq!((&ok).dispatch_kind().finish(ok), Ok(Value::from(3)));
+        assert_eq!(CommandResponse(ok).finish(), Ok(Value::from(3)));
         let err: Result<u32, String> = Err("boom".into());
-        assert_eq!((&err).dispatch_kind().finish(err), Err("boom".to_string()));
+        assert_eq!(CommandResponse(err).finish(), Err("boom".to_string()));
         let structured: Result<(), serde_json::Value> = Err(serde_json::json!({"code": "x"}));
         assert_eq!(
-            (&structured).dispatch_kind().finish(structured),
+            CommandResponse(structured).finish(),
             Err("{\"code\":\"x\"}".to_string())
         );
         let plain = true;
-        assert_eq!(
-            (&plain).dispatch_kind().finish(plain),
-            Ok(Value::Bool(true))
-        );
+        assert_eq!(CommandResponse(plain).finish(), Ok(Value::Bool(true)));
         let unit = ();
-        assert_eq!((&unit).dispatch_kind().finish(unit), Ok(Value::Null));
+        assert_eq!(CommandResponse(unit).finish(), Ok(Value::Null));
     }
 
     #[test]
