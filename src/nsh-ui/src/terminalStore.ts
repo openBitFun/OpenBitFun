@@ -188,8 +188,6 @@ setFleetOwnerLookup("terminal", id => {
   const tab = tabs.find(item => (item.deviceId ?? "") === device) ?? tabs[0];
   return tab?.deviceId || null;
 });
-/** A running shell waiting for the user to confirm closing it. */
-export const confirmingCloseTerminal = signal<string | null>(null);
 /** The tab whose name is being edited. */
 export const renamingTerminal = signal<string | null>(null);
 /** The tab on screen; also the session input and resize go to. */
@@ -209,6 +207,16 @@ export const activeTerminalTab = computed<TerminalTab | null>(() => {
 });
 /** The shells this host reports; a host without shell detection answers with none. */
 export const terminalShells = signal<TerminalShell[]>([]);
+/** Older hosts can launch only the preferred executable of each shell type. */
+export const shellChoices = computed(() => {
+  const shells = terminalShells();
+  return shells
+    .filter((shell, index) => {
+      if (shell.id) return true;
+      return /^[A-Za-z]+$/.test(shell.type) && shells.findIndex(other => other.type === shell.type) === index;
+    })
+    .map(shell => ({ ...shell, key: shell.id || shell.type }));
+});
 /** The shell the next `New shell` starts, by the discovered shell's own id. */
 export const selectedShellId = signal<string | null>(null);
 export const shellPickerOpen = signal(false);
@@ -388,10 +396,13 @@ async function replayHistory(sessionId: string, deviceId: string = deviceContext
   }
 }
 
+function findShell(key: string | null): TerminalShell | undefined {
+  return shellChoices().find(shell => shell.key === key);
+}
+
 /** The plain shell type name a discovered shell reports, when it is a plain one. */
 export function shellTypeOf(shellId: string | null): string {
-  if (!shellId) return "";
-  const type = terminalShells().find(entry => entry.id === shellId)?.type.trim() ?? "";
+  const type = findShell(shellId)?.type.trim() ?? "";
   return /^[A-Za-z]+$/.test(type) ? type : "";
 }
 
@@ -436,7 +447,7 @@ export async function openTerminal(
     await loadTerminalShells();
   }
   const shellId = override?.shellId ?? selectedShellId() ?? "";
-  const shell = terminalShells().find(entry => entry.id === shellId);
+  const shell = findShell(shellId);
   try {
     const session = await createTerminal({
       ...(workspaceId ? { workspaceId } : {}),
@@ -518,7 +529,8 @@ async function readShells(deviceKey: string): Promise<void> {
     if (currentDeviceScopeKey() !== deviceKey) return;
     // A shell the host reports as unavailable is not offered, and a stored choice
     // that no longer exists falls back to the host's default.
-    terminalShells.set(shells.filter(shell => shell.id && shell.available !== false));
+    terminalShells.set(shells.filter(shell => shell.available !== false));
+    if (!findShell(selectedShellId())) selectedShellId.set(null);
     shellsLoadedForDevice = deviceKey;
   } catch {
     if (currentDeviceScopeKey() !== deviceKey) return;
@@ -550,7 +562,7 @@ export function chooseShell(shellId: string | null): void {
 export function selectedShellLabel(): string {
   const id = selectedShellId();
   if (!id) return "default shell";
-  return terminalShells().find(entry => entry.id === id)?.name || id;
+  return findShell(id)?.name || id;
 }
 
 /** Draws one tab: its own scrollback replaces whatever the view held. */
@@ -687,52 +699,49 @@ async function runResyncTerminalOnce(sessionId: string, deviceId: string): Promi
 }
 
 /** Clears what the view shows (the shell and its process keep running). */
-export function clearTerminalView(): void {
-  const id = terminalId();
-  if (!id) return;
+export async function clearTerminalView(id: string): Promise<void> {
+  const device = deviceContext();
+  const tab = findTab(id, device);
+  if (!tab) return;
+  // An attached background tab may still need its initial history cursor.
+  if (tab.nextOffset === undefined) await resyncTerminal(id, device);
   flushPendingPtyData();
-  const tab = findTab(id);
-  const tabDevice = tab?.deviceId ?? deviceContext();
-  setScrollback(terminalTabKey(tabDevice, id), "");
-  resetter?.();
+  setScrollback(terminalTabKey(device, id), "");
+  if (terminalId() === id && deviceContext() === device) resetter?.();
 }
 
 export function renameTerminalTab(id: string, title: string): void {
   renamingTerminal.set(null);
   const next = title.trim();
   if (!next) return;
-  updateTab(id, { title: next, named: true });
+  updateTab(id, { title: next, named: true }, deviceContext());
 }
 
-/** Closing a running shell asks first: it ends whatever runs in it. */
-export function requestCloseTerminalTab(id: string): void {
-  const tab = findTab(id);
-  if (tab && tab.status === "running") {
-    confirmingCloseTerminal.set(id);
-    return;
-  }
-  void closeTerminalTab(id);
-}
-
-export function cancelCloseTerminal(): void {
-  confirmingCloseTerminal.set(null);
-}
+const closingTerminals = new Set<string>();
 
 let lastSize = { cols: 120, rows: 32 };
 let lastSizeKnown = false;
 
 export async function closeTerminalTab(id: string): Promise<void> {
-  if (confirmingCloseTerminal() === id) confirmingCloseTerminal.set(null);
-  const target = findTab(id);
-  const tabDevice = target?.deviceId ?? deviceContext();
+  const tabDevice = deviceContext();
   const key = terminalTabKey(tabDevice, id);
+  if (!findTab(id, tabDevice) || closingTerminals.has(key)) return;
+  closingTerminals.add(key);
+  terminalMessage.set("");
+  try {
+    await closeTerminal(id);
+  } catch (error) {
+    if (deviceContext() === tabDevice) terminalMessage.set(errorMessageOf(error));
+    return;
+  } finally {
+    closingTerminals.delete(key);
+  }
   pendingPtyData.delete(key);
   scrollbackRings.delete(key);
   resyncAgain.delete(key);
   const remaining = terminalTabs().filter(tab => !(tab.id === id && (tab.deviceId ?? "") === tabDevice));
   terminalTabs.set(remaining);
-  await closeTerminal(id).catch(() => undefined);
-  if (terminalId() !== id) return;
+  if (deviceContext() !== tabDevice || terminalId() !== id) return;
   const next = visibleTerminalTabs()[visibleTerminalTabs().length - 1];
   terminalId.set(null);
   resetter?.();

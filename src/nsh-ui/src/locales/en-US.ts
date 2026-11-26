@@ -903,7 +903,6 @@ export const enUSMessages = {
   "terminal.thisWorkspace": "this workspace",
   "terminal.openProfile": "Open {{name}}",
   "terminal.shellOptions": "Shell & profiles",
-  "terminal.statusRunning": "running",
   "terminal.statusStarting": "starting",
   "terminal.statusExited": "exited",
   "terminal.statusExitedCode": "exited ({{code}})",

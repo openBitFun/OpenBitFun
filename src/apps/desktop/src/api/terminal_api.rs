@@ -181,6 +181,8 @@ impl From<CoreSessionResponse> for SessionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellInfo {
+    #[serde(default)]
+    pub id: String,
     pub shell_type: String,
     pub name: String,
     pub path: String,
@@ -191,6 +193,7 @@ pub struct ShellInfo {
 impl From<CoreShellInfo> for ShellInfo {
     fn from(info: CoreShellInfo) -> Self {
         Self {
+            id: info.id,
             shell_type: format!("{:?}", info.shell_type),
             name: info.name,
             path: info.path,
@@ -1048,10 +1051,29 @@ pub fn start_terminal_event_loop(terminal_state: TerminalState, app_handle: Host
 #[cfg(test)]
 mod tests {
     use super::{
-        remote_terminal_signal_bytes, resolve_terminal_workspace_target, CreateSessionRequest,
+        remote_terminal_signal_bytes, resolve_terminal_workspace_target, CoreShellInfo,
+        CreateSessionRequest, ShellInfo,
     };
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn shell_list_preserves_the_id_used_to_create_a_terminal() {
+        let core = serde_json::from_value::<CoreShellInfo>(json!({
+            "id": "pwsh:/opt/powershell/7/pwsh", "shellType": "PowerShellCore",
+            "name": "PowerShell 7", "path": "/opt/powershell/7/pwsh", "version": "7.5",
+            "discoverySource": "path", "available": true
+        }))
+        .unwrap();
+        let id = core.id.clone();
+        let listed = serde_json::to_value(ShellInfo::from(core)).unwrap();
+        let request: CreateSessionRequest = serde_json::from_value(json!({
+            "shellId": listed["id"], "shellType": listed["shellType"]
+        }))
+        .unwrap();
+        assert_eq!(request.shell_id.as_deref(), Some(id.as_str()));
+        assert_eq!(request.shell_type.as_deref(), Some("PowerShellCore"));
+    }
 
     #[test]
     fn terminal_workspace_target_rejects_rebound_connection_or_root() {

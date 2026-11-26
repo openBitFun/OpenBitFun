@@ -902,7 +902,6 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "terminal.thisWorkspace": "当前工作区",
   "terminal.openProfile": "打开 {{name}}",
   "terminal.shellOptions": "Shell 与配置",
-  "terminal.statusRunning": "运行中",
   "terminal.statusStarting": "启动中",
   "terminal.statusExited": "已退出",
   "terminal.statusExitedCode": "已退出（{{code}}）",

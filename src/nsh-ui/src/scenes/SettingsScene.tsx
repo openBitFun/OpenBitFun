@@ -8199,7 +8199,7 @@ function DefaultShellRow() {
         value: shell.path,
         label: shell.name,
         description: shell.path,
-        accessibilityLabel: `terminal-default-shell-${shell.id}`,
+        accessibilityLabel: `terminal-default-shell-${shell.id || shell.path}`,
       })),
     ];
     const current = selected();

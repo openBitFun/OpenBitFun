@@ -1969,7 +1969,8 @@ test("terminal scene creates a host session", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openToolScene(app, "terminal");
-  await app.waitFor("running");
+  await app.waitFor("terminal-1 %");
+  expect(app.texts()).not.toContain("running");
   expect(backend.actions()).toContain("terminal_create");
   const createCall = backend.calls.find(call => call.action === "terminal_create");
   // The shell starts at the view's measured size (120 x 32 before the view reports one).
@@ -2015,6 +2016,39 @@ test("the terminal menu launches the chosen shell once and plus uses the saved d
   expect(creations()[2]?.request).toMatchObject({ shellId: "shell-zsh", shellType: "Zsh" });
 });
 
+test("the terminal menu launches by type when an older Windows host omits shell ids", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = data => {
+    if ((data as { action?: string }).action === "terminal_get_shells") {
+      return { ok: true, value: [
+        { shellType: "PowerShellCore", name: "PowerShell 7", path: "C:/PowerShell/7/pwsh.exe" },
+        { shellType: "PowerShellCore", name: "PowerShell Preview", path: "C:/PowerShell/preview/pwsh.exe" },
+        { shellType: "Cmd", name: "Command Prompt", path: "C:/Windows/System32/cmd.exe" },
+      ] };
+    }
+    return invoke(data);
+  };
+  const app = await open("./App.tsx", {
+    ...DESKTOP, platform: "windows", host: { handlers: backend.handlers },
+    storage: { "openbitfun.nsh.terminal-shell.v1": "PowerShellCore-0" },
+  });
+  await openToolScene(app, "terminal");
+  await app.waitFor("shell 1");
+  const initial = backend.calls.find(call => call.action === "terminal_create")?.request as object;
+  expect(Object.keys(initial)).not.toContain("shellId");
+  expect(Object.keys(initial)).not.toContain("shellType");
+  for (const [name, type] of [["PowerShell 7", "PowerShellCore"], ["Command Prompt", "Cmd"]]) {
+    await app.press("New terminal with shell…");
+    expect(app.texts()).not.toContain("PowerShell Preview");
+    await app.press(name);
+    await app.waitFor(`label:terminal-tab-${name}`);
+    const request = backend.calls.filter(call => call.action === "terminal_create").pop()?.request;
+    expect(request).toMatchObject({ shellType: type });
+    expect(Object.keys(request as object)).not.toContain("shellId");
+  }
+});
+
 test("terminal tabs keep their own shell and switch without losing output", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
@@ -2043,14 +2077,33 @@ test("terminal tabs keep their own shell and switch without losing output", asyn
 
   await app.press("shell 1");
   await app.waitFor("shell 1");
-  // Closing a running shell asks first; confirming closes its host session and
-  // falls back to the other one.
   await app.press("× >> nth=0");
-  await app.waitFor("Close shell");
-  expect(backend.actions()).not.toContain("terminal_close");
-  await app.press("Close shell");
-  await app.waitUntil(() => backend.actions().includes("terminal_close"));
-  await app.waitFor("shell 2");
+  await app.waitUntil(() => !app.texts().includes("shell 1"));
+  expect(backend.calls.filter(call => call.action === "terminal_close").map(call => call.request))
+    .toEqual([{ sessionId: "terminal-1" }]);
+  await app.waitFor("terminal-2 % second");
+});
+
+test("a terminal close failure keeps the tab available for retry", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let refuse = true;
+  backend.handlers["openbitfun.invoke"] = data => {
+    if ((data as { action?: string }).action === "terminal_close" && refuse) {
+      return { ok: false, error: "Shell is still running" };
+    }
+    return invoke(data);
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openToolScene(app, "terminal");
+  await app.waitFor("shell 1");
+  await app.press("×");
+  await app.waitFor("Shell is still running");
+  expect(app.texts()).toContain("shell 1");
+
+  refuse = false;
+  await app.press("×");
+  await app.waitFor("No active shell");
 });
 
 test("a shell's title follows its program, while a named tab keeps its name", async () => {

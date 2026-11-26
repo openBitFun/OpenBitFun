@@ -968,8 +968,8 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
 
   await openToolScene(app, "terminal");
   await app.waitFor("workbench-switch-terminal");
-  await app.waitFor("running");
   await app.waitFor("shell 1");
+  expect(app.texts()).not.toContain("running");
 
   await app.press("New terminal with shell…");
   await app.press("New terminal");
@@ -985,6 +985,37 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
 });
 
 
+test("terminal tab menus rename and clear the clicked shell without changing the active shell", async () => {
+  const app = await open("./fixtures/terminalScene.tsx", { platform: "windows", width: 850, height: 650 });
+  await app.waitFor("terminal-1 %");
+  await app.press("New shell");
+  await app.waitFor("terminal-2 %");
+  expect(app.layout("terminal-rename-tab")).toBe(null);
+  expect(app.layout("terminal-clear")).toBe(null);
+
+  await app.rightClick("label:terminal-tab-shell 1");
+  await app.press("terminal-rename-tab");
+  await app.clear("terminal-rename-input");
+  await app.type("terminal-rename-input", "Build log");
+  await app.submit("terminal-rename-input");
+  await app.waitFor("label:terminal-tab-Build log");
+  await app.waitFor("terminal-2 %");
+
+  await app.rightClick("label:terminal-tab-Build log");
+  await app.press("terminal-clear");
+  await app.waitFor("terminal-2 %");
+  await app.press("label:terminal-tab-Build log");
+  expect(app.layout("terminal-1 %")).toBe(null);
+  expect(app.layout("terminal-2 %")).toBe(null);
+
+  await app.setViewport(540, 650);
+  await app.waitFor("terminal-compact-menu");
+  await app.longPress("label:terminal-tab-shell 2");
+  await app.press("terminal-clear");
+  await app.press("label:terminal-tab-shell 2");
+  expect(app.layout("terminal-2 %")).toBe(null);
+});
+
 test("two long terminal tabs fit beside the narrow and full toolbars", async () => {
   const titles = ["first", "second"].map(name => `wsp@desktop:/projects/worktrees/test-approval/${name}`);
   const backend = createWorkbenchBackend({
@@ -999,9 +1030,16 @@ test("two long terminal tabs fit beside the narrow and full toolbars", async () 
   await openToolScene(app, "terminal");
   await app.waitFor(titles[1]);
 
+  await app.host.send("openbitfun.event", {
+    event: "terminal_event",
+    payload: { type: "Exit", payload: { session_id: "terminal-0", exit_code: 7 } },
+  });
+
   for (const [width, toolbarControl] of [[559, "terminal-compact-menu"], [820, "New terminal with shell…"]] as const) {
     await app.setViewport(width, DESKTOP.height);
     await app.waitFor(toolbarControl);
+    await app.waitFor("exited (7)");
+    expect(app.texts()).not.toContain("running");
     for (const [index, title] of titles.entries()) {
       const label = app.layout(`label:terminal-tab-${title}`);
       const close = app.layout(`label:× >> nth=${index}`);
@@ -1012,9 +1050,9 @@ test("two long terminal tabs fit beside the narrow and full toolbars", async () 
     }
   }
 
-  const title = titles[1];
+  const title = titles[0];
   await app.hover(`label:terminal-tab-${title}`);
-  const tooltip = `text:${title} · running`;
+  const tooltip = `text:${title} · exited (7)`;
   await app.waitFor(tooltip);
   const wrapped = app.layout(tooltip);
   const singleLine = app.layout(`text:${title}`);
@@ -1024,7 +1062,7 @@ test("two long terminal tabs fit beside the narrow and full toolbars", async () 
 });
 
 
-test("terminal scene attaches the shells the host already runs for the workspace and asks before closing a running one", async () => {
+test("terminal scene attaches the shells the host already runs for the workspace and closes a background shell in one click", async () => {
   const backend = createWorkbenchBackend({
     terminalSessions: [
       {
@@ -1061,14 +1099,18 @@ test("terminal scene attaches the shells the host already runs for the workspace
   expect(app.texts()).not.toContain("elsewhere");
   expect(app.texts()).not.toContain("shell 1");
 
-  // Closing a running shell asks first.
-  await app.press("×");
-  await app.waitFor("Close shell");
-  await app.press("Cancel");
-  await app.waitFor("cargo test");
-
+  await app.rightClick("label:terminal-tab-cargo test");
   await app.press("terminal-clear");
-  await app.waitFor("cargo test");
+  await app.press("New shell");
+  await app.waitFor("shell 2");
+  await app.press("× >> nth=0");
+  await app.waitUntil(() => !app.texts().includes("cargo test"));
+  expect(backend.calls.filter(call => call.action === "terminal_close").map(call => call.request))
+    .toEqual([{ sessionId: "agent-term-1" }]);
+  await app.waitFor("terminal-1 %");
+
+  await app.press("×");
+  await app.waitFor("No active shell");
 });
 
 

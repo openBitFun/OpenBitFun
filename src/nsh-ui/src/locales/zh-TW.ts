@@ -902,7 +902,6 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "terminal.thisWorkspace": "目前工作區",
   "terminal.openProfile": "開啟 {{name}}",
   "terminal.shellOptions": "Shell 與設定檔",
-  "terminal.statusRunning": "執行中",
   "terminal.statusStarting": "啟動中",
   "terminal.statusExited": "已結束",
   "terminal.statusExitedCode": "已結束（{{code}}）",

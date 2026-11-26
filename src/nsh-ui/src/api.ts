@@ -467,6 +467,7 @@ export const getGitDiff = (
  * from, which is why `terminal_create` is given the id.
  */
 export interface TerminalShell {
+  /** Empty on older desktop hosts that support selection by type only. */
   id: string;
   name: string;
   type: string;
@@ -477,17 +478,14 @@ export interface TerminalShell {
 
 export const listTerminalShells = async (): Promise<TerminalShell[]> => {
   const rows = await invokeCommand<Array<Record<string, unknown>>>("terminal_get_shells");
-  return (Array.isArray(rows) ? rows : []).map((row, index) => ({
+  return (Array.isArray(rows) ? rows : []).map(row => ({
     id: String(row?.id ?? row?.shellId ?? row?.shell_id ?? ""),
     name: String(row?.name ?? ""),
     type: String(row?.shellType ?? row?.shell_type ?? row?.type ?? ""),
     path: String(row?.path ?? ""),
     version: (row?.version as string | null | undefined) ?? null,
     available: row?.available !== false,
-  })).filter(shell => shell.id || shell.name || shell.path).map((shell, index) => ({
-    ...shell,
-    id: shell.id || `${shell.type || "shell"}-${index}`,
-  }));
+  })).filter(shell => shell.id || shell.name || shell.path);
 };
 
 export const createTerminal = (request: {

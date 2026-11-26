@@ -1,5 +1,5 @@
 import { ToolPaneHeader } from "../ui/toolPane";
-import { cleanup, computed, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
+import { cleanup, computed, effect, pixelRatio, Scroll, signal, Text, View, type Point, type ViewRef } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
 import { fleetDeviceById } from "../fleetStore";
 import { formatCount } from "../format";
@@ -10,15 +10,12 @@ import {
   applyTerminalTitle,
   attachTerminalWriter,
   chooseShell,
-  cancelCloseTerminal,
   clearTerminalView,
   closeTerminalTab,
-  confirmingCloseTerminal,
   ensureTerminal,
   getTerminalScrollback,
   renameTerminalTab,
   renamingTerminal,
-  requestCloseTerminalTab,
   visibleTerminalTabs,
   loadTerminalShells,
   openProfile,
@@ -27,10 +24,10 @@ import {
   selectTerminal,
   sendTerminalInput,
   sendTerminalResize,
+  shellChoices,
   shellTypeOf,
   terminalId,
   terminalMessage,
-  terminalShells,
   terminalStatus,
   terminalTabs,
 } from "../terminalStore";
@@ -70,6 +67,7 @@ import {
   tactileActiveStyle,
 } from "../ui/motion";
 import {
+  ContextMenuOverlay,
   DropdownMenu,
   ModalDialog,
   SelectDropdown,
@@ -112,7 +110,6 @@ const profileModalOpen = signal(false);
 
 function terminalMarkState(status: string): MarkState {
   const lower = status.toLowerCase();
-  if (lower === "running") return "working";
   if (lower === "starting") return "queued";
   if (lower === "failed") return "failed";
   if (lower.startsWith("exited") || lower === "closed") return "stopped";
@@ -122,7 +119,7 @@ function terminalMarkState(status: string): MarkState {
 function localizedTabStatus(status: string): string {
   const trimmed = status.trim();
   const lower = trimmed.toLowerCase();
-  if (lower === "running") return tr("terminal.statusRunning");
+  if (lower === "running") return "";
   if (lower === "starting") return tr("terminal.statusStarting");
   if (lower === "exited") return tr("terminal.statusExited");
   const exitedMatch = /^exited\s*\((-?\d+)\)$/i.exec(trimmed);
@@ -163,12 +160,12 @@ function TabChip(props: {
   touch?: boolean;
 }) {
   const hovered = signal(false);
+  const menuPosition = signal<Point | null>(null);
   const chipRef = signal<ViewRef | null>(null);
   const innerRadius = concentricRadius(radii.sm, space.hair);
   const tabHeight = () => (compactLayout() ? layout.touchTarget : 28);
-  const confirming = () => confirmingCloseTerminal() === props.tabId;
   effect(() => {
-    if (!confirming() && !props.active) return;
+    if (!props.active) return;
     const node = chipRef();
     if (!node) return;
     try {
@@ -177,15 +174,19 @@ function TabChip(props: {
       // Layout may not be measured yet on initial mount.
     }
   });
-  // One status mark per tab: compact strip shows `<StateMark>` (teal pulse via ui/fleet.tsx),
-  // full strip shows localized inline status text.
-  const showMark = () => Boolean(props.compact) && props.status.toLowerCase() === "running";
+  const statusLabel = () => localizedTabStatus(props.status);
   const fallbackTitle = () => tr("pane.terminal.tab", { n: props.index + 1 });
   const displayTitle = () => props.title || fallbackTitle();
+
+  const startRename = () => {
+    renameDraft.set(displayTitle());
+    renamingTerminal.set(props.tabId);
+  };
 
   return (
     <View
       ref={el => chipRef.set(el)}
+      onContextMenu={event => menuPosition.set(event.pagePosition)}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
       hitSlop={props.touch || compactLayout() ? touchSlop(controlHeight.md) : undefined}
@@ -194,8 +195,7 @@ function TabChip(props: {
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
-        // The inline close confirmation needs room for both actions.
-        maxWidth: confirming() ? undefined : props.maxWidth,
+        maxWidth: props.maxWidth,
         gap: space.hair,
         minHeight: tabHeight(),
         paddingLeft: space.sm,
@@ -203,36 +203,26 @@ function TabChip(props: {
         borderRadius: radii.sm,
         borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: confirming() ? palette().dangerBorder : "transparent",
-        backgroundColor: confirming()
-          ? palette().dangerSoft
-          : props.active
-            ? palette().panelHover
-            : "transparent",
+        borderColor: "transparent",
+        backgroundColor: props.active ? palette().panelHover : "transparent",
         userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={
-        compactLayout() || confirming()
-          ? undefined
-          : {
-              backgroundColor: palette().panelHover,
-            }
-      }
+      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
     >
       <View
         role="tab"
         tooltip={
           !compactLayout() ? (
-            <TooltipBubble text={`${displayTitle()} · ${localizedTabStatus(props.status)}`} />
+            <TooltipBubble text={statusLabel() ? `${displayTitle()} · ${statusLabel()}` : displayTitle()} />
           ) : undefined
         }
         accessibilityState={{ selected: props.active }}
         accessibilityLabel={`terminal-tab-${displayTitle()}`}
+        onLongPress={event => menuPosition.set(event.pagePosition)}
         onPress={event => {
           if (event?.clickCount === 2) {
-            renameDraft.set(displayTitle());
-            renamingTerminal.set(props.tabId);
+            startRename();
             return;
           }
           selectTerminal(props.tabId);
@@ -255,9 +245,6 @@ function TabChip(props: {
         activeStyle={tactileActiveStyle(0.97)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <If when={showMark()}>
-          <StateMark state={terminalMarkState(props.status)} size={12} />
-        </If>
         <If
           when={renamingTerminal() === props.tabId}
           else={
@@ -309,7 +296,7 @@ function TabChip(props: {
             </Text>
           </View>
         </If>
-        <If when={!showMark()}>
+        <If when={statusLabel()}>
           <Text
             style={{
               color: stateColor(terminalMarkState(props.status)),
@@ -319,88 +306,43 @@ function TabChip(props: {
               flexShrink: 0,
             }}
           >
-            {localizedTabStatus(props.status)}
+            {statusLabel()}
           </Text>
         </If>
       </View>
-      <If
-        when={confirming()}
-        else={
-          <IconButton
-            icon="close"
-            size="xs"
-            iconSize={12}
-            tooltip={tr("terminal.closeShell")}
-            accessibilityLabel={"\u00d7"}
-            style={{
-              borderRadius: innerRadius,
-              opacity: compactLayout() || props.active || hovered() ? 0.86 : 0.34,
-            }}
-            onPress={() => requestCloseTerminalTab(props.tabId)}
-          />
-        }
-      >
-        <View
-          role="alert"
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 2,
-            paddingLeft: space.xs,
-            flexShrink: 0,
-          }}
-        >
-          <View
-            role="button"
-            accessibilityLabel={tr("common.cancel")}
-            onPress={() => cancelCloseTerminal()}
-            style={{
-              height: 22,
-              paddingHorizontal: space.xs + 2,
-              borderRadius: radii.xs,
-              borderCurve: "continuous",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-              userSelect: "none",
-              ...pressTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{ backgroundColor: palette().panelHover }}
-            activeStyle={tactileActiveStyle(0.96)}
-            focusVisibleStyle={focusRingStyle()}
-          >
-            <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}>
-              {tr("common.cancel")}
-            </Text>
-          </View>
-          <View
-            role="button"
-            accessibilityLabel={tr("terminal.closeShell")}
-            onPress={() => void closeTerminalTab(props.tabId)}
-            style={{
-              height: 22,
-              paddingHorizontal: space.xs + 2,
-              borderRadius: radii.xs,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().dangerBorder,
-              backgroundColor: palette().dangerHoverBg,
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-              userSelect: "none",
-              ...pressTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{ borderColor: palette().danger }}
-            activeStyle={tactileActiveStyle(0.96)}
-            focusVisibleStyle={focusRingStyle()}
-          >
-            <Text style={{ ...textStyle("caption", { color: palette().danger }), fontWeight: "600" }}>
-              {tr("terminal.closeShell")}
-            </Text>
-          </View>
-        </View>
-      </If>
+      <IconButton
+        icon="close"
+        size="xs"
+        iconSize={12}
+        tooltip={tr("terminal.closeShell")}
+        accessibilityLabel={"\u00d7"}
+        style={{
+          borderRadius: innerRadius,
+          opacity: compactLayout() || props.active || hovered() ? 0.86 : 0.34,
+        }}
+        onPress={() => void closeTerminalTab(props.tabId)}
+      />
+      <ContextMenuOverlay
+        open={menuPosition() !== null}
+        position={menuPosition()}
+        items={[
+          {
+            id: "rename",
+            label: tr("common.rename"),
+            icon: "edit",
+            accessibilityLabel: "terminal-rename-tab",
+            onSelect: startRename,
+          },
+          {
+            id: "clear",
+            label: tr("terminal.clear"),
+            icon: "trash",
+            accessibilityLabel: "terminal-clear",
+            onSelect: () => void clearTerminalView(props.tabId),
+          },
+        ]}
+        onClose={() => menuPosition.set(null)}
+      />
     </View>
   );
 }
@@ -416,12 +358,12 @@ function shellOptions(): SelectDropdownOption<string>[] {
       icon: "terminal",
       accessibilityLabel: "shell-option-default",
     },
-    ...terminalShells().map(shell => ({
-      value: shell.id,
+    ...shellChoices().map(shell => ({
+      value: shell.key,
       label: tr("terminal.shellLabel", { name: shell.name || shell.path || shell.type }),
       description: shell.path || shell.type,
       icon: "terminal" as const,
-      accessibilityLabel: `shell-option-${shell.id}`,
+      accessibilityLabel: `shell-option-${shell.key}`,
     })),
   ];
 }
@@ -431,11 +373,11 @@ function NewTerminalButton(props: { disabled: boolean; onCreate: (shellId?: stri
   const anchor = signal<ViewRef | null>(null);
   const menuItems = (): DropdownMenuItem[] => [
     { id: "new", label: tr("pane.terminal.new"), onSelect: () => props.onCreate() },
-    ...terminalShells().map((shell, index) => ({
-      id: `shell-${shell.id}`,
+    ...shellChoices().map((shell, index) => ({
+      id: `shell-${shell.key}`,
       label: shell.name || shell.path || shell.type,
       separator: index === 0,
-      onSelect: () => props.onCreate(shell.id),
+      onSelect: () => props.onCreate(shell.key),
     })),
   ];
 
@@ -487,6 +429,12 @@ function quickProfileOptions(): SelectDropdownOption<string>[] {
 
 export function TerminalScene(props: { compact?: boolean } = {}) {
   attachTerminalWriter(writeToMountedTerminals, resetMountedTerminals);
+  // NSH measures each rendered row in whole device pixels. Use that same
+  // height for the grid so fractional display scaling cannot clip the top row.
+  const rowHeight = computed(() => {
+    const scale = pixelRatio();
+    return Math.round(textLineHeight(13, 18 / 13) * scale) / scale;
+  });
   const sceneWidth = createSceneWidth();
   const tabStrip = createSceneWidth();
   const compactMenuOpen = signal(false);
@@ -549,12 +497,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     if (deviceOffline()) return;
     void openTerminal(activeWorkspaceId(), activeWorkspaceRoot(), { shellId });
   };
-  const startRenameActive = () => {
-    const active = activeTerminalTab();
-    if (!active) return;
-    renameDraft.set(active.title);
-    renamingTerminal.set(active.id);
-  };
   const toggleProfileModal = () =>
     profileDraft()
       ? closeProfileDraft()
@@ -590,12 +532,12 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         accessibilityLabel: "shell-option-default",
         onSelect: () => chooseShell(null),
       },
-      ...terminalShells().map(shell => ({
-        id: `shell-${shell.id}`,
+      ...shellChoices().map(shell => ({
+        id: `shell-${shell.key}`,
         label: tr("terminal.shellLabel", { name: shell.name || shell.path || shell.type }),
-        icon: (currentShell === shell.id ? "check" : "terminal") as "check" | "terminal",
-        accessibilityLabel: `shell-option-${shell.id}`,
-        onSelect: () => chooseShell(shell.id),
+        icon: (currentShell === shell.key ? "check" : "terminal") as "check" | "terminal",
+        accessibilityLabel: `shell-option-${shell.key}`,
+        onSelect: () => chooseShell(shell.key),
       })),
     ];
 
@@ -614,27 +556,11 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
 
     items.push({ id: "sep-manage", label: "", separator: true });
     items.push({
-      id: "rename-tab",
-      label: tr("common.renameEllipsis"),
-      icon: "edit",
-      disabled: !terminalId(),
-      accessibilityLabel: "terminal-rename-tab",
-      onSelect: startRenameActive,
-    });
-    items.push({
       id: "manage-profiles",
       label: tr("terminal.profilesCount", { count: formatCount(profiles.length) }),
       icon: "sliders",
       accessibilityLabel: "profiles-toggle",
       onSelect: toggleProfileModal,
-    });
-    items.push({
-      id: "clear-view",
-      label: tr("terminal.clear"),
-      icon: "trash",
-      disabled: !terminalId(),
-      accessibilityLabel: "terminal-clear",
-      onSelect: clearTerminalView,
     });
     return items;
   };
@@ -681,7 +607,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         <ToolPaneHeader />
       </If>
       <RemoteWorkspaceStatusBanner compact={props.compact} />
-      {/* Full workbench toolbar: tabs, profile and editing controls, and the new terminal split button. */}
+      {/* Full workbench toolbar: tabs, profile controls, and the new terminal split button. */}
       <If when={!narrow()}>
         <View
           style={{
@@ -758,22 +684,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               size="sm"
               accessibilityLabel="profiles-toggle"
               onPress={toggleProfileModal}
-            />
-            <IconButton
-              icon="edit"
-              size="sm"
-              tooltip={tr("common.renameEllipsis")}
-              accessibilityLabel="terminal-rename-tab"
-              disabled={!terminalId()}
-              onPress={startRenameActive}
-            />
-            <IconButton
-              icon="trash"
-              size="sm"
-              tooltip={tr("terminal.clear")}
-              accessibilityLabel="terminal-clear"
-              disabled={!terminalId()}
-              onPress={clearTerminalView}
             />
             <ToolbarDivider />
             <NewTerminalButton disabled={deviceOffline()} onCreate={startNewShell} />
@@ -1118,7 +1028,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           style={{ flex: 1, minHeight: 0, minWidth: 0 }}
           fontFamily={fontMono}
           fontSize={textSize(13)}
-          lineHeight={textLineHeight(13, 18 / 13)}
+          lineHeight={rowHeight()}
           cursorStyle={{
             backgroundColor: palette().accent,
             opacity: 0.72,
