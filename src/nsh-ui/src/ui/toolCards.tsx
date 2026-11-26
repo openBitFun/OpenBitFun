@@ -1809,41 +1809,11 @@ export function ExploreGroupCard(props: {
     }));
   });
   const expanded = computed(() => isCardExpanded(props.cardId));
-  const rawRunning = computed(() =>
+  const running = computed(() =>
     resolvedItems().some(item =>
       item.kind === "thinking" ? Boolean(item.live) : props.stateOf(item.call) === "running",
     ),
   );
-  const displayRunning = signal(rawRunning());
-  let settleTimer: ReturnType<typeof setTimeout> | null = null;
-
-  effect(() => {
-    const active = rawRunning();
-    if (settleTimer) {
-      clearTimeout(settleTimer);
-      settleTimer = null;
-    }
-    if (active) {
-      displayRunning.set(true);
-      return;
-    }
-    if (props.live) {
-      // Hold the spinning state briefly across inter-tool gaps so consecutive
-      // calls never flicker between running and settled labels.
-      settleTimer = setTimeout(() => {
-        settleTimer = null;
-        if (!rawRunning()) displayRunning.set(false);
-      }, 380);
-    } else {
-      displayRunning.set(false);
-    }
-  });
-  cleanup(() => {
-    if (settleTimer) {
-      clearTimeout(settleTimer);
-      settleTimer = null;
-    }
-  });
 
   const counts = computed(() => activityCounts(resolvedItems()));
   const reads = computed(() => counts().reads);
@@ -1876,16 +1846,16 @@ export function ExploreGroupCard(props: {
   });
 
   const headingLabel = computed(() => {
-    const running = displayRunning();
+    const active = running();
     switch (groupKind()) {
       case "explore":
-        return running ? tr("chat.tool.exploring") : tr("chat.tool.explored");
+        return active ? tr("chat.tool.exploring") : tr("chat.tool.explored");
       case "exec":
-        return running ? tr("chat.tool.exec.running") : tr("chat.tool.exec.done");
+        return active ? tr("chat.tool.exec.running") : tr("chat.tool.exec.done");
       case "thinking":
-        return running ? tr("state.thinking") : tr("chat.thinking");
+        return active ? tr("state.thinking") : tr("chat.thinking");
       default:
-        return running ? tr("chat.tool.working") : tr("chat.tool.worked");
+        return active ? tr("chat.tool.working") : tr("chat.tool.worked");
     }
   });
 
@@ -1901,7 +1871,7 @@ export function ExploreGroupCard(props: {
         focusVisibleStyle={focusRingStyle()}
       >
         <TranscriptRowIconSlot>
-          <If when={displayRunning()} else={<Icon name={settledIcon()} size={14} color={palette().textMuted} />}>
+          <If when={running()} else={<Icon name={settledIcon()} size={14} color={palette().textMuted} />}>
             <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
           </If>
         </TranscriptRowIconSlot>

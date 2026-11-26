@@ -2275,16 +2275,38 @@ test("interleaved thinking and non-explore commands fold both live and settled w
     },
   });
 
-  // Live folded activity group collapses all 4 non-text entries (2 thinking + 2 commands) into one row.
+  // Settled prior steps (thinking-1, cmd-1, thinking-2) stay calmly folded in Row 1
+  // while the active running command (cmd-2) stays visible on the single active row below.
   await app.waitFor("label:explore-group-explore:tool:cmd-1");
-  expect(app.texts().join("")).toContain("2 commands");
+  await app.waitFor("footprint -p 123");
+  expect(app.texts().join("")).toContain("Ran");
+  expect(app.texts().join("")).toContain("1 command");
   expect(app.texts().join("\n")).not.toContain("ps aux");
-  expect(app.texts().join("\n")).not.toContain("footprint -p 123");
+  expect(app.shows("label:turn-waiting-indicator")).toBe(false);
 
-  // Expanding reveals the inner rows and confirms r-2 thinking is no longer stuck in "Thinking…" while cmd-2 runs.
+  // Expanding reveals the settled inner rows and confirms r-2 thinking is no longer stuck in "Thinking…" while cmd-2 runs.
   await app.press("label:explore-group-explore:tool:cmd-1");
   await app.waitFor("ps aux");
-  await app.waitFor("footprint -p 123");
+  expect(app.texts()).not.toContain("Thinking…");
+
+  // Once cmd-2 finishes, it folds immediately into the settled group (now 2 commands, never lingering in "Running")
+  // and keeps the expanded group open to show both Thinking blocks and both Ran commands.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-1",
+      turnId: "turn-fold-live",
+      roundId: "r-2",
+      toolEvent: {
+        event_type: "Completed",
+        tool_id: "cmd-2",
+        tool_name: "ExecCommand",
+        result: { output: "42 MB" },
+      },
+    },
+  });
+  await app.waitUntil(() => app.texts().join("").includes("2 commands"));
+  expect(app.texts()).not.toContain("Running");
   expect(app.texts()).not.toContain("Thinking…");
 });
 
@@ -2384,5 +2406,148 @@ test("sending a message immediately shows a waiting indicator until streaming st
     event: "agentic://dialog-turn-completed",
     payload: { sessionId: "session-wait", turnId: "turn-wait-1" },
   });
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+});
+
+test("multi-command live turn keeps settled history calm above one active row without double spinners", async () => {
+  const backend = createBackend({
+    sessions: [
+      {
+        sessionId: "session-multi-cmd",
+        sessionName: "Multi cmd",
+        lastUpdated: 1763150000000,
+        messageCount: 0,
+        agentType: "Standard",
+      },
+    ],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Multi cmd");
+  await app.waitFor("How can I help today?");
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-multi-cmd", turnId: "turn-multi-1", userInput: "Summarize git changes" },
+  });
+  await app.waitFor("label:turn-waiting-indicator");
+
+  // Command 1 runs on the active row; waiting indicator hides.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-1",
+      toolEvent: { event_type: "Started", tool_id: "c1", tool_name: "ExecCommand", params: { command: "git status" } },
+    },
+  });
+  await app.waitFor("git status");
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  expect(app.texts()).toContain("Running");
+
+  // Command 1 finishes -> settled row above, waiting row below, zero "Running" left behind.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-1",
+      toolEvent: { event_type: "Completed", tool_id: "c1", tool_name: "ExecCommand", result: { output: "clean" } },
+    },
+  });
+  await app.waitFor("label:turn-waiting-indicator");
+  expect(app.texts()).toContain("Ran");
+  expect(app.texts()).not.toContain("Running");
+  const row1AfterCmd1 = app.layout("label:tool-card-ExecCommand");
+  const row2AfterCmd1 = app.layout("label:turn-waiting-indicator");
+  expect(row1AfterCmd1).not.toBeNull();
+  expect(row2AfterCmd1).not.toBeNull();
+
+  // Command 2 runs -> Command 1 stays settled above while Command 2 takes the single active row below at the same y.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-2",
+      toolEvent: { event_type: "Started", tool_id: "c2", tool_name: "ExecCommand", params: { command: "git log -n 5" } },
+    },
+  });
+  await app.waitFor("git log -n 5");
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  expect(app.texts()).toContain("git status");
+  expect(app.texts()).toContain("Ran");
+  expect(app.texts()).toContain("Running");
+
+  // Command 2 completes -> immediately folds into settled "Ran 2 commands" + waiting indicator (no 380ms dual spinner).
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-2",
+      toolEvent: { event_type: "Completed", tool_id: "c2", tool_name: "ExecCommand", result: { output: "5 commits" } },
+    },
+  });
+  await app.waitFor("label:explore-group-explore:tool:c1");
+  await app.waitFor("label:turn-waiting-indicator");
+  expect(app.texts().join("")).toContain("2 commands");
+  expect(app.texts()).toContain("Ran");
+  expect(app.texts()).not.toContain("Running");
+  const row1AfterCmd2 = app.layout("label:explore-group-explore:tool:c1");
+  const row2AfterCmd2 = app.layout("label:turn-waiting-indicator");
+  expect(row1AfterCmd2?.y).toBe(row1AfterCmd1?.y);
+  expect(row2AfterCmd2?.y).toBe(row2AfterCmd1?.y);
+
+  // Command 3 starts -> folded history stays calmly settled at "Ran 2 commands" while Command 3 runs in the exact active slot.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-3",
+      toolEvent: { event_type: "Started", tool_id: "c3", tool_name: "ExecCommand", params: { command: "git diff --stat" } },
+    },
+  });
+  await app.waitFor("git diff --stat");
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+  expect(app.shows("label:explore-group-explore:tool:c1")).toBe(true);
+  expect(app.texts().join("")).toContain("2 commands");
+  expect(app.texts()).toContain("Ran");
+  expect(app.texts()).toContain("Running");
+  const row1DuringCmd3 = app.layout("label:explore-group-explore:tool:c1");
+  const row2DuringCmd3 = app.layout("label:tool-card-ExecCommand");
+  expect(row1DuringCmd3?.y).toBe(row1AfterCmd1?.y);
+  expect(row2DuringCmd3?.y).toBe(row2AfterCmd1?.y);
+
+  // Command 3 completes -> immediately folds into "Ran 3 commands" with zero lingering "Running" label.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-3",
+      toolEvent: { event_type: "Completed", tool_id: "c3", tool_name: "ExecCommand", result: { output: "2 files" } },
+    },
+  });
+  await app.waitFor("label:turn-waiting-indicator");
+  expect(app.texts().join("")).toContain("3 commands");
+  expect(app.texts()).toContain("Ran");
+  expect(app.texts()).not.toContain("Running");
+  expect(app.layout("label:explore-group-explore:tool:c1")?.y).toBe(row1AfterCmd1?.y);
+  expect(app.layout("label:turn-waiting-indicator")?.y).toBe(row2AfterCmd1?.y);
+
+  // Answer text takes the active row cleanly.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: {
+      sessionId: "session-multi-cmd",
+      turnId: "turn-multi-1",
+      roundId: "r-4",
+      contentType: "text",
+      text: "Here are the 5 commits from this week.",
+    },
+  });
+  await app.waitFor("Here are the 5 commits from this week.");
   await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
 });

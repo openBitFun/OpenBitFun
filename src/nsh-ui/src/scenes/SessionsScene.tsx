@@ -143,7 +143,7 @@ import { fleetDeviceById, fleetSessionRow } from "../fleetStore";
 import type { FleetPrompt } from "../fleetTypes";
 import { activeConversationId } from "../superagentStore";
 import { PromptAttention, ReviewNotesBar, type AttentionDevice } from "../ui/attention";
-import { DeviceBadge, StateMark, deviceException, type MarkState } from "../ui/fleet";
+import { DeviceBadge, StateMark, deviceException, stateColor, type MarkState } from "../ui/fleet";
 import {
   loadQuestionMailbox,
   type QuestionPrompt,
@@ -2761,7 +2761,7 @@ function ThinkingBlock(props: {
       >
         <TranscriptRowIconSlot>
           <If when={Boolean(props.live)} else={<Icon name="bulb" size={14} color={palette().textMuted} />}>
-            <BrandSpinner size={12} color={palette().accent} variant="matrix" />
+            <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
           </If>
         </TranscriptRowIconSlot>
         <Text style={textStyle("label", { color: palette().textMuted })}>
@@ -3146,11 +3146,22 @@ type LiveDisplayBlock =
   | { kind: "tool"; key: string; call: ToolCallView }
   | { kind: "explore"; key: string; items: FoldedProcessItem[]; calls: ToolCallView[] };
 
+function isLiveProcessItemActive(item: FoldedProcessItem): boolean {
+  if (item.kind === "thinking") return Boolean(item.live);
+  return persistedToolState(item.call) === "running";
+}
+
 /**
  * Projects live rounds into the exact same folded structure `turnItems` produces
  * on settle, reading only coarse structural signals (`hasLiveRoundThinking`,
  * `hasLiveRoundText`, `hasLiveRoundTailText`) so steady-state streaming never
  * recomputes the block list.
+ *
+ * While a turn is running, settled process steps stay folded in one calm row
+ * above any currently running tool or live thinking step. That way the settled
+ * summary never flips back to "Running", the active command stays visible on
+ * the single active row, and `TurnWaitingIndicator` occupies that exact same
+ * slot during inter-tool LLM gaps without vertical ping-pong or double spinners.
  */
 function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): LiveDisplayBlock[] {
   const singleRound = rounds.length === 1;
@@ -3197,18 +3208,18 @@ function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): Live
 
   const blocks: LiveDisplayBlock[] = [];
   let run: FoldedProcessItem[] = [];
-  const flush = () => {
-    if (run.length >= 2) {
-      const firstTool = run.find(entry => entry.kind === "tool");
-      const calls = run.flatMap(entry => (entry.kind === "tool" ? [entry.call] : []));
+  const emitRun = (items: FoldedProcessItem[], keyPrefix = "explore") => {
+    if (items.length >= 2) {
+      const firstTool = items.find(entry => entry.kind === "tool");
+      const calls = items.flatMap(entry => (entry.kind === "tool" ? [entry.call] : []));
       blocks.push({
         kind: "explore",
-        key: `explore:${(firstTool ?? run[0]!).key}`,
-        items: run,
+        key: `${keyPrefix}:${(firstTool ?? items[0]!).key}`,
+        items,
         calls,
       });
-    } else if (run.length === 1) {
-      const only = run[0]!;
+    } else if (items.length === 1) {
+      const only = items[0]!;
       if (only.kind === "thinking") {
         blocks.push({
           kind: "thinking",
@@ -3220,6 +3231,16 @@ function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): Live
       } else {
         blocks.push(only);
       }
+    }
+  };
+  const flush = () => {
+    if (run.length === 0) return;
+    const firstActiveIdx = run.findIndex(isLiveProcessItemActive);
+    if (firstActiveIdx > 0) {
+      emitRun(run.slice(0, firstActiveIdx), "explore");
+      emitRun(run.slice(firstActiveIdx), "explore-active");
+    } else {
+      emitRun(run, "explore");
     }
     run = [];
   };
@@ -3248,6 +3269,22 @@ function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): Live
 }
 
 const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => buildLiveDisplayBlocks(liveRounds(), 0));
+
+/**
+ * Reserves the settled `TurnFooter` slot only when the live turn is streaming
+ * answer text or settling, not during the tool/thinking loop where the active
+ * row alternates cleanly in place at identical height.
+ */
+function shouldReserveLiveFooterSpace(
+  settling: boolean,
+  blocks: ReadonlyArray<LiveDisplayBlock>,
+  fallbackCount: number,
+): boolean {
+  if (fallbackCount > 0) return true;
+  if (blocks.length === 0) return false;
+  if (settling) return true;
+  return blocks[blocks.length - 1]?.kind === "liveText";
+}
 
 /**
  * True when live blocks already carry an active visual pulse (live thinking,
@@ -3298,7 +3335,7 @@ function TurnWaitingIndicator(props: { startedAt?: () => number | undefined; acc
     elapsedSec.set(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
   }, 1000);
   cleanup(() => clearInterval(timer));
-  const motion = enterMotion("fadeIn", MOTION_DURATION.fast);
+  const textMotion = subtleCrossfadeMotion();
   return (
     <View
       accessibilityLabel={props.accessibilityLabel}
@@ -3308,25 +3345,26 @@ function TurnWaitingIndicator(props: { startedAt?: () => number | undefined; acc
           minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
           paddingVertical: 0,
         },
-        motion.style,
       ]}
     >
       <TranscriptRowIconSlot>
-        <BrandSpinner size={12} color={palette().accent} variant="matrix" />
+        <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
       </TranscriptRowIconSlot>
-      <Text style={textStyle("label", { color: palette().textMuted })}>
+      <Text style={[textStyle("label", { color: palette().textMuted, tabular: true }), textMotion.style]}>
         {tr("state.thinking")}
+        <If when={elapsedSec() >= 2 ? formatDuration(elapsedSec() * 1000) : ""}>
+          {formatted => (
+            <Text
+              style={{
+                ...textStyle("caption", { color: palette().textMuted, tabular: true }),
+                opacity: 0.72,
+              }}
+            >
+              {` · ${formatted()}`}
+            </Text>
+          )}
+        </If>
       </Text>
-      <If when={elapsedSec() >= 2}>
-        <Text
-          style={{
-            ...textStyle("caption", { color: palette().textMuted, tabular: true }),
-            opacity: 0.72,
-          }}
-        >
-          {`· ${formatDuration(elapsedSec() * 1000)}`}
-        </Text>
-      </If>
     </View>
   );
 }
@@ -3931,6 +3969,10 @@ const primaryWaitingStartedAt = computed<number | undefined>(() => {
   const sid = activeSessionId();
   return pendingTurnState()?.createdAt ?? (sid ? turnStartedAt(sid) : undefined);
 });
+
+const primaryReserveFooterSpace = computed<boolean>(() =>
+  shouldReserveLiveFooterSpace(Boolean(liveTurn()?.settling), liveDisplayBlocks(), liveFallbackItems().length),
+);
 
 
 /**
@@ -4819,6 +4861,7 @@ interface SessionTranscriptListProps {
   liveFallbackItems?: () => TranscriptItem[];
   awaitingResponse?: () => boolean;
   waitingStartedAt?: () => number | undefined;
+  reserveFooterSpace?: () => boolean;
   cardPrefix?: string;
   turnError: () => string;
   onDismissTurnError: () => void;
@@ -4934,24 +4977,34 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
                 />
               </If>
 
-              <If when={props.liveDisplayBlocks().length > 0}>
-                <LiveTranscriptBlocks blocks={props.liveDisplayBlocks} pane={props.pane} cardPrefix={props.cardPrefix} />
-              </If>
-              <If when={fallbackItems().length > 0}>
-                <TranscriptItems items={fallbackItems()} live={true} pane={props.pane} />
-              </If>
               <If
-                when={Boolean(props.awaitingResponse?.())}
-                else={
-                  <If when={props.liveDisplayBlocks().length > 0 || fallbackItems().length > 0}>
-                    <View style={{ height: compactLayout() ? layout.touchTarget : controlHeight.sm }} />
-                  </If>
+                when={
+                  props.liveDisplayBlocks().length > 0 ||
+                  fallbackItems().length > 0 ||
+                  Boolean(props.awaitingResponse?.())
                 }
               >
-                <TurnWaitingIndicator
-                  startedAt={props.waitingStartedAt}
-                  accessibilityLabel={`${prefix}turn-waiting-indicator`}
-                />
+                <View style={{ gap: TRANSCRIPT_ROW_GAP }}>
+                  <If when={props.liveDisplayBlocks().length > 0}>
+                    <LiveTranscriptBlocks blocks={props.liveDisplayBlocks} pane={props.pane} cardPrefix={props.cardPrefix} />
+                  </If>
+                  <If when={fallbackItems().length > 0}>
+                    <TranscriptItems items={fallbackItems()} live={true} pane={props.pane} />
+                  </If>
+                  <If
+                    when={Boolean(props.awaitingResponse?.())}
+                    else={
+                      <If when={Boolean(props.reserveFooterSpace?.())}>
+                        <View style={{ height: compactLayout() ? layout.touchTarget : controlHeight.sm }} />
+                      </If>
+                    }
+                  >
+                    <TurnWaitingIndicator
+                      startedAt={props.waitingStartedAt}
+                      accessibilityLabel={`${prefix}turn-waiting-indicator`}
+                    />
+                  </If>
+                </View>
               </If>
             </View>
           </If>
@@ -5158,6 +5211,7 @@ function Transcript() {
       liveFallbackItems={liveFallbackItems}
       awaitingResponse={primaryAwaitingResponse}
       waitingStartedAt={primaryWaitingStartedAt}
+      reserveFooterSpace={primaryReserveFooterSpace}
       turnError={turnError}
       onDismissTurnError={() => turnError.set("")}
       showAuthActionOnError={true}
@@ -9635,6 +9689,10 @@ const secondaryWaitingStartedAt = computed<number | undefined>(() => {
   return secondaryPendingTurnState()?.createdAt ?? (sid ? turnStartedAt(sid) : undefined);
 });
 
+const secondaryReserveFooterSpace = computed<boolean>(() =>
+  shouldReserveLiveFooterSpace(Boolean(secondaryLiveTurn()?.settling), secondaryLiveDisplayBlocks(), 0),
+);
+
 const secondaryVisibleTurnRows = computed(() => {
   const list = secondaryTurns();
   const live = secondaryLiveTurn();
@@ -10049,6 +10107,7 @@ function SecondaryTranscript() {
       liveDisplayBlocks={secondaryLiveDisplayBlocks}
       awaitingResponse={secondaryAwaitingResponse}
       waitingStartedAt={secondaryWaitingStartedAt}
+      reserveFooterSpace={secondaryReserveFooterSpace}
       cardPrefix="sec-"
       turnError={secondaryTurnError}
       onDismissTurnError={() => secondaryTurnError.set("")}
