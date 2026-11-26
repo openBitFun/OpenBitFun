@@ -2672,6 +2672,13 @@ const dockedNavWidth = computed(() =>
 );
 const sidebarDocked = computed(() => drawerOpen() && !compactShell() && !overlayNav());
 
+const nativeWindowsCanvas = computed(() => nativeWindow() && windowPlatform() === "windows");
+const floatingCanvas = computed(() => !compactShell() && !nativeWindowsCanvas());
+const canvasEdgeInset = computed(() => floatingCanvas() ? layout.canvasInset : 0);
+const canvasLeftInset = computed(() => compactShell() || sidebarDocked() ? 0 : layout.canvasInset);
+// Keep the floating canvas's existing docking threshold. On Windows only the left gutter can remain.
+const canvasWidthAllowance = computed(() => nativeWindowsCanvas() ? canvasLeftInset() : 2 * layout.canvasInset);
+
 function auxFillsScene(): boolean {
   return auxPaneMaximized() || compactShell();
 }
@@ -2690,7 +2697,7 @@ const auxAsSheet = computed(() => {
   if (width <= 0) return false;
   const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
   const minDockedAuxAllowance = AUX_MIN_WIDTH + 9;
-  const canvasAllowance = width - navAllowance - layout.canvasInset * 2 - minDockedAuxAllowance;
+  const canvasAllowance = width - navAllowance - canvasWidthAllowance() - minDockedAuxAllowance;
   return canvasAllowance < layout.canvasMinWidth;
 });
 
@@ -2708,8 +2715,8 @@ function showSceneTopBar(): boolean {
 
 function canvasCaptionInset(): number {
   if (compactShell() || showSceneTopBar()) return 0;
-  // The canvas already stops short of the window edge by its margin and border.
-  return Math.max(0, windowControlsRightInsetPx() - layout.canvasInset - 1);
+  const rightFrame = floatingCanvas() ? canvasEdgeInset() + 1 : 0;
+  return Math.max(0, windowControlsRightInsetPx() - rightFrame);
 }
 
 function sceneCaptionInset(): number {
@@ -2721,7 +2728,7 @@ function sceneCaptionInset(): number {
 const dockedAuxMaxHeight = computed(() => {
   const height = shellHeight();
   if (height <= 0) return AUX_MAX_HEIGHT;
-  const canvasHeight = Math.max(0, height - layout.canvasInset * 2 - 44);
+  const canvasHeight = Math.max(0, height - (nativeWindowsCanvas() ? 0 : layout.canvasInset * 2) - layout.topBarHeight);
   const maxByCol = Math.floor(canvasHeight * 0.68) - 9;
   return Math.max(AUX_MIN_HEIGHT, Math.min(AUX_MAX_HEIGHT, maxByCol));
 });
@@ -2734,7 +2741,7 @@ const dockedAuxMaxWidth = computed(() => {
   const width = shellWidth();
   if (width <= 0) return AUX_MAX_WIDTH;
   const navAllowance = sidebarDocked() ? dockedNavWidth() + 9 : 0;
-  const sceneRowWidth = Math.max(0, width - navAllowance - layout.canvasInset * 2);
+  const sceneRowWidth = Math.max(0, width - navAllowance - canvasWidthAllowance());
   const maxShare = splitPaneOpen() ? 0.45 : 0.68;
   const maxByRow = Math.floor(sceneRowWidth * maxShare) - 9;
   return Math.max(AUX_MIN_WIDTH, Math.min(AUX_MAX_WIDTH, maxByRow));
@@ -3498,24 +3505,27 @@ function StudioApp() {
         </SurfaceContext.Provider>
       </If>
 
-      {/* The canvas: inset 8 top, right and bottom on desktop (radius 12, hairline); full bleed on a phone. */}
+      {/* The Windows canvas meets the native frame; the other desktop shells use a floating canvas. */}
       <View
         style={{
           flex: 1,
           minWidth: 0,
           minHeight: 0,
-          marginTop: compactShell() || windowControlsRightInsetPx() > 0 ? 0 : layout.canvasInset,
-          marginRight: compactShell() ? 0 : layout.canvasInset,
-          marginBottom: compactShell() ? 0 : layout.canvasInset,
-          marginLeft: compactShell() || sidebarDocked() ? 0 : layout.canvasInset,
+          marginTop: windowControlsRightInsetPx() > 0 ? 0 : canvasEdgeInset(),
+          marginRight: canvasEdgeInset(),
+          marginBottom: canvasEdgeInset(),
+          marginLeft: canvasLeftInset(),
           paddingLeft: compactShell() ? safeArea().left : 0,
           paddingRight: compactShell() ? safeArea().right : 0,
           borderRadius: compactShell() ? 0 : layout.canvasRadius,
+          borderTopRightRadius: floatingCanvas() ? layout.canvasRadius : 0,
+          borderBottomRightRadius: floatingCanvas() ? layout.canvasRadius : 0,
           borderCurve: "continuous",
-          borderWidth: compactShell() ? 0 : 1,
+          borderWidth: floatingCanvas() ? 1 : 0,
+          borderLeftWidth: compactShell() ? 0 : 1,
           borderColor: palette().borderSubtle,
           backgroundColor: palette().canvas,
-          boxShadow: compactShell() ? undefined : palette().shadowSceneEdge,
+          boxShadow: floatingCanvas() ? palette().shadowSceneEdge : undefined,
           overflow: "hidden",
           flexDirection: "column",
         }}
