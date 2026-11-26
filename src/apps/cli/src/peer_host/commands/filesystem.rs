@@ -1,5 +1,6 @@
 //! Filesystem HostInvoke handlers.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use openbitfun_core::service::filesystem::path_operations;
 use openbitfun_core::service::workspace::WorkspaceKind;
 use openbitfun_core::service::{filesystem::FileSystemService, workspace::WorkspaceService};
@@ -278,21 +279,29 @@ pub(crate) async fn read_file_content(
     state: &PeerHostState,
     args: &Value,
 ) -> Result<Value, String> {
+    read_file_content_with(&state.filesystem_service, &state.workspace_service, args).await
+}
+
+async fn read_file_content_with(
+    files: &FileSystemService,
+    workspaces: &WorkspaceService,
+    args: &Value,
+) -> Result<Value, String> {
     let request = request_value(args);
     let path = get_string(request, "filePath")?;
-    let hint = file_connection(state, request, &path).await?;
+    let hint = directory_connection(workspaces, request, &path).await?;
     if let Some(encoding) = optional_string(request, "encoding") {
+        if encoding.eq_ignore_ascii_case("base64") {
+            let bytes = path_operations::read_bytes(files, &path, hint.as_deref()).await?;
+            return Ok(Value::String(BASE64.encode(bytes)));
+        }
         if !encoding.eq_ignore_ascii_case("utf-8") && !encoding.eq_ignore_ascii_case("utf8") {
             return Err(format!("Unsupported text encoding: {encoding}"));
         }
     }
-    openbitfun_core::service::filesystem::path_operations::read_text(
-        &state.filesystem_service,
-        &path,
-        hint.as_deref(),
-    )
-    .await
-    .map(Value::String)
+    path_operations::read_text(files, &path, hint.as_deref())
+        .await
+        .map(Value::String)
 }
 
 pub(crate) async fn write_file_content(
@@ -476,5 +485,51 @@ mod tests {
             .await
             .is_err());
         assert!(get_file_tree(&files, &workspaces, &invalid).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_content_supports_base64_and_utf8_encodings() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let png_bytes: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+        let image_path = root.join("pixel.png");
+        let text_path = root.join("readme.md");
+        std::fs::write(&image_path, png_bytes).unwrap();
+        std::fs::write(&text_path, "# Hello\n").unwrap();
+
+        let workspaces =
+            WorkspaceService::new_isolated_for_tests(temporary.path().join("user")).await;
+        let workspace = workspaces
+            .register_local_workspace_record(root)
+            .await
+            .unwrap();
+        let files = FileSystemService::default();
+
+        let encoded = read_file_content_with(
+            &files,
+            &workspaces,
+            &json!({"request": {"workspaceId": workspace.id, "filePath": image_path, "encoding": "base64"}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(encoded.as_str().unwrap(), BASE64.encode(png_bytes));
+
+        let text = read_file_content_with(
+            &files,
+            &workspaces,
+            &json!({"request": {"workspaceId": workspace.id, "filePath": text_path, "encoding": "utf-8"}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text.as_str().unwrap(), "# Hello\n");
+
+        let bad = read_file_content_with(
+            &files,
+            &workspaces,
+            &json!({"request": {"workspaceId": workspace.id, "filePath": text_path, "encoding": "latin1"}}),
+        )
+        .await;
+        assert!(bad.is_err());
     }
 }

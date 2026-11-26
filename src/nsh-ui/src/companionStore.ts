@@ -16,7 +16,10 @@ import { computed, signal, untracked } from "nsh";
 import { attentionGroups } from "./attentionStore";
 import { errorMessageOf } from "./backendConnection";
 import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "./bridge";
-import { fleetTotals } from "./fleetStore";
+import { fleetDevices, fleetTotals } from "./fleetStore";
+import { tr } from "./i18n";
+import { acknowledgedAt, statusOfSession } from "./sessionStatusStore";
+import { deviceContext, isSessionArchived, runningTurns, sessionKey, sessionLastActivityMs, sessions } from "./state";
 import type { MarkState } from "./ui/fleet";
 
 export const COMPANION_ENABLED_PATH = "app.ai_experience.enable_agent_companion";
@@ -273,6 +276,249 @@ export function releasePetSheets(): void {
 
 // ── What the pet shows ───────────────────────────────────────────────────────
 
+/** Maximum number of session bubbles shown on the left of the companion pet. */
+export const MAX_PET_BUBBLES = 2;
+
+export type PetBubbleState = "needs_you" | "running" | "failed" | "unread";
+
+export interface PetSessionBubble {
+  /** Stable deduplication key: `${deviceId}/${sessionId}` or `cloud/${conversationId}`. */
+  key: string;
+  deviceId: string;
+  deviceName?: string;
+  workspaceId?: string;
+  sessionId?: string;
+  conversationId?: string;
+  title: string;
+  state: PetBubbleState;
+  /** Latest known activity timestamp (ms) used for ordering and dismissal re-arming. */
+  activityMs: number;
+}
+
+type PetBubbleDismissBucket = "active" | "notice";
+
+interface PetBubbleDismissRecord {
+  bucket: PetBubbleDismissBucket;
+  activityMs: number;
+}
+
+const PET_BUBBLE_PRIORITY: Readonly<Record<PetBubbleState, number>> = {
+  needs_you: 0,
+  running: 1,
+  failed: 2,
+  unread: 3,
+};
+
+function petBubbleDismissBucket(state: PetBubbleState): PetBubbleDismissBucket {
+  return state === "running" ? "active" : "notice";
+}
+
+const dismissedPetBubbles = signal<Record<string, PetBubbleDismissRecord>>({});
+
+function isBubbleDismissed(
+  bubble: PetSessionBubble,
+  dismissed: Record<string, PetBubbleDismissRecord>,
+): boolean {
+  const rec = dismissed[bubble.key];
+  if (!rec) return false;
+  if (rec.bucket !== petBubbleDismissBucket(bubble.state)) return false;
+  return bubble.activityMs <= rec.activityMs;
+}
+
+/**
+ * All active (running / waiting) and unread sessions across the fleet (and
+ * local single-device state), deduplicated and sorted by urgency then recency.
+ */
+const candidatePetBubbles = computed<PetSessionBubble[]>(() => {
+  const byKey = new Map<string, PetSessionBubble>();
+  const acked = acknowledgedAt();
+  const running = runningTurns();
+  const devices = fleetDevices();
+  const multiDevice = devices.length > 1;
+  const deviceNames = new Map<string, string>();
+  for (const device of devices) {
+    deviceNames.set(device.deviceId, device.name);
+  }
+
+  const isAcked = (key: string, activityMs: number, bareId?: string): boolean => {
+    const stamp = acked[key] ?? (!fleetActive() && bareId ? acked[bareId] : undefined);
+    return stamp !== undefined && activityMs <= stamp;
+  };
+
+  const upsert = (next: PetSessionBubble) => {
+    const existing = byKey.get(next.key);
+    if (!existing) {
+      byKey.set(next.key, next);
+      return;
+    }
+    const nextPriority = PET_BUBBLE_PRIORITY[next.state];
+    const prevPriority = PET_BUBBLE_PRIORITY[existing.state];
+    const state = nextPriority < prevPriority ? next.state : existing.state;
+    const title = existing.title || next.title;
+    const workspaceId = existing.workspaceId ?? next.workspaceId;
+    const deviceName = existing.deviceName ?? next.deviceName;
+    const activityMs = Math.max(existing.activityMs, next.activityMs);
+    byKey.set(next.key, {
+      ...existing,
+      ...next,
+      state,
+      title,
+      workspaceId,
+      deviceName,
+      activityMs,
+    });
+  };
+
+  // 1. Attention groups (`fleet_attention` / `fleet_prompts`): needs_you, unread failed, unread done.
+  const now = Date.now();
+  for (const group of attentionGroups()) {
+    for (const item of group.items) {
+      let state: PetBubbleState | null = null;
+      if (group.id === "needs_you") {
+        state = "needs_you";
+      } else if (group.id === "failed" && item.unread !== false) {
+        state = "failed";
+      } else if (group.id === "done" && item.unread === true) {
+        state = "unread";
+      }
+      if (!state) continue;
+      const deviceId = item.source.deviceId ?? "";
+      const sessionId = item.source.sessionId;
+      const conversationId = item.source.conversationId;
+      const key = conversationId
+        ? `cloud/${conversationId}`
+        : `${deviceId}/${sessionId ?? item.itemId}`;
+      const activityMs = typeof item.ageMs === "number" && Number.isFinite(item.ageMs)
+        ? Math.max(0, now - item.ageMs)
+        : 0;
+      if (state !== "needs_you" && sessionId && isAcked(key, activityMs, sessionId)) {
+        continue;
+      }
+      upsert({
+        key,
+        deviceId,
+        deviceName: multiDevice ? (item.deviceName ?? deviceNames.get(deviceId)) : undefined,
+        workspaceId: item.source.workspaceId,
+        sessionId,
+        conversationId,
+        title: item.title?.trim() || tr("allSessions.untitled"),
+        state,
+        activityMs,
+      });
+    }
+  }
+
+  // 2. Fleet navigator sessions across all account devices (running, waiting, unread, failed).
+  if (fleetActive()) {
+    for (const device of devices) {
+      for (const workspace of device.workspaces) {
+        for (const session of workspace.sessions) {
+          if (session.parentSessionId) continue;
+          const key = `${device.deviceId}/${session.sessionId}`;
+          const activityMs = session.lastActivityMs ?? 0;
+          const liveRunning = session.status === "running" || Boolean(running[key]);
+          const waiting = session.status === "waiting" || session.needsAttention === true;
+          const ackedHere = isAcked(key, activityMs, session.sessionId);
+          const failed = session.status === "error" && session.unread && !ackedHere;
+          const unread = session.unread === true && !ackedHere;
+          const state: PetBubbleState | null = waiting
+            ? "needs_you"
+            : liveRunning
+              ? "running"
+              : failed
+                ? "failed"
+                : unread
+                  ? "unread"
+                  : null;
+          if (!state) continue;
+          upsert({
+            key,
+            deviceId: device.deviceId,
+            deviceName: multiDevice ? device.name : undefined,
+            workspaceId: session.workspaceId || workspace.workspaceId,
+            sessionId: session.sessionId,
+            title: session.title?.trim() || tr("allSessions.untitled"),
+            state,
+            activityMs,
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Local/active device session list (covers non-fleet hosts and immediate live running turns).
+  const statusOf = statusOfSession();
+  const fallbackDevice = fleetActive() ? deviceContext() : "";
+  for (const row of sessions()) {
+    if (isSessionArchived(row)) continue;
+    const activityMs = sessionLastActivityMs(row) ?? 0;
+    const mark = statusOf(row.sessionId, activityMs, row.messageCount, row.deviceId);
+    if (!mark || mark.kind === "queued") continue;
+    const state: PetBubbleState =
+      mark.kind === "approval"
+        ? "needs_you"
+        : mark.kind === "running"
+          ? "running"
+          : mark.kind === "failed"
+            ? "failed"
+            : "unread";
+    const deviceId = row.deviceId ?? fallbackDevice;
+    const key = sessionKey(row.sessionId, deviceId);
+    upsert({
+      key,
+      deviceId,
+      deviceName: multiDevice && deviceId ? deviceNames.get(deviceId) : undefined,
+      workspaceId: row.workspaceId,
+      sessionId: row.sessionId,
+      title: row.sessionName?.trim() || tr("allSessions.untitled"),
+      state,
+      activityMs,
+    });
+  }
+
+  return [...byKey.values()].sort(
+    (a, b) =>
+      PET_BUBBLE_PRIORITY[a.state] - PET_BUBBLE_PRIORITY[b.state] ||
+      b.activityMs - a.activityMs ||
+      a.key.localeCompare(b.key),
+  );
+});
+
+/** Up to `MAX_PET_BUBBLES` (2) active/unread session bubbles shown to the left of the pet. */
+export const petSessionBubbles = computed<PetSessionBubble[]>(() => {
+  const dismissed = dismissedPetBubbles();
+  return candidatePetBubbles()
+    .filter(bubble => !isBubbleDismissed(bubble, dismissed))
+    .slice(0, MAX_PET_BUBBLES);
+});
+
+/** Closes one session bubble (silences its current active or notice bucket until state/activity changes). */
+export function dismissPetBubble(bubble: Pick<PetSessionBubble, "key" | "state" | "activityMs">): void {
+  dismissedPetBubbles.update(current => ({
+    ...current,
+    [bubble.key]: {
+      bucket: petBubbleDismissBucket(bubble.state),
+      activityMs: bubble.activityMs,
+    },
+  }));
+}
+
+/** Closes every currently eligible session bubble so queued items do not immediately replace the closed pair. */
+export function dismissAllPetBubbles(): void {
+  const candidates = candidatePetBubbles();
+  if (candidates.length === 0) return;
+  dismissedPetBubbles.update(current => {
+    const next = { ...current };
+    for (const bubble of candidates) {
+      next[bubble.key] = {
+        bucket: petBubbleDismissBucket(bubble.state),
+        activityMs: bubble.activityMs,
+      };
+    }
+    return next;
+  });
+}
+
 /**
  * The fleet's attention as one state: the first non-empty Inbox group in the
  * backend's order (an unseen item for done and failed), else working while
@@ -286,6 +532,7 @@ export const petState = computed<MarkState>(() => {
     if (group.id === "done" && group.items.some(item => item.unread === true)) return "done";
   }
   if ((fleetTotals()?.running ?? 0) > 0) return "working";
+  if (Object.keys(runningTurns()).length > 0) return "working";
   return "idle";
 });
 
@@ -296,6 +543,7 @@ export function resetCompanionForTests(): void {
   companionPets.set(null);
   companionNotice.set("");
   companionBusy.set(null);
+  dismissedPetBubbles.set({});
   petSheets.set({});
   petSheetErrors.set({});
   loadingSheets.clear();

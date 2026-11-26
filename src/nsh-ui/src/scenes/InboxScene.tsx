@@ -59,7 +59,7 @@ function openDevice(deviceId: string): void {
 
 function answeredToast(entry: AttentionEntry): void {
   const device = entry.deviceName ?? "";
-  if (device) pushToast(tr("inbox.answeredToast", { device }), "neutral", 4000);
+  if (device) pushToast(tr("inbox.answeredToast", { device }), "neutral");
 }
 
 /** "Mark all as read" shows only while there are Done or Failed items to mark. */

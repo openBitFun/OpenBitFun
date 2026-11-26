@@ -138,6 +138,7 @@ import {
   recentWorkspaces,
   renameSession,
   runningTurns,
+  selectSession,
   sessionGrouping,
   sessionHasMore,
   sessionTotal,
@@ -171,6 +172,7 @@ import {
   elevationShadow,
   fontMono,
   fontSans,
+  inputFontSans,
   isLightAppearance,
   palette,
   radii,
@@ -284,6 +286,7 @@ import { ConversationHistory, BitMatrixGlyph } from "./src/ui/jobs";
 import {
   activeConversationId,
   newConversation,
+  openConversation,
   startSuperagentStore,
   superagentPhase,
   superagentStatus,
@@ -996,9 +999,21 @@ function AccountRow() {
         size="sm"
         surface="chrome"
         active={activeScene() === "settings"}
+        iconColor={activeScene() === "settings" ? palette().chromeAccent : undefined}
         accessibilityLabel={tr("nav.settings")}
         tooltip={<TooltipBubble text={tr("nav.settings")} shortcut={shortcutLabel("mod+,", "⌘,")} />}
-        onPress={() => navigateScene("settings")}
+        style={{ borderWidth: 0, borderColor: "transparent" }}
+        onPress={() => {
+          if (activeScene() === "settings") {
+            if (canGoBack()) {
+              goBackScene();
+            } else {
+              navigateScene(landingScene());
+            }
+            return;
+          }
+          navigateScene("settings");
+        }}
       />
       <DropdownMenu
         open={accountMenuOpen()}
@@ -2261,6 +2276,7 @@ function SearchPanel() {
                 caretColor: palette().accent,
                 backgroundColor: "transparent",
                 borderWidth: 0,
+                fontFamily: inputFontSans(),
                 fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
               }}
               onChange={event => {
@@ -3413,6 +3429,17 @@ function StudioApp() {
     about: () => openAboutDialog(),
     markAllRead: () => markAllNotificationsRead(),
     openInbox: () => navigateScene("inbox"), // wave22-p3
+    openSession: target => {
+      if (target.conversationId && superAgentUi()) {
+        openConversation(target.conversationId);
+        navigateScene("openbitfun");
+        return;
+      }
+      if (target.sessionId) {
+        selectSession(target.sessionId, target.deviceId || undefined, target.workspaceId || undefined);
+        navigateScene("sessions");
+      }
+    },
     openPetSettings: () => requestSettingsPage("pet"), // wave22-p3
   });
   cleanup(() => stopShellIntegration());
@@ -3762,7 +3789,7 @@ function StudioApp() {
       <AboutDialog />
       <CloseAskDialog />
       <ImageLightboxHost />
-      <ToastHost bottomOffset={activeScene() === "sessions" && Boolean(activeSessionId()) ? 116 : 0} />
+      <ToastHost />
     </View>
   );
 }

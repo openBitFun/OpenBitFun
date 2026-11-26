@@ -254,6 +254,11 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
           showMainWindow();
           actions.openInbox?.();
         },
+        openSession: target => {
+          showMainWindow();
+          if (actions.openSession) actions.openSession(target);
+          else actions.openInbox?.();
+        },
         openPetSettings: () => {
           showMainWindow();
           (actions.openPetSettings ?? actions.openSettings)();

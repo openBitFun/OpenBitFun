@@ -29,6 +29,7 @@ import {
   controlHeight,
   elevationShadow,
   fontMono,
+  inputFontSans,
   layout,
   isLightAppearance,
   motionTiming,
@@ -477,6 +478,7 @@ export interface IconButtonProps {
   surface?: ControlSurface;
   tone?: IconButtonTone;
   iconSize?: number;
+  iconColor?: string;
   active?: boolean;
   disabled?: boolean;
   tooltip?: string | JSX.Element;
@@ -567,7 +569,8 @@ export function IconButton(props: IconButtonProps) {
         name={props.icon}
         size={props.iconSize ?? iconBtnGlyph(props.size ?? "sm")}
         color={
-          props.tone === "danger"
+          props.iconColor ??
+          (props.tone === "danger"
             ? palette().danger
             : props.surface === "chrome"
               ? props.active
@@ -575,7 +578,7 @@ export function IconButton(props: IconButtonProps) {
                 : palette().chromeTextMuted
               : props.active
                 ? palette().text
-                : palette().textSecondary
+                : palette().textSecondary)
         }
       />
     </View>
@@ -2858,7 +2861,7 @@ export function TextField(props: TextFieldProps) {
             placeholderColor:
               props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
             caretColor: palette().accent,
-            fontFamily: props.monospace ? fontMono : undefined,
+            fontFamily: props.monospace ? fontMono : inputFontSans(),
             fontSize: inputFontSize(),
             lineHeight: props.multiline
               ? textLineHeight(props.monospace ? 12 : 13, 1.5)
@@ -3023,6 +3026,7 @@ export function SearchInput(props: SearchInputProps) {
           placeholderColor:
             props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
           caretColor: palette().accent,
+          fontFamily: inputFontSans(),
           fontSize: inputFontSize(),
         }}
       />

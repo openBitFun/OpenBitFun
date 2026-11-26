@@ -776,8 +776,14 @@ function SkillInspectModal() {
                     >
                       <MarkdownPreview
                         markdown={stripYamlFrontmatter(inspectedSkillContent() ?? "")}
+                        documentPath={inspectedSkill()?.entryFile || inspectedSkill()?.path || undefined}
                         links="report"
                         compact={true}
+                        onOpenWorkspacePath={target => {
+                          closeSkillInspector();
+                          void revealPath(target);
+                          navigateScene("files");
+                        }}
                         onLinkPress={event => {
                           const remote = isRemoteWorkspace(activeWorkspace());
                           const skillPath = inspectedSkill()?.entryFile || inspectedSkill()?.path || "";

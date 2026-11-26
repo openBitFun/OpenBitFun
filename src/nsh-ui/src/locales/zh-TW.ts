@@ -2964,9 +2964,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "signin.signedIn": "已登入",
   "signin.signedInAs": "已登入：{{account}}",
   "signin.accountTitle": "你的帳號",
-  "about.version": "版本 {{version}}",
   "about.tagline": "一個對話，連接你的所有裝置。",
-  "about.harmonyFonts": "本應用程式內含 HarmonyOS Sans 字型。",
   "about.releaseNotes": "版本資訊",
   "about.licenses": "開源授權",
   "about.details": "詳細資訊",
@@ -3363,6 +3361,9 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "doc.openInBrowser": "在瀏覽器中開啟",
   "doc.pdfElsewhere": "PDF 可在桌面應用中預覽。請在桌面應用或其他 PDF 閱讀器中開啟。",
   "doc.pdfUnavailable": "目前視窗無法預覽此 PDF，請使用其他閱讀器開啟。",
+  "doc.videoUnavailable": "無法預覽影片：{{name}}",
+  "doc.audioUnavailable": "無法預覽音訊：{{name}}",
+  "doc.mediaTooLarge": "{{name}}（{{size}}）過大，無法內嵌預覽。",
   // end wave22-p1 documents
   // wave22-p2 browser
   "browser.more": "更多",
@@ -3446,6 +3447,13 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "pet.character": "形象",
   "pet.characterBody": "內建形象和你匯入的 Petdex 角色包。",
   "pet.import": "匯入 .zip…",
+  "pet.bubble.openSession": "開啟工作階段",
+  "pet.bubble.close": "關閉此氣泡",
+  "pet.bubble.closeAll": "關閉所有氣泡",
+  "pet.bubble.running": "進行中",
+  "pet.bubble.needsYou": "待確認",
+  "pet.bubble.failed": "失敗",
+  "pet.bubble.unread": "未讀",
   // end wave22-p3 desktop presence
   // wave22-p5
   "goal.menu": "設定目標…",

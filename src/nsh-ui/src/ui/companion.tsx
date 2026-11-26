@@ -13,6 +13,8 @@ import {
   companionBusy,
   companionPets,
   deleteCompanionPet,
+  dismissAllPetBubbles,
+  dismissPetBubble,
   loadPetSheet,
   loadPetStill,
   PET_COLUMNS,
@@ -20,6 +22,7 @@ import {
   PET_ROW_FRAMES,
   petRowFor,
   petRows,
+  petSessionBubbles,
   petSheetErrors,
   petSheets,
   petState,
@@ -28,14 +31,21 @@ import {
   selectCompanionPet,
   selectedPet,
   type CompanionPet,
+  type PetBubbleState,
+  type PetSessionBubble,
 } from "../companionStore";
 import { tr } from "../i18n";
-import { compactLayout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { compactLayout, elevationShadow, palette, radii, space, textLineHeight, textSize, textStyle, touchSlop } from "../theme";
 import { stateWord, type MarkState } from "./fleet";
 import { Icon } from "./icons";
-import { pressTransition, tactileActiveStyle } from "./motion";
+import { Spinner, pressTransition, tactileActiveStyle } from "./motion";
 import { focusRingStyle, SkeletonBlock, TooltipBubble } from "./primitives";
 import { MoreMenu } from "./studio";
+
+/** Dimensions shared with `desktopPresence.tsx` so the pet window fits bubbles without clipping. */
+export const PET_BUBBLE_WIDTH = 196;
+export const PET_BUBBLE_HEIGHT = 48;
+export const PET_BUBBLE_GAP = space.sm;
 
 /** Petdex cells are 192 × 208; a sheet whose size is unknown yet uses that shape. */
 const DEFAULT_CELL_ASPECT = 192 / 208;
@@ -185,42 +195,220 @@ export interface PetWindowContentProps {
   height: number;
   /** A press on the pet: the main window and the Inbox. */
   onOpen: () => void;
+  /** A press on a session bubble: the main window opened straight to that session. */
+  onOpenSession?: (bubble: PetSessionBubble) => void;
   onHide: () => void;
   onSettings: () => void;
 }
 
-/**
- * The pet window's content: the pet on a transparent ground. Its edge drags
- * the window; a press on the pet opens the Inbox; the context menu hides it or
- * opens its settings.
- */
-export function PetWindowContent(props: PetWindowContentProps) {
+function bubbleStatusLabel(state: PetBubbleState): string {
+  switch (state) {
+    case "running":
+      return tr("pet.bubble.running");
+    case "needs_you":
+      return tr("pet.bubble.needsYou");
+    case "failed":
+      return tr("pet.bubble.failed");
+    case "unread":
+      return tr("pet.bubble.unread");
+  }
+}
+
+function bubbleBorderColor(state: PetBubbleState): string {
+  switch (state) {
+    case "needs_you":
+      return palette().warningBorder;
+    case "failed":
+      return palette().dangerBorder;
+    case "unread":
+      return palette().accentBorder;
+    default:
+      return palette().border;
+  }
+}
+
+function bubbleStatusColor(state: PetBubbleState): string {
+  switch (state) {
+    case "needs_you":
+      return palette().warning;
+    case "failed":
+      return palette().danger;
+    case "running":
+    case "unread":
+      return palette().accent;
+  }
+}
+
+function PetSessionBubbleCard(props: {
+  bubble: PetSessionBubble;
+  onOpenSession?: (bubble: PetSessionBubble) => void;
+}) {
+  const b = () => props.bubble;
+  const openTarget = () => {
+    if (props.onOpenSession) props.onOpenSession(b());
+  };
+  const subtitle = () => {
+    const status = bubbleStatusLabel(b().state);
+    const device = b().deviceName?.trim();
+    return device ? `${status} · ${device}` : status;
+  };
   return (
     <View
-      desktop={{ windowDrag: true }}
-      accessibilityLabel="pet-window"
+      testID={`pet-bubble-${b().sessionId ?? b().conversationId ?? b().key}`}
+      role="button"
+      accessibilityLabel={`pet-bubble-${b().key}`}
+      onPress={openTarget}
       onContextMenu={event =>
         void Menu.popup(
           [
-            { label: tr("pet.openInbox"), onSelect: () => props.onOpen() },
+            { label: tr("pet.bubble.openSession"), onSelect: openTarget },
             { type: "separator" },
-            { label: tr("pet.hide"), onSelect: () => props.onHide() },
-            { label: tr("pet.settings"), onSelect: () => props.onSettings() },
+            { label: tr("pet.bubble.close"), onSelect: () => dismissPetBubble(b()) },
+            { label: tr("pet.bubble.closeAll"), onSelect: () => dismissAllPetBubbles() },
           ],
           event.pagePosition,
         )
       }
-      style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space.md, backgroundColor: "transparent" }}
+      hoverStyle={{ backgroundColor: palette().panelHover, borderColor: palette().borderStrong }}
+      activeStyle={tactileActiveStyle(0.98)}
+      focusVisibleStyle={focusRingStyle()}
+      style={{
+        boxSizing: "border-box",
+        width: PET_BUBBLE_WIDTH,
+        minHeight: PET_BUBBLE_HEIGHT,
+        paddingHorizontal: space.md,
+        paddingVertical: space.xs + 2,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: bubbleBorderColor(b().state),
+        backgroundColor: palette().popoverBg,
+        boxShadow: elevationShadow(2),
+        justifyContent: "center",
+        gap: 2,
+        cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(120),
+      }}
     >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs + 2, minWidth: 0 }}>
+        <View style={{ width: 14, height: textLineHeight(12, 1.35), alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <If when={b().state === "running"}>
+            <Spinner size={12} color={palette().accent} />
+          </If>
+          <If when={b().state === "needs_you" || b().state === "failed"}>
+            <Icon name="alert-circle" size={12} color={bubbleStatusColor(b().state)} />
+          </If>
+          <If when={b().state === "unread"}>
+            <View
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: radii.pill,
+                backgroundColor: palette().accent,
+              }}
+            />
+          </If>
+        </View>
+        <Text
+          style={{
+            ...textStyle("caption", { color: palette().text }),
+            fontSize: textSize(12),
+            fontWeight: "500",
+            lineHeight: textLineHeight(12, 1.35),
+            flex: 1,
+            minWidth: 0,
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {b().title}
+        </Text>
+      </View>
+      <Text
+        style={{
+          ...textStyle("caption", { color: palette().textMuted }),
+          fontSize: textSize(11),
+          lineHeight: textLineHeight(11, 1.3),
+          paddingLeft: 14 + space.xs + 2,
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {subtitle()}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * The pet window's content: up to two active/unread session bubbles to the left
+ * of the pet, on a transparent ground. The pet drags the window, opens the Inbox
+ * on press, and carries its own context menu; each bubble opens its session on
+ * press and offers Close / Close all on right-click.
+ */
+export function PetWindowContent(props: PetWindowContentProps) {
+  const bubbles = () => petSessionBubbles();
+  return (
+    <View
+      accessibilityLabel="pet-window"
+      style={{
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "flex-end",
+        justifyContent: "flex-end",
+        gap: PET_BUBBLE_GAP,
+        padding: space.sm,
+        backgroundColor: "transparent",
+      }}
+    >
+      <If when={bubbles().length > 0}>
+        <View
+          testID="pet-session-bubbles"
+          accessibilityLabel="pet-session-bubbles"
+          style={{
+            width: PET_BUBBLE_WIDTH,
+            flexDirection: "column",
+            alignItems: "stretch",
+            justifyContent: "flex-end",
+            gap: space.xs,
+            flexShrink: 0,
+          }}
+        >
+          <Each of={bubbles()} key={item => item.key}>
+            {item => (
+              <PetSessionBubbleCard
+                bubble={item()}
+                onOpenSession={props.onOpenSession}
+              />
+            )}
+          </Each>
+        </View>
+      </If>
       <View
         desktop={{ windowDrag: true }}
         role="button"
         accessibilityLabel="pet-open-inbox"
         hitSlop={touchSlop(props.height)}
         onPress={() => props.onOpen()}
+        onContextMenu={event =>
+          void Menu.popup(
+            [
+              { label: tr("pet.openInbox"), onSelect: () => props.onOpen() },
+              ...(bubbles().length > 0
+                ? [{ label: tr("pet.bubble.closeAll"), onSelect: () => dismissAllPetBubbles() }]
+                : []),
+              { type: "separator" },
+              { label: tr("pet.hide"), onSelect: () => props.onHide() },
+              { label: tr("pet.settings"), onSelect: () => props.onSettings() },
+            ],
+            event.pagePosition,
+          )
+        }
         activeStyle={tactileActiveStyle(0.96)}
         focusVisibleStyle={focusRingStyle()}
         style={{
+          flexShrink: 0,
           borderRadius: radii.md,
           cursor: "grab",
           userSelect: "none",

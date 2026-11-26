@@ -7,7 +7,6 @@ import { controllerAppVersion, invokeCommand } from "../bridge";
 import { localizeHostError, tr } from "../i18n";
 import {
   compactLayout,
-  hasBundledUiFonts,
   layout,
   palette,
   radii,
@@ -310,9 +309,7 @@ export function AboutDialog() {
                   userSelect: "text",
                 }}
               >
-                {aboutFacts()?.version
-                  ? tr("about.version", { version: aboutFacts()!.version })
-                  : tr("shell.about.notAvailable")}
+                {aboutFacts()?.version || tr("shell.about.notAvailable")}
               </Text>
             }
           >
@@ -496,20 +493,6 @@ export function AboutDialog() {
             )}
           </If>
         </InsetGroup>
-
-        {/* Subtle legal colophon at the bottom */}
-        <If when={hasBundledUiFonts()}>
-          <Text
-            style={{
-              ...textStyle("micro", { color: palette().textMuted }),
-              marginTop: space.lg,
-              textAlign: "center",
-              opacity: 0.78,
-            }}
-          >
-            {tr("about.harmonyFonts")}
-          </Text>
-        </If>
       </View>
     </ModalDialog>
   );

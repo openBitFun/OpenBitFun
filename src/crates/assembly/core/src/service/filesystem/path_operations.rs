@@ -74,6 +74,20 @@ pub async fn read_text(
     Ok(file.content)
 }
 
+pub async fn read_bytes(
+    service: &FileSystemService,
+    path: &str,
+    hint: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    if let Some((fs, id)) = remote(path, hint).await? {
+        return fs.read_file(&id, path).await.map_err(|e| e.to_string());
+    }
+    service
+        .read_file_bytes(path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Serialize optimistic writes by target/path. As in Happy's writeFile handler,
 /// expected_hash is checked on the runtime, never by a controller-side read.
 /// Empty hash means create-only; absent hash preserves ordinary runtime writes.

@@ -10,6 +10,19 @@
     "network": {
       "hosts": [
         "super.openbitfun.com"
+      ],
+      "http": [
+        {
+          "host": "*",
+          "methods": [
+            "GET",
+            "HEAD"
+          ],
+          "schemes": [
+            "https",
+            "http"
+          ]
+        }
       ]
     },
     "application": true,

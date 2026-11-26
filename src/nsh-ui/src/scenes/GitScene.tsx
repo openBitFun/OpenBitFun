@@ -122,6 +122,7 @@ import {
   textStyle,
   textTracking,
   touchSlop,
+  inputFontSans,
 } from "../theme";
 import { deviceException, stateColor } from "../ui/fleet";
 import { Icon, type IconName } from "../ui/icons";
@@ -1295,6 +1296,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                   color: palette().text,
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
+                  fontFamily: inputFontSans(),
                   fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
                   lineHeight: textLineHeight(compactLayout() ? 16 : 13, 1.45),
                 }}

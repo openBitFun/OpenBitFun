@@ -10,6 +10,21 @@
     "notifications": true,
     "picker": true,
     "statusBar": true,
+    "network": {
+      "http": [
+        {
+          "host": "*",
+          "methods": [
+            "GET",
+            "HEAD"
+          ],
+          "schemes": [
+            "https",
+            "http"
+          ]
+        }
+      ]
+    },
     "webview": {
       "hosts": [
         "*"

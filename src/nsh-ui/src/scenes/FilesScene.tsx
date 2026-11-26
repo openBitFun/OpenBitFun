@@ -4,7 +4,6 @@ import {
   Clipboard,
   computed,
   effect,
-  Image,
   keymap,
   openUrl,
   untracked,
@@ -23,7 +22,6 @@ import {
   Tree,
   type EditorRef,
   type EditorSearchResult,
-  type TextViewImage,
   type TreeEntry,
   type TreeItem,
 } from "nsh/base";
@@ -118,7 +116,6 @@ import {
 } from "../state";
 import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { mentionToken } from "../mentionStore";
-import { readFileContent } from "../api";
 import { openTerminal } from "../terminalStore";
 import {
   compactLayout,
@@ -2357,96 +2354,6 @@ function EditorStatusBar() {
 /** The image viewer's zoom: fitted to the pane, or a factor of the natural size. */
 const imageZoom = signal<ImageZoomState>("fit");
 
-/** Resolves a document-relative reference (`./img/a.png`, `../b.md`) against the document's folder. */
-function resolveDocumentPath(documentPath: string, reference: string): string {
-  const sep = pathSep(documentPath);
-  const cleaned = reference.split(/[?#]/)[0];
-  let decoded = cleaned;
-  try {
-    decoded = decodeURIComponent(cleaned);
-  } catch {
-    decoded = cleaned;
-  }
-  if (decoded.startsWith("/") || /^[A-Za-z]:[\\/]/.test(decoded)) return decoded;
-  const parts = dirnameOf(documentPath).split(/[\\/]/);
-  for (const segment of decoded.split(/[\\/]/)) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (parts.length > 1) parts.pop();
-      continue;
-    }
-    parts.push(segment);
-  }
-  return parts.join(sep);
-}
-
-function isExternalUrl(url: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[A-Za-z]:[\\/]/.test(url);
-}
-
-/** Workspace images referenced by a Markdown file, read once as data URLs. */
-const markdownImageCache = signal<Record<string, string | null>>({});
-const markdownImagePending = new Set<string>();
-
-function loadMarkdownImage(path: string): void {
-  const workspaceId = activeWorkspaceId();
-  if (!workspaceId || markdownImagePending.has(path) || path in markdownImageCache()) return;
-  markdownImagePending.add(path);
-  void readFileContent(workspaceId, path, "base64")
-    .then(encoded => {
-      const ext = extensionOf(path);
-      const mime = ext === "svg" ? "image/svg+xml" : ext === "jpg" ? "image/jpeg" : `image/${ext || "png"}`;
-      markdownImageCache.update(current => ({ ...current, [path]: encoded ? `data:${mime};base64,${encoded}` : null }));
-    })
-    .catch(() => markdownImageCache.update(current => ({ ...current, [path]: null })))
-    .finally(() => markdownImagePending.delete(path));
-}
-
-/**
- * An image in a Markdown preview. Web and data URLs load as they are; a path
- * inside the workspace is read through the host (`read_file_content`, base64),
- * which works for a remote workspace too. Reactive to prop/workspace changes.
- */
-function MarkdownImage(props: { image: TextViewImage; documentPath: string }) {
-  const external = () => isExternalUrl(props.image.src);
-  const path = () => (external() ? "" : resolveDocumentPath(props.documentPath, props.image.src));
-  effect(() => {
-    const _workspace = activeWorkspaceId();
-    const target = path();
-    void _workspace;
-    if (target) {
-      untracked(() => loadMarkdownImage(target));
-    }
-  });
-  const source = () => (external() ? props.image.src : markdownImageCache()[path()] ?? "");
-  const width = () => (typeof props.image.width === "number" ? props.image.width : undefined);
-  const height = () => (typeof props.image.height === "number" ? props.image.height : undefined);
-  return (
-    <If
-      when={source()}
-      else={
-        <Text style={{ ...textStyle("caption", { color: palette().textMuted }) }}>
-          {markdownImageCache()[path()] === null
-            ? tr("files.imageUnavailable", { name: props.image.alt || basename(path()) })
-            : props.image.alt || basename(path())}
-        </Text>
-      }
-    >
-      <Image
-        src={source()}
-        accessibilityLabel={props.image.alt || basename(path() || props.image.src)}
-        style={{
-          maxWidth: "100%",
-          ...(width() ? { width: width() } : {}),
-          ...(height() ? { height: height() } : {}),
-          objectFit: "contain",
-          borderRadius: radii.sm,
-        }}
-      />
-    </If>
-  );
-}
-
 /** A link in a Markdown preview: web/mailto links open outside, workspace/file:// links open here. */
 function openMarkdownLink(url: string, documentPath: string): void {
   const remote = isRemoteWorkspace();
@@ -2852,8 +2759,9 @@ function PreviewBody(props: { compact?: boolean }) {
                   <MarkdownPreview
                     accessibilityLabel="file-markdown-preview"
                     markdown={editingContent() ?? file().content}
+                    documentPath={file().path}
                     compact={props.compact}
-                    renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
+                    onOpenWorkspacePath={target => void revealPath(target)}
                     onLinkPress={event => openMarkdownLink(event.url, file().path)}
                   />
                 </View>
@@ -2863,6 +2771,7 @@ function PreviewBody(props: { compact?: boolean }) {
           <If when={markdownMode() === "visual"}>
             <MarkdownDocumentEditor
               documentKey={file().path}
+              documentPath={file().path}
               documentName={file().name}
               text={editingContent() ?? file().content}
               onChange={setEditingContent}
@@ -2871,7 +2780,6 @@ function PreviewBody(props: { compact?: boolean }) {
               compact={props.compact}
               maxWidth={layout.conversationWidth}
               ai={true}
-              renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
               onLinkPress={url => openMarkdownLink(url, file().path)}
             />
           </If>
@@ -2895,8 +2803,9 @@ function PreviewBody(props: { compact?: boolean }) {
                       <MarkdownPreview
                         accessibilityLabel="file-markdown-preview"
                         markdown={editingContent() ?? file().content}
+                        documentPath={file().path}
                         compact={true}
-                        renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
+                        onOpenWorkspacePath={target => void revealPath(target)}
                         onLinkPress={event => openMarkdownLink(event.url, file().path)}
                       />
                     </View>

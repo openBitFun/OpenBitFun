@@ -34,13 +34,15 @@ import {
 import {
   companionEnabled,
   loadCompanionSettings,
+  petSessionBubbles,
   releasePetSheets,
   selectedPet,
   setCompanionEnabled,
+  type PetSessionBubble,
 } from "./companionStore";
 import { space } from "./theme";
 import { CardView, openCardConversation } from "./ui/cardView";
-import { PetWindowContent } from "./ui/companion";
+import { PET_BUBBLE_GAP, PET_BUBBLE_HEIGHT, PET_BUBBLE_WIDTH, PetWindowContent } from "./ui/companion";
 
 // ── Window driver ────────────────────────────────────────────────────────────
 
@@ -50,6 +52,8 @@ export interface PresenceWindow {
   focus(): void;
   close(): void;
   setSize(size: { width: number; height: number }): void;
+  setBounds?(bounds: { origin?: { x: number; y: number }; size: { width: number; height: number } }): void;
+  bounds?(): { x: number; y: number; width: number; height: number } | null;
 }
 
 export interface PresenceWindowEvents {
@@ -86,6 +90,11 @@ const nshWindowDriver: PresenceWindowDriver = {
       focus: () => ref.focus(),
       close: () => ref.close(),
       setSize: size => ref.setBounds({ size }),
+      setBounds: bounds => ref.setBounds(bounds),
+      bounds: () => {
+        const b = ref.state()?.bounds;
+        return b ? { x: b.origin.x, y: b.origin.y, width: b.size.width, height: b.size.height } : null;
+      },
     };
   },
 };
@@ -250,34 +259,79 @@ export const petHiddenForRun = signal(false);
 
 let petWindow: PresenceWindow | null = null;
 let petWindowKey = "";
+let lastPetBounds: { x: number; y: number; width: number; height: number } | null = null;
+let lastPetSize: { width: number; height: number } | null = null;
 
-function petWindowSize(): { width: number; height: number } {
+function petWindowSize(bubbleCount: number): { width: number; height: number } {
   const side = petHeight() + space.sm * 2;
-  return { width: side, height: side };
+  if (bubbleCount <= 0) return { width: side, height: side };
+  const bubblesHeight =
+    bubbleCount * PET_BUBBLE_HEIGHT +
+    Math.max(0, bubbleCount - 1) * space.xs +
+    space.sm * 2;
+  return {
+    width: PET_BUBBLE_WIDTH + PET_BUBBLE_GAP + side,
+    height: Math.max(side, bubblesHeight),
+  };
+}
+
+/** Keeps the pet anchored at its bottom-right edge as session bubbles appear or close on its left. */
+function resizePetWindowAnchored(win: PresenceWindow, next: { width: number; height: number }): void {
+  const current = win.bounds?.() ?? lastPetBounds;
+  if (current) {
+    if (current.width === next.width && current.height === next.height) {
+      lastPetSize = next;
+      return;
+    }
+    lastPetSize = next;
+    if (win.setBounds) {
+      const all = displays();
+      const area = (all.find(display => display.primary) ?? all[0])?.visibleBounds;
+      const minX = area ? area.origin.x : 0;
+      const minY = area ? area.origin.y : 0;
+      const origin = {
+        x: Math.max(minX, Math.round(current.x + current.width - next.width)),
+        y: Math.max(minY, Math.round(current.y + current.height - next.height)),
+      };
+      lastPetBounds = { x: origin.x, y: origin.y, width: next.width, height: next.height };
+      win.setBounds({ origin, size: next });
+      return;
+    }
+    win.setSize(next);
+    return;
+  }
+  if (lastPetSize && lastPetSize.width === next.width && lastPetSize.height === next.height) return;
+  lastPetSize = next;
+  win.setSize(next);
 }
 
 function closePetWindow(): void {
   const open = petWindow;
   petWindow = null;
   petWindowKey = "";
+  lastPetBounds = null;
+  lastPetSize = null;
   open?.close();
 }
 
 function reconcilePet(actions: DesktopPresenceActions): void {
   const pet = selectedPet();
   const show = companionEnabled() === true && pet !== null && !petHiddenForRun();
+  const bubbleCount = petSessionBubbles().length;
   if (!show || !pet) {
     closePetWindow();
     releasePetSheets();
     return;
   }
+  const size = petWindowSize(bubbleCount);
   const key = pet.spritesheetPath;
   if (petWindow && petWindowKey === key) {
-    petWindow.setSize(petWindowSize());
+    resizePetWindowAnchored(petWindow, size);
     return;
   }
   closePetWindow();
   petWindowKey = key;
+  lastPetSize = size;
   petWindow = driver.open(
     () => (
       <>
@@ -286,6 +340,10 @@ function reconcilePet(actions: DesktopPresenceActions): void {
             pet={selectedPet()!}
             height={petHeight()}
             onOpen={() => actions.openInbox()}
+            onOpenSession={bubble => {
+              if (actions.openSession) actions.openSession(bubble);
+              else actions.openInbox();
+            }}
             onHide={() => void setCompanionEnabled(false)}
             onSettings={() => actions.openPetSettings()}
           />
@@ -308,13 +366,19 @@ function reconcilePet(actions: DesktopPresenceActions): void {
       closeOnPress: false,
       activate: false,
       workspaces: "all",
-      defaultSize: petWindowSize(),
+      defaultSize: size,
       restoreBounds: true,
     },
     {
+      onBounds: bounds => {
+        lastPetBounds = bounds;
+        lastPetSize = { width: bounds.width, height: bounds.height };
+      },
       onClose: () => {
         petWindow = null;
         petWindowKey = "";
+        lastPetBounds = null;
+        lastPetSize = null;
       },
     },
   );
@@ -345,6 +409,8 @@ export const PET_SHELL_OPERATIONS: Record<string, (args: Record<string, unknown>
 export interface DesktopPresenceActions {
   /** Shows the main window and opens the Inbox. */
   openInbox(): void;
+  /** Shows the main window and opens a specific session or conversation from a pet bubble. */
+  openSession?(target: Pick<PetSessionBubble, "deviceId" | "workspaceId" | "sessionId" | "conversationId">): void;
   /** Shows the main window and opens Settings › Pet. */
   openPetSettings(): void;
   /** Shows the main window. */

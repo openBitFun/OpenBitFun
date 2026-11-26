@@ -50,6 +50,7 @@ import {
   cjkTypography,
   fontMono,
   fontSans,
+  layout,
   palette,
   radii,
   resolvedScheme,
@@ -62,6 +63,13 @@ import {
   uiFontBasePx,
   type Palette,
 } from "../theme";
+import {
+  MARKDOWN_MEDIA_EXTENSION,
+  MarkdownImageView,
+  MarkdownMediaEmbed,
+  openMarkdownImageInLightbox,
+  transformEmbeddedMediaMarkdown,
+} from "./markdownMedia";
 import { activeWorkspace, activeWorkspaceRoot, openInAuxPane } from "../state";
 import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import { Icon } from "./icons";
@@ -246,12 +254,18 @@ function markdownExtensions(
   const WorkspaceImage = RichImage.extend({
     addNodeView: () => nodeProps => {
       const attrs = (nodeProps.node.attrs ?? {}) as Record<string, unknown>;
+      const parseAttrSize = (val: unknown): number | `${number}%` | undefined => {
+        if (typeof val === "number" && Number.isFinite(val)) return val;
+        if (typeof val === "string" && /^\d+(?:\.\d+)?%$/.test(val.trim())) return val.trim() as `${number}%`;
+        if (typeof val === "string" && /^\d+(?:\.\d+)?$/.test(val.trim())) return Number(val.trim());
+        return undefined;
+      };
       return renderImage({
         src: String(attrs.src ?? ""),
         alt: String(attrs.alt ?? ""),
         title: typeof attrs.title === "string" ? attrs.title : undefined,
-        width: typeof attrs.width === "number" ? attrs.width : undefined,
-        height: typeof attrs.height === "number" ? attrs.height : undefined,
+        width: parseAttrSize(attrs.width),
+        height: parseAttrSize(attrs.height),
       });
     },
   });
@@ -795,14 +809,24 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
   );
 }
 
-const MERMAID_EXTENSIONS = [{ name: "mermaid", language: "mermaid" }];
+const MARKDOWN_PREVIEW_EXTENSIONS = [
+  { name: "mermaid", language: "mermaid" },
+  MARKDOWN_MEDIA_EXTENSION,
+];
 
 export interface MarkdownPreviewProps {
   markdown: string;
   compact?: boolean;
-  /** Images of the document (workspace-relative paths are the caller's to read). */
+  /** Document path for resolving relative workspace images, videos, and audio. */
+  documentPath?: string;
+  /** Optional workspace root override (e.g. assistant persona folder). */
+  workspaceRoot?: string;
+  /** Optional custom image renderer; defaults to the shared workspace-aware image renderer. */
   renderImage?: (image: TextViewImage) => JSX.Element;
   onLinkPress?: (event: TextViewLinkPressEvent) => void;
+  onImagePress?: (event: { image: TextViewImage }) => void;
+  /** Called when an embedded local media fallback asks to open a workspace path. */
+  onOpenWorkspacePath?: (path: string) => void;
   /** `"open"` lets the view open web links itself. */
   links?: "open" | "report";
   accessibilityLabel?: string;
@@ -822,27 +846,67 @@ function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
   openDefaultMarkdownUrl(event.url);
 }
 
-/** A Markdown document as a reader sees it, with Mermaid diagrams and display formulas. */
+/** A Markdown document as a reader sees it, with workspace images, embedded media, Mermaid diagrams, and display formulas. */
 export function MarkdownPreview(props: MarkdownPreviewProps) {
+  const columnWidth = signal<number>(layout.conversationWidth);
+  const preparedMarkdown = () => transformEmbeddedMediaMarkdown(props.markdown);
   return (
-    <View accessibilityLabel={props.accessibilityLabel} style={{ alignSelf: "stretch", minWidth: 0 }}>
+    <View
+      accessibilityLabel={props.accessibilityLabel}
+      onLayout={event => {
+        const nextW = Math.round(event.bounds.size.width);
+        if (nextW > 0 && nextW !== untracked(() => columnWidth())) columnWidth.set(nextW);
+      }}
+      style={{ alignSelf: "stretch", minWidth: 0 }}
+    >
     <TextView
-      markdown={props.markdown}
+      markdown={preparedMarkdown()}
       selectable={true}
       links={props.onLinkPress ? (props.links ?? "report") : (props.links ?? "report")}
       options={STATIC_MARKDOWN_OPTIONS}
-      extensions={MERMAID_EXTENSIONS}
+      extensions={MARKDOWN_PREVIEW_EXTENSIONS}
       styles={createMarkdownStyles({ compact: props.compact })}
       codeBlockActions={createMarkdownCodeActions()}
-      renderImage={props.renderImage}
-      onLinkPress={props.onLinkPress ?? defaultPreviewLinkPress}
-      renderCustom={node =>
-        node.name === "mermaid" ? (
-          <DiagramIsland kind="mermaid" source={node.text ?? ""} />
+      renderImage={image =>
+        props.renderImage ? (
+          props.renderImage(image)
         ) : (
-          <Text style={textStyle("body")}>{node.text ?? ""}</Text>
+          <MarkdownImageView
+            image={image}
+            documentPath={props.documentPath}
+            workspaceRoot={props.workspaceRoot}
+            containerWidth={() => columnWidth()}
+          />
         )
       }
+      onImagePress={event => {
+        if (props.onImagePress) {
+          props.onImagePress(event);
+          return;
+        }
+        void openMarkdownImageInLightbox(event.image, {
+          documentPath: props.documentPath,
+          workspaceRoot: props.workspaceRoot,
+        });
+      }}
+      onLinkPress={props.onLinkPress ?? defaultPreviewLinkPress}
+      renderCustom={node => {
+        if (node.name === "mermaid") {
+          return <DiagramIsland kind="mermaid" source={node.text ?? ""} />;
+        }
+        if (node.name === "media") {
+          return (
+            <MarkdownMediaEmbed
+              rawJson={node.text ?? ""}
+              documentPath={props.documentPath}
+              workspaceRoot={props.workspaceRoot}
+              containerWidth={() => columnWidth()}
+              onOpenWorkspacePath={props.onOpenWorkspacePath}
+            />
+          );
+        }
+        return <Text style={textStyle("body")}>{node.text ?? ""}</Text>;
+      }}
       renderMath={math =>
         math.display ? (
           <DiagramIsland kind="math" source={math.tex} />
@@ -877,6 +941,10 @@ export interface MarkdownDocumentEditorProps {
   onChange: (markdown: string) => void;
   /** The document's name, for the AI prompt. */
   documentName: string;
+  /** Document path for resolving relative workspace images (defaults to `documentKey`). */
+  documentPath?: string;
+  /** Optional workspace root override for relative images. */
+  workspaceRoot?: string;
   accessibilityLabel?: string;
   placeholder?: string;
   compact?: boolean;
@@ -1132,7 +1200,15 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const frontmatterYaml = signal(baselineSplit.yaml);
   const frontmatterExpanded = signal(false);
 
-  const session = createMarkdownSession(baselineSplit.body, untracked(() => owner.renderImage));
+  const resolvedRenderImage = untracked(() => owner.renderImage) ?? ((image: TextViewImage) => (
+    <MarkdownImageView
+      image={image}
+      documentPath={owner.documentPath ?? owner.documentKey}
+      workspaceRoot={owner.workspaceRoot}
+      containerWidth={() => Math.max(240, (owner.maxWidth ?? layout.conversationWidth) - space.x3l * 2)}
+    />
+  ));
+  const session = createMarkdownSession(baselineSplit.body, resolvedRenderImage);
   let normalizedInitialBody = normalizeMarkdown(session.getMarkdown());
   let quietRevision = session.revision;
   const hasSelection = signal(false);

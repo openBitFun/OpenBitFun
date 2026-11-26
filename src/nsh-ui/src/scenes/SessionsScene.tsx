@@ -66,6 +66,13 @@ import {
 import { permissionMode } from "../permissionPolicyStore";
 import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import {
+  MARKDOWN_MEDIA_EXTENSION,
+  MarkdownImageView,
+  MarkdownMediaEmbed,
+  openMarkdownImageInLightbox,
+  transformEmbeddedMediaMarkdown,
+} from "../ui/markdownMedia";
+import {
   ExploreGroupCard,
   FoldedGroupStep,
   isCardExpanded,
@@ -336,6 +343,7 @@ import {
   controlHeight,
   elevationShadow,
   fontMono,
+  inputFontSans,
   layout,
   palette,
   radii,
@@ -2825,19 +2833,7 @@ function handleMarkdownLink(event: { url: string }): void {
 function handleMarkdownImagePress(event: { image: { src: string; alt?: string; title?: string } }): void {
   const raw = (event.image.src ?? "").trim();
   if (!raw) return;
-  const title = event.image.alt || event.image.title || undefined;
-  if (/^(https?:|data:|file:|asset:)/i.test(raw)) {
-    openImageLightbox({ src: raw, title });
-    return;
-  }
-  const resolved = resolveWorkspaceMarkdownLink(raw, activeWorkspaceRoot(), isRemoteActiveWorkspace());
-  if (resolved.kind === "workspace") {
-    if (isLocalAttachmentPathAllowed()) {
-      openImageLightbox({ src: fileUrlOfPath(resolved.path), title: title || basename(resolved.path) });
-    } else {
-      openInAuxPane("files", resolved.path);
-    }
-  }
+  void openMarkdownImageInLightbox(event.image);
 }
 
 /** Structured summary card for an inline visualization figure (`visualize{...}` or `publishedFigures`). */
@@ -2949,17 +2945,36 @@ function fullReplySignal(key: string): Signal<boolean> {
   return entry;
 }
 
+const SESSION_MARKDOWN_EXTENSIONS = [MARKDOWN_MEDIA_EXTENSION];
+
 function MarkdownBody(props: { text: string; live?: boolean }) {
   const parsed = computed(() => extractVisualizeDirectives(props.text, { streaming: props.live }));
+  const columnWidth = signal<number>(layout.conversationWidth);
+  const preparedText = () => (props.live ? parsed().text : transformEmbeddedMediaMarkdown(parsed().text));
   return (
-    <View style={{ width: "100%", gap: space.sm }}>
-      <If when={parsed().text}>
+    <View
+      onLayout={event => {
+        const nextW = Math.round(event.bounds.size.width);
+        if (nextW > 0 && nextW !== untracked(() => columnWidth())) columnWidth.set(nextW);
+      }}
+      style={{ width: "100%", gap: space.sm }}
+    >
+      <If when={preparedText()}>
         <TextView
-          markdown={parsed().text}
+          markdown={preparedText()}
           selectable
           links="report"
           onLinkPress={handleMarkdownLink}
           onImagePress={handleMarkdownImagePress}
+          extensions={SESSION_MARKDOWN_EXTENSIONS}
+          renderImage={image => <MarkdownImageView image={image} containerWidth={() => columnWidth()} />}
+          renderCustom={node =>
+            node.name === "media" ? (
+              <MarkdownMediaEmbed rawJson={node.text ?? ""} containerWidth={() => columnWidth()} />
+            ) : (
+              <Text style={textStyle("body")}>{node.text ?? ""}</Text>
+            )
+          }
           options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
           codeBlockActions={createMarkdownCodeActions()}
           styles={createMarkdownStyles()}
@@ -6928,6 +6943,7 @@ function SessionComposer(props: SessionComposerProps) {
                 minWidth: 0,
                 minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
                 maxHeight: 160,
+                fontFamily: inputFontSans(),
                 fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
                 lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
                 color: palette().text,

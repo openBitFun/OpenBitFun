@@ -34,7 +34,15 @@ installPresenceWindowDriver({
         events.delete(options.id);
         window.close();
       },
-      setSize: size => window.setSize(size),
+      setSize: size => {
+        host.post("openbitfun.presence", { action: "setSize", id: options.id, size });
+        window.setSize(size);
+      },
+      setBounds: bounds => {
+        host.post("openbitfun.presence", { action: "setBounds", id: options.id, origin: bounds.origin ?? null, size: bounds.size });
+        window.setBounds?.(bounds);
+      },
+      bounds: () => window.bounds?.() ?? null,
     };
   },
 });

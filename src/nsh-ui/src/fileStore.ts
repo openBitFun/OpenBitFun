@@ -10,6 +10,7 @@ import { fleetActive, invokeCommand, listenEvent, windowShellId } from "./bridge
 import { holdGitStatusLive } from "./gitStatusLive";
 import { currentDeviceScopeKey, isRemotePeerContext } from "./shared/deviceScope";
 import { errorMessageOf } from "./shared/errorUtils";
+import { invalidateMarkdownMediaCache } from "./ui/markdownMedia";
 import {
   dirnameOfPath,
   fileUrlToPath,
@@ -385,6 +386,7 @@ function setDraft(path: string, draft: FileDraft | null): void {
 }
 
 function setChangedOnDisk(path: string, state: "modified" | "deleted" | null): void {
+  if (state) invalidateMarkdownMediaCache(path);
   changedOnDisk.update(current => {
     if (!state) {
       if (!(path in current)) return current;
@@ -701,6 +703,7 @@ export async function reloadFromDisk(path: string): Promise<void> {
   saveConflict.set(null);
   setChangedOnDisk(path, null);
   setDraft(path, null);
+  invalidateMarkdownMediaCache();
   if (openFile()?.path === path) editingContent.set(null);
   await openFileAt(path);
 }

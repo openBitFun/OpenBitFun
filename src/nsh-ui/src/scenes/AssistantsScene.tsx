@@ -93,6 +93,7 @@ import {
   textStyle,
   textTracking,
   touchSlop,
+  inputFontSans,
 } from "../theme";
 import { stateColor } from "../ui/fleet";
 import { Icon } from "../ui/icons";
@@ -873,6 +874,7 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                   color: palette().text,
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
+                  fontFamily: inputFontSans(),
                   fontSize: compactLayout() ? Math.max(16, textSize(13)) : textSize(13),
                 }}
                 onChange={event => avatarCustomInput.set(event.value)}
@@ -970,6 +972,7 @@ function AssistantNameEditor(props: { assistant: AssistantWorkspaceView }) {
           color: palette().text,
           placeholderColor: palette().textMuted,
           caretColor: palette().accent,
+          fontFamily: inputFontSans(),
           fontSize: textSize(studioCompact() ? 17 : 22),
           fontWeight: "600",
         }}
@@ -1646,6 +1649,8 @@ function PersonaStudioPane() {
                               >
                                 <MarkdownDocumentEditor
                                   documentKey={joinPersonaFilePath(assistant().rootPath, activePersonaFile())}
+                                  documentPath={joinPersonaFilePath(assistant().rootPath, activePersonaFile())}
+                                  workspaceRoot={assistant().rootPath || activeWorkspace()?.rootPath || undefined}
                                   documentName={activePersonaFile()}
                                   text={personaDraft()}
                                   onChange={setPersonaDraftText}
@@ -1691,7 +1696,13 @@ function PersonaStudioPane() {
                               {md => (
                                 <MarkdownPreview
                                   markdown={md()}
+                                  documentPath={joinPersonaFilePath(assistant().rootPath, activePersonaFile())}
+                                  workspaceRoot={assistant().rootPath || activeWorkspace()?.rootPath || undefined}
                                   links="report"
+                                  onOpenWorkspacePath={target => {
+                                    void revealPath(target);
+                                    navigateScene("files");
+                                  }}
                                   onLinkPress={event => {
                                     const baseDir = assistant().rootPath || activeWorkspace()?.rootPath || "";
                                     const resolved = resolveWorkspaceMarkdownLink(
@@ -1760,6 +1771,7 @@ function PersonaStudioPane() {
                     color: palette().text,
                     placeholderColor: palette().textMuted,
                     caretColor: palette().accent,
+                    fontFamily: inputFontSans(),
                     fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(14),
                     lineHeight: textLineHeight(14, 1.45),
                   }}

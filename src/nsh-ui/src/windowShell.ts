@@ -43,6 +43,8 @@ export interface ShellActions {
   markAllRead(): void;
   /** Opens the Inbox (the desktop pet's press; wave22-p3). */
   openInbox?(): void;
+  /** Opens a specific session or conversation from a companion pet bubble. */
+  openSession?(target: { deviceId?: string; workspaceId?: string; sessionId?: string; conversationId?: string }): void;
   /** Opens Settings › Pet (the desktop pet's menu; wave22-p3). */
   openPetSettings?(): void;
 }

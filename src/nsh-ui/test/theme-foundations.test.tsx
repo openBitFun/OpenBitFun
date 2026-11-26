@@ -8,7 +8,10 @@ import {
   APPEARANCE_PRESETS,
   SPACE_SCALE,
   controlHeight,
+  fontMono,
+  fontSans,
   getAppearancePreset,
+  inputFontSans,
   layout,
   motionTiming,
   radii,
@@ -22,6 +25,7 @@ import {
   type Palette,
   type TextRole,
 } from "../src/theme";
+import { DEFAULT_TOAST_DURATION_MS } from "../src/ui/overlays";
 
 function channel(value: number): number {
   const c = value / 255;
@@ -206,7 +210,7 @@ test("session markdown typography uses native 15px prose, distinct heading scale
     const enRoot = obj(en.root);
     const enParagraph = obj(en.paragraph);
     expect(enRoot.fontSize).toBe(15);
-    expect(enRoot.fontFamily).toBeUndefined();
+    expect(enRoot.fontFamily).toBe(fontSans());
     expect(Number(obj(en.heading1).fontSize ?? 0) > Number(obj(en.heading2).fontSize ?? 0)).toBe(true);
     expect(Number(obj(en.heading2).fontSize ?? 0) > Number(obj(en.heading3).fontSize ?? 0)).toBe(true);
     expect(Number(obj(en.heading3).fontSize ?? 0) > Number(enRoot.fontSize ?? 0)).toBe(true);
@@ -218,6 +222,51 @@ test("session markdown typography uses native 15px prose, distinct heading scale
     currentLocale.set("zh-CN");
     const zh = createMarkdownStyles();
     expect(Number(obj(zh.root).lineHeight ?? 0)).toBeGreaterThan(Number(enRoot.lineHeight ?? 0));
+  } finally {
+    currentLocale.set(before);
+  }
+});
+
+test("cross-platform font stacks guarantee sans-serif CJK fallbacks and keep Windows inputs off SimSun", () => {
+  const before = currentLocale();
+  try {
+    for (const locale of ["zh-CN", "en-US", "zh-TW"] as const) {
+      currentLocale.set(locale);
+      const stack = fontSans(locale);
+      const families = stack.split(", ");
+      expect(families[families.length - 1]).toBe("sans-serif");
+      expect(stack).not.toMatch(/\b(SimSun|NSimSun|PMingLiU|MingLiU|Songti|Times New Roman|Georgia)\b/i);
+      expect(stack).toContain('"Microsoft YaHei UI"');
+      expect(stack).toContain('"PingFang SC"');
+      expect(stack).toContain('"Noto Sans CJK SC"');
+      expect(stack).toContain('"WenQuanYi Micro Hei"');
+      expect(textStyle("body").fontFamily).toBe(stack);
+      expect(textStyle("mono").fontFamily).toBe(fontMono);
+    }
+
+    // Traditional Chinese prioritizes TC sans-serif faces ahead of SC faces.
+    const tcStack = fontSans("zh-TW");
+    expect(tcStack.indexOf('"PingFang TC"')).toBeLessThan(tcStack.indexOf('"PingFang SC"'));
+    expect(tcStack.indexOf('"Microsoft JhengHei UI"')).toBeLessThan(tcStack.indexOf('"Microsoft YaHei UI"'));
+
+    // Windows `<Input>` leads with Windows' built-in CJK sans-serif UI font so RichEdit
+    // stays in DirectWrite mode and never falls back to SimSun for CJK input.
+    expect(inputFontSans("zh-CN", "windows").split(", ")[0]).toBe('"Microsoft YaHei UI"');
+    expect(inputFontSans("en-US", "windows").split(", ")[0]).toBe('"Microsoft YaHei UI"');
+    expect(inputFontSans("zh-TW", "windows").split(", ")[0]).toBe('"Microsoft JhengHei UI"');
+
+    // Web, macOS, Linux, iOS, and Android reuse the full locale-aware sans-serif stack.
+    for (const targetOs of ["web", "macos", "linux", "ios", "android"]) {
+      expect(inputFontSans("zh-CN", targetOs)).toBe(fontSans("zh-CN"));
+    }
+
+    // Monospace code text includes sans-serif CJK fallbacks before generic monospace.
+    expect(fontMono).toContain('"Microsoft YaHei UI"');
+    expect(fontMono).toContain('"Noto Sans CJK SC"');
+    expect(fontMono.endsWith("monospace")).toBe(true);
+
+    // Unified toast auto-dismiss duration is 6 seconds.
+    expect(DEFAULT_TOAST_DURATION_MS).toBe(6000);
   } finally {
     currentLocale.set(before);
   }

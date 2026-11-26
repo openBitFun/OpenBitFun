@@ -19,7 +19,7 @@ import { Input, Slider, TextView } from "nsh/base";
 import type { ToolCallView } from "../format";
 import { tr } from "../i18n";
 import { sendTurn } from "../state";
-import { compactLayout, controlHeight, fontMono, layout, palette, radii, space as themeSpace, textLineHeight, textSize, typeScale } from "../theme";
+import { compactLayout, controlHeight, fontMono, inputFontSans, layout, palette, radii, space as themeSpace, textLineHeight, textSize, typeScale } from "../theme";
 import { Icon, type IconName } from "../ui/icons";
 import { LUCIDE_PATHS } from "../ui/lucideIcons";
 import { createMarkdownStyles } from "../ui/markdown";
@@ -951,6 +951,7 @@ function GenField(props: { node: GenElement; ctx: GenContext }) {
           borderWidth: 1,
           borderColor: focused() ? palette().fieldFocusBorder : palette().border,
           backgroundColor: palette().inputBg,
+          fontFamily: inputFontSans(),
           fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(14),
           color: palette().text,
           placeholderColor: palette().textMuted,

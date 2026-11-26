@@ -512,3 +512,155 @@ test("workspaceUtils handles POSIX roots, Windows drives, remote backslashes, pr
   expect(isRemoteWorkspace({ id: "3", rootPath: "/srv", workspaceKind: "wsl" })).toBe(true);
   expect(isRemoteWorkspace({ id: "4", rootPath: "/home/a", workspaceKind: "assistant" })).toBe(false);
 });
+
+/** Makes a minimal valid PNG header (24 bytes) with the requested natural width × height. */
+function makePngHeaderBase64(width: number, height: number): string {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 0);
+  bytes[16] = (width >>> 24) & 0xff;
+  bytes[17] = (width >>> 16) & 0xff;
+  bytes[18] = (width >>> 8) & 0xff;
+  bytes[19] = width & 0xff;
+  bytes[20] = (height >>> 24) & 0xff;
+  bytes[21] = (height >>> 16) & 0xff;
+  bytes[22] = (height >>> 8) & 0xff;
+  bytes[23] = height & 0xff;
+  return Buffer.from(bytes).toString("base64");
+}
+
+test("Markdown preview sizes workspace images, percentage rows, SVGs, missing fallbacks, and embedded videos without collapsing to 0px", async () => {
+  const wordmarkB64 = makePngHeaderBase64(2172, 724); // 3:1
+  const shotB64 = makePngHeaderBase64(1920, 1138);
+  const qrB64 = makePngHeaderBase64(588, 588); // 1:1
+  const svgB64 = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><rect width="200" height="100"/></svg>').toString("base64");
+  const richReadme = [
+    '<div align="center">',
+    '<img src="./png/wordmark.png" alt="Wordmark" width="520" />',
+    '<a href="./png/qr.png"><img src="./png/qr.png" alt="WeChat QR" width="147" /></a>',
+    "</div>",
+    "",
+    '<div align="center">',
+    '  <video src="https://example.com/demo.mp4" controls width="640"></video>',
+    "</div>",
+    "",
+    '<p align="center">',
+    '  <img src="./png/shot-a.png" alt="Desktop A" width="49%" />',
+    '  <img src="./png/shot-b.png" alt="Desktop B" width="49%" />',
+    "</p>",
+    "",
+    "![Vector badge](/png/badge.svg)",
+    "![Missing pic](./png/missing.png)",
+    "",
+    "```html",
+    '<video src="https://example.com/literal-code.mp4"></video>',
+    "```",
+  ].join("\n");
+
+  const backend = documentsBackend({
+    fileContent: {
+      ...TEXT,
+      "/repo/README.md": richReadme,
+      "/repo/png/wordmark.png": wordmarkB64,
+      "/repo/png/qr.png": qrB64,
+      "/repo/png/shot-a.png": shotB64,
+      "/repo/png/shot-b.png": shotB64,
+      "/repo/png/badge.svg": svgB64,
+    },
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openFiles(app);
+
+  await app.press("README.md");
+  await app.waitFor("file-markdown-preview");
+
+  // All local images (relative and repo-root-relative `/png/badge.svg`) load via base64 read_file_content.
+  await app.waitUntil(() =>
+    backend.calls.some(call => call.action === "read_file_content" && call.payload.filePath === "/repo/png/wordmark.png" && call.payload.encoding === "base64") &&
+    backend.calls.some(call => call.action === "read_file_content" && call.payload.filePath === "/repo/png/badge.svg" && call.payload.encoding === "base64"),
+  );
+
+  // Every loaded image has non-zero width AND height matching its natural aspect ratio
+  // (TextView wraps `renderImage` in a pressable container with the same alt label, so `nth=1` is the `<Image>` itself).
+  await app.waitFor("label:Wordmark >> nth=1");
+  const wordmarkLayout = app.layout("label:Wordmark >> nth=1");
+  expect(wordmarkLayout).not.toBeNull();
+  expect(wordmarkLayout!.width).toBe(520);
+  expect(wordmarkLayout!.height).toBeGreaterThan(150);
+  expect(wordmarkLayout!.height).toBeLessThan(190);
+
+  const qrLayout = app.layout("label:WeChat QR >> nth=1");
+  expect(qrLayout).not.toBeNull();
+  expect(qrLayout!.width).toBe(147);
+  expect(qrLayout!.height).toBe(147);
+
+  const shotALayout = app.layout("label:Desktop A >> nth=1");
+  expect(shotALayout).not.toBeNull();
+  expect(shotALayout!.width).toBeGreaterThan(200);
+  expect(shotALayout!.height).toBeGreaterThan(100);
+
+  const badgeLayout = app.layout("label:Vector badge >> nth=1");
+  expect(badgeLayout).not.toBeNull();
+  expect(badgeLayout!.width).toBe(200);
+  expect(badgeLayout!.height).toBe(100);
+
+  // Missing image surfaces a clear unavailable caption instead of silently collapsing.
+  await app.waitFor("Image not found: Missing pic");
+
+  // Embedded `<video>` renders as a native media view (not dropped), while fenced HTML code stays literal.
+  await app.waitFor("label:doc-video-view");
+  const videoLayout = app.layout("label:doc-video-view");
+  expect(videoLayout).not.toBeNull();
+  expect(videoLayout!.width).toBeGreaterThan(300);
+  expect(videoLayout!.height).toBeGreaterThan(150);
+  expect(app.texts().join("\n")).toContain("literal-code.mp4");
+});
+
+test("markdownMedia helpers compute sizes, sniff headers, resolve paths, and preprocess HTML media safely", async () => {
+  const {
+    computeMarkdownImageBox,
+    resolveMarkdownMediaTarget,
+    sniffBase64ImageDimensions,
+    transformEmbeddedMediaMarkdown,
+  } = await import("../src/ui/markdownMedia");
+
+  expect(sniffBase64ImageDimensions(makePngHeaderBase64(1672, 941), "image/png")).toEqual({ width: 1672, height: 941 });
+  expect(
+    sniffBase64ImageDimensions(
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 172 20"></svg>').toString("base64"),
+      "image/svg+xml",
+    ),
+  ).toEqual({ width: 172, height: 20 });
+
+  // Natural badge keeps its small intrinsic size; large image clamps to column; 49% pairs fit side-by-side.
+  expect(computeMarkdownImageBox({ natural: { width: 172, height: 20 }, containerWidth: 760 })).toEqual({ width: 172, height: 20 });
+  expect(computeMarkdownImageBox({ natural: { width: 1672, height: 941 }, containerWidth: 760 })).toEqual({ width: 760, height: 428 });
+  const half = computeMarkdownImageBox({ width: "49%", natural: { width: 1920, height: 1138 }, containerWidth: 760 });
+  expect(half.width * 2).toBeLessThan(760);
+  expect(half.height).toBeGreaterThan(150);
+
+  // Path resolution covers relative, repo-root, file://, and remote POSIX workspaces.
+  expect(resolveMarkdownMediaTarget("./png/a.png", { documentPath: "/srv/repo/docs/guide.md", workspaceRoot: "/srv/repo", isRemote: true })).toEqual({
+    kind: "workspace",
+    paths: ["/srv/repo/docs/png/a.png", "/srv/repo/png/a.png"],
+  });
+  expect(resolveMarkdownMediaTarget("/png/a.png", { documentPath: "/srv/repo/README.md", workspaceRoot: "/srv/repo", isRemote: true })).toEqual({
+    kind: "workspace",
+    paths: ["/srv/repo/png/a.png", "/png/a.png"],
+  });
+  expect(resolveMarkdownMediaTarget("file:///Users/me/out.png", { workspaceRoot: "/repo", isRemote: false })).toEqual({
+    kind: "workspace",
+    paths: ["/Users/me/out.png"],
+  });
+
+  // Fenced code blocks are untouched while real `<video>` / `<audio>` tags become `openbitfun-media` blocks.
+  const input = [
+    '<video controls width="800"><source src="./clip.mp4" type="video/mp4"></video>',
+    "```html",
+    '<video src="./untouched.mp4"></video>',
+    "```",
+  ].join("\n");
+  const transformed = transformEmbeddedMediaMarkdown(input);
+  expect(transformed).toContain("```openbitfun-media");
+  expect(transformed).toContain('"src":"./clip.mp4"');
+  expect(transformed).toContain('<video src="./untouched.mp4"></video>');
+});

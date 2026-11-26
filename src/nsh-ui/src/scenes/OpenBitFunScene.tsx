@@ -11,7 +11,7 @@
 // model picker chooses only where the model rounds run: Auto (the cloud node
 // picks) or a device and one of its models, as the cloud node lists them.
 
-import { Scroll, Text, View, cleanup, computed, openUrl, signal, type ScrollRef, type ViewRef } from "nsh";
+import { Scroll, Text, View, cleanup, computed, openUrl, signal, untracked, type ScrollRef, type ViewRef } from "nsh";
 import { TextView } from "nsh/base";
 import { contentWidth } from "../contentWidthStore";
 import { FLEET_ENTRY_LOST, fleetErrorKind } from "../fleetTypes";
@@ -49,6 +49,7 @@ import {
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle } from "../theme";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
 import { Icon } from "../ui/icons";
+import { MarkdownImageView, openMarkdownImageInLightbox } from "../ui/markdownMedia";
 import {
   CitationChip,
   CITATION_FADE_MS,
@@ -484,14 +485,23 @@ function AssistantProse(props: {
   citations: Array<{ jobId: string; label?: string }>;
   onCite: (jobId: string) => void;
 }) {
+  const columnWidth = signal<number>(layout.conversationWidth);
   return (
-    <View style={{ gap: space.sm }}>
+    <View
+      onLayout={event => {
+        const nextW = Math.round(event.bounds.size.width);
+        if (nextW > 0 && nextW !== untracked(() => columnWidth())) columnWidth.set(nextW);
+      }}
+      style={{ gap: space.sm }}
+    >
       <If when={props.text}>
         <TextView
           markdown={props.text}
           selectable
           links="report"
           onLinkPress={handleLink}
+          renderImage={image => <MarkdownImageView image={image} containerWidth={() => columnWidth()} />}
+          onImagePress={event => void openMarkdownImageInLightbox(event.image)}
           options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
           codeBlockActions={createMarkdownCodeActions()}
           styles={createMarkdownStyles({ baseFontSize: 15 })}

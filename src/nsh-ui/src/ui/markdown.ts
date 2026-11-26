@@ -21,6 +21,7 @@ import { currentLocale, tr, type AppLocale } from "../i18n";
 import {
   cjkTypography,
   fontMono,
+  fontSans,
   palette,
   textLineHeight,
   textSize,
@@ -99,11 +100,12 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
   const h6Size = Math.max(11, base - 2);
 
   return {
-    // Omit `fontFamily` so prose inherits the current locale's UI font,
-    // matching `textStyle("prose")` and `UserBubble` 1:1. Drive block spacing through `root.gap`
-    // and container gaps instead of `paragraph.marginBottom` so list items and quotes never double-space.
+    // Pass the full locale-aware UI font stack explicitly (`setTheme` keeps only
+    // the first non-generic family in `font-sans`, dropping fallbacks). Drive block
+    // spacing through `root.gap` and container gaps instead of `paragraph.marginBottom`.
     root: {
       color: p.text,
+      fontFamily: fontSans(),
       fontSize: textSize(base),
       lineHeight: proseLineHeight,
       letterSpacing: textTracking(base),

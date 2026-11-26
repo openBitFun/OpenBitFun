@@ -34,6 +34,7 @@ import {
   controlHeight,
   elevationShadow,
   fontMono,
+  inputFontSans,
   isLightAppearance,
   layout,
   palette,
@@ -1188,6 +1189,7 @@ function SelectPopoverSurface<T extends string>(props: {
               color: palette().text,
               placeholderColor: palette().textElevatedMuted,
               caretColor: palette().accent,
+              fontFamily: inputFontSans(),
               fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(12),
             }}
             onChange={e => props.onQueryChange(e.value)}
@@ -1596,9 +1598,10 @@ export function dismissToast(id: string): void {
   toastExitTimers.set(id, exitHandle);
 }
 
-function defaultToastDurationMs(tone: ToastTone): number {
-  if (tone === "danger" || tone === "error") return 8000;
-  return 4000;
+export const DEFAULT_TOAST_DURATION_MS = 6000;
+
+function defaultToastDurationMs(_tone: ToastTone): number {
+  return DEFAULT_TOAST_DURATION_MS;
 }
 
 export function pushToast(
@@ -1665,7 +1668,6 @@ function toastToneTokens(tone: ToastTone): {
 }
 
 function ToastCard(props: { entry: InternalToastEntry }) {
-  const fromTop = compactLayout();
   const motion = createMotion({
     enter: reduceMotion()
       ? {
@@ -1677,7 +1679,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
       : {
           keyframes: {
             opacity: [0, 1],
-            translateY: [fromTop ? -10 : 10, 0],
+            translateY: [10, 0],
             scale: [0.97, 1],
           },
           duration: MOTION_DURATION.toast,
@@ -1700,7 +1702,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           : {
               keyframes: {
                 opacity: [1, 0],
-                translateY: [0, fromTop ? -6 : 6],
+                translateY: [0, 6],
                 scale: [1, 0.97],
               },
               duration: TOAST_EXIT_MS,
@@ -1797,19 +1799,20 @@ export function ToastHost(props: { bottomOffset?: number } = {}) {
   return (
     <If when={toasts().length > 0}>
       <Overlay
+        accessibilityLabel="toast-host"
         style={
           compactLayout()
             ? {
-                left: space.sm,
-                right: space.sm,
-                top: layout.phoneTopBarHeight + safeArea().top + space.sm,
-                alignItems: "stretch",
+                left: space.sm + safeArea().left,
+                right: space.sm + safeArea().right,
+                bottom: space.md + safeArea().bottom + (props.bottomOffset ?? 0),
+                alignItems: "flex-start",
                 pointerEvents: "box-none",
               }
             : {
-                right: space.xl,
-                bottom: space.xl + (props.bottomOffset ?? 0),
-                alignItems: "flex-end",
+                left: space.lg,
+                bottom: space.lg + (props.bottomOffset ?? 0),
+                alignItems: "flex-start",
                 pointerEvents: "box-none",
               }
         }
@@ -1819,7 +1822,7 @@ export function ToastHost(props: { bottomOffset?: number } = {}) {
           onMouseLeave={() => hovered.set(false)}
           style={{
             gap: space.sm,
-            alignItems: compactLayout() ? "stretch" : "flex-end",
+            alignItems: "flex-start",
             pointerEvents: "box-none",
           }}
         >

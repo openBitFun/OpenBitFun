@@ -481,6 +481,7 @@ import {
   textStyle,
   textTracking,
   touchSlop,
+  inputFontSans,
   type AppearanceId,
 } from "../theme";
 import { chooseAppearancePreset, setFollowSystemAppearance } from "../themeStore";
@@ -2147,6 +2148,7 @@ function SettingsNumberStepper(props: {
                 textAlign: "center",
                 placeholderColor: palette().textMuted,
                 caretColor: palette().accent,
+                fontFamily: inputFontSans(),
                 fontSize: fontSize(),
                 backgroundColor: "transparent",
                 borderWidth: 0,

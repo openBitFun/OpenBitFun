@@ -180,7 +180,9 @@ test("the NSH desktop shell owns the window: menu shortcuts, close press, About 
   // About reads this build's version from the backend's ready() answer.
   await app.press("label:account-row");
   await app.press("About OpenBitFun");
-  await app.waitFor("Version 9.8.7");
+  await app.waitFor("9.8.7");
+  expect(app.shows("Version 9.8.7")).toBe(false);
+  expect(app.shows("Includes HarmonyOS Sans fonts.")).toBe(false);
 
   // The native backend runs the app's own update channel: the menu reads the staged update.
   await app.waitUntil(() => wire.invokes.some(call => call.command === "get_pending_update"));
@@ -193,7 +195,7 @@ test("the NSH desktop shell owns the window: menu shortcuts, close press, About 
     "openbitfun.wireEvents",
     wire.batch([{ event: "host://shell-request", payload: { id: 1, op: "window.show" } }]),
   );
-  await app.waitFor("Version 9.8.7");
+  await app.waitFor("9.8.7");
   await app.window("main").pressClose();
   await app.waitUntil(() => app.window("main").state()?.visible === false);
   const commands = wire.invokes.map(call => call.command);

@@ -13,6 +13,7 @@ import {
   colorScheme,
   computed,
   context,
+  platform,
   setColorScheme,
   setTheme,
   signal,
@@ -886,9 +887,35 @@ export function getAppearancePreset(id: AppearanceId): AppearancePreset {
 export const APPEARANCE_STORAGE_KEY = "openbitfun.nsh.appearance.v1";
 export const APPEARANCE_ID_STORAGE_KEY = "openbitfun.nsh.appearance-id.v1";
 
-/** Native-first sans-serif stack matching the OS UI font across macOS, Windows, and Linux. */
-const systemFontSans =
-  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif';
+type UiLocale = ReturnType<typeof currentLocale>;
+
+/**
+ * Native-first sans-serif stacks covering macOS, iOS, Windows, Linux, Android,
+ * and browser hosts without bundling a heavy CJK font on web/Apple/mobile.
+ * Explicit CJK sans-serif families precede `sans-serif` so neither browsers on
+ * Linux/Windows nor native text engines ever fall back to serif faces (e.g.
+ * SimSun, PMingLiU, AR PL UMing).
+ */
+const systemFontSansSC =
+  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "WenQuanYi Micro Hei", "PingFang TC", "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC", "Noto Sans TC", sans-serif';
+
+const systemFontSansTC =
+  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang TC", "Hiragino Sans CNS", "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC", "Noto Sans TC", "Source Han Sans TC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", sans-serif';
+
+/**
+ * Windows native `<Input>` uses windowless RichEdit (`ITextServices2`), whose
+ * hardware-accelerated DirectWrite mode (`TXTBIT_D2DDWRITE`) only sees system
+ * fonts and whose single `CHARFORMAT2W.szFaceName` falls back to SimSun (serif)
+ * for CJK whenever the face lacks CJK glyphs (such as Segoe UI or Latin-only
+ * HarmonyOS Sans) or GDI rejects/mismatches an in-memory variable font. Naming
+ * Windows' built-in CJK sans-serif UI face first keeps RichEdit in DirectWrite
+ * mode and prevents SimSun fallback for both Latin and CJK input.
+ */
+const windowsInputFontSansSC =
+  '"Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif';
+
+const windowsInputFontSansTC =
+  '"Microsoft JhengHei UI", "Microsoft JhengHei", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif';
 
 type BundledUiFonts = { base: string; simplifiedChinese: string };
 let bundledUiFonts: BundledUiFonts | undefined;
@@ -902,15 +929,30 @@ export function hasBundledUiFonts(): boolean {
   return bundledUiFonts !== undefined;
 }
 
-export function fontSans(): string {
-  if (!bundledUiFonts || currentLocale() === "zh-TW") return systemFontSans;
-  const base = `"${bundledUiFonts.base}", ${systemFontSans}`;
-  return currentLocale() === "zh-CN" ? `"${bundledUiFonts.simplifiedChinese}", ${base}` : base;
+export function fontSans(locale: UiLocale = currentLocale()): string {
+  const fallback = locale === "zh-TW" ? systemFontSansTC : systemFontSansSC;
+  if (!bundledUiFonts || locale === "zh-TW") return fallback;
+  if (locale === "zh-CN") {
+    return `"${bundledUiFonts.simplifiedChinese}", "${bundledUiFonts.base}", ${fallback}`;
+  }
+  // Keep the bundled SC face right behind the Latin face so CJK text shown in
+  // an English UI still renders in HarmonyOS Sans instead of degrading.
+  return `"${bundledUiFonts.base}", "${bundledUiFonts.simplifiedChinese}", ${fallback}`;
 }
 
-/** Code / monospace font stack aligned with `src/web-ui`. */
+export function inputFontSans(
+  locale: UiLocale = currentLocale(),
+  targetOs: string = platform.os,
+): string {
+  if (targetOs === "windows") {
+    return locale === "zh-TW" ? windowsInputFontSansTC : windowsInputFontSansSC;
+  }
+  return fontSans(locale);
+}
+
+/** Code / monospace font stack with sans-serif CJK fallbacks so CJK inside code never falls back to serif. */
 export const fontMono =
-  '"Fira Code", "SF Mono", Menlo, Monaco, Consolas, ui-monospace, monospace';
+  '"Fira Code", "SF Mono", Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", ui-monospace, monospace';
 
 /** The scheme the user chose in this surface: follow the host, or force one. */
 export const appearanceMode = signal<"system" | "light" | "dark">("system");
@@ -1526,6 +1568,7 @@ export function textStyle(role: TextRole, opts?: TextStyleOptions): TextStyle {
   if (spec.mono) {
     style.fontFamily = fontMono;
   } else {
+    style.fontFamily = fontSans();
     style.letterSpacing = textTracking(spec.size, uppercase);
   }
   if (uppercase) style.textTransform = "uppercase";

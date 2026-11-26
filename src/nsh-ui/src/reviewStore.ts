@@ -234,7 +234,7 @@ async function runLaunch(request: Record<string, unknown>, intent: ReviewIntent)
     return answer;
   }
   await openReviewChild(answer, intent);
-  if (answer.status === "uncertain") pushToast(tr("review.uncertain"), "warning", 5200);
+  if (answer.status === "uncertain") pushToast(tr("review.uncertain"), "warning");
   return answer;
 }
 

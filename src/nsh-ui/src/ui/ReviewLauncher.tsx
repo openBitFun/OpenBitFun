@@ -26,7 +26,7 @@ import {
   type ReviewLaunchFile,
 } from "../reviewStore";
 import { activeWorkspace } from "../state";
-import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { compactLayout, fontMono, inputFontSans, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon } from "./icons";
 import { MOTION_DURATION, Spinner, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { ModalDialog } from "./overlays";
@@ -274,6 +274,7 @@ export function ReviewLauncherDialog() {
             color: palette().text,
             placeholderColor: palette().textMuted,
             caretColor: palette().accent,
+            fontFamily: inputFontSans(),
             fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
             lineHeight: compactLayout() ? textLineHeight(16, 1.45) : textLineHeight(13, 1.5),
             ...paintTransition(MOTION_DURATION.fast),

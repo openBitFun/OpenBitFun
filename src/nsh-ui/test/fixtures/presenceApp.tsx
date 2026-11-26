@@ -20,6 +20,7 @@ function PresenceHarness() {
   startDesktopPresence(
     {
       openInbox: () => host.post("openbitfun.presence", { action: "openInbox" }),
+      openSession: target => host.post("openbitfun.presence", { action: "openSession", target }),
       openPetSettings: () => host.post("openbitfun.presence", { action: "openPetSettings" }),
       showMain: () => host.post("openbitfun.presence", { action: "showMain" }),
     },

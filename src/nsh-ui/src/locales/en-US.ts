@@ -2965,9 +2965,7 @@ export const enUSMessages = {
   "signin.signedIn": "Signed in",
   "signin.signedInAs": "Signed in as {{account}}",
   "signin.accountTitle": "Your account",
-  "about.version": "Version {{version}}",
   "about.tagline": "One conversation for all your devices.",
-  "about.harmonyFonts": "Includes HarmonyOS Sans fonts.",
   "about.releaseNotes": "Release notes",
   "about.licenses": "Licenses",
   "about.details": "Details",
@@ -3364,6 +3362,9 @@ export const enUSMessages = {
   "doc.openInBrowser": "Open in browser",
   "doc.pdfElsewhere": "PDFs preview in the desktop app. Open this one there or in another PDF viewer.",
   "doc.pdfUnavailable": "This PDF couldn't be shown here. Open it in another PDF viewer.",
+  "doc.videoUnavailable": "Video unavailable: {{name}}",
+  "doc.audioUnavailable": "Audio unavailable: {{name}}",
+  "doc.mediaTooLarge": "{{name}} ({{size}}) is too large to embed here.",
   // end wave22-p1 documents
   // wave22-p2 browser
   "browser.more": "More",
@@ -3447,6 +3448,13 @@ export const enUSMessages = {
   "pet.character": "Character",
   "pet.characterBody": "Built-in characters and the Petdex packs you imported.",
   "pet.import": "Import .zip…",
+  "pet.bubble.openSession": "Open session",
+  "pet.bubble.close": "Close bubble",
+  "pet.bubble.closeAll": "Close all bubbles",
+  "pet.bubble.running": "Running",
+  "pet.bubble.needsYou": "Needs you",
+  "pet.bubble.failed": "Failed",
+  "pet.bubble.unread": "Unread",
   // end wave22-p3 desktop presence
   // wave22-p5
   "goal.menu": "Set goal…",

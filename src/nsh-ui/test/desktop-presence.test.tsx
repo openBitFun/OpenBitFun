@@ -6,7 +6,7 @@
 // (`fixtures/installTestPresence.ts` records them).
 
 import { expect, open, test } from "nsh/test";
-import { createBackend, fleetDeviceRow, fleetObpHost, type Backend } from "./support";
+import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, type Backend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const PHONE = { width: 375, height: 812, platform: "macos" as const };
@@ -370,4 +370,115 @@ test("the native desktop announces the pet operations, answers them, and Setting
   await app.press("label:desktop-cards-enabled");
   await app.waitUntil(() => state.configWrites.some(write => write.path === "app.ai_experience.enable_desktop_cards"));
   expect(state.configWrites.find(write => write.path === "app.ai_experience.enable_desktop_cards")?.value).toBe(false);
+});
+
+test("the pet shows at most two running/unread session bubbles on its left with right-click close and close-all", async () => {
+  const state = freshState(true);
+  const backend = withPresence(createBackend(), state);
+  const posts: Array<Record<string, unknown>> = [];
+  const baseMs = Date.now() - 10_000;
+  const navigatorPayload = {
+    revision: 1,
+    full: true,
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "ws-1",
+            name: "OpenBitFun",
+            rootPath: "/repo",
+            sessions: [
+              { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 400), status: "idle", unread: false },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Running build", baseMs + 300), status: "running", unread: false },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-1", "Unread newer", baseMs + 200), status: "idle", unread: true },
+              { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 100), status: "idle", unread: true },
+            ],
+          },
+        ],
+        { hostKind: "desktop" },
+      ),
+    ],
+    removedDeviceIds: [] as string[],
+    totals: { running: 1, waiting: 0, unread: 2 },
+  };
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: navigatorPayload,
+  });
+  host.handlers["openbitfun.presence"] = (data: unknown) => {
+    posts.push(data as Record<string, unknown>);
+    return null;
+  };
+
+  const app = await open(PRESENCE, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitUntil(() => posts.some(post => post.action === "open" && post.id === "openbitfun-pet"));
+
+  // At most 2 bubbles appear (running first, then newest unread); 3rd unread and idle session are hidden.
+  await app.waitFor("id:pet-bubble-s-run");
+  await app.waitFor("id:pet-bubble-s-unread-1");
+  expect(app.shows("id:pet-bubble-s-unread-2")).toBe(false);
+  expect(app.shows("id:pet-bubble-s-idle")).toBe(false);
+
+  // Bubbles sit on the left side of the pet sprite.
+  const bubbleLayout = app.layout("id:pet-bubble-s-run");
+  const petLayout = app.layout("label:pet-open-inbox");
+  expect(bubbleLayout).not.toBeNull();
+  expect(petLayout).not.toBeNull();
+  expect(bubbleLayout!.x + bubbleLayout!.width).toBeLessThanOrEqual(petLayout!.x + 1);
+
+  // Left-clicking a bubble opens that session.
+  await app.press("id:pet-bubble-s-run");
+  await app.waitUntil(() => posts.some(post => post.action === "openSession"));
+  const opened = posts.find(post => post.action === "openSession")?.target as Record<string, unknown>;
+  expect(opened?.sessionId).toBe("s-run");
+  expect(opened?.deviceId).toBe("dev-a");
+
+  // Right-clicking a bubble offers "Close bubble" and "Close all bubbles".
+  await app.rightClick("id:pet-bubble-s-run");
+  const menuLabels = (app.menu() ?? []).map(entry => entry.label);
+  expect(menuLabels).toContain("Close bubble");
+  expect(menuLabels).toContain("Close all bubbles");
+  await app.chooseMenuItem("Close bubble");
+
+  // Closing the running bubble removes it and lets the 3rd queued unread session take the 2nd slot.
+  await app.waitUntil(() => !app.shows("id:pet-bubble-s-run"));
+  await app.waitFor("id:pet-bubble-s-unread-2");
+  expect(app.shows("id:pet-bubble-s-unread-1")).toBe(true);
+
+  // Right-clicking a bubble and choosing "Close all bubbles" clears every bubble at once.
+  await app.rightClick("id:pet-bubble-s-unread-1");
+  await app.chooseMenuItem("Close all bubbles");
+  await app.waitUntil(() => !app.shows("id:pet-session-bubbles"));
+  expect(app.shows("id:pet-bubble-s-unread-1")).toBe(false);
+  expect(app.shows("id:pet-bubble-s-unread-2")).toBe(false);
+
+  // When the previously closed running session later finishes unread, its completion notice still gets through.
+  const finishedMs = Date.now() + 5_000;
+  navigatorPayload.revision = 2;
+  navigatorPayload.devices = [
+    fleetDeviceRow(
+      "dev-a",
+      "MacBook",
+      [
+        {
+          workspaceId: "ws-1",
+          name: "OpenBitFun",
+          rootPath: "/repo",
+          sessions: [
+            { ...fleetSessionRow("dev-a", "ws-1", "s-idle", "Idle done", baseMs + 400), status: "idle", unread: false },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-run", "Running build", finishedMs), status: "idle", unread: true },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-1", "Unread newer", baseMs + 200), status: "idle", unread: true },
+            { ...fleetSessionRow("dev-a", "ws-1", "s-unread-2", "Unread older", baseMs + 100), status: "idle", unread: true },
+          ],
+        },
+      ],
+      { hostKind: "desktop" },
+    ),
+  ];
+  navigatorPayload.totals = { running: 0, waiting: 0, unread: 3 };
+  await app.host.send("openbitfun.obpFrames", [eventFrame("fleet://index-changed", { revision: 2, deviceIds: ["dev-a"] })]);
+  await app.waitFor("id:pet-bubble-s-run");
+  expect(app.shows("id:pet-bubble-s-unread-1")).toBe(false);
 });
