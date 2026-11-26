@@ -158,7 +158,12 @@ pub async fn save_issued_session(
 ) -> Result<()> {
     let previous = {
         let _guard = state_lock()?;
-        let previous = load_session_detailed()?;
+        // An unreadable record cannot be revoked or reused; this explicit sign-in
+        // replaces it rather than failing the new session.
+        let previous = load_session_detailed().unwrap_or_else(|error| {
+            log::warn!("Saved account session is unreadable; replacing it on sign-in: {error}");
+            None
+        });
         write_record(&LoadedSession {
             token: session.token.clone(),
             user_id: session.user_id.clone(),
@@ -463,6 +468,29 @@ mod renewal_tests {
         tokio::time::timeout(std::time::Duration::from_secs(3), completed.notified())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sign_in_replaces_an_unreadable_saved_session() {
+        let temp = tempfile::tempdir().unwrap();
+        TEST_STORE.with(|dir| *dir.borrow_mut() = Some(temp.path().to_owned()));
+        std::fs::write(temp.path().join("account_session.key"), [0x11; 32]).unwrap();
+        std::fs::write(
+            temp.path().join("account_session.enc"),
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0x5a; 60]),
+        )
+        .unwrap();
+        assert!(load_session_detailed().is_err());
+
+        save_issued_session(
+            &AccountSession::new("fresh".into(), "me".into(), [2; 32]),
+            "http://127.0.0.1:1",
+            Some("0123456789abcdef0123456789abcdef"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(load_session_detailed().unwrap().unwrap().token, "fresh");
     }
 
     #[tokio::test]
