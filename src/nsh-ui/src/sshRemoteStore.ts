@@ -21,6 +21,7 @@ import {
   activeScene,
   activeWorkspace,
   closeWorkspace,
+  insertWorkspaceRecord,
   loadWorkspaces,
   navigateScene,
   onWorkspaceChanged,
@@ -1961,7 +1962,7 @@ export async function openRemoteWorkspace(
     }
 
     if (openedRecord?.id && !workspaces().some(ws => ws.id === openedRecord?.id)) {
-      workspaces.update(current => [openedRecord!, ...current]);
+      workspaces.update(current => insertWorkspaceRecord(current, openedRecord!));
     }
     const matched =
       (openedRecord?.id ? workspaces().find(ws => ws.id === openedRecord?.id) : undefined) ??
@@ -2636,7 +2637,7 @@ export async function createAssistantFromNewWorkspace(): Promise<boolean> {
     }
     if (created?.id) {
       if (!workspaces().some(w => w.id === created.id)) {
-        workspaces.update(current => [created, ...current]);
+        workspaces.update(current => insertWorkspaceRecord(current, created));
       }
       selectWorkspace(created.id);
     }

@@ -19,6 +19,7 @@ import { listSessions, setActiveWorkspace, type SessionSummary } from "./api";
 import {
   activeWorkspaceId,
   closeWorkspace,
+  insertWorkspaceRecord,
   loadSessions,
   loadWorkspaces,
   navigateScene,
@@ -167,15 +168,14 @@ function mapAssistant(raw: unknown, index: number): AssistantWorkspaceView {
 
 function ensureAssistantInWorkspaces(assistant: AssistantWorkspaceView): void {
   if (!workspaces().some(item => item.id === assistant.id)) {
-    workspaces.update(current => [
-      ...current,
-      {
+    workspaces.update(current =>
+      insertWorkspaceRecord(current, {
         id: assistant.id,
         name: assistant.name,
         rootPath: assistant.rootPath,
         workspaceKind: assistant.workspaceKind || "assistant",
-      },
-    ]);
+      }),
+    );
   }
 }
 
@@ -438,6 +438,8 @@ export async function setPrimaryAssistant(workspaceId: string): Promise<void> {
     });
     primaryAssistantId.set(workspaceId);
     await loadAssistants(workspaceId);
+    if (fleetActive()) void refreshFleetNavigator();
+    else void loadWorkspaces();
     assistantsNotice.set(tr("assistants.store.primaryUpdated"));
   } catch (error) {
     assistantsError.set(errorMessage(error));

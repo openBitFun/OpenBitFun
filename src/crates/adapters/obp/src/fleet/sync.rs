@@ -678,6 +678,7 @@ pub mod legacy {
                     connection_name,
                     link_state: None,
                     is_host_current: Some(id) == current,
+                    is_primary_assistant: false,
                     sessions: Vec::new(),
                     session_total: 0,
                     has_more: false,

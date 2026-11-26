@@ -940,6 +940,24 @@ function clearWorkspaceSelection(): void {
   });
 }
 
+function isAssistantWorkspaceRecord(record: Pick<WorkspaceRecord, "workspaceKind"> | null | undefined): boolean {
+  return (record?.workspaceKind ?? "").toLowerCase().includes("assistant");
+}
+
+/**
+ * Inserts a newly opened workspace into the local fallback list while keeping
+ * assistant workspaces ahead of non-assistant workspaces (matching the backend).
+ */
+export function insertWorkspaceRecord(current: WorkspaceRecord[], record: WorkspaceRecord): WorkspaceRecord[] {
+  if (current.some(item => item.id === record.id)) return current;
+  if (isAssistantWorkspaceRecord(record)) {
+    return [record, ...current];
+  }
+  const insertAt = current.findIndex(item => !isAssistantWorkspaceRecord(item));
+  if (insertAt < 0) return [...current, record];
+  return [...current.slice(0, insertAt), record, ...current.slice(insertAt)];
+}
+
 /**
  * Reopens a workspace from the recent list. The host makes it active as it opens
  * it, so the selection follows without a separate `set_active_workspace`.
@@ -950,7 +968,7 @@ export async function openRecentWorkspace(record: WorkspaceRecord): Promise<void
     await loadWorkspaces();
     const id = opened?.id || record.id;
     if (opened?.id && !workspaces().some(item => item.id === opened.id)) {
-      workspaces.update(current => [opened, ...current]);
+      workspaces.update(current => insertWorkspaceRecord(current, opened));
     }
     recentWorkspaces.update(current => current.filter(item => item.id !== id));
     selectWorkspace(id, { syncHost: false });
@@ -1029,7 +1047,7 @@ export async function openPathWorkspace(rootPath: string): Promise<void> {
     await loadWorkspaces();
     if (record?.id) {
       if (!workspaces().some(item => item.id === record.id)) {
-        workspaces.update(current => [record, ...current]);
+        workspaces.update(current => insertWorkspaceRecord(current, record));
       }
       selectWorkspace(record.id);
     }

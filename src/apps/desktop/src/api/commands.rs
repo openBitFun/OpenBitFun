@@ -1706,6 +1706,7 @@ pub async fn set_primary_assistant_workspace(
         "Primary assistant workspace changed: workspace_id={}, assistant_id={:?}",
         workspace.id, workspace.assistant_id
     );
+    crate::fleet::refresh_local_now().await;
 
     Ok(WorkspaceInfoDto::from_workspace_info(&workspace))
 }

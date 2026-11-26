@@ -455,6 +455,35 @@ fn workspace_summary_preserves_remote_connection_metadata() {
     assert_eq!(projected_local.kind, FleetWorkspaceKind::Local);
     assert_eq!(projected_local.connection_id, None);
     assert_eq!(projected_local.connection_name, None);
+    assert!(!projected_local.is_primary_assistant);
+
+    let assistant_primary = make(
+        "asst_1",
+        "/Users/dev/.openbitfun/assistants/default",
+        WorkspaceKind::Assistant,
+        HashMap::new(),
+    );
+    let assistant_secondary = make(
+        "asst_2",
+        "/Users/dev/.openbitfun/assistants/helper",
+        WorkspaceKind::Assistant,
+        HashMap::new(),
+    );
+    let projected_primary =
+        workspace_summary_with_primary(&assistant_primary, None, Some(&assistant_primary.id));
+    assert_eq!(projected_primary.kind, FleetWorkspaceKind::Assistant);
+    assert!(projected_primary.is_primary_assistant);
+    let projected_secondary = workspace_summary_with_primary(
+        &assistant_secondary,
+        Some(&assistant_secondary.id),
+        Some(&assistant_primary.id),
+    );
+    assert_eq!(projected_secondary.kind, FleetWorkspaceKind::Assistant);
+    assert!(!projected_secondary.is_primary_assistant);
+    assert!(projected_secondary.is_host_current);
+    // Non-assistant workspaces are never marked primary assistant even if IDs matched.
+    let projected_non_asst = workspace_summary_with_primary(&local, None, Some(&local.id));
+    assert!(!projected_non_asst.is_primary_assistant);
 
     // Closed workspaces in `recent_workspaces` (without `dispatchTracked`) must
     // not reappear in the fleet digest, while Detached Dispatch worktrees do.

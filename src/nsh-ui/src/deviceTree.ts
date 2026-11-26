@@ -1,9 +1,9 @@
 // The account's runtime devices → their workspaces → their sessions, as the
 // sidebar (and, on a phone, the session list) draws them. Display only: rows,
-// their order (newest first), states and the action gates come from the
-// backend — the fleet navigator on a fleet entry, the host's own catalogue
-// without the fleet layer. The only local state is the extra session pages a
-// workspace was asked to show ("Show more").
+// their order (each device's assistant workspace first, then current / newest),
+// states and the action gates come from the backend — the fleet navigator on a
+// fleet entry, the host's own catalogue without the fleet layer. The only local
+// state is the extra session pages a workspace was asked to show ("Show more").
 
 import { batch, computed, signal } from "nsh";
 import { listSessions, type SessionSummary } from "./api";

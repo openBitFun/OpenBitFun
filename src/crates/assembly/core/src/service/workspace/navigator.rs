@@ -5,8 +5,23 @@
 //! selection should show. This projection owns those rules so the desktop, a
 //! browser, a phone and a Peer controller show the same navigator.
 
+use openbitfun_services_core::workspace_records::{WorkspaceInfo, WorkspaceKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+/// Places assistant workspaces ahead of non-assistant workspaces while
+/// preserving the relative order of workspaces within each group. When
+/// `primary_assistant_id` matches an assistant workspace, it stays first.
+pub fn order_workspaces_assistants_first(
+    workspaces: &mut [WorkspaceInfo],
+    primary_assistant_id: Option<&str>,
+) {
+    workspaces.sort_by_key(|info| {
+        let is_assistant = info.workspace_kind == WorkspaceKind::Assistant;
+        let is_primary = is_assistant && primary_assistant_id == Some(info.id.as_str());
+        (!is_assistant, !is_primary)
+    });
+}
 
 /// Why `selected_id` is the workspace the navigator shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,5 +164,52 @@ mod tests {
         assert_eq!(value["selectedId"], "a");
         assert_eq!(value["selection"], "first_opened");
         assert!(value.get("reopenCandidateId").is_none());
+    }
+
+    #[test]
+    fn order_workspaces_assistants_first_keeps_primary_then_assistants_then_projects() {
+        use openbitfun_services_core::workspace_records::{WorkspaceStatus, WorkspaceType};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let make = |id: &str, kind: WorkspaceKind| WorkspaceInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            root_path: PathBuf::from(format!("/{id}")),
+            workspace_type: WorkspaceType::Other,
+            workspace_kind: kind,
+            assistant_id: None,
+            status: WorkspaceStatus::Inactive,
+            languages: Vec::new(),
+            opened_at: chrono::Utc::now(),
+            last_accessed: chrono::Utc::now(),
+            description: None,
+            tags: Vec::new(),
+            statistics: None,
+            identity: None,
+            worktree: None,
+            related_paths: Vec::new(),
+            metadata: HashMap::new(),
+        };
+
+        let mut list = vec![
+            make("proj-1", WorkspaceKind::Normal),
+            make("remote-1", WorkspaceKind::Remote),
+            make("asst-secondary", WorkspaceKind::Assistant),
+            make("proj-2", WorkspaceKind::Normal),
+            make("asst-primary", WorkspaceKind::Assistant),
+        ];
+        order_workspaces_assistants_first(&mut list, Some("asst-primary"));
+        let ids: Vec<&str> = list.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "asst-primary",
+                "asst-secondary",
+                "proj-1",
+                "remote-1",
+                "proj-2",
+            ]
+        );
     }
 }

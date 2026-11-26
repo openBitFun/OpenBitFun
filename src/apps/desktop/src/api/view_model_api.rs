@@ -17,7 +17,7 @@ use openbitfun_core::service::token_usage::{
     TokenUsageActivityRequest, TokenUsageStatisticsRequest, UsageStatisticsFilterKind,
 };
 use openbitfun_core::service::workspace::navigator::{
-    project_workspace_navigator, WorkspaceNavigator,
+    order_workspaces_assistants_first, project_workspace_navigator, WorkspaceNavigator,
 };
 use serde::Deserialize;
 
@@ -41,9 +41,13 @@ pub async fn get_workspace_navigator(
     request: GetWorkspaceNavigatorRequest,
 ) -> Result<WorkspaceNavigator<WorkspaceInfoDto>, String> {
     let service = &state.workspace_service;
-    let opened = service
-        .get_opened_workspaces()
+    let primary_assistant_id = service
+        .get_primary_assistant_workspace()
         .await
+        .map(|info| info.id);
+    let mut opened_infos = service.get_opened_workspaces().await;
+    order_workspaces_assistants_first(&mut opened_infos, primary_assistant_id.as_deref());
+    let opened = opened_infos
         .iter()
         .map(WorkspaceInfoDto::from_workspace_info)
         .collect();

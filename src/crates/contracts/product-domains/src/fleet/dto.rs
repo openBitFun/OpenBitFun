@@ -332,6 +332,13 @@ pub struct FleetWorkspace {
     /// The workspace the owning host has selected itself.
     #[serde(deserialize_with = "null_default")]
     pub is_host_current: bool,
+    /// Whether this assistant workspace holds the device's primary assistant role.
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub is_primary_assistant: bool,
     #[serde(deserialize_with = "null_default")]
     pub sessions: Vec<FleetSession>,
     /// Top-level sessions the owner holds for this workspace.
@@ -816,6 +823,7 @@ mod tests {
                     connection_name: Some("Box".into()),
                     link_state: Some("connected".into()),
                     is_host_current: true,
+                    is_primary_assistant: false,
                     sessions: vec![FleetSession {
                         device_id: "d1".into(),
                         workspace_id: "w1".into(),
@@ -943,13 +951,35 @@ mod tests {
             "instanceId": "i",
             "revision": 3,
             "full": true,
-            "workspaces": [{"workspaceId": "w"}],
+            "workspaces": [{"workspaceId": "w"}, {"workspaceId": "a", "kind": "assistant", "isPrimaryAssistant": null}],
             "sessions": [{"sessionId": "s", "workspaceId": "w"}]
         }))
         .unwrap();
         assert!(digest.prompts.is_empty());
         assert!(digest.removed.is_empty());
         assert!(!digest.sessions_truncated);
+        assert!(!digest.workspaces[0].is_primary_assistant);
+        assert!(!digest.workspaces[1].is_primary_assistant);
+
+        let primary = FleetWorkspace {
+            workspace_id: "asst-1".into(),
+            kind: FleetWorkspaceKind::Assistant,
+            is_primary_assistant: true,
+            ..FleetWorkspace::default()
+        };
+        let wire = serde_json::to_value(&primary).unwrap();
+        assert_eq!(wire["isPrimaryAssistant"], true);
+        let back: FleetWorkspace = serde_json::from_value(wire).unwrap();
+        assert!(back.is_primary_assistant);
+        let non_primary = FleetWorkspace {
+            workspace_id: "asst-2".into(),
+            kind: FleetWorkspaceKind::Assistant,
+            ..FleetWorkspace::default()
+        };
+        assert!(serde_json::to_value(&non_primary)
+            .unwrap()
+            .get("isPrimaryAssistant")
+            .is_none());
     }
 
     #[test]

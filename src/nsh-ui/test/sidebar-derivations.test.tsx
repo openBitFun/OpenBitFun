@@ -25,6 +25,7 @@ import {
   flushShellLayout,
   loadShellLayout,
   activeWorkspaceKey,
+  insertWorkspaceRecord,
   navWidth,
   persistShellLayout,
   runningTurns,
@@ -242,4 +243,23 @@ test("on a single host a session's status change rebuilds only that session's ro
   // An unrelated change (a running turn's id) keeps every row and the list.
   runningTurns.set({ "/s1": "turn-2" });
   expect(deviceTree()).toBe(tree2);
+});
+
+test("insertWorkspaceRecord keeps assistant workspaces ahead of opened projects", () => {
+  const assistant = { id: "asst-1", name: "Claw", rootPath: "/assistants/default", workspaceKind: "assistant" };
+  const projA = { id: "proj-a", name: "Alpha", rootPath: "/repo/alpha", workspaceKind: "normal" };
+  const projB = { id: "proj-b", name: "Beta", rootPath: "/repo/beta", workspaceKind: "remote" };
+
+  // Opening a project skips the leading assistant workspace.
+  const afterProjA = insertWorkspaceRecord([assistant], projA);
+  expect(afterProjA.map(item => item.id)).toEqual(["asst-1", "proj-a"]);
+  const afterProjB = insertWorkspaceRecord(afterProjA, projB);
+  expect(afterProjB.map(item => item.id)).toEqual(["asst-1", "proj-b", "proj-a"]);
+
+  // Ensuring an assistant workspace places it at the very front.
+  const assistantFirst = insertWorkspaceRecord([projA, projB], assistant);
+  expect(assistantFirst.map(item => item.id)).toEqual(["asst-1", "proj-a", "proj-b"]);
+
+  // Duplicates keep the existing list untouched.
+  expect(insertWorkspaceRecord(afterProjB, projA)).toBe(afterProjB);
 });

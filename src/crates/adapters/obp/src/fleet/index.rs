@@ -937,18 +937,17 @@ fn latest_activity(partition: &FleetDigest) -> BTreeMap<String, u64> {
 /// prompts, prompt payloads, and the byte size of the whole partition. The
 /// owner's own `sessionsTruncated` is kept; dropping anything here sets it.
 pub fn bound_partition(partition: &mut FleetDigest) {
-    // Workspaces: the host's current one, then most recent activity.
+    // Workspaces: assistant workspaces first (primary assistant first), then
+    // the host's current one, then most recent activity.
     if partition.workspaces.len() > MAX_WORKSPACES_PER_DEVICE {
         let latest = latest_activity(partition);
         partition.workspaces.sort_by(|a, b| {
-            b.is_host_current
-                .cmp(&a.is_host_current)
-                .then_with(|| {
-                    latest
-                        .get(&b.workspace_id)
-                        .cmp(&latest.get(&a.workspace_id))
-                })
-                .then_with(|| a.workspace_id.cmp(&b.workspace_id))
+            compare_workspaces_with_activity(
+                a,
+                latest.get(&a.workspace_id).copied().unwrap_or(0),
+                b,
+                latest.get(&b.workspace_id).copied().unwrap_or(0),
+            )
         });
         partition.workspaces.truncate(MAX_WORKSPACES_PER_DEVICE);
         let kept: BTreeSet<String> = partition

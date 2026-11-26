@@ -13,7 +13,9 @@ use openbitfun_core::service::personal_overview::{
 use openbitfun_core::service::token_usage::{
     TokenUsageActivityRequest, TokenUsageStatisticsRequest, UsageStatisticsFilterKind,
 };
-use openbitfun_core::service::workspace::navigator::project_workspace_navigator;
+use openbitfun_core::service::workspace::navigator::{
+    order_workspaces_assistants_first, project_workspace_navigator,
+};
 
 use crate::peer_host::args::request_value;
 use crate::peer_host::state::PeerHostState;
@@ -48,12 +50,13 @@ pub(crate) async fn get_workspace_navigator(
         .and_then(Value::as_str)
         .map(str::to_string);
     let service = &state.workspace_service;
-    let opened: Vec<Value> = service
-        .get_opened_workspaces()
+    let primary_assistant_id = service
+        .get_primary_assistant_workspace()
         .await
-        .iter()
-        .map(workspace_info_to_json)
-        .collect();
+        .map(|info| info.id);
+    let mut opened_infos = service.get_opened_workspaces().await;
+    order_workspaces_assistants_first(&mut opened_infos, primary_assistant_id.as_deref());
+    let opened: Vec<Value> = opened_infos.iter().map(workspace_info_to_json).collect();
     let recent: Vec<Value> = service
         .get_recent_workspaces()
         .await

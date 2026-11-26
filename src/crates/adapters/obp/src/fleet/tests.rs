@@ -1253,3 +1253,42 @@ async fn router_refuses_fleet_call_for_cloud_agent_and_paired_client() {
         "cloud agent fleet_call must never forward to a peer"
     );
 }
+
+#[test]
+fn bound_partition_retains_assistant_workspace_ahead_of_workspace_limit() {
+    let mut workspaces: Vec<FleetWorkspace> = (0..MAX_WORKSPACES_PER_DEVICE + 25)
+        .map(|i| workspace(&format!("proj-{i:03}"), &format!("A-{i:03}")))
+        .collect();
+    workspaces[0].is_host_current = true;
+    let mut primary = workspace("asst-primary", "Z-Primary");
+    primary.kind = FleetWorkspaceKind::Assistant;
+    primary.is_primary_assistant = true;
+    let mut secondary = workspace("asst-secondary", "A-Secondary");
+    secondary.kind = FleetWorkspaceKind::Assistant;
+    workspaces.push(secondary);
+    workspaces.push(primary);
+
+    let sessions: Vec<FleetSession> = (0..MAX_WORKSPACES_PER_DEVICE + 25)
+        .map(|i| {
+            session(
+                &format!("proj-{i:03}"),
+                &format!("s-{i:03}"),
+                5_000 + i as u64,
+            )
+        })
+        .collect();
+    let mut partition = FleetDigest {
+        device_id: "dev-a".into(),
+        instance_id: "inst-1".into(),
+        revision: 1,
+        full: true,
+        workspaces,
+        sessions,
+        ..Default::default()
+    };
+    super::index::bound_partition(&mut partition);
+    assert_eq!(partition.workspaces.len(), MAX_WORKSPACES_PER_DEVICE);
+    assert_eq!(partition.workspaces[0].workspace_id, "asst-primary");
+    assert_eq!(partition.workspaces[1].workspace_id, "asst-secondary");
+    assert!(partition.sessions_truncated);
+}

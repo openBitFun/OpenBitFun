@@ -558,6 +558,16 @@ pub(crate) fn collect_fleet_digest_workspaces(
 
 /// A workspace record as a fleet workspace summary.
 pub fn workspace_summary(info: &WorkspaceInfo, current_id: Option<&str>) -> FleetWorkspace {
+    workspace_summary_with_primary(info, current_id, None)
+}
+
+/// A workspace record as a fleet workspace summary, marking the device's
+/// primary assistant workspace when known.
+pub fn workspace_summary_with_primary(
+    info: &WorkspaceInfo,
+    current_id: Option<&str>,
+    primary_assistant_id: Option<&str>,
+) -> FleetWorkspace {
     let meta_str = |key: &str| {
         info.metadata
             .get(key)
@@ -587,6 +597,8 @@ pub fn workspace_summary(info: &WorkspaceInfo, current_id: Option<&str>) -> Flee
         connection_name,
         link_state: None,
         is_host_current: current_id == Some(info.id.as_str()),
+        is_primary_assistant: info.workspace_kind == WorkspaceKind::Assistant
+            && primary_assistant_id == Some(info.id.as_str()),
         sessions: Vec::new(),
         session_total: 0,
         has_more: false,
@@ -812,6 +824,10 @@ impl CoreFleetDigestSource {
 
         let service = &self.workspace_service;
         let current = service.get_current_workspace().await.map(|info| info.id);
+        let primary_assistant = service
+            .get_primary_assistant_workspace()
+            .await
+            .map(|info| info.id);
         let mut records = collect_fleet_digest_workspaces(
             service.get_opened_workspaces().await,
             service.get_recent_workspaces().await,
@@ -821,12 +837,20 @@ impl CoreFleetDigestSource {
             ..FleetDigestSnapshot::default()
         };
         if records.len() > MAX_WORKSPACES_PER_DEVICE {
+            crate::service::workspace::navigator::order_workspaces_assistants_first(
+                &mut records,
+                primary_assistant.as_deref(),
+            );
             records.truncate(MAX_WORKSPACES_PER_DEVICE);
             snapshot.sessions_truncated = true;
         }
         let store = crate::agentic::session::CoreSessionStorePort::default();
         for info in &records {
-            let mut workspace = workspace_summary(info, current.as_deref());
+            let mut workspace = workspace_summary_with_primary(
+                info,
+                current.as_deref(),
+                primary_assistant.as_deref(),
+            );
             let page = match store.resolve_workspace_storage(&info.id).await {
                 Ok(resolution) => self
                     .compatibility

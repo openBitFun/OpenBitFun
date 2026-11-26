@@ -81,8 +81,27 @@ fn compare_sessions(a: &FleetSession, b: &FleetSession) -> Ordering {
         .then_with(|| a.session_id.cmp(&b.session_id))
 }
 
-/// Workspace order inside a device: the host's current workspace, then the
-/// most recent session activity, then name, then id.
+/// Workspace order inside a device: assistant workspaces first (the device's
+/// primary assistant ahead of any other assistant), then the host's current
+/// workspace, then the most recent session activity, then name, then id.
+pub fn compare_workspaces_with_activity(
+    a: &FleetWorkspace,
+    a_latest: u64,
+    b: &FleetWorkspace,
+    b_latest: u64,
+) -> Ordering {
+    let is_assistant = |workspace: &FleetWorkspace| workspace.kind == FleetWorkspaceKind::Assistant;
+    let is_primary =
+        |workspace: &FleetWorkspace| is_assistant(workspace) && workspace.is_primary_assistant;
+    is_assistant(b)
+        .cmp(&is_assistant(a))
+        .then_with(|| is_primary(b).cmp(&is_primary(a)))
+        .then_with(|| b.is_host_current.cmp(&a.is_host_current))
+        .then_with(|| b_latest.cmp(&a_latest))
+        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        .then_with(|| a.workspace_id.cmp(&b.workspace_id))
+}
+
 fn compare_workspaces(a: &FleetWorkspace, b: &FleetWorkspace) -> Ordering {
     let latest = |workspace: &FleetWorkspace| {
         workspace
@@ -92,11 +111,7 @@ fn compare_workspaces(a: &FleetWorkspace, b: &FleetWorkspace) -> Ordering {
             .max()
             .unwrap_or(0)
     };
-    b.is_host_current
-        .cmp(&a.is_host_current)
-        .then_with(|| latest(b).cmp(&latest(a)))
-        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        .then_with(|| a.workspace_id.cmp(&b.workspace_id))
+    compare_workspaces_with_activity(a, latest(a), b, latest(b))
 }
 
 // ---------------------------------------------------------------------------
@@ -1593,5 +1608,100 @@ mod tests {
             serde_json::to_value(candidate("x")).unwrap()["fleetLoad"],
             1
         );
+    }
+
+    #[test]
+    fn assistant_workspace_always_leads_each_device() {
+        let client = FleetDeviceFacts {
+            is_client_device: true,
+            ..facts("mac", "MacBook", FleetDeviceState::Online)
+        };
+        let peer = facts("linux", "Linux Box", FleetDeviceState::Online);
+
+        let mut local_current = workspace("proj-alpha", "Alpha");
+        local_current.is_host_current = true;
+        let mut remote = workspace("remote-beta", "Beta");
+        remote.kind = FleetWorkspaceKind::RemoteSsh;
+        let mut secondary_asst = workspace("asst-secondary", "A-Helper");
+        secondary_asst.kind = FleetWorkspaceKind::Assistant;
+        let mut primary_asst = workspace("asst-primary", "Zeta Assistant");
+        primary_asst.kind = FleetWorkspaceKind::Assistant;
+        primary_asst.is_primary_assistant = true;
+
+        let client_partition = digest(
+            "mac",
+            vec![local_current, remote, secondary_asst, primary_asst],
+            vec![
+                session("proj-alpha", "s-proj", 900),
+                session("remote-beta", "s-remote", 800),
+                session("asst-secondary", "s-sec", 700),
+                session("asst-primary", "s-pri", 10),
+            ],
+        );
+
+        // Older peer digest without `isPrimaryAssistant` still keeps its assistant first.
+        let mut peer_current = workspace("peer-repo", "Aardvark");
+        peer_current.is_host_current = true;
+        let mut peer_asst = workspace("peer-asst", "Zzz Bot");
+        peer_asst.kind = FleetWorkspaceKind::Assistant;
+        let peer_partition = digest(
+            "linux",
+            vec![peer_current, peer_asst],
+            vec![session("peer-repo", "s-peer-repo", 999)],
+        );
+
+        let input = FleetNavigatorInput {
+            revision: 1,
+            devices: vec![
+                FleetDeviceInput {
+                    facts: &client,
+                    partition: Some(&client_partition),
+                    changed_revision: 1,
+                },
+                FleetDeviceInput {
+                    facts: &peer,
+                    partition: Some(&peer_partition),
+                    changed_revision: 1,
+                },
+            ],
+            ..FleetNavigatorInput::default()
+        };
+        let navigator = project_navigator(&input, None);
+        let mac_ids: Vec<&str> = navigator.devices[0]
+            .workspaces
+            .iter()
+            .map(|w| w.workspace_id.as_str())
+            .collect();
+        assert_eq!(
+            mac_ids,
+            [
+                "asst-primary",
+                "asst-secondary",
+                "proj-alpha",
+                "remote-beta"
+            ]
+        );
+        let peer_ids: Vec<&str> = navigator.devices[1]
+            .workspaces
+            .iter()
+            .map(|w| w.workspace_id.as_str())
+            .collect();
+        assert_eq!(peer_ids, ["peer-asst", "peer-repo"]);
+
+        // Truncation beyond `MAX_WORKSPACES_PER_DEVICE` keeps the assistant first.
+        let mut wide: Vec<FleetWorkspace> = (0..300)
+            .map(|i| workspace(&format!("w{i:03}"), &format!("A-{i:03}")))
+            .collect();
+        wide[0].is_host_current = true;
+        let mut wide_asst = workspace("asst-last", "Z-Assistant");
+        wide_asst.kind = FleetWorkspaceKind::Assistant;
+        wide_asst.is_primary_assistant = true;
+        wide.push(wide_asst);
+        let wide_sessions: Vec<FleetSession> = (0..300)
+            .map(|i| session(&format!("w{i:03}"), &format!("s{i:03}"), 10_000 + i as u64))
+            .collect();
+        let bounded = project_device(&client, Some(&digest("mac", wide, wide_sessions)));
+        assert_eq!(bounded.workspaces.len(), MAX_WORKSPACES_PER_DEVICE);
+        assert_eq!(bounded.workspaces[0].workspace_id, "asst-last");
     }
 }
