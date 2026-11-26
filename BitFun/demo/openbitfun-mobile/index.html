@@ -1,0 +1,2553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>OpenBitFun · Mobile</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   OpenBitFun Mobile · 精确还原 HarmonyOS / iOS 官方实现
+   设计令牌来源: src/apps/mobile/harmonyos/entry/src/main/ets/generated/MobileDesignTokens.ets
+   ============================================================ */
+
+/* ---------- MobileDesignTokens · Light Theme ---------- */
+:root {
+  /* MobileDesignColors (light) */
+  --page-bg: #FFFFFF;
+  --welcome-page-bg: #FFFFFF;
+  --ink: #171717;
+  --muted: #706F6A;
+  --subtle: #A5A39B;
+  --line: #E9E7E2;
+  --card: #FFFFFF;
+  --soft: #F4F3F0;
+  --sidebar-bg: #F8F8F9;
+  --sidebar-raised: #FFFFFF;
+  --sidebar-line: rgba(16, 26, 39, 0.08);   /* #14101A27 */
+  --sidebar-hover: #F0F0F2;
+  --sidebar-selection: rgba(0, 0, 0, 0.06);  /* FF active: 6% fill, hover 更高以区分层级 */
+  --sidebar-ink: rgba(0, 0, 0, 0.80);        /* #CC000000 */
+  --sidebar-deep: rgba(0, 0, 0, 0.72);       /* 对话名称：深灰，接近正文 */
+  --sidebar-muted: rgba(0, 0, 0, 0.50);      /* 工作区名称：中灰 */
+  --sidebar-subtle: rgba(0, 0, 0, 0.35);     /* 分类标签：浅灰 */
+  --status-success: #27C46A;
+  --scrim: rgba(0, 0, 0, 0.27);              /* #44000000 */
+  --shell-scrim: rgba(0, 0, 0, 0.14);        /* #24000000 */
+
+  /* MobileDesignTypography · Fluid Functionalism type ladder (Inter variable) */
+  --display-large: 600 24px/30px;
+  --display-medium: 600 22px/28px;
+  --headline-large: 500 22px/28px;
+  --headline-medium: 600 20px/26px;
+  --title-large: 600 20px/26px;
+  --title-medium: 500 17px/22px;
+  --title-small: 500 15px/20px;
+  --body-large: 400 16px/24px;
+  --body-medium: 400 13px/20px;
+  --body-small: 400 12px/18px;
+  --label-large: 500 15px/20px;
+  --label-medium: 500 13px/20px;
+  --label-small: 400 12px/16px;
+  --conversation-header-title: 600 17px/22px;
+
+  /* MobileDesignGeometry */
+  --conversation-header-height: 76px;
+  --conversation-header-compact-height: 64px;
+  --control-touch-size: 48px;
+  --content-gutter: 16px;
+  --sheet-top-radius: 28px;
+  --recent-home-gutter: 24px;
+  --recent-home-mark-size: 160px;
+  --recent-home-title-size: 22px;
+  --recent-home-max-width: 560px;
+  --recent-home-row-padding: 18px;
+  --welcome-max-width: 520px;
+  --welcome-gutter: 25px;
+  --welcome-header-height: 58px;
+  --welcome-button-height: 49px;
+  --welcome-button-gap: 11px;
+  --welcome-dock-radius: 30px;
+  --welcome-dock-bottom: 39px;
+  --welcome-mark-size: 92px;
+
+  /* MobileDesignBreakpoints */
+  --bp-wide: 600px;
+  --bp-extra-wide: 840px;
+  --bp-xl: 1440px;
+
+  /* MobileDesignMotion · Fluid Functionalism spring speeds */
+  --motion-quick: 180ms;
+  --motion-structure: 220ms;
+  --ff-fast: 80ms;      /* hover, tooltips, focus rings */
+  --ff-moderate: 160ms; /* dropdowns, tabs */
+  --ff-slow: 240ms;     /* dialogs, drawers */
+
+  /* Fluid Functionalism geometry */
+  --ff-radius: 10px;          /* 控件统一圆角 */
+  --ff-control: 36px;         /* default 控件/行高 */
+  --ff-control-compact: 28px; /* compact */
+  --ff-shadow-card: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --ff-shadow-pop: 0 4px 12px rgba(16,24,40,.08), 0 12px 32px rgba(16,24,40,.10);
+
+  /* Safe areas */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+button:focus { outline: none; box-shadow: none; }
+button:hover { outline: none; }
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", sans-serif;
+  font-optical-sizing: auto;
+  background: #e5e5ea;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* ============ 预览控制栏 · segmented control ============ */
+.preview-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; flex-shrink: 0;
+  background: rgba(229,229,234,.92); backdrop-filter: blur(20px);
+  z-index: 100;
+}
+.preview-bar .label { font-size: 12px; color: var(--muted); font-weight: 500; }
+.device-switch {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 3px; border-radius: 999px;
+  background: rgba(0,0,0,.05);
+  border: 0.5px solid rgba(0,0,0,.06);
+}
+.device-btn {
+  padding: 0 14px; height: 28px; border-radius: 999px;
+  font: var(--body-medium); font-weight: 500;
+  background: transparent; color: var(--muted);
+  transition: background var(--ff-fast) ease, color var(--ff-fast) ease, box-shadow var(--ff-fast) ease;
+}
+.device-btn:hover { color: var(--ink); }
+.device-btn.active { background: var(--ink); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+
+/* ============ 设备容器 (真实设备尺寸) ============ */
+.stage { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 24px 32px; overflow: auto; }
+.device-frame {
+  position: relative;
+  background: linear-gradient(145deg, #2a2a2a, #1a1a1a);
+  padding: 10px;
+  box-shadow:
+    0 24px 64px rgba(0,0,0,.35),
+    0 8px 24px rgba(0,0,0,.25),
+    inset 0 1px 0 rgba(255,255,255,.1);
+}
+.device-frame::before {
+  content: none;
+}
+.device {
+  background: var(--page-bg);
+  overflow: hidden;
+  clip-path: inset(0 round 47px);
+  container-type: inline-size;
+  container-name: app;
+  position: relative;
+  transition: none;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+}
+/* iPhone 15 Pro: 393 × 852, 圆角约 47px (屏下摄像头) */
+.device-frame[data-mode="slab"]    { width: 413px !important; height: 872px !important; border-radius: 62px !important; }
+.device[data-mode="slab"]          { width: 393px !important; height: 852px !important; border-radius: 52px !important; }
+/* 双折展开: 接近方形，圆角约 36px */
+.device-frame[data-mode="duo"]     { width: 680px !important; height: 740px !important; border-radius: 48px !important; }
+.device[data-mode="duo"]           { width: 660px !important; height: 720px !important; border-radius: 38px !important; }
+/* 三折叠展开: 宽屏，圆角约 28px */
+.device-frame[data-mode="trifold"] { width: min(1044px, 100%) !important; height: 660px !important; border-radius: 40px !important; }
+.device[data-mode="trifold"]       { width: 1024px !important; height: 640px !important; border-radius: 30px !important; }
+
+/* ============ App Shell (AppShell.ets 精确还原) ============ */
+.app-shell {
+  width: 100%; height: 100%;
+  position: relative; display: flex;
+  overflow: hidden;
+  background: var(--sidebar-bg);
+}
+
+/* --- Sidebar Floor --- */
+.sidebar-floor {
+  position: absolute; inset: 0;
+  background: var(--sidebar-bg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 250ms ease-out;
+  z-index: 1;
+}
+.sidebar-floor.visible { opacity: 1; }
+
+/* --- Sidebar Panel --- */
+.sidebar-panel {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  z-index: 20;
+  background: var(--sidebar-bg);
+  display: flex; flex-direction: column;
+  opacity: 0;
+  transform: translateX(-10%);
+  transition: opacity 220ms ease-out, transform 220ms ease-out;
+}
+.sidebar-panel.open {
+  opacity: 1 !important;
+  transform: translateX(0) !important;
+  transition: opacity 300ms ease-out, transform 300ms ease-out;
+}
+
+/* 小屏: 强制侧栏打开状态 (仅直板机) */
+@container app (max-width: 599px) {
+  .sidebar-panel.open {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    opacity: 1 !important;
+    transform: translateX(0) !important;
+    z-index: 20 !important;
+    transition: none !important;
+  }
+  .sidebar-panel:not(.open) {
+    transition: none !important;
+  }
+}
+
+/* --- Content Card --- */
+.content-card {
+  position: absolute; inset: 0;
+  background: var(--page-bg);
+  z-index: 10;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  transition: border-radius 320ms ease-out, transform 320ms ease-out, box-shadow 320ms ease-out;
+}
+/* FF overlay 抽屉: 内容卡片保持完整平面, 不推挤不变形 */
+.content-card.drawer-open {
+  border-radius: 0;
+  box-shadow: none;
+  transform: none;
+}
+
+/* 小屏: 抽屉打开时内容卡片不动, 抽屉右缘投影分层 (仅直板机) */
+@container app (max-width: 599px) {
+  .content-card.drawer-open {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    transform: none !important;
+    transition: none !important;
+  }
+  .content-card {
+    transition: none !important;
+  }
+  .sidebar-panel.open {
+    box-shadow: 8px 0 24px rgba(16,24,40,.10), 1px 0 0 var(--sidebar-line) !important;
+  }
+}
+
+/* 常驻侧栏 (双折/三折叠, useMasterDetail = true)
+   统一宽度 295px，与直板机抽屉宽度一致 */
+@container app (min-width: 840px) {
+  .sidebar-floor { display: none; }
+  .sidebar-panel {
+    position: relative !important;
+    opacity: 1 !important;
+    transform: none !important;
+    width: 295px !important;
+    flex-shrink: 0;
+    border-right: 1px solid var(--line);
+    z-index: 1;
+    transition: width 0.3s ease, opacity 0.3s ease !important;
+  }
+  .sidebar-panel.collapsed {
+    width: 0 !important;
+    border-right: none !important;
+    opacity: 0 !important;
+    overflow: hidden;
+  }
+  .content-card {
+    position: relative !important; flex: 1;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    transform: none !important;
+    z-index: 10;
+    transition: margin-left 0.3s ease;
+  }
+  .drawer-fab { display: none; }
+  .drawer-scrim { display: none; }
+}
+
+/* 双折: 常驻侧栏，与直板机/三折叠保持一致宽度 */
+@container app (min-width: 600px) and (max-width: 839px) {
+  .sidebar-floor { display: none; }
+  .sidebar-panel {
+    position: relative !important;
+    opacity: 1 !important;
+    transform: none !important;
+    width: 295px !important;
+    flex-shrink: 0;
+    border-right: 1px solid var(--line);
+    z-index: 1;
+    transition: width 0.3s ease, opacity 0.3s ease !important;
+  }
+  .sidebar-panel.collapsed {
+    width: 0 !important;
+    border-right: none !important;
+    opacity: 0 !important;
+    overflow: hidden;
+  }
+  .content-card {
+    position: relative !important; flex: 1;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    transform: none !important;
+    z-index: 10;
+    transition: margin-left 0.3s ease;
+  }
+  .drawer-fab { display: none; }
+  .drawer-scrim { display: none; }
+}
+
+/* 小屏: 侧栏宽度 + 覆盖模式 (仅直板机) */
+@container app (max-width: 599px) {
+  .sidebar-panel:not(.open) {
+    width: var(--sidebar-w, 295px) !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    opacity: 0 !important;
+    transform: translateX(-10%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+    transition: none !important;
+  }
+  .sidebar-panel.open {
+    width: var(--sidebar-w, 295px) !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    opacity: 1 !important;
+    transform: translateX(0) !important;
+    pointer-events: auto !important;
+    z-index: 20 !important;
+    transition: none !important;
+  }
+}
+
+/* ============ 状态栏 ============ */
+/* 状态栏: 系统层级, 绝对定位浮于抽屉/内容之上, 始终可见 */
+.statusbar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: calc(54px + var(--safe-top));
+  padding: var(--safe-top) calc(24px + var(--safe-right)) 0 calc(24px + var(--safe-left));
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 15px; font-weight: 600; flex-shrink: 0;
+  color: var(--ink); z-index: 30;
+  pointer-events: none;
+}
+.statusbar .icons { display: flex; gap: 6px; align-items: center; }
+
+/* ============ 页面容器 ============ */
+.pages { flex: 1; position: relative; overflow: hidden; }
+.page {
+  position: absolute; inset: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column;
+  background: var(--page-bg);
+  transition: transform 320ms cubic-bezier(.32,.72,.35,1), opacity 320ms;
+}
+.page.hidden-right {
+  transform: translateX(60%);
+  opacity: 0;
+  pointer-events: none;
+  transition: none !important;
+}
+.page.active {
+  transform: translateX(0);
+  opacity: 1;
+  transition: none !important;
+}
+
+/* ============ FF AskUserQuestions ============ */
+.ask-user {
+  width: 100%;
+  max-width: 560px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--ff-radius);
+  padding: 24px;
+  margin-bottom: 24px;
+}
+.ask-user-header {
+  font: var(--label-small);
+  color: var(--sidebar-subtle);
+  margin-bottom: 8px;
+}
+.ask-user-title {
+  font: var(--headline-medium);
+  color: var(--ink);
+  margin-bottom: 20px;
+}
+.ask-user-options {
+  display: flex;
+  flex-direction: column;
+}
+.ask-user-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background var(--ff-fast) ease;
+  margin: 0 -12px;
+  padding-left: 12px;
+  padding-right: 12px;
+  border-radius: var(--ff-radius);
+}
+.ask-user-option:last-child {
+  border-bottom: none;
+}
+.ask-user-option:hover {
+  background: var(--sidebar-hover);
+}
+.ask-user-option .option-label {
+  font: var(--body-medium);
+  font-weight: 500;
+  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ask-user-option .option-desc {
+  font: var(--body-medium);
+  color: var(--muted);
+}
+.ask-user-option .option-num {
+  font: var(--label-small);
+  color: var(--sidebar-subtle);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+}
+.ask-user-option.selected {
+  background: var(--sidebar-selection);
+}
+.ask-user-option.selected .option-num {
+  background: var(--ink);
+  color: var(--card);
+  border-color: var(--ink);
+}
+.ask-user-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.ask-user-skip {
+  font: var(--body-medium);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: var(--ff-radius);
+  transition: background var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.ask-user-skip:hover {
+  background: var(--sidebar-hover);
+  color: var(--ink);
+}
+/* 手机端适配 */
+@media (max-width: 599px) {
+  .ask-user {
+    padding: 16px;
+    margin-left: -8px;
+    margin-right: -8px;
+  }
+  .ask-user-option {
+    padding: 12px 0;
+    margin: 0 -8px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .ask-user-option:active {
+    background: var(--sidebar-hover);
+  }
+}
+
+/* ============ FF Settings Section ============ */
+.settings-section {
+  width: 100%;
+  max-width: 560px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--ff-radius);
+  overflow: hidden;
+}
+.settings-group {
+  padding: 16px 0;
+}
+.settings-group + .settings-group {
+  border-top: 1px solid var(--line);
+}
+.settings-group-label {
+  font: var(--label-small);
+  color: var(--sidebar-subtle);
+  padding: 0 20px 12px;
+}
+.settings-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: background var(--ff-fast) ease;
+}
+.settings-item:hover {
+  background: var(--sidebar-hover);
+}
+.settings-item:active {
+  background: var(--sidebar-selection);
+}
+.settings-item svg {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.settings-item span {
+  font: var(--body-medium);
+  color: var(--ink);
+}
+.settings-item .arrow {
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  color: var(--sidebar-subtle);
+}
+/* 手机端适配 */
+@media (max-width: 599px) {
+  .settings-section {
+    margin-left: -8px;
+    margin-right: -8px;
+  }
+  .settings-item {
+    padding: 12px 16px;
+  }
+  .settings-group-label {
+    padding: 0 16px 10px;
+  }
+}
+
+/* ============ FF Sidebar List ============ */
+.sidebar-list {
+  width: 100%;
+  max-width: 280px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--ff-radius);
+  overflow: hidden;
+}
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.sidebar-search svg {
+  width: 16px;
+  height: 16px;
+}
+.sidebar-search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font: var(--body-medium);
+  color: var(--ink);
+  background: transparent;
+}
+.sidebar-search input::placeholder {
+  color: var(--sidebar-subtle);
+}
+.sidebar-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  transition: background var(--ff-fast) ease;
+}
+.sidebar-new:hover {
+  background: var(--sidebar-hover);
+  color: var(--ink);
+}
+.sidebar-new svg {
+  width: 16px;
+  height: 16px;
+}
+.sidebar-group {
+  padding: 8px 0;
+}
+.sidebar-group + .sidebar-group {
+  border-top: 1px solid var(--line);
+}
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background var(--ff-fast) ease;
+}
+.sidebar-group-header:hover {
+  background: var(--sidebar-hover);
+}
+.sidebar-group-header .group-name {
+  font: var(--body-medium);
+  font-weight: 500;
+  color: var(--ink);
+}
+.sidebar-group-header .add-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity var(--ff-fast) ease, background var(--ff-fast) ease;
+}
+.sidebar-group-header:hover .add-btn {
+  opacity: 1;
+}
+.sidebar-group-header .add-btn:hover {
+  background: var(--sidebar-selection);
+}
+.sidebar-group-header .add-btn svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px 8px 24px;
+  cursor: pointer;
+  position: relative;
+  transition: background var(--ff-fast) ease;
+}
+.sidebar-item:hover {
+  background: var(--sidebar-hover);
+}
+.sidebar-item:active {
+  background: var(--sidebar-selection);
+}
+.sidebar-item .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sidebar-item .status-dot.active {
+  background: var(--success);
+}
+.sidebar-item .status-dot.idle {
+  background: var(--sidebar-subtle);
+}
+.sidebar-item .status-dot.error {
+  background: var(--danger);
+}
+.sidebar-item .item-title {
+  flex: 1;
+  font: var(--body-medium);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-item.selected {
+  background: var(--sidebar-selection);
+}
+.sidebar-item.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink);
+}
+/* 手机端适配 */
+@media (max-width: 599px) {
+  .sidebar-list {
+    max-width: 100%;
+    margin: 0 -8px;
+  }
+  .sidebar-item {
+    padding: 10px 16px 10px 24px;
+  }
+  .sidebar-group-header .add-btn {
+    opacity: 1;
+  }
+}
+
+/* ============ FF Thinking Path ============ */
+.thinking-path {
+  width: 100%;
+  max-width: 560px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--ff-radius);
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: var(--body-medium);
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 16px;
+  cursor: pointer;
+}
+.thinking-header svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transition: transform var(--ff-fast) ease;
+}
+.thinking-header.open svg {
+  transform: rotate(180deg);
+}
+.thinking-steps {
+  display: flex;
+  flex-direction: column;
+}
+.thinking-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  position: relative;
+  padding-bottom: 16px;
+}
+.thinking-step:last-child {
+  padding-bottom: 0;
+}
+.thinking-step::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 20px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.thinking-step:last-child::before {
+  display: none;
+}
+.thinking-step .step-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-size: 10px;
+}
+.thinking-step .step-icon.search {
+  background: var(--sidebar-hover);
+  color: var(--muted);
+}
+.thinking-step .step-icon.globe {
+  background: var(--sidebar-hover);
+  color: var(--muted);
+}
+.thinking-step .step-icon.check {
+  background: var(--success);
+  color: var(--card);
+}
+.thinking-step .step-content {
+  flex: 1;
+}
+.thinking-step .step-title {
+  font: var(--body-medium);
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.thinking-step .step-detail {
+  font: var(--body-medium);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.thinking-step .step-detail svg {
+  width: 12px;
+  height: 12px;
+}
+.thinking-step .step-children {
+  margin-top: 8px;
+  padding-left: 20px;
+  border-left: 1px solid var(--line);
+}
+.thinking-step .step-child {
+  font: var(--body-medium);
+  color: var(--muted);
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.thinking-step .step-child::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--sidebar-subtle);
+}
+/* 手机端适配 */
+@media (max-width: 599px) {
+  .thinking-path {
+    padding: 16px;
+    margin-left: -8px;
+    margin-right: -8px;
+  }
+}
+
+/* ============ 页面一：RecentRemoteHome.ets ============ */
+/* 品牌区垂直居中：在状态栏与 ComposerBar 之间 */
+.recent-home {
+  align-items: center;
+  justify-content: center;
+  padding: calc(54px + var(--safe-top)) var(--recent-home-gutter) 140px;
+}
+.recent-home-inner {
+  width: 100%; max-width: var(--recent-home-max-width);
+  display: flex; flex-direction: column; align-items: center;
+}
+.brand-flow {
+  width: var(--recent-home-mark-size);
+  height: var(--recent-home-mark-size);
+  margin-top: 20px; margin-bottom: 16px;
+  position: relative;
+}
+.recent-title {
+  font: var(--headline-large);
+  font-size: var(--recent-home-title-size);
+  color: var(--ink); text-align: center; letter-spacing: -0.02em;
+  margin-bottom: 48px;
+  position: relative; height: 32px;
+}
+.title-line {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  white-space: nowrap;
+  opacity: 0; transform: translateY(4px) scale(0.96);
+  transition: opacity 500ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.title-line.active {
+  opacity: 1; transform: translateY(0) scale(1);
+}
+.recent-head-row {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+}
+.recent-label { font: var(--label-small); color: var(--muted); }
+.recent-all-btn { font: var(--body-medium); font-weight: 500; color: var(--ink); height: 44px; padding: 0 4px; border-radius: var(--ff-radius); transition: opacity var(--ff-fast) ease; }
+.recent-all-btn:hover { opacity: .7; }
+.session-list { width: 100%; }
+/* Fluid Functionalism CardGroup: borderless + hairline dividers, fluid hover, no shadow */
+.session-row {
+  width: 100%; text-align: left;
+  padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  border-radius: var(--ff-radius);
+  transition: background var(--ff-fast) ease;
+}
+.session-row:hover { background: var(--soft); }
+.session-row:active { background: var(--soft); opacity: .8; }
+.session-title { font: var(--title-small); color: var(--ink); transition: font-weight var(--ff-fast) ease; }
+.session-row:hover .session-title { font-weight: 600; }
+.session-meta { font: var(--body-medium); color: var(--muted); }
+.session-divider { height: 1px; background: var(--line); margin: 0 12px; }
+
+/* ============ ComposerBar (ComposerBar.ets 精确还原) ============ */
+/* 外层: 绝对定位钉在页面底部, 宽度铺满, 左右各留 16px */
+.composer {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 0;
+  padding: 8px 16px calc(12px + var(--safe-bottom));
+  background: transparent;
+  z-index: 15;
+}
+/* 胶囊: CARD_OVERLAY 80% 白 + 模糊 + 0.5px LINE + 阴影(18/6) */
+.composer-pill {
+  display: flex; align-items: center; gap: 5px;
+  min-height: 56px;
+  padding: 4px 8px;
+  background: rgba(255,255,255,.80);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 0.5px solid var(--line);
+  border-radius: 28px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.07);
+  transition: border-radius var(--ff-moderate) ease;
+}
+.composer-pill.expanded { border-radius: 18px; }
+/* 加号: COMPOSER_ACTION_SIZE 48 触摸区, 图形 22px ink */
+.composer-add {
+  width: 48px; height: 48px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink);
+  border-radius: 50%;
+  transition: background var(--ff-fast) ease;
+}
+.composer-add:hover { background: var(--soft); }
+/* 输入框: bodyLarge 16/24, placeholder muted, 单行折叠 */
+.composer-input {
+  flex: 1; min-width: 0;
+  height: 44px;
+  border: none; background: transparent; outline: none;
+  font: var(--body-large); color: var(--ink);
+  padding: 0 4px;
+}
+.composer-input::placeholder { color: var(--muted); }
+/* 主操作: 48px 触摸区; 空闲 = 麦克风 38% 灰 on SOFT 底; 可发送 = 32px 黑底白箭头 */
+.composer-action {
+  position: relative;
+  width: 48px; height: 48px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--muted);
+  transition: background var(--ff-fast) ease;
+}
+.composer-action .icon-mic { opacity: .38; transition: opacity var(--ff-fast) ease; }
+.composer-action .send-surface {
+  position: absolute; inset: 0;
+  margin: auto;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--ink); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transform: scale(.6);
+  transition: opacity var(--ff-fast) ease, transform var(--ff-fast) cubic-bezier(.34,1.56,.64,1);
+}
+.composer-action.sendable { background: transparent; }
+.composer-action.sendable .icon-mic { opacity: 0; }
+.composer-action.sendable .send-surface { opacity: 1; transform: scale(1); }
+.composer-action.sendable:active .send-surface { background: var(--muted); }
+
+/* ============ 页面二：MiniAppSurface.ets ============ */
+.miniapp-header {
+  width: 100%; height: 56px;
+  display: flex; align-items: center; padding: 0 12px;
+  flex-shrink: 0; position: relative;
+  margin-top: calc(54px + var(--safe-top));
+}
+.miniapp-header .title {
+  flex: 1; text-align: center;
+  font: var(--body-large); font-weight: 500; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nav-back {
+  width: 48px; height: 48px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.nav-back:active { opacity: .4; }
+.header-spacer { width: 48px; flex-shrink: 0; }
+
+.miniapp-body {
+  flex: 1; overflow-y: auto;
+  padding: 0 16px;
+  display: flex; flex-direction: column;
+  align-items: flex-start;
+  max-width: 1000px; width: 100%; margin: 0 auto;
+}
+/* ============ 小应用 · 列表卡片视图 ============ */
+/* ============ 小应用 · 列表卡片视图 ============ */
+.app-grid {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+.app-card {
+  width: 100%;
+  display: flex;
+  align-items: stretch;
+  background: var(--card);
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  transition: background var(--ff-fast) ease, transform var(--ff-fast) ease, box-shadow var(--ff-fast) ease;
+  position: relative;
+  cursor: pointer;
+  min-height: 140px;
+}
+.app-card:hover {
+  background: var(--sidebar-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+}
+.app-card:active {
+  transform: scale(0.98);
+  background: var(--sidebar-selection);
+}
+.app-cover-wrap {
+  width: 140px;
+  min-height: 140px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--soft);
+  position: relative;
+}
+.app-cover-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 卡片信息 */
+.app-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: left;
+}
+.app-name {
+  font: var(--title-large);
+  font-weight: 700;
+  color: var(--ink);
+  display: block;
+  text-align: left;
+  font-size: 20px;
+}
+.app-desc {
+  font: var(--body-large);
+  color: var(--muted);
+  line-height: 1.5;
+  text-align: left;
+  font-size: 15px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* hover 效果 - 不变蓝 */
+.app-card:hover .app-name {
+  color: var(--ink);
+}
+
+/* 三折叠: 一行两个卡片 */
+@container app (min-width: 840px) {
+  .app-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .app-card {
+    min-height: 160px;
+  }
+  .app-cover-wrap {
+    width: 160px;
+    min-height: 160px;
+  }
+  .app-info {
+    gap: 10px;
+    padding: 28px;
+  }
+  .app-name {
+    font-size: 22px;
+  }
+  .app-desc {
+    font-size: 16px;
+  }
+}
+
+/* 发光效果 - 列表模式移除 */
+.app-card.glow .app-cover-wrap,
+.app-card.glow:hover .app-cover-wrap {
+  box-shadow: none;
+}
+/* 3D 翻转效果 - 列表模式移除 */
+.app-card.flip .app-cover-wrap,
+.app-card.flip:hover .app-cover-wrap {
+  transform: none;
+  transition: none;
+}
+/* 粒子背景 - 列表模式移除 */
+.app-particles {
+  display: none;
+}
+
+/* ============ 小应用 · 卡片滑动视图 ============ */
+.card-swiper-view {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.card-stack {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  perspective: 1200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.swiper-card {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(320px, 85vw);
+  height: min(420px, 70vh);
+  margin-left: calc(min(320px, 85vw) / -2);
+  margin-top: calc(min(420px, 70vh) / -2);
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.08);
+  transition: transform 0.4s cubic-bezier(0.34, 1.3, 0.64, 1), opacity 0.3s ease;
+  cursor: grab;
+  will-change: transform;
+  background: var(--card);
+  user-select: none;
+}
+.swiper-card:active {
+  cursor: grabbing;
+}
+.swiper-card .card-cover {
+  width: 100%;
+  height: 65%;
+  overflow: hidden;
+  position: relative;
+}
+.swiper-card .card-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.swiper-card .card-cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, transparent 60%, rgba(0,0,0,0.2));
+}
+.swiper-card .card-icon {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 44px;
+  height: 44px;
+  background: rgba(255,255,255,0.95);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  z-index: 2;
+}
+.swiper-card .card-info {
+  padding: 20px;
+  height: 35%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.swiper-card .card-name {
+  font: var(--title-large);
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+.swiper-card .card-desc {
+  font: var(--body-medium);
+  color: var(--muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 卡片状态 */
+.swiper-card.card-active {
+  transform: translateX(0) scale(1) rotateZ(0deg);
+  z-index: 3;
+  opacity: 1;
+}
+.swiper-card.card-prev {
+  transform: translateX(-100px) scale(0.85) rotateZ(-5deg);
+  z-index: 2;
+  opacity: 0.6;
+  filter: brightness(0.85);
+}
+.swiper-card.card-next {
+  transform: translateX(100px) scale(0.85) rotateZ(5deg);
+  z-index: 2;
+  opacity: 0.6;
+  filter: brightness(0.85);
+}
+.swiper-card.card-hidden-left {
+  transform: translateX(-200px) scale(0.7) rotateZ(-10deg);
+  z-index: 1;
+  opacity: 0;
+}
+.swiper-card.card-hidden-right {
+  transform: translateX(200px) scale(0.7) rotateZ(10deg);
+  z-index: 1;
+  opacity: 0;
+}
+/* 拖拽中 */
+.swiper-card.dragging {
+  transition: none;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.25);
+}
+/* 指示器 */
+.card-indicator {
+  display: flex;
+  gap: 8px;
+  padding: 20px 0 12px;
+}
+.card-indicator .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sidebar-subtle);
+  opacity: 0.4;
+  transition: all 0.3s ease;
+}
+.card-indicator .dot.active {
+  opacity: 1;
+  width: 24px;
+  border-radius: 4px;
+  background: var(--ink);
+}
+/* 提示文字 */
+.card-hint {
+  font: var(--label-small);
+  color: var(--sidebar-subtle);
+  padding-bottom: 16px;
+}
+/* 视图切换按钮 */
+.view-toggle {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--muted);
+  transition: all var(--ff-fast) ease;
+}
+.view-toggle:hover {
+  background: var(--sidebar-hover);
+  color: var(--ink);
+}
+/* 手机端适配 */
+@media (max-width: 599px) {
+  .card-swiper-view {
+    overflow: hidden;
+  }
+  .swiper-card {
+    width: min(280px, 82vw);
+    height: min(400px, 65vh);
+    margin-left: calc(min(280px, 82vw) / -2);
+    margin-top: calc(min(400px, 65vh) / -2);
+  }
+  .swiper-card.card-prev {
+    transform: translateX(-70px) scale(0.82) rotateZ(-5deg);
+  }
+  .swiper-card.card-next {
+    transform: translateX(70px) scale(0.82) rotateZ(5deg);
+  }
+}
+
+/* 双折适配：卡片缩小适应较窄屏幕 */
+@container app (min-width: 600px) and (max-width: 839px) {
+  .card-swiper-view {
+    overflow: hidden;
+  }
+  .swiper-card {
+    width: min(260px, 75vw);
+    height: min(360px, 60vh);
+    margin-left: calc(min(260px, 75vw) / -2);
+    margin-top: calc(min(360px, 60vh) / -2);
+  }
+  .swiper-card .card-cover {
+    height: 60%;
+  }
+  .swiper-card .card-info {
+    padding: 16px;
+  }
+  .swiper-card .card-name {
+    font-size: 18px;
+  }
+  .swiper-card .card-desc {
+    font-size: 13px;
+    -webkit-line-clamp: 2;
+  }
+  .swiper-card.card-prev {
+    transform: translateX(-60px) scale(0.85) rotateZ(-5deg);
+  }
+  .swiper-card.card-next {
+    transform: translateX(60px) scale(0.85) rotateZ(5deg);
+  }
+}
+
+/* 三折叠适配 */
+@container app (min-width: 840px) {
+  .swiper-card {
+    width: min(340px, 80vw);
+    height: min(440px, 65vh);
+    margin-left: calc(min(340px, 80vw) / -2);
+    margin-top: calc(min(440px, 65vh) / -2);
+  }
+}
+
+/* 左下角评分 - 已禁用 */
+/*
+.app-rating {
+  position: absolute;
+  bottom: 12px; left: 12px;
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  font: var(--label-small);
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 8px;
+  z-index: 3;
+}
+.app-rating::before {
+  content: '★';
+  color: #FFD700;
+  font-size: 10px;
+}
+*/
+
+/* 悬浮动画元素 - 已禁用 */
+/*
+.app-float-emoji {
+  position: absolute;
+  font-size: 24px;
+  z-index: 3;
+  opacity: 0;
+  transform: scale(0) rotate(0deg);
+  transition: all var(--ff-moderate) cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+}
+.app-card:hover .app-float-emoji {
+  opacity: 1;
+  transform: scale(1) rotate(10deg);
+}
+.app-float-emoji.e1 { top: 20%; right: 15%; transition-delay: 0.05s; }
+.app-float-emoji.e2 { top: 40%; right: 25%; transition-delay: 0.1s; font-size: 18px; }
+.app-float-emoji.e3 { top: 60%; right: 10%; transition-delay: 0.15s; font-size: 20px; }
+*/
+
+/* 卡片底部信息 - 简化 */
+.app-info {
+  padding: 12px 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.app-name {
+  font: var(--title-small); font-weight: 600; color: var(--ink);
+  display: block;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color var(--ff-fast) ease;
+}
+.app-card:hover .app-name {
+  color: var(--accent, #007AFF);
+}
+/* 分类标签 - 已禁用 */
+/*
+.app-tag {
+  font: var(--label-small);
+  color: var(--sidebar-subtle);
+  background: var(--soft);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+*/
+/* 彩虹边框效果 - 已禁用 */
+/*
+.app-card.rainbow .app-cover-wrap {
+  box-shadow:
+    inset 0 0 0 2px transparent,
+    0 4px 20px rgba(0,0,0,0.08);
+}
+.app-card.rainbow:hover .app-cover-wrap {
+  box-shadow:
+    inset 0 0 0 2px #FF6B6B,
+    inset 0 0 0 4px #FF8E53,
+    inset 0 0 0 6px #FFD93D,
+    inset 0 0 0 8px #6BCB77,
+    inset 0 0 0 10px #4D96FF,
+    inset 0 0 0 12px #9B59B6,
+    0 12px 40px rgba(0,0,0,0.15);
+}
+*/
+
+/* ============ 抽屉内容 (AppSidebar.ets) ============ */
+.sidebar-inner {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  padding: calc(50px + var(--safe-top)) 10px var(--safe-bottom);
+}
+.sidebar-header {
+  height: 40px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0;
+  padding: 0 8px;
+}
+.sidebar-brand { font: var(--title-medium); font-weight: 500; color: var(--sidebar-ink); letter-spacing: -0.01em; }
+.sidebar-header-btns { display: flex; gap: 8px; align-items: center; }
+.sidebar-icon-btn {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: transparent;
+  border: 0.5px solid transparent;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--sidebar-muted);
+  transition: background var(--ff-fast) ease, border-color var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.sidebar-icon-btn:hover { background: var(--sidebar-hover); border-color: var(--sidebar-line); color: var(--sidebar-ink); }
+.sidebar-collapse-btn {
+  display: none;
+}
+/* 双折/三折叠显示收起按钮 */
+@container app (min-width: 600px) {
+  .sidebar-collapse-btn {
+    display: flex !important;
+  }
+}
+/* 侧栏收起状态 - 带动画 */
+.sidebar-panel {
+  transition: width 0.3s ease, opacity 0.3s ease;
+}
+.sidebar-panel.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border-right: none !important;
+  overflow: hidden;
+  flex-shrink: 0;
+  opacity: 0;
+}
+.sidebar-panel.collapsed .sidebar-inner {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.sidebar-scroll {
+  flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column;
+  padding: 8px 0 16px;
+}
+.sidebar-miniapp-btn {
+  width: 100%; height: 40px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 8px;
+  border-radius: var(--ff-radius);
+  font: 400 16px/24px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-ink);
+  outline: none; -webkit-tap-highlight-color: transparent;
+  transition: background var(--ff-fast) ease;
+}
+.sidebar-miniapp-btn .miniapp-icon { width: 16px; height: 16px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; opacity: 0.85; }
+.sidebar-miniapp-btn:active { background: var(--sidebar-hover); }
+.sidebar-miniapp-btn:focus { outline: none; box-shadow: none; }
+.sidebar-miniapp-btn:hover { background: var(--sidebar-hover); }
+
+/* 助理行 · 毕方 IP (FF SidebarMenuButton: 32px 行高, 13px/400, hover 填充) */
+.assistant-row {
+  width: 100%; height: 40px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 8px;
+  border-radius: var(--ff-radius);
+  font: 400 16px/24px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-ink);
+  outline: none; -webkit-tap-highlight-color: transparent;
+  transition: background var(--ff-fast) ease;
+}
+.assistant-row:hover { background: var(--sidebar-hover); }
+.assistant-row:active { background: var(--sidebar-hover); }
+.assistant-row .mascot {
+  width: 18px; height: 18px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.assistant-row .mascot img { width: 18px; height: 18px; display: block; }
+.sidebar-section-label {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 32px; padding: 12px 8px 0;
+  font: var(--label-small); font-weight: 400; color: var(--sidebar-muted);
+}
+.workspace-label {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 28px; margin: 20px 8px 6px; padding: 0;
+  font: 400 12px/18px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-subtle);
+  letter-spacing: 0.02em;
+}
+.workspace-label .add-btn {
+  width: 16px; height: 16px; margin-top: -2px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--sidebar-subtle); opacity: 0.6;
+  border-radius: 6px;
+  transition: background var(--ff-fast) ease, opacity var(--ff-fast) ease;
+}
+.workspace-label .add-btn:hover { background: var(--sidebar-hover); opacity: 1; }
+.ws-row {
+  width: 100%; height: 36px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 8px; border-radius: 8px;
+  font: 400 14px/22px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-muted);
+  transition: background var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.ws-row:hover { background: var(--sidebar-hover); color: var(--sidebar-ink); }
+.ws-row:active { background: var(--sidebar-hover); color: var(--sidebar-ink); }
+.ws-row .chev-wrap { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: transform var(--ff-fast) ease; }
+.ws-row .chev { color: var(--sidebar-subtle); opacity: 0.5; }
+.ws-row .ws-name { text-align: left; }
+/* 展开状态：箭头旋转 90°，名称变深色 */
+.ws-row.expanded { color: var(--sidebar-ink); }
+.ws-row.expanded .chev-wrap { transform: rotate(90deg); }
+.ws-row.expanded .chev { opacity: 0.8; }
+/* 展开后的子项 */
+.ws-children { overflow: hidden; max-height: 0; transition: max-height var(--ff-med) ease; }
+.ws-children.open { max-height: 200px; }
+.ws-child {
+  width: 100%; height: 36px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 8px 0 28px; border-radius: 8px;
+  font: 400 13px/20px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-muted);
+  transition: background var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.ws-child:hover { background: var(--sidebar-hover); color: var(--sidebar-ink); }
+.ws-child .ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sidebar-subtle); opacity: 0.5; flex-shrink: 0; }
+/* 最近会话（与工作区并列，默认展开） */
+.ws-recent-label {
+  height: 28px; margin: 24px 8px 8px; padding: 0;
+  font: 400 12px/18px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-subtle);
+  display: flex; align-items: center; justify-content: flex-start; gap: 6px;
+  letter-spacing: 0.02em;
+}
+.ws-recent-label .collapse-btn {
+  width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--sidebar-subtle); opacity: 0.6;
+  border-radius: 6px;
+  transition: background var(--ff-fast) ease, opacity var(--ff-fast) ease, transform var(--ff-fast) ease;
+}
+.ws-recent-label .collapse-btn:hover { background: var(--sidebar-hover); opacity: 1; }
+.ws-recent-label .collapse-btn svg { transition: transform var(--ff-fast) ease; transform: rotate(90deg); }
+.ws-recent-label .collapse-btn.collapsed svg { transform: rotate(0deg); }
+.ws-recent-list { overflow: hidden; max-height: 300px; transition: max-height var(--ff-med) ease; }
+.ws-recent-list.collapsed { max-height: 0; }
+.ws-recent-item {
+  width: 100%; height: 40px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 8px; border-radius: 8px;
+  font: 400 15px/22px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-deep);
+  transition: background var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.ws-recent-item:hover { background: var(--sidebar-hover); color: var(--sidebar-ink); }
+.ws-recent-item .item-title { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-recent-item .item-time { font: var(--label-small); color: var(--sidebar-subtle); opacity: 0; flex-shrink: 0; transition: opacity var(--ff-fast) ease; }
+.ws-recent-item:hover .item-time { opacity: 0.6; }
+/* 状态点：名称右侧，仅运行中/错误显示 */
+.ws-recent-item .status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  margin-left: auto;
+}
+.ws-recent-item .status-dot.running { background: var(--status-success); }
+.ws-recent-item .status-dot.error { background: #FF3B30; }
+
+.sidebar-footer {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 8px;
+  min-height: 48px;
+  border-top: 0.5px solid var(--sidebar-line);
+}
+.tool-pill {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 88px; height: 36px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0.5px solid transparent;
+  border-radius: var(--ff-radius);
+  font: 400 14px/20px "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  color: var(--sidebar-muted);
+  transition: background var(--ff-fast) ease, border-color var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.tool-pill:hover { background: var(--sidebar-hover); border-color: var(--sidebar-line); color: var(--sidebar-ink); }
+.settings-btn {
+  width: 32px; height: 32px; border-radius: var(--ff-radius);
+  background: transparent;
+  border: 0.5px solid transparent;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--sidebar-muted);
+  margin-left: auto;
+  transition: background var(--ff-fast) ease, border-color var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+.settings-btn:hover { background: var(--sidebar-hover); border-color: var(--sidebar-line); color: var(--sidebar-ink); }
+
+/* ============ 抽屉遮罩 ============ */
+.drawer-scrim {
+  position: absolute; inset: 0;
+  background: var(--scrim);
+  z-index: 15; pointer-events: none;
+  opacity: 0; transition: opacity 210ms ease-out;
+}
+.drawer-scrim.visible { opacity: 0.62 !important; pointer-events: auto !important; }
+
+/* 小屏: 抽屉遮罩 (仅直板机) */
+@container app (max-width: 599px) {
+  .drawer-scrim.visible {
+    opacity: 0.62 !important;
+    pointer-events: auto !important;
+    transition: none !important;
+  }
+  .drawer-scrim {
+    transition: none !important;
+  }
+}
+
+/* ============ 首页抽屉按钮 ============ */
+.drawer-fab {
+  position: absolute;
+  left: calc(12px + var(--safe-left));
+  top: calc(52px + var(--safe-top));
+  z-index: 12;
+  width: 36px; height: 36px; border-radius: var(--ff-radius);
+  background: transparent;
+  display: none;
+  align-items: center; justify-content: center;
+  border: none;
+  color: var(--sidebar-muted);
+  transition: background var(--ff-fast) ease, color var(--ff-fast) ease;
+}
+/* 双折/三折叠收起侧栏时显示 */
+@container app (min-width: 600px) {
+  .sidebar-panel.collapsed ~ .content-card .drawer-fab {
+    display: flex;
+  }
+}
+/* 直板机始终显示 */
+@container app (max-width: 599px) {
+  .drawer-fab {
+    display: flex;
+  }
+}
+.drawer-fab:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink);
+}
+.drawer-fab:active {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink);
+}
+
+/* ============ Home Indicator ============ */
+.home-indicator {
+  position: absolute;
+  bottom: calc(8px + var(--safe-bottom));
+  left: 50%; transform: translateX(-50%);
+  width: 134px; height: 5px; border-radius: 3px;
+  background: rgba(0,0,0,.20); z-index: 40; pointer-events: none;
+}
+
+/* ============ 容器查询适配 (ConversationLayoutPolicy) ============ */
+
+/* 列表视图始终单列 */
+
+/* ============ 设备尺寸微调 ============ */
+/* 直板机: content-card 圆角与设备圆角匹配 */
+@container app (max-width: 599px) {
+  .device[data-mode="slab"] {
+    border-radius: 47px;
+  }
+}
+
+/* 双折: 稍小圆角 */
+@container app (min-width: 600px) and (max-width: 839px) {
+  .device[data-mode="duo"] {
+    border-radius: 36px;
+  }
+}
+
+/* 三折叠: 最小圆角 */
+@container app (min-width: 840px) {
+  .device[data-mode="trifold"] {
+    border-radius: 28px;
+  }
+}
+
+/* 小屏: 侧栏宽度 + 覆盖模式 (仅直板机) */
+@container app (max-width: 599px) {
+  .sidebar-panel:not(.open) {
+    width: var(--sidebar-w, 295px) !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    opacity: 0 !important;
+    transform: translateX(-10%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+    transition: none !important;
+  }
+  .sidebar-panel.open {
+    width: var(--sidebar-w, 295px) !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    opacity: 1 !important;
+    transform: translateX(0) !important;
+    pointer-events: auto !important;
+    z-index: 20 !important;
+    transition: none !important;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- 预览设备切换 -->
+<div class="preview-bar">
+  <span class="label">设备:</span>
+  <div class="device-switch">
+    <button class="device-btn active" data-mode="slab">直板机</button>
+    <button class="device-btn" data-mode="duo">双折</button>
+    <button class="device-btn" data-mode="trifold">三折叠</button>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="device-frame" data-mode="slab" id="deviceFrame">
+    <div class="device" data-mode="slab" id="device">
+    <!-- 状态栏: 系统层级, 浮于抽屉/内容之上 -->
+    <div class="statusbar">
+      <span id="clock">03:00</span>
+      <span class="icons">
+        <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="5" y="4.5" width="3" height="7.5" rx="1"/><rect x="10" y="2" width="3" height="10" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1" opacity=".35"/></svg>
+        <svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor"><path d="M8 9.6a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8zM8 5.5c1.7 0 3.2.7 4.3 1.8l-1.4 1.4A4 4 0 0 0 8 7.5a4 4 0 0 0-2.9 1.2L3.7 7.3A6 6 0 0 1 8 5.5zM8 1c2.8 0 5.3 1.1 7.1 2.9l-1.4 1.4A8 8 0 0 0 8 3a8 8 0 0 0-5.7 2.3L.9 3.9A10 10 0 0 1 8 1z"/></svg>
+        <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="1.5" fill="currentColor"/><path d="M23.5 4v4a2 2 0 0 0 0-4z" fill="currentColor" opacity=".4"/></svg>
+      </span>
+    </div>
+    <div class="app-shell">
+
+      <!-- Sidebar Floor -->
+      <div class="sidebar-floor" id="sidebarFloor"></div>
+
+      <!-- Sidebar Panel -->
+      <aside class="sidebar-panel" id="sidebarPanel">
+        <div class="sidebar-inner">
+          <!-- PrimaryNavigationHeader -->
+          <div class="sidebar-header">
+            <span class="sidebar-brand">OpenBitFun</span>
+            <div class="sidebar-header-btns">
+              <button class="sidebar-icon-btn" aria-label="搜索">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+              </button>
+              <button class="sidebar-icon-btn sidebar-collapse-btn" aria-label="收起侧栏" id="collapseSidebarBtn" style="display:none">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="sidebar-scroll">
+            <!-- 助理入口 · 毕方 IP -->
+            <button class="assistant-row">
+              <span class="mascot">
+                <img src="assets/bitfun-mascot.svg" alt="毕方" draggable="false">
+              </span>
+              助理
+            </button>
+
+            <!-- 小应用入口 -->
+            <button class="sidebar-miniapp-btn" id="goMiniApps">
+              <span class="miniapp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <rect x="3.2" y="3.2" width="7.6" height="7.6" rx="2.2"/>
+                  <circle cx="17" cy="7" r="3.8"/>
+                  <rect x="3.2" y="13.2" width="7.6" height="7.6" rx="3.8"/>
+                  <circle cx="17" cy="17" r="3.8"/>
+                </svg>
+              </span>
+              小应用
+            </button>
+
+            <!-- 工作区 -->
+            <div class="workspace-label">
+              <span>工作区</span>
+              <button class="add-btn" aria-label="添加工作区">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+            </div>
+            <button class="ws-row" data-ws="DevEco">
+              <span class="ws-name">DevEco</span>
+              <span class="chev-wrap"><svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <div class="ws-children" id="ws-DevEco">
+              <button class="ws-child"><span class="ws-dot"></span>远程会话</button>
+              <button class="ws-child"><span class="ws-dot"></span>本地草稿</button>
+            </div>
+            <button class="ws-row" data-ws="BitFun">
+              <span class="ws-name">BitFun</span>
+              <span class="chev-wrap"><svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <div class="ws-children" id="ws-BitFun">
+              <button class="ws-child"><span class="ws-dot"></span>远程会话</button>
+              <button class="ws-child"><span class="ws-dot"></span>本地草稿</button>
+            </div>
+            <button class="ws-row" data-ws="助理2">
+              <span class="ws-name">助理 2</span>
+              <span class="chev-wrap"><svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <div class="ws-children" id="ws-助理2">
+              <button class="ws-child"><span class="ws-dot"></span>远程会话</button>
+              <button class="ws-child"><span class="ws-dot"></span>本地草稿</button>
+            </div>
+
+            <!-- 最近（与工作区并列，默认展开） -->
+            <div class="ws-recent-label">
+              <span>最近</span>
+              <button class="collapse-btn" id="wsRecentCollapse" aria-label="收起/展开">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+            </div>
+            <div class="ws-recent-list" id="wsRecentList">
+              <button class="ws-recent-item">
+                <span class="item-title">https://github.com/openbitfun</span>
+                <span class="status-dot running"></span>
+                <span class="item-time">2m</span>
+              </button>
+              <button class="ws-recent-item">
+                <span class="item-title">test</span>
+                <span class="item-time">1h</span>
+              </button>
+              <button class="ws-recent-item">
+                <span class="item-title">https://github.com/openbitfun</span>
+                <span class="item-time">3h</span>
+              </button>
+              <button class="ws-recent-item">
+                <span class="item-title">demo 页面布局调整</span>
+                <span class="status-dot error"></span>
+                <span class="item-time">1d</span>
+              </button>
+              <button class="ws-recent-item">
+                <span class="item-title">composer 交互优化</span>
+                <span class="item-time">2d</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div class="sidebar-footer">
+            <button class="tool-pill">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/></svg>
+              工具
+            </button>
+            <button class="settings-btn" aria-label="设置">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Content Card -->
+      <div class="content-card" id="contentCard">
+        <!-- 页面栈 -->
+        <div class="pages">
+          <!-- 页面一：RecentRemoteHome -->
+          <section class="page active recent-home" id="pageHome">
+            <button class="drawer-fab" id="openDrawer" aria-label="打开侧栏">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>
+            </button>
+            <div class="recent-home-inner">
+              <!-- WelcomeBrandFlow (sweep 动画) -->
+              <div class="brand-flow" id="brandFlow">
+                <canvas id="brandCanvas" width="132" height="132"></canvas>
+              </div>
+              <div class="recent-title" id="recentTitle">
+                <span class="title-line active" data-greeting="今天，想做点什么？"></span>
+                <span class="title-line" data-greeting="代码，从这里开始"></span>
+                <span class="title-line" data-greeting="连接你的创意"></span>
+                <span class="title-line" data-greeting="让灵感流动"></span>
+              </div>
+            </div>
+
+            <!-- ComposerBar (ComposerBar.ets 还原: 胶囊 + 模糊 + 单行折叠) -->
+            <div class="composer" id="composer">
+              <div class="composer-pill" id="composerPill">
+                <button class="composer-add" aria-label="添加图片">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+                <input class="composer-input" id="composerInput" type="text" placeholder="给 BitFun 发消息" autocomplete="off">
+                <button class="composer-action" id="composerAction" aria-label="语音输入">
+                  <svg class="icon-mic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+                  <span class="send-surface" aria-hidden="true">
+                    <svg width="16" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                  </span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- 页面二：MiniAppSurface -->
+          <section class="page hidden-right" id="pageApps">
+            <div class="miniapp-header">
+              <button class="nav-back" id="backHome" aria-label="返回">
+                <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7"/></svg>
+              </button>
+              <span class="title">小应用</span>
+              <button class="view-toggle" id="viewToggle" aria-label="切换视图">
+                <svg class="icon-grid" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+                  <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+                  <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+                  <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+                </svg>
+                <svg class="icon-swipe" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+                  <rect x="2" y="6" width="20" height="12" rx="2"/>
+                  <path d="M8 12h8M8 10v4M16 10v4"/>
+                </svg>
+              </button>
+            </div>
+            <div class="miniapp-body">
+              <!-- 卡片滑动视图 -->
+              <div class="card-swiper-view" id="cardSwiperView">
+                <div class="card-stack" id="cardStack"></div>
+                <div class="card-indicator">
+                  <span class="dot active"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                </div>
+                <div class="card-hint">左右滑动切换</div>
+              </div>
+
+              <!-- 网格视图 -->
+              <div class="app-grid" id="appGrid" style="display:none"></div>
+            </div>
+          </section>
+
+        </div>
+
+        <div class="home-indicator"></div>
+      </div><!-- /content-card -->
+
+      <!-- Drawer Scrim -->
+      <div class="drawer-scrim" id="drawerScrim"></div>
+    </div><!-- /app-shell -->
+    </div><!-- /device -->
+  </div><!-- /device-frame -->
+</div>
+
+<script>
+/* ============================================================
+   Mock 数据 (字段与 MiniAppModels / RemoteModels 对齐)
+   ============================================================ */
+const miniApps = [
+  { id: 'builtin-gomoku',           name: '五子棋',    cover: 'assets/gomoku.webp' },
+  { id: 'builtin-regex-playground', name: '正则游乐场', cover: 'assets/regex-playground.webp' },
+  { id: 'builtin-daily-divination', name: '每日占卜',   cover: 'assets/daily-divination.webp' },
+];
+
+/* ============================================================
+   渲染：小应用网格 · 趣味化设计（简化版）
+   ============================================================ */
+const appEmojis = {
+  'builtin-gomoku': '⚫⚪',
+  'builtin-regex-playground': '🔧',
+  'builtin-daily-divination': '🔮',
+};
+
+// 渲染列表视图
+const appDescriptions = {
+  'builtin-gomoku': '经典五子棋对战，考验你的策略与布局能力',
+  'builtin-regex-playground': '正则表达式练习场，提升你的文本处理技巧',
+  'builtin-daily-divination': '每日星座塔罗占卜，为你揭示今日运势',
+};
+
+document.getElementById('appGrid').innerHTML = miniApps.map(a => `
+  <button class="app-card" data-id="${a.id}">
+    <div class="app-cover-wrap">
+      <img src="${a.cover}" alt="${a.name}" loading="lazy">
+    </div>
+    <div class="app-info">
+      <span class="app-name">${a.name}</span>
+      <span class="app-desc">${appDescriptions[a.id] || ''}</span>
+    </div>
+  </button>
+`).join('');
+
+// 渲染卡片滑动视图
+const cardStack = document.getElementById('cardStack');
+const cardIndicator = document.querySelector('.card-indicator');
+let currentCardIndex = 0;
+
+function renderCardStack() {
+  cardStack.innerHTML = miniApps.map((a, i) => {
+    let stateClass = '';
+    if (i === currentCardIndex) stateClass = 'card-active';
+    else if (i === currentCardIndex - 1) stateClass = 'card-prev';
+    else if (i === currentCardIndex + 1) stateClass = 'card-next';
+    else if (i < currentCardIndex) stateClass = 'card-hidden-left';
+    else stateClass = 'card-hidden-right';
+
+    return `
+      <div class="swiper-card ${stateClass}" data-index="${i}" data-id="${a.id}">
+        <div class="card-cover">
+          <img src="${a.cover}" alt="${a.name}" draggable="false">
+        </div>
+        <div class="card-info">
+          <div class="card-name">${a.name}</div>
+          <div class="card-desc">${appDescriptions[a.id] || ''}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // 更新指示器
+  cardIndicator.innerHTML = miniApps.map((_, i) =>
+    `<span class="dot ${i === currentCardIndex ? 'active' : ''}"></span>`
+  ).join('');
+
+  attachCardEvents();
+}
+
+function attachCardEvents() {
+  const cards = cardStack.querySelectorAll('.swiper-card');
+  let startX = 0;
+  let currentX = 0;
+  let isDragging = false;
+  let currentCard = null;
+
+  cards.forEach(card => {
+    card.addEventListener('pointerdown', (e) => {
+      if (!card.classList.contains('card-active')) return;
+      isDragging = true;
+      currentCard = card;
+      startX = e.clientX;
+      currentX = startX;
+      card.classList.add('dragging');
+      card.setPointerCapture(e.pointerId);
+    });
+
+    card.addEventListener('pointermove', (e) => {
+      if (!isDragging || card !== currentCard) return;
+      currentX = e.clientX;
+      const diff = currentX - startX;
+      card.style.transform = `translateX(${diff}px) rotate(${diff * 0.05}deg)`;
+    });
+
+    card.addEventListener('pointerup', (e) => {
+      if (!isDragging || card !== currentCard) return;
+      isDragging = false;
+      card.classList.remove('dragging');
+      const diff = e.clientX - startX;
+
+      if (Math.abs(diff) > 80) {
+        // 切换卡片
+        if (diff > 0 && currentCardIndex > 0) {
+          currentCardIndex--;
+        } else if (diff < 0 && currentCardIndex < miniApps.length - 1) {
+          currentCardIndex++;
+        }
+        renderCardStack();
+      } else {
+        // 回弹
+        card.style.transform = '';
+      }
+      currentCard = null;
+    });
+
+    card.addEventListener('pointercancel', () => {
+      if (card === currentCard) {
+        isDragging = false;
+        card.classList.remove('dragging');
+        card.style.transform = '';
+        currentCard = null;
+      }
+    });
+  });
+}
+
+// 初始化渲染
+renderCardStack();
+
+// 视图切换
+let isGridView = false;
+const viewToggle = document.getElementById('viewToggle');
+const cardSwiperView = document.getElementById('cardSwiperView');
+const appGrid = document.getElementById('appGrid');
+const iconGrid = viewToggle.querySelector('.icon-grid');
+const iconSwipe = viewToggle.querySelector('.icon-swipe');
+
+viewToggle.addEventListener('click', () => {
+  isGridView = !isGridView;
+  if (isGridView) {
+    cardSwiperView.style.display = 'none';
+    appGrid.style.display = 'grid';
+    iconGrid.style.display = 'none';
+    iconSwipe.style.display = 'block';
+  } else {
+    cardSwiperView.style.display = 'flex';
+    appGrid.style.display = 'none';
+    iconGrid.style.display = 'block';
+    iconSwipe.style.display = 'none';
+    renderCardStack(); // 重新渲染卡片
+  }
+});
+
+/* ============================================================
+   WelcomeBrandFlow · Canvas 等高线扫光动画
+   精确移植自 WelcomeBrandFlow.ets 的 CONTOURS 路径
+   ============================================================ */
+const CONTOURS = [
+  "M154.860 59.584 Q167.500 59.584 173.820 70.531 L200.680 117.053 Q207.000 128.000 200.680 138.947 L173.820 185.469 Q167.500 196.416 154.860 196.416 L101.140 196.416 Q88.500 196.416 82.180 185.469 L55.320 138.947 Q49.000 128.000 55.320 117.053 L82.180 70.531 Q88.500 59.584 101.140 59.584 Z",
+  "M152.788 57.185 Q165.682 56.702 172.547 67.628 L201.722 114.060 Q208.586 124.985 202.557 136.392 L176.934 184.875 Q170.905 196.282 158.011 196.765 L103.212 198.815 Q90.318 199.298 83.453 188.372 L54.278 141.940 Q47.414 131.015 53.443 119.608 L79.066 71.125 Q85.095 59.718 97.989 59.235 Z",
+  "M150.574 54.847 Q163.702 53.863 171.119 64.741 L202.639 110.973 Q210.056 121.851 204.343 133.713 L180.066 184.126 Q174.353 195.988 161.224 196.972 L105.426 201.153 Q92.298 202.137 84.881 191.259 L53.361 145.027 Q45.944 134.149 51.657 122.287 L75.934 71.874 Q81.647 60.012 94.776 59.028 Z",
+  "M148.218 52.578 Q161.562 51.074 169.537 61.879 L203.427 107.798 Q211.401 118.603 206.031 130.911 L183.208 183.221 Q177.838 195.529 164.494 197.032 L107.782 203.422 Q94.438 204.926 86.463 194.121 L52.573 148.202 Q44.599 137.397 49.969 125.089 L72.792 72.779 Q78.162 60.471 91.506 58.968 Z",
+  "M145.724 50.384 Q159.263 48.344 167.799 59.048 L204.079 104.542 Q212.616 115.246 207.614 127.991 L186.355 182.157 Q181.353 194.902 167.814 196.943 L110.276 205.616 Q96.737 207.656 88.201 196.952 L51.921 151.458 Q43.384 140.754 48.386 128.009 L69.645 73.843 Q74.647 61.098 88.186 59.057 Z",
+  "M143.094 48.274 Q156.805 45.680 165.907 56.257 L204.592 101.209 Q213.694 111.786 209.085 124.957 L189.498 180.935 Q184.889 194.106 171.178 196.700 L112.906 207.726 Q99.195 210.320 90.093 199.743 L51.408 154.791 Q42.306 144.214 46.915 131.043 L66.502 75.065 Q71.111 61.894 84.822 59.300 Z",
+  "M140.330 46.254 Q154.191 43.091 163.861 53.512 L204.959 97.806 Q214.629 108.227 210.439 121.813 L192.629 179.551 Q188.438 193.137 174.578 196.301 L115.670 209.746 Q101.809 212.909 92.139 202.488 L51.041 158.194 Q41.371 147.773 45.561 134.187 L63.371 76.449 Q67.562 62.863 81.422 59.699 Z",
+  "M137.437 44.331 Q151.423 40.584 161.662 50.823 L205.177 94.338 Q215.416 104.577 211.669 118.563 L195.741 178.007 Q191.993 191.993 178.007 195.741 L118.563 211.669 Q104.577 215.416 94.338 205.177 L50.823 161.662 Q40.584 151.423 44.331 137.437 L60.259 77.993 Q64.007 64.007 77.993 60.259 Z",
+  "M134.416 42.513 Q148.504 38.167 159.311 48.195 L205.242 90.813 Q216.049 100.840 212.769 115.214 L198.826 176.300 Q195.545 190.673 181.458 195.019 L121.584 213.487 Q107.496 217.833 96.689 207.805 L50.758 165.187 Q39.951 155.160 43.231 140.786 L57.174 79.700 Q60.455 65.327 74.542 60.981 Z",
+  "M131.272 40.805 Q145.436 35.849 156.810 45.637 L205.149 87.237 Q216.523 97.025 213.733 111.769 L201.877 174.431 Q199.087 189.175 184.923 194.131 L124.728 215.195 Q110.564 220.151 99.190 210.363 L50.851 168.763 Q39.477 158.975 42.267 144.231 L54.123 81.569 Q56.913 66.825 71.077 61.869 Z",
+  "M128.010 39.216 Q142.223 33.637 154.160 43.157 L204.895 83.616 Q216.832 93.136 214.556 108.234 L204.885 172.401 Q202.609 187.499 188.396 193.077 L127.990 216.784 Q113.777 222.363 101.840 212.843 L51.105 172.384 Q39.168 162.864 41.444 147.766 L51.115 83.599 Q53.391 68.501 67.604 62.923 Z",
+  "M124.633 37.750 Q138.869 31.539 151.365 40.762 L204.475 79.959 Q216.972 89.182 215.233 104.616 L207.842 170.209 Q206.103 185.643 191.868 191.854 L131.367 218.250 Q117.131 224.461 104.635 215.238 L51.525 176.041 Q39.028 166.818 40.767 151.384 L48.158 85.791 Q49.897 70.357 64.132 64.146 Z",
+  "M121.147 36.415 Q135.377 29.562 148.427 38.459 L203.889 76.272 Q216.938 85.169 215.758 100.920 L210.742 167.858 Q209.562 183.608 195.331 190.461 L134.853 219.585 Q120.623 226.438 107.573 217.541 L52.111 179.728 Q39.062 170.831 40.242 155.080 L45.258 88.142 Q46.438 72.392 60.669 65.539 Z",
+  "M117.556 35.216 Q131.752 27.713 145.348 36.256 L203.131 72.563 Q216.727 81.106 216.127 97.152 L213.575 165.347 Q212.975 181.393 198.778 188.896 L138.444 220.784 Q124.248 228.287 110.652 219.744 L52.869 183.437 Q39.273 174.894 39.873 158.848 L42.425 90.653 Q43.025 74.607 57.222 67.104 Z",
+  "M113.866 34.160 Q128.000 26.000 142.134 34.160 L202.201 68.840 Q216.335 77.000 216.335 93.320 L216.335 162.680 Q216.335 179.000 202.201 187.160 L142.134 221.840 Q128.000 230.000 113.866 221.840 L53.799 187.160 Q39.665 179.000 39.665 162.680 L39.665 93.320 Q39.665 77.000 53.799 68.840 Z"
+];
+
+const LENGTHS = [460.633, 470.212, 479.792, 489.371, 498.95, 508.529, 518.108, 527.687, 537.267, 546.846, 556.425, 566.004, 575.583, 585.163, 594.742];
+
+/* ============================================================
+   WelcomeBrandFlow · Canvas 呼吸动效
+   原始 CONTOURS 15 层叠加 + 扫光 + 呼吸脉动
+   ============================================================ */
+
+// 呼吸状态控制（全局，提前声明供 setupBrandFlow 使用）
+let breathState = 'idle';
+function setBreathState(state) {
+  breathState = state;
+}
+
+function setupBrandFlow() {
+  const canvas = document.getElementById('brandCanvas');
+  const container = document.getElementById('brandFlow');
+  const size = 160;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  canvas.style.width = size + 'px';
+  canvas.style.height = size + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr * size / 256, dpr * size / 256);
+
+  let phase = 0;
+  const cycle = 5000; // 扫光周期
+  // 呼吸与打字机节奏同步：打字 1.6s + 停留 3s + 删除 0.8s + 间隔 0.8s ≈ 6.2s
+  const BREATH_CYCLE = 6200; // 呼吸周期与打字机完整周期一致
+  const BREATH_MIN = 0.96;   // 呼吸最小缩放
+  const BREATH_MAX = 1.04;   // 呼吸最大缩放
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // 全局相位：由打字机控制，实现呼吸与文字节奏同步
+  let globalBreathPhase = 0;
+  let lastFrameTime = Date.now();
+
+  function updateBreathPhase(state) {
+    // state: 'typing' | 'holding' | 'erasing' | 'idle'
+    const now = Date.now();
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+
+    switch(state) {
+      case 'typing':
+        // 打字时：快速吸气（放大）
+        globalBreathPhase = Math.min(1, globalBreathPhase + dt / 1600);
+        break;
+      case 'holding':
+        // 停留时：缓慢呼气（缩小）
+        globalBreathPhase = Math.max(0, globalBreathPhase - dt / 3000);
+        break;
+      case 'erasing':
+        // 删除时：快速呼气
+        globalBreathPhase = Math.max(0, globalBreathPhase - dt / 800);
+        break;
+      case 'idle':
+        // 间隔时：保持最低
+        globalBreathPhase = Math.max(0, globalBreathPhase - dt / 400);
+        break;
+    }
+  }
+
+  function getBreathScale() {
+    // 使用平滑的缓动函数
+    const t = globalBreathPhase;
+    const eased = t * t * (3 - 2 * t); // smoothstep
+    return BREATH_MIN + (BREATH_MAX - BREATH_MIN) * eased;
+  }
+
+  function paint() {
+    ctx.clearRect(0, 0, 256, 256);
+
+    // 更新呼吸相位（与打字机同步）
+    if (!reducedMotion) {
+      updateBreathPhase(breathState);
+    }
+
+    // 呼吸缩放：围绕中心 128,128
+    const breathScale = reducedMotion ? 1 : getBreathScale();
+    ctx.save();
+    ctx.translate(128, 128);
+    ctx.scale(breathScale, breathScale);
+    ctx.translate(-128, -128);
+
+    // 扫光渐变：高级灰蓝光感，低饱和
+    const sweepT = reducedMotion ? 0.5 : ((Date.now() % 5000) / 5000);
+    const sweepR = 128 + (sweepT * 2 - 1) * 128;
+    const innerR = Math.max(0, sweepR - 50);
+    const outerR = Math.min(256, sweepR + 50);
+    const gradient = ctx.createRadialGradient(128, 128, innerR, 128, 128, outerR);
+    // 高级灰蓝渐变：雾灰 → 银灰 → 月光白，低饱和
+    gradient.addColorStop(0, 'rgba(23,23,23,0.04)');
+    gradient.addColorStop(0.25, 'rgba(120,125,140,0.08)');
+    gradient.addColorStop(0.4, 'rgba(190,195,210,0.25)');
+    gradient.addColorStop(0.5, 'rgba(245,247,252,0.9)');
+    gradient.addColorStop(0.6, 'rgba(190,195,210,0.25)');
+    gradient.addColorStop(0.75, 'rgba(120,125,140,0.08)');
+    gradient.addColorStop(1, 'rgba(23,23,23,0.04)');
+
+    ctx.strokeStyle = reducedMotion ? '#171717' : gradient;
+    ctx.lineWidth = 1.3;
+    CONTOURS.forEach(d => {
+      const path = new Path2D(d);
+      ctx.stroke(path);
+    });
+    ctx.restore();
+  }
+
+  if (!reducedMotion) {
+    function animate() {
+      paint();
+      requestAnimationFrame(animate);
+    }
+    animate();
+  } else {
+    paint();
+  }
+}
+setupBrandFlow();
+
+/* ============================================================
+   AppShell 抽屉交互 (AppShell.ets 精确还原)
+   ============================================================ */
+const sidebarPanel = document.getElementById('sidebarPanel');
+const sidebarFloor = document.getElementById('sidebarFloor');
+const contentCard  = document.getElementById('contentCard');
+const drawerScrim  = document.getElementById('drawerScrim');
+const device       = document.getElementById('device');
+
+function getSidebarWidth() {
+  // 统一宽度 295px，与双折/三折叠常驻侧栏一致
+  return 295;
+}
+
+function updateSidebarWidth() {
+  const sw = getSidebarWidth();
+  document.documentElement.style.setProperty('--sidebar-w', sw + 'px');
+  // 小屏模式设置内联宽度，大屏使用容器查询的宽度
+  if (device.clientWidth < 600) {
+    sidebarPanel.style.width = sw + 'px';
+  } else {
+    sidebarPanel.style.width = '';
+  }
+}
+
+function openDrawer() {
+  updateSidebarWidth();
+  sidebarFloor.classList.add('visible');
+  sidebarPanel.classList.add('open');
+  contentCard.classList.add('drawer-open');
+  drawerScrim.classList.add('visible');
+}
+
+function closeDrawer() {
+  sidebarFloor.classList.remove('visible');
+  sidebarPanel.classList.remove('open');
+  contentCard.classList.remove('drawer-open');
+  drawerScrim.classList.remove('visible');
+}
+
+document.getElementById('openDrawer').addEventListener('click', openDrawer);
+drawerScrim.addEventListener('click', closeDrawer);
+window.addEventListener('resize', updateSidebarWidth);
+
+// 侧栏收起按钮（双折/三折叠）
+const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
+if (collapseSidebarBtn) {
+  collapseSidebarBtn.addEventListener('click', () => {
+    sidebarPanel.classList.toggle('collapsed');
+    // 收起后显示 drawer-fab 以便重新打开
+    if (sidebarPanel.classList.contains('collapsed')) {
+      document.getElementById('openDrawer').style.display = 'flex';
+    } else {
+      document.getElementById('openDrawer').style.display = 'none';
+    }
+  });
+}
+
+/* ============================================================
+   工作区展开/收起交互
+   ============================================================ */
+document.querySelectorAll('.ws-row').forEach(row => {
+  row.addEventListener('click', () => {
+    const wsId = row.dataset.ws;
+    const children = document.getElementById('ws-' + wsId);
+    if (!children) return;
+    const isOpen = children.classList.contains('open');
+    // 关闭其他展开项（手风琴效果）
+    document.querySelectorAll('.ws-children.open').forEach(el => el.classList.remove('open'));
+    document.querySelectorAll('.ws-row.expanded').forEach(el => el.classList.remove('expanded'));
+    if (!isOpen) {
+      children.classList.add('open');
+      row.classList.add('expanded');
+    }
+  });
+});
+
+/* ============================================================
+   最近会话收起/展开（点击三角按钮切换）
+   ============================================================ */
+const wsRecentList = document.getElementById('wsRecentList');
+const wsRecentCollapse = document.getElementById('wsRecentCollapse');
+if (wsRecentCollapse && wsRecentList) {
+  wsRecentCollapse.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isCollapsed = wsRecentList.classList.contains('collapsed');
+    wsRecentList.classList.toggle('collapsed');
+    wsRecentCollapse.classList.toggle('collapsed', !isCollapsed);
+  });
+}
+
+/* ============================================================
+   打字机问候语轮换 · 与呼吸动效同步
+   ============================================================ */
+const GREETINGS = [
+  '今天，想做点什么？',
+  '代码，从这里开始',
+  '连接你的创意',
+  '让灵感流动'
+];
+const TYPE_SPEED = 80;    // 打字速度 ms/字
+const ERASE_SPEED = 40;   // 删除速度 ms/字
+const HOLD_TIME = 3000;   // 停留时间
+const ERASE_DELAY = 800;  // 开始删除前的延迟
+
+function typewriterGreeting() {
+  const lines = document.querySelectorAll('.title-line');
+  if (!lines.length) return;
+  let idx = 0;
+
+  function typeLine(line, text, done) {
+    let i = 0;
+    line.textContent = '';
+    setBreathState('typing'); // 打字时吸气
+    function type() {
+      if (i < text.length) {
+        line.textContent = text.substring(0, ++i);
+        setTimeout(type, TYPE_SPEED);
+      } else {
+        setBreathState('holding'); // 停留时呼气
+        setTimeout(done, HOLD_TIME);
+      }
+    }
+    type();
+  }
+
+  function eraseLine(line, done) {
+    const text = line.textContent;
+    let i = text.length;
+    setBreathState('erasing'); // 删除时快速呼气
+    function erase() {
+      if (i > 0) {
+        line.textContent = text.substring(0, --i);
+        setTimeout(erase, ERASE_SPEED);
+      } else {
+        setBreathState('idle'); // 间隔时保持
+        done();
+      }
+    }
+    erase();
+  }
+
+  function cycle() {
+    lines.forEach((el, i) => el.classList.toggle('active', i === idx));
+    const current = lines[idx];
+    const text = GREETINGS[idx];
+    typeLine(current, text, () => {
+      eraseLine(current, () => {
+        idx = (idx + 1) % GREETINGS.length;
+        cycle();
+      });
+    });
+  }
+
+  // 初始启动
+  cycle();
+}
+
+typewriterGreeting();
+
+/* ============================================================
+   页面导航
+   ============================================================ */
+const pageHome = document.getElementById('pageHome');
+const pageApps = document.getElementById('pageApps');
+
+document.getElementById('goMiniApps').addEventListener('click', () => {
+  closeDrawer();
+  pageHome.classList.replace('active', 'hidden-right');
+  pageApps.classList.replace('hidden-right', 'active');
+});
+document.getElementById('backHome').addEventListener('click', () => {
+  pageApps.classList.replace('active', 'hidden-right');
+  pageHome.classList.replace('hidden-right', 'active');
+});
+
+/* ============================================================
+   设备切换
+   ============================================================ */
+function initSidebarForMode() {
+  const w = device.clientWidth;
+  // 双折/三折叠：常驻侧栏，默认展开
+  if (w >= 600) {
+    sidebarPanel.classList.add('open');
+    sidebarFloor.classList.add('visible');
+    contentCard.classList.add('drawer-open');
+  } else {
+    // 直板机：默认收起
+    closeDrawer();
+  }
+  updateSidebarWidth();
+}
+
+document.querySelectorAll('.device-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelector('.device-btn.active').classList.remove('active');
+    btn.classList.add('active');
+    const mode = btn.dataset.mode;
+    device.dataset.mode = mode;
+    document.getElementById('deviceFrame').dataset.mode = mode;
+    initSidebarForMode();
+  });
+});
+
+initSidebarForMode();
+
+/* ============================================================
+   ComposerBar · 主操作状态机 (ChatComposerPolicy 对齐)
+   空闲 = 麦克风(38% 灰 on SOFT); 有文字/聚焦可发送 = 黑底白箭头
+   ============================================================ */
+const composerInput = document.getElementById('composerInput');
+const composerAction = document.getElementById('composerAction');
+const composerPill = document.getElementById('composerPill');
+
+function refreshComposerState() {
+  const hasText = composerInput.value.trim().length > 0;
+  composerAction.classList.toggle('sendable', hasText);
+  composerAction.setAttribute('aria-label', hasText ? '发送' : '语音输入');
+  composerPill.classList.toggle('expanded', hasText || document.activeElement === composerInput);
+}
+composerInput.addEventListener('input', refreshComposerState);
+composerInput.addEventListener('focus', refreshComposerState);
+composerInput.addEventListener('blur', refreshComposerState);
+composerAction.addEventListener('click', () => {
+  if (composerInput.value.trim().length > 0) {
+    composerInput.value = '';
+    refreshComposerState();
+    composerInput.focus();
+  }
+});
+
+/* ============================================================
+   状态栏时钟
+   ============================================================ */
+function tick() {
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+tick(); setInterval(tick, 30000);
+</script>
+</body>
+</html>
