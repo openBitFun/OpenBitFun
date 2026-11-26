@@ -16,45 +16,15 @@
 //   --shared-data    the default: the installed app's data
 // Explicit OPENBITFUN_USER_ROOT / OPENBITFUN_HOME values take precedence.
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { stampDevAppIdentity } from './desktop-nsh-package-common.mjs';
 
-/**
- * Stamps the dev NSH bundle (`target/desktop-nsh/nsh`) with OpenBitFun's app
- * name and 1.0.x icon so running the unbundled runner (`openbitfun-nsh`) shows
- * the real OpenBitFun Dock / taskbar icon instead of the OS generic executable icon.
- */
-export function stampDevAppIdentity(appDir, rootDir = ROOT, platform = process.platform) {
-  const appJsonPath = path.join(appDir, 'app.json');
-  if (existsSync(appJsonPath)) {
-    const manifest = JSON.parse(readFileSync(appJsonPath, 'utf8'));
-    let changed = false;
-    if (!manifest.name) {
-      manifest.name = 'OpenBitFun';
-      changed = true;
-    }
-    if (platform === 'darwin') {
-      const macIcon = path.join(rootDir, 'src', 'apps', 'desktop', 'icons', 'openbitfun-app-icon.icns');
-      if (existsSync(macIcon) && manifest.icon !== macIcon) {
-        manifest.icon = macIcon;
-        changed = true;
-      }
-    }
-    if (changed) {
-      writeFileSync(appJsonPath, `${JSON.stringify(manifest)}\n`);
-    }
-  }
-  if (platform === 'win32') {
-    const winIcon = path.join(rootDir, 'src', 'apps', 'desktop', 'icons', 'openbitfun-app-icon.ico');
-    const destIcon = path.join(appDir, 'icon.ico');
-    if (existsSync(winIcon)) {
-      copyFileSync(winIcon, destIcon);
-    }
-  }
-}
+export { stampDevAppIdentity };
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function resolveDesktopDevDataMode(args = []) {
   if (args.includes('--shared-data') && args.includes('--isolated-data')) {
@@ -179,10 +149,8 @@ async function main(args) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    await main(process.argv.slice(2).filter((arg) => arg !== '--'));
-  } catch (error) {
-    console.error(`[desktop-dev] ${error.message}`);
+  main(process.argv.slice(2).filter((arg) => arg !== '--')).catch((error) => {
+    console.error(`[desktop-dev] ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
-  }
+  });
 }

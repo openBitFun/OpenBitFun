@@ -18,7 +18,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildDesktopWebUiAsync } from './build-desktop-web-ui.mjs';
-import { stampDevAppIdentity } from './desktop-nsh-dev.mjs';
 import {
   backendCargoArgs,
   buildNativeUiAsync,
@@ -27,6 +26,7 @@ import {
   runnerCargoArgs,
   shouldParallelizeCargo,
   stageRunnerBinary,
+  stampDevAppIdentity,
 } from './desktop-nsh-package-common.mjs';
 
 export function parseDesktopBuildArgs(argv = []) {

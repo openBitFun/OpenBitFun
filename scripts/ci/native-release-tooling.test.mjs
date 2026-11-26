@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -121,6 +122,19 @@ test('desktop:dev keeps the installed data by default and isolates it on request
   assert.equal(scripts['nsh:install'], 'node scripts/ci/install-nsh.mjs --ensure');
   assert.match(scripts.postinstall, /node scripts\/ci\/install-nsh\.mjs --postinstall/);
   assert.doesNotMatch(Object.values(scripts).join('\n'), /desktop-tauri-build|scripts\/dev\.cjs|tauri dev/);
+  // Keep desktop-nsh-dev.mjs free of top-level await and circular imports back
+  // from desktop-nsh-build.mjs, which otherwise deadlocks ESM evaluation with exit code 13.
+  const devSource = readFileSync(path.join(root, 'scripts', 'desktop-nsh-dev.mjs'), 'utf8');
+  const buildSource = readFileSync(path.join(root, 'scripts', 'desktop-nsh-build.mjs'), 'utf8');
+  assert.doesNotMatch(buildSource, /from\s+['"]\.\/desktop-nsh-dev\.mjs['"]/);
+  assert.doesNotMatch(devSource, /^\s*await\s+main\(/m);
+  const stampCheck = spawnSync(process.execPath, [path.join(root, 'scripts', 'desktop-nsh-dev.mjs'), '--stamp-only'], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(stampCheck.status, 0, stampCheck.stderr);
+  assert.doesNotMatch(stampCheck.stderr, /unsettled top-level await/i);
 });
 
 test('install-nsh ensure/postinstall reuses existing versions, skips in CI/opt-out, and links node_modules/.bin', async (t) => {

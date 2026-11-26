@@ -316,6 +316,40 @@ function finalizeNativeUiBuild({ nshOut, app, apple, fingerprint, nshVersion }) 
   );
 }
 
+/**
+ * Stamps the dev NSH bundle (`target/desktop-nsh/nsh`) with OpenBitFun's app
+ * name and 1.0.x icon so running the unbundled runner (`openbitfun-nsh`) shows
+ * the real OpenBitFun Dock / taskbar icon instead of the OS generic executable icon.
+ */
+export function stampDevAppIdentity(appDir, rootDir = root, platform = process.platform) {
+  const appJsonPath = join(appDir, "app.json");
+  if (existsSync(appJsonPath)) {
+    const manifest = JSON.parse(readFileSync(appJsonPath, "utf8"));
+    let changed = false;
+    if (!manifest.name) {
+      manifest.name = "OpenBitFun";
+      changed = true;
+    }
+    if (platform === "darwin") {
+      const macIcon = join(rootDir, "src", "apps", "desktop", "icons", "openbitfun-app-icon.icns");
+      if (existsSync(macIcon) && manifest.icon !== macIcon) {
+        manifest.icon = macIcon;
+        changed = true;
+      }
+    }
+    if (changed) {
+      writeFileSync(appJsonPath, `${JSON.stringify(manifest)}\n`);
+    }
+  }
+  if (platform === "win32") {
+    const winIcon = join(rootDir, "src", "apps", "desktop", "icons", "openbitfun-app-icon.ico");
+    const destIcon = join(appDir, "icon.ico");
+    if (existsSync(winIcon)) {
+      copyFileSync(winIcon, destIcon);
+    }
+  }
+}
+
 /** Build the native UI for the target OS, including the notices for its font assets. */
 export function buildNativeUi({ nshOut, target, release = false, force = false, env = process.env }) {
   const nshEnv = resolveNshEnvironment(env);
