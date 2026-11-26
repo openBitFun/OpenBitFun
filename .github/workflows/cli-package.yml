@@ -157,6 +157,7 @@ jobs:
         shell: pwsh
         env:
           RUSTFLAGS: -C target-feature=+crt-static
+          OPENBITFUN_RELEASE_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
         run: cargo build --release --target ${{ matrix.platform.target }} -p openbitfun-cli
 
       - name: Test installer (Unix)
@@ -229,12 +230,53 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
       - name: Download CLI artifacts
         uses: actions/download-artifact@v7
         with:
           pattern: openbitfun-cli-${{ needs.prepare.outputs.release_tag }}-*
           path: cli-release-assets
           merge-multiple: true
+
+      - name: Sign unsigned CLI archives and checksums
+        # macOS archives are already signed on their build runners; this signs
+        # Windows archives/checksums (and verifies every newly produced `.sig`)
+        # with the same minisign trust root used by Linux and Desktop releases.
+        shell: bash
+        env:
+          OPENBITFUN_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          OPENBITFUN_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          OPENBITFUN_SIGNING_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(
+            find cli-release-assets -maxdepth 1 -type f \
+              \( -name 'openbitfun-cli-*.tar.gz' \
+                 -o -name 'openbitfun-cli-*.tar.gz.sha256' \
+                 -o -name 'openbitfun-cli-*.zip' \
+                 -o -name 'openbitfun-cli-*.zip.sha256' \) | sort
+          )
+          [[ "${#targets[@]}" -gt 0 ]]
+          bash scripts/sign-release-assets.sh "${targets[@]}"
+
+      - name: Generate CLI binaries manifest
+        run: |
+          node scripts/generate-cli-binaries-manifest.mjs \
+            --assets-dir cli-release-assets \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "${{ needs.prepare.outputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --out cli-release-assets/cli-binaries-v1.json
 
       - name: List release assets
         run: |
@@ -273,6 +315,9 @@ jobs:
             cli-release-assets/openbitfun-cli-*.tar.gz.sha256.sig
             cli-release-assets/openbitfun-cli-*.zip
             cli-release-assets/openbitfun-cli-*.zip.sha256
+            cli-release-assets/openbitfun-cli-*.zip.sig
+            cli-release-assets/openbitfun-cli-*.zip.sha256.sig
+            cli-release-assets/cli-binaries-v1.json
             cli-release-assets/SHA256SUMS
           fail_on_unmatched_files: true
 
@@ -315,3 +360,21 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${GITHUB_API_URL}/repos/${TAP_REPOSITORY}/dispatches" \
             -d "$PAYLOAD"
+
+      - name: Request openbitfun mirror sync
+        if: github.repository_id == '1147866277'
+        continue-on-error: true
+        env:
+          SYNC_WEBHOOK_URL: ${{ secrets.OPENBITFUN_SYNC_WEBHOOK_URL }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SYNC_WEBHOOK_URL:-}" ]]; then
+            echo "OPENBITFUN_SYNC_WEBHOOK_URL is not configured; the mirror will pick this up on its next cron run."
+            exit 0
+          fi
+          curl -fsSL -X POST --retry 3 --retry-delay 5 --max-time 30 \
+            -H 'Content-Type: application/json' \
+            -d "{\"tag\":\"${RELEASE_TAG}\",\"channel\":\"stable\"}" \
+            "${SYNC_WEBHOOK_URL}" >/dev/null
+          echo "Mirror sync requested for ${RELEASE_TAG}."

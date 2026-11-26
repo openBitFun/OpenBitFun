@@ -63,7 +63,7 @@ const BUILD_BOX = {
   route: null,
 };
 
-function hello() {
+function hello(extra: Record<string, unknown> = {}) {
   return {
     jsonrpc: "2.0",
     id: 0,
@@ -75,6 +75,7 @@ function hello() {
       lastSeq: 0,
       creditBytes: 1048576,
       backend: { version: "9.9.9", platform: "macos", instanceId: "desk-instance" },
+      ...extra,
     },
   };
 }
@@ -86,8 +87,15 @@ interface HostOptions {
   refuse?: Record<string, { code: number; reason: string }>;
   /** What `ui_bundle_manifest` answers, by device: a manifest (default) or an error message. */
   manifest?: Record<string, { error: string } | { manifest: unknown }>;
+  /** Optional `fleet` answer in `hello`, enabling `fleet_ui_bundle`. */
+  fleet?: Record<string, unknown>;
+  /** What `fleet_ui_bundle` answers, by device: payload or error. */
+  fleetManifest?: Record<
+    string,
+    { error: string } | { manifest: unknown; ownerDeviceId?: string; holders?: string[]; bundleId?: string }
+  >;
   /** What the loader counts as the bundleId (default: this page's own). */
-  bundleId?: string;
+  bundleId?: string | ((data: Record<string, unknown>) => string);
   /** The loader's refusal (`ui_bundle_schema: ...`). */
   prepareError?: string;
   /** What the page realm says about how the page started. */
@@ -158,9 +166,12 @@ function controllerHost(options: HostOptions = {}) {
       value: { handoff: null, showDevices: false, uiError: null, ...(options.page ?? {}) },
     }),
     "openbitfun.controller.prepareBundle": (data: unknown) => {
-      prepared.push(data as Record<string, unknown>);
+      const record = data as Record<string, unknown>;
+      prepared.push(record);
       if (options.prepareError) return { ok: false, error: options.prepareError };
-      return { ok: true, value: { bundleId: options.bundleId ?? OWN_BUNDLE } };
+      const resolvedId =
+        typeof options.bundleId === "function" ? options.bundleId(record) : (options.bundleId ?? OWN_BUNDLE);
+      return { ok: true, value: { bundleId: resolvedId } };
     },
     "openbitfun.controller.launch": (data: unknown) => {
       launched.push(data as Record<string, unknown>);
@@ -183,9 +194,27 @@ function controllerHost(options: HostOptions = {}) {
       const { id, text } = data as { id: string; text: string };
       const frame = JSON.parse(text) as { id?: number; method: string; params: { command: string; args: Record<string, unknown> } };
       if (frame.method === "hello") {
-        push({ id, type: "message", data: JSON.stringify(hello()) });
+        push({ id, type: "message", data: JSON.stringify(hello(options.fleet ? { fleet: options.fleet } : {})) });
       } else if (frame.method === "call") {
         calls.push(frame.params.command);
+        if (frame.params.command === "fleet_ui_bundle") {
+          const device = socketDevice.get(id) ?? "";
+          const answer = options.fleetManifest?.[device];
+          const body = !answer
+            ? { error: { code: -32000, message: "unsupported: fleet_ui_bundle unavailable" } }
+            : "error" in answer
+              ? { error: { code: -32000, message: answer.error } }
+              : {
+                  result: {
+                    manifest: answer.manifest,
+                    bundleId: answer.bundleId ?? "f".repeat(64),
+                    ownerDeviceId: answer.ownerDeviceId ?? device,
+                    holders: answer.holders ?? [answer.ownerDeviceId ?? device],
+                  },
+                };
+          push({ id, type: "message", data: JSON.stringify({ jsonrpc: "2.0", id: frame.id, ...body }) });
+          return { ok: true, value: true };
+        }
         if (frame.params.command === "ui_bundle_manifest") {
           const device = socketDevice.get(id) ?? "";
           const answer = options.manifest?.[device] ?? { manifest: MANIFEST };
@@ -237,6 +266,11 @@ function controllerHost(options: HostOptions = {}) {
     launched,
     left,
     pageHostCalls,
+    push,
+    latestSocketId() {
+      const last = opened.at(-1);
+      return last ? String(last.id) : null;
+    },
     attach(next: App) {
       app = next;
       const pending = held;
@@ -513,4 +547,80 @@ test("refusal codes and gateway addresses", () => {
   expect(resolveControllerUrl("/obp/api/v1", false, "https://super.openbitfun.com/")).toBe(
     "https://super.openbitfun.com/obp/api/v1",
   );
+});
+
+test("fleet entry prefers fleet_ui_bundle with peer holders (updated CLI alongside older desktop)", async () => {
+  const NEWER_MANIFEST = { ...MANIFEST, version: "2.0.1" };
+  const host = controllerHost({
+    signedIn: true,
+    fleet: { protocol: 1, deviceId: "desk-1", cursorState: {} },
+    fleetManifest: {
+      "desk-1": {
+        manifest: NEWER_MANIFEST,
+        ownerDeviceId: "cli-3",
+        holders: ["cli-3", "cli-4"],
+      },
+    },
+    bundleId: DEVICE_BUNDLE,
+  });
+  const app = await start(host);
+  await until(app, "text:Opening OpenBitFun…");
+  for (let step = 0; step < 100 && host.launched.length === 0; step += 1) await app.wait(50);
+  expect(host.calls[0]).toBe("fleet_ui_bundle");
+  expect(host.prepared[0]).toEqual({
+    manifest: NEWER_MANIFEST,
+    deviceId: "cli-3",
+    holders: ["cli-3", "cli-4"],
+  });
+  // Launch still hands off to the entry device while CAS pulls use the bundle's holders.
+  expect(host.launched[0]).toEqual({ bundleId: DEVICE_BUNDLE, deviceId: "desk-1" });
+});
+
+test("fleet entry falls back to ui_bundle_manifest when fleet_ui_bundle is unsupported", async () => {
+  const host = controllerHost({
+    signedIn: true,
+    fleet: { protocol: 1, deviceId: "desk-1", cursorState: {} },
+    fleetManifest: {
+      "desk-1": { error: "unsupported: fleet_ui_bundle is unknown on this host" },
+    },
+    bundleId: OWN_BUNDLE,
+  });
+  const app = await start(host);
+  await until(app, "label:controller-studio");
+  expect(host.calls.slice(0, 2)).toEqual(["fleet_ui_bundle", "ui_bundle_manifest"]);
+  expect(host.prepared[0]).toEqual({ manifest: MANIFEST, deviceId: "desk-1" });
+});
+
+test("reconnecting to a restarted device with a newer UI shows a Reload notice and launches on click", async () => {
+  const UPDATED_MANIFEST = { ...MANIFEST, version: "2.0.1" };
+  let activeManifest = MANIFEST;
+  const host = controllerHost({
+    signedIn: true,
+    manifest: {
+      "desk-1": {
+        get manifest() {
+          return activeManifest;
+        },
+      },
+    },
+    bundleId: data => ((data.manifest as { version?: string })?.version === "2.0.1" ? DEVICE_BUNDLE : OWN_BUNDLE),
+  });
+  const app = await start(host);
+  await until(app, "label:controller-studio");
+  expect(app.shows("label:web-ui-update-notice")).toBe(false);
+
+  // Simulate `openbitfun update` restarting the CLI daemon: socket drops and reconnects with 2.0.1.
+  activeManifest = UPDATED_MANIFEST;
+  const firstSocketId = host.latestSocketId();
+  expect(firstSocketId).toBeTruthy();
+  host.push({ id: firstSocketId!, type: "close", code: 1006, reason: "restarting" });
+
+  await until(app, "label:web-ui-update-notice");
+  await app.waitFor("text:OpenBitFun 2.0.1 interface is ready.");
+  // Never forcibly navigates away until the user clicks Reload.
+  expect(host.launched).toEqual([]);
+
+  await app.press("label:web-ui-update-reload");
+  for (let step = 0; step < 100 && host.launched.length === 0; step += 1) await app.wait(50);
+  expect(host.launched[0]).toEqual({ bundleId: DEVICE_BUNDLE, deviceId: "desk-1" });
 });

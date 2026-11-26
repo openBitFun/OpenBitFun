@@ -32,6 +32,7 @@ for (const workflow of [
   assert.match(content, /oven-sh\/setup-bun@v2/);
   assert.match(content, /plugin Host resources/);
   assert.match(content, /plugin-host:prepare|extension-host/);
+  assert.match(content, /build-cli-web-ui\.mjs/);
 }
 
 for (const workflow of [
@@ -49,3 +50,10 @@ assert.match(releaseWorkflow, /primary_binary:\s*"openbitfun"/);
 assert.doesNotMatch(releaseWorkflow, /deprecated_binary|deprecated:\s*true/);
 assert.match(releaseWorkflow, /post-publication/i);
 assert.doesNotMatch(releaseWorkflow, /Homebrew release gate/i);
+assert.match(releaseWorkflow, /generate-cli-binaries-manifest\.mjs/);
+assert.match(releaseWorkflow, /cli-binaries-v1\.json/);
+assert.match(releaseWorkflow, /openbitfun-cli-\*\.zip\.sig/);
+assert.match(releaseWorkflow, /openbitfun-cli-\*\.zip\.sha256\.sig/);
+
+const desktopReleaseWorkflow = read('.github/workflows/desktop-package.yml');
+assert.match(desktopReleaseWorkflow, /gh workflow run cli-package\.yml/);

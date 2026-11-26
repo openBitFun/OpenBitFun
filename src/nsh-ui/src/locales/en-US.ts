@@ -3239,6 +3239,8 @@ export const enUSMessages = {
   "nav.openHistory": "Show conversations",
   "nav.superAgent": "Super Agent",
   "shell.fleetUpdate": "This device needs an update to show your other devices.",
+  "shell.webUiUpdate": "A newer interface is ready.",
+  "shell.webUiUpdateVersion": "OpenBitFun {{version}} interface is ready.",
   "shell.unreachable": "Can't reach your devices. Retrying…",
   "shell.retryNow": "Retry now",
   "shell.restartToUpdate": "Restart to update",

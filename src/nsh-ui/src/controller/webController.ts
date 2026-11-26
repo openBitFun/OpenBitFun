@@ -27,6 +27,7 @@ import {
   ControllerError,
   type ControllerLaunchState,
   type ControllerUiPlacement,
+  type ControllerUiUpdate,
   type ControllerAccount,
   type ControllerCodeChallenge,
   type ControllerConnection,
@@ -349,28 +350,8 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       }
     },
     async placeUi(connection): Promise<ControllerUiPlacement> {
-      let answer: { manifest?: unknown; bundleId?: unknown } | null;
-      try {
-        answer = (await connection.invoke("ui_bundle_manifest", { request: {} })) as typeof answer;
-      } catch (error) {
-        throw uiManifestError(error);
-      }
-      if (!answer || typeof answer.manifest !== "object" || answer.manifest === null) {
-        throw new ControllerError("device_ui_unavailable", "The device answered no web UI manifest");
-      }
-      let prepared: { bundleId: string };
-      try {
-        prepared = await callController<{ bundleId: string }>("prepareBundle", {
-          manifest: answer.manifest,
-          deviceId: connection.deviceId,
-        });
-      } catch (error) {
-        throw uiPrepareError(error);
-      }
-      // The device's stated id is a hint only; the loader's own count decides.
-      if (typeof answer.bundleId === "string" && answer.bundleId !== prepared.bundleId) {
-        console.warn("The device stated another UI bundle id than its manifest has");
-      }
+      const resolved = await resolveUiBundle(connection);
+      const prepared = await prepareBundleOnLoader(resolved);
       if (options.uiBundleId && prepared.bundleId === options.uiBundleId) return { kind: "here" };
       // The pool's cookie path (`/cas`) is re-issued with the session.
       const session = await request("/session");
@@ -387,10 +368,133 @@ export function createWebController(options: WebControllerOptions): ControllerPo
         },
       };
     },
+    async checkUiUpdate(connection): Promise<ControllerUiUpdate | null> {
+      if (!options.uiBundleId) return null;
+      let resolved: ResolvedUiBundle;
+      try {
+        resolved = await resolveUiBundle(connection);
+      } catch {
+        return null;
+      }
+      let prepared: { bundleId: string };
+      try {
+        prepared = await prepareBundleOnLoader(resolved);
+      } catch {
+        return null;
+      }
+      if (prepared.bundleId === options.uiBundleId) return null;
+      const version = asString((resolved.manifest as Record<string, unknown>)?.version);
+      const deviceId = connection.deviceId;
+      return {
+        bundleId: prepared.bundleId,
+        version,
+        apply: async () => {
+          const session = await request("/session");
+          if (session.signedIn !== true) throw new ControllerError("signed_out", "The session ended");
+          try {
+            await callController("launch", { bundleId: prepared.bundleId, deviceId });
+          } catch (error) {
+            throw uiPrepareError(error);
+          }
+        },
+      };
+    },
     async leave() {
       if (!options.bundlePage) return false;
       await callController("leave");
       return true;
     },
   };
+
+  interface ResolvedUiBundle {
+    manifest: Record<string, unknown>;
+    statedBundleId: string | null;
+    ownerDeviceId: string;
+    holders: string[];
+  }
+
+  function validHolders(raw: unknown, fallbackDeviceId: string): string[] {
+    const out: string[] = [];
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (typeof item === "string" && item.length > 0 && !out.includes(item)) out.push(item);
+      }
+    }
+    if (out.length === 0 && fallbackDeviceId) out.push(fallbackDeviceId);
+    return out;
+  }
+
+  /**
+   * Resolves the best web UI manifest for this connection: on a fleet entry,
+   * asks `fleet_ui_bundle` so the browser picks the newest compatible bundle
+   * across all online devices (e.g. an updated CLI peer alongside an older
+   * desktop entry) with all its holders; falls back to `ui_bundle_manifest`
+   * on non-fleet or older hosts.
+   */
+  async function resolveUiBundle(connection: ControllerConnection): Promise<ResolvedUiBundle> {
+    if (connection.fleet?.()) {
+      try {
+        const fleetAnswer = (await connection.invoke("fleet_ui_bundle", { request: {} })) as {
+          manifest?: unknown;
+          bundleId?: unknown;
+          ownerDeviceId?: unknown;
+          holders?: unknown;
+        } | null;
+        if (fleetAnswer && typeof fleetAnswer.manifest === "object" && fleetAnswer.manifest !== null) {
+          const ownerDeviceId = asString(fleetAnswer.ownerDeviceId) ?? connection.deviceId;
+          const holders = validHolders(fleetAnswer.holders, ownerDeviceId);
+          return {
+            manifest: fleetAnswer.manifest as Record<string, unknown>,
+            statedBundleId: asString(fleetAnswer.bundleId),
+            ownerDeviceId,
+            holders,
+          };
+        }
+      } catch (error) {
+        // Older entries without `fleet_ui_bundle`, or entries with no fleet
+        // peers yet: fall back to the entry's own `ui_bundle_manifest`.
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/unknown|unsupported|forbidden_for_scope|not found|no handler|ui_bundle_unavailable/i.test(message)) {
+          // Even transient fleet errors still have a valid direct fallback on this entry.
+          console.warn(`fleet_ui_bundle failed, falling back to ui_bundle_manifest: ${message}`);
+        }
+      }
+    }
+
+    let answer: { manifest?: unknown; bundleId?: unknown } | null;
+    try {
+      answer = (await connection.invoke("ui_bundle_manifest", { request: {} })) as typeof answer;
+    } catch (error) {
+      throw uiManifestError(error);
+    }
+    if (!answer || typeof answer.manifest !== "object" || answer.manifest === null) {
+      throw new ControllerError("device_ui_unavailable", "The device answered no web UI manifest");
+    }
+    return {
+      manifest: answer.manifest as Record<string, unknown>,
+      statedBundleId: asString(answer.bundleId),
+      ownerDeviceId: connection.deviceId,
+      holders: [connection.deviceId],
+    };
+  }
+
+  async function prepareBundleOnLoader(resolved: ResolvedUiBundle): Promise<{ bundleId: string }> {
+    const extraHolders = resolved.holders.filter(id => id !== resolved.ownerDeviceId);
+    const args: Record<string, unknown> = {
+      manifest: resolved.manifest,
+      deviceId: resolved.ownerDeviceId,
+      ...(extraHolders.length > 0 ? { holders: resolved.holders } : {}),
+    };
+    let prepared: { bundleId: string };
+    try {
+      prepared = await callController<{ bundleId: string }>("prepareBundle", args);
+    } catch (error) {
+      throw uiPrepareError(error);
+    }
+    // The device's stated id is a hint only; the loader's own count decides.
+    if (resolved.statedBundleId && resolved.statedBundleId !== prepared.bundleId) {
+      console.warn("The device stated another UI bundle id than its manifest has");
+    }
+    return prepared;
+  }
 }

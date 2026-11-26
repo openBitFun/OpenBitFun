@@ -178,6 +178,7 @@ test('release sync pins Linux metadata to the updater release during latest rota
     flock() { return 0; }
     curl() { printf '%s' "$TEST_LATEST_JSON"; }
     mirror_linux_binaries() { printf '%s\\n' "$GITHUB_LINUX_BINARIES_URL" >> "$TEST_URLS"; }
+    mirror_cli_binaries() { printf '%s\\n' "$GITHUB_CLI_BINARIES_URL" >> "$TEST_URLS"; }
     mirror_dispatch_macos_cli_archives() { :; }
     download_asset() { :; }
     mirror_windows_installer() { :; }
@@ -201,7 +202,158 @@ test('release sync pins Linux metadata to the updater release during latest rota
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(fs.readFileSync(urls, 'utf8').trim().split('\n'), [
     `${releaseBase}/linux-binaries-v1.json`,
+    `${releaseBase}/cli-binaries-v1.json`,
   ]);
+});
+
+test('generates GitHub URLs and signatures for macOS and Windows CLI archives', (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-cli-manifest-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const assets = path.join(temp, 'assets');
+  const out = path.join(temp, 'cli-binaries-v1.json');
+  fs.mkdirSync(assets);
+
+  for (const filename of [
+    'openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz',
+    'openbitfun-cli-2.0.1-x86_64-apple-darwin.tar.gz',
+    'openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip',
+  ]) {
+    fs.writeFileSync(path.join(assets, filename), '');
+    fs.writeFileSync(path.join(assets, `${filename}.sha256`), '');
+    fs.writeFileSync(path.join(assets, `${filename}.sig`), '');
+    fs.writeFileSync(path.join(assets, `${filename}.sha256.sig`), '');
+  }
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      'scripts/generate-cli-binaries-manifest.mjs',
+      '--assets-dir', assets,
+      '--version', '2.0.1',
+      '--tag', 'v2.0.1',
+      '--repo', 'openBitFun/OpenBitFun',
+      '--out', out,
+    ],
+    { cwd: repoRoot, encoding: 'utf8' }
+  );
+  assert.equal(result.status, 0, result.stderr);
+
+  const manifest = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.version, '2.0.1');
+  assert.equal(manifest.tag, 'v2.0.1');
+  assert.deepEqual(Object.keys(manifest.platforms).sort(), [
+    'darwin-aarch64',
+    'darwin-x86_64',
+    'windows-x86_64',
+  ]);
+  assert.match(
+    manifest.platforms['darwin-aarch64'].cli.url,
+    /releases\/download\/v2\.0\.1\/openbitfun-cli-2\.0\.1-aarch64-apple-darwin\.tar\.gz$/
+  );
+  assert.match(
+    manifest.platforms['darwin-x86_64'].cli.sigUrl,
+    /openbitfun-cli-2\.0\.1-x86_64-apple-darwin\.tar\.gz\.sig$/
+  );
+  assert.match(
+    manifest.platforms['windows-x86_64'].cli.url,
+    /openbitfun-cli-2\.0\.1-x86_64-pc-windows-msvc\.zip$/
+  );
+  assert.match(
+    manifest.platforms['windows-x86_64'].cli.sigUrl,
+    /openbitfun-cli-2\.0\.1-x86_64-pc-windows-msvc\.zip\.sig$/
+  );
+  assert.match(
+    manifest.platforms['windows-x86_64'].cli.sha256SigUrl,
+    /openbitfun-cli-2\.0\.1-x86_64-pc-windows-msvc\.zip\.sha256\.sig$/
+  );
+});
+
+test('openbitfun sync mirrors cli-binaries-v1.json and rewrites URLs to mirror origin', (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-cli-mirror-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const releaseDir = path.join(temp, 'release');
+  const versionDir = path.join(releaseDir, '2.0.1');
+  const calls = path.join(temp, 'download-calls.tsv');
+  const checksums = path.join(temp, 'checksum-list.txt');
+  const upstreamManifest = path.join(temp, 'upstream-cli.json');
+  fs.mkdirSync(versionDir, { recursive: true });
+  const base = 'https://github.com/openBitFun/OpenBitFun/releases/download/v2.0.1';
+  fs.writeFileSync(
+    upstreamManifest,
+    JSON.stringify({
+      schemaVersion: 1,
+      version: '2.0.1',
+      tag: 'v2.0.1',
+      platforms: {
+        'darwin-aarch64': {
+          target: 'aarch64-apple-darwin',
+          cli: {
+            filename: 'openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz',
+            url: `${base}/openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz`,
+            sha256Url: `${base}/openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz.sha256`,
+            sigUrl: `${base}/openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz.sig`,
+            sha256SigUrl: `${base}/openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz.sha256.sig`,
+          },
+        },
+        'windows-x86_64': {
+          target: 'x86_64-pc-windows-msvc',
+          cli: {
+            filename: 'openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip',
+            url: `${base}/openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip`,
+            sha256Url: `${base}/openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip.sha256`,
+            sigUrl: `${base}/openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip.sig`,
+            sha256SigUrl: `${base}/openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip.sha256.sig`,
+          },
+        },
+      },
+    })
+  );
+
+  const result = spawnSync(
+    'bash',
+    ['-c', `
+      source "$SYNC_SCRIPT"
+      VERSION="2.0.1"
+      VERSION_DIR="$TEST_VERSION_DIR"
+      WEBSITE_RELEASE_DIR="$TEST_RELEASE_DIR"
+      OPENBITFUN_BASE_URL="https://openbitfun.test/release"
+      fetch_cli_manifest() {
+        cp "$UPSTREAM_MANIFEST" "$CLI_MANIFEST_TMP"
+        CLI_MANIFEST_STATE="ok"
+      }
+      download_asset() {
+        printf '%s\\t%s\\n' "$1" "$2" >> "$DOWNLOAD_CALLS"
+      }
+      verify_mirrored_checksums() {
+        cat > "$CHECKSUM_LIST"
+      }
+      mirror_cli_binaries
+    `],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SYNC_SCRIPT: path.join(repoRoot, 'scripts/openbitfun-release-sync.sh'),
+        TEST_RELEASE_DIR: releaseDir,
+        TEST_VERSION_DIR: versionDir,
+        UPSTREAM_MANIFEST: upstreamManifest,
+        DOWNLOAD_CALLS: calls,
+        CHECKSUM_LIST: checksums,
+      },
+    }
+  );
+  assert.equal(result.status, 0, result.stderr);
+
+  const mirrored = JSON.parse(fs.readFileSync(path.join(releaseDir, 'cli-binaries-v1.json'), 'utf8'));
+  assert.equal(
+    mirrored.platforms['darwin-aarch64'].cli.url,
+    'https://openbitfun.test/release/2.0.1/openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz'
+  );
+  assert.equal(
+    mirrored.platforms['windows-x86_64'].cli.sigUrl,
+    'https://openbitfun.test/release/2.0.1/openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip.sig'
+  );
 });
 
 test('openbitfun sync mirrors the website installer from the exact updater release', () => {

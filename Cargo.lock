@@ -5813,6 +5813,7 @@ dependencies = [
  "uuid",
  "windows 0.61.3",
  "winsplit",
+ "zip 4.6.1",
 ]
 
 [[package]]

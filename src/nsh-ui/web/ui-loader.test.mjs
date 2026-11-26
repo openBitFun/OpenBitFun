@@ -368,3 +368,23 @@ test('QuotaExceededError during cache.put evicts older caches and still serves v
   assert.equal(putAttempts, 2);
   assert.equal(world.caches.has(`obf-ui-${old.bundleId}`), false);
 });
+
+test('fleet holders are stored alongside deviceId and forwarded as &holders= on CAS pulls', async () => {
+  const b = bundle();
+  const world = environment();
+  world.pool.set(sha(b.index), b.index);
+  const ui = loader.createUiLoader(world.env);
+
+  const stored = await ui.storeManifest({
+    manifest: b.manifest,
+    deviceId: 'cli-new',
+    holders: ['cli-new', 'desk-2', 'cli-backup', 'cli-new'],
+  });
+  const response = await ui.handle(navigate(`${SCOPE}${stored.bundleId}/index.html`), 'c1');
+  assert.equal(response.status, 200);
+  assert.equal(Buffer.from(await response.arrayBuffer()).toString(), b.index.toString());
+  assert.equal(
+    world.fetched[0].url,
+    `${CAS}${sha(b.index)}?device=cli-new&holders=${encodeURIComponent('desk-2,cli-backup')}`,
+  );
+});

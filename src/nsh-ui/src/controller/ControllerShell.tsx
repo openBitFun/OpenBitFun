@@ -7,6 +7,7 @@
 // connected and why not are the server's.
 
 import { Scroll, effect, safeArea, signal, Text, untracked, View, type JSX } from "nsh";
+import { connectionState } from "../bridge";
 import { formatRelativeTime } from "../format";
 import { tr } from "../i18n";
 import { compactLayout, controlHeight, layout, motionTiming, palette, radii, space, textStyle, touchSlop } from "../theme";
@@ -16,6 +17,7 @@ import { DeviceGlyph, EmptyStateCard, focusRingStyle } from "../ui/primitives";
 import { SignInView } from "../ui/SignInView";
 import type { ControllerDevice } from "./controllerPort";
 import {
+  checkControllerUiUpdate,
   connectControllerDevice,
   controllerAccount,
   controllerBusy,
@@ -335,6 +337,23 @@ export function ControllerShell(props: { children: () => JSX.Element }) {
   effect(() => {
     const challenge = controllerChallenge();
     untracked(() => resendAt.set(challenge ? Date.now() + challenge.retryAfterSeconds * 1000 : null));
+  });
+  let wasDisconnected = false;
+  effect(() => {
+    const phase = controllerPhase();
+    const state = connectionState();
+    if (phase !== "connected") {
+      wasDisconnected = false;
+      return;
+    }
+    if (state === "reconnecting" || state === "failed") {
+      wasDisconnected = true;
+      return;
+    }
+    if (state === "connected" && wasDisconnected) {
+      wasDisconnected = false;
+      untracked(() => void checkControllerUiUpdate());
+    }
   });
   return (
     <View

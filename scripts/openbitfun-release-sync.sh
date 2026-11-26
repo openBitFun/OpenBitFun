@@ -62,6 +62,7 @@ case "$RELEASE_CHANNEL" in
 esac
 GITHUB_LATEST_JSON_URL="${GITHUB_RELEASE_ROOT}/latest-v1.json"
 GITHUB_LINUX_BINARIES_URL="${GITHUB_RELEASE_ROOT}/linux-binaries-v1.json"
+GITHUB_CLI_BINARIES_URL="${GITHUB_RELEASE_ROOT}/cli-binaries-v1.json"
 OPENBITFUN_BASE_URL="https://openbitfun.com/release${CHANNEL_PATH}"
 # The mirror deliberately lives outside the website checkout. It used to be
 # OpenBitFun-Website/dist/release, but `npm run build` empties dist/, so every
@@ -422,6 +423,104 @@ PY
   fi
 }
 
+# Mirror the standalone macOS and Windows CLI manifest (`cli-binaries-v1.json`)
+# and every archive/checksum/signature it references.
+#
+# Published by `.github/workflows/cli-package.yml` after the Desktop release
+# exists, so a 404 right after release publication is expected; a later cron
+# run picks it up even when `latest-v1.json` is already on the same version.
+fetch_cli_manifest() {
+  local attempt status
+  CLI_MANIFEST_STATE="unhealthy"
+  for attempt in $(seq 1 "$MAX_RETRIES"); do
+    status="$(curl -sSL \
+      --connect-timeout "$CONNECT_TIMEOUT" \
+      --max-time "$MAX_TIME" \
+      -o "$CLI_MANIFEST_TMP" \
+      -w '%{http_code}' \
+      "$GITHUB_CLI_BINARIES_URL" || echo "000")"
+    if [ "$status" = "200" ]; then
+      CLI_MANIFEST_STATE="ok"
+      return 0
+    fi
+    rm -f "$CLI_MANIFEST_TMP"
+    if [ "$status" = "404" ]; then
+      CLI_MANIFEST_STATE="missing"
+      return 0
+    fi
+    log "  Retry $attempt/$MAX_RETRIES for cli-binaries-v1.json (HTTP $status)"
+    sleep "$RETRY_DELAY"
+  done
+  return 0
+}
+
+mirror_cli_binaries() {
+  CLI_MANIFEST_TMP="${VERSION_DIR}/cli-binaries.github.json.part"
+  CLI_MANIFEST_STATE="missing"
+  fetch_cli_manifest
+  if [ "$CLI_MANIFEST_STATE" = "ok" ]; then
+    CLI_VERSION=$("$PYTHON" -c \
+      "import json,sys;print(json.load(open(sys.argv[1], encoding='utf-8'))['version'])" \
+      "$CLI_MANIFEST_TMP")
+    if [ "$CLI_VERSION" != "$VERSION" ]; then
+      log "ERROR: CLI manifest version $CLI_VERSION does not match Desktop version $VERSION"
+      rm -f "$CLI_MANIFEST_TMP"
+      exit 1
+    fi
+
+    CLI_ASSET_LIST=$("$PYTHON" - "$CLI_MANIFEST_TMP" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+seen = set()
+for platform in data.get("platforms", {}).values():
+    entry = platform.get("cli", {})
+    for key in ("url", "sha256Url", "sha256SigUrl", "sigUrl"):
+        url = entry.get(key)
+        if not url:
+            continue
+        filename = url.rsplit("/", 1)[-1]
+        if filename not in seen:
+            seen.add(filename)
+            print(f"{url}\t{filename}")
+PY
+)
+    while IFS=$'\t' read -r url filename; do
+      [ -z "$url" ] && continue
+      log "  Mirroring CLI binary asset: $filename"
+      download_asset "$url" "${VERSION_DIR}/${filename}" || exit 1
+    done <<< "$CLI_ASSET_LIST"
+
+    cut -f2 <<< "$CLI_ASSET_LIST" | verify_mirrored_checksums || exit 1
+
+    "$PYTHON" - "$CLI_MANIFEST_TMP" "${VERSION_DIR}/cli-binaries-v1.json" \
+      "$OPENBITFUN_BASE_URL" <<'PY'
+import json, sys
+source, dest, base = sys.argv[1:]
+with open(source, encoding="utf-8") as f:
+    data = json.load(f)
+version_base = f"{base}/{data['version']}"
+for platform in data.get("platforms", {}).values():
+    entry = platform.get("cli", {})
+    for key in ("url", "sha256Url", "sha256SigUrl", "sigUrl"):
+        if entry.get(key):
+            entry[key] = f"{version_base}/{entry[key].rsplit('/', 1)[-1]}"
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+    rm -f "$CLI_MANIFEST_TMP"
+    publish_file_atomically \
+      "${VERSION_DIR}/cli-binaries-v1.json" \
+      "${WEBSITE_RELEASE_DIR}/cli-binaries-v1.json"
+    log "Updated ${WEBSITE_RELEASE_DIR}/cli-binaries-v1.json"
+  elif [ "$CLI_MANIFEST_STATE" = "missing" ]; then
+    log "CLI binaries manifest is not present in the latest release yet; keeping existing mirror."
+  else
+    log "WARN: CLI binaries manifest unreachable this run; keeping the published mirror."
+  fi
+}
+
 # macOS SSH Dispatch uses the standalone CLI archives published by the CLI
 # workflow after the Desktop release exists. They are not represented by
 # linux-binaries-v1.json, so mirror the deterministic names separately. Missing
@@ -514,6 +613,24 @@ main() {
       "${WEBSITE_RELEASE_DIR}/latest-v1.json") || PUBLISHED_VERSION=""
   fi
   if [ -n "$PUBLISHED_VERSION" ] && [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
+    # cli-package.yml finishes asynchronously after desktop-package.yml, so
+    # pick up cli-binaries-v1.json (macOS/Windows CLI) once it lands even when
+    # Desktop latest-v1.json is already mirrored on this version.
+    if [ "$RELEASE_CHANNEL" = "stable" ] && [ ! -f "${WEBSITE_RELEASE_DIR}/${VERSION}/cli-binaries-v1.json" ]; then
+      RELEASE_ASSET_BASE_URL=$(printf '%s' "$LATEST_JSON" | "$PYTHON" -c "
+import json, sys
+data = json.load(sys.stdin)
+bases = {entry['url'].rsplit('/', 1)[0] for entry in data.get('platforms', {}).values() if entry.get('url')}
+if len(bases) == 1:
+    print(bases.pop())
+" 2>/dev/null || true)
+      if [ -n "${RELEASE_ASSET_BASE_URL:-}" ]; then
+        VERSION_DIR="${WEBSITE_RELEASE_DIR}/${VERSION}"
+        mkdir -p "$VERSION_DIR"
+        GITHUB_CLI_BINARIES_URL="${RELEASE_ASSET_BASE_URL}/cli-binaries-v1.json"
+        mirror_cli_binaries
+      fi
+    fi
     log "Already mirroring $VERSION; nothing to fetch"
     prune_old_versions
     log "=== ${RELEASE_CHANNEL} sync complete: version $VERSION (unchanged) ==="
@@ -535,6 +652,7 @@ print(bases.pop())
   }
 
   GITHUB_LINUX_BINARIES_URL="${RELEASE_ASSET_BASE_URL}/linux-binaries-v1.json"
+  GITHUB_CLI_BINARIES_URL="${RELEASE_ASSET_BASE_URL}/cli-binaries-v1.json"
 
   INSTALLER_METADATA=$(printf '%s' "$LATEST_JSON" | "$PYTHON" -c "
 import json, sys
@@ -572,6 +690,7 @@ if entry:
   # mirrors Desktop updater and installer assets under /release/beta.
   if [ "$RELEASE_CHANNEL" = "stable" ]; then
     mirror_linux_binaries
+    mirror_cli_binaries
     mirror_dispatch_macos_cli_archives
   else
     log "Skipping stable-only CLI and Relay metadata for the beta channel"

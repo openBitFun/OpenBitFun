@@ -167,6 +167,18 @@ jobs:
           shared-key: "cli-manual-v1-${{ matrix.platform.name }}"
           cache-bin: false
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      - name: Build the CLI's web UI
+        # Browsers load the web UI from the device they control, so the CLI
+        # embeds the one built from this commit (src/apps/cli/build.rs).
+        shell: bash
+        run: node scripts/ci/build-cli-web-ui.mjs
+
       - name: Build CLI (Unix)
         if: runner.os != 'Windows'
         shell: bash

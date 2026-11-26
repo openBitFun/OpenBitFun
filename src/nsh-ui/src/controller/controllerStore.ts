@@ -22,6 +22,7 @@ import {
   type ControllerConnection,
   type ControllerDevice,
   type ControllerErrorCode,
+  type ControllerUiUpdate,
 } from "./controllerPort";
 
 /**
@@ -52,8 +53,16 @@ export const controllerDevice = signal<ControllerDevice | null>(null);
 export const controllerConnectMs = signal<number | null>(null);
 /** The device being opened while the phase is `opening` (`null`: going back to the list). */
 export const controllerOpening = signal<ControllerDevice | null>(null);
+/** Newer web UI bundle ready to load without forcibly interrupting the active tab. */
+export const controllerUiUpdate = signal<ControllerUiUpdate | null>(null);
+/** True while applying a web UI update (navigating to the new bundle). */
+export const controllerUiUpdating = signal(false);
 
 let connection: ControllerConnection | null = null;
+let stopUiEventWatch: (() => void) | null = null;
+let uiCheckTimer: ReturnType<typeof setTimeout> | null = null;
+let uiCheckInFlight = false;
+let dismissedUiBundleId: string | null = null;
 /** The device this page was opened for, until the first device list is read. */
 let launchDevice: string | null = null;
 /** Pick nothing at the first device list (the user asked to see it, or a UI failed). */
@@ -266,6 +275,86 @@ export async function refreshControllerDevices(): Promise<void> {
 
 export type ConnectOutcome = "connected" | "away" | "failed";
 
+function stopUiUpdateWatch(): void {
+  if (uiCheckTimer !== null) {
+    clearTimeout(uiCheckTimer);
+    uiCheckTimer = null;
+  }
+  stopUiEventWatch?.();
+  stopUiEventWatch = null;
+  controllerUiUpdate.set(null);
+  controllerUiUpdating.set(false);
+}
+
+/**
+ * Checks whether the active device or its fleet now advertises a newer web UI
+ * bundle than this page is running (e.g. after `openbitfun update` restarted
+ * the CLI daemon or a peer device rejoined on a newer build).
+ */
+export async function checkControllerUiUpdate(): Promise<void> {
+  const port = controllerPort();
+  const active = connection;
+  if (!port?.checkUiUpdate || !active || active.state() !== "connected" || uiCheckInFlight) return;
+  uiCheckInFlight = true;
+  try {
+    const update = await port.checkUiUpdate(active);
+    if (connection !== active) return;
+    if (!update) {
+      controllerUiUpdate.set(null);
+      return;
+    }
+    if (dismissedUiBundleId === update.bundleId) return;
+    controllerUiUpdate.set(update);
+  } finally {
+    uiCheckInFlight = false;
+  }
+}
+
+function scheduleControllerUiUpdateCheck(delayMs = 800): void {
+  if (uiCheckTimer !== null) clearTimeout(uiCheckTimer);
+  uiCheckTimer = setTimeout(() => {
+    uiCheckTimer = null;
+    void checkControllerUiUpdate();
+  }, delayMs);
+}
+
+export function dismissControllerUiUpdate(): void {
+  const current = controllerUiUpdate();
+  if (current) dismissedUiBundleId = current.bundleId;
+  controllerUiUpdate.set(null);
+}
+
+export async function applyControllerUiUpdate(): Promise<void> {
+  const current = controllerUiUpdate();
+  if (!current || controllerUiUpdating()) return;
+  controllerUiUpdating.set(true);
+  try {
+    await current.apply();
+  } catch (error) {
+    controllerUiUpdating.set(false);
+    const reason = failure(error);
+    controllerFailure.set(reason);
+    if (reason.code === "signed_out") {
+      controllerAccount.set(null);
+      controllerPhase.set("email");
+    }
+  }
+}
+
+function startUiUpdateWatch(active: ControllerConnection): void {
+  stopUiUpdateWatch();
+  if (!controllerPort()?.checkUiUpdate) return;
+  stopUiEventWatch = active.subscribe(events => {
+    if (connection !== active) return;
+    for (const item of events) {
+      if (item.event === "fleet://digest-changed" || item.event === "backend://events-dropped") {
+        scheduleControllerUiUpdateCheck();
+        return;
+      }
+    }
+  });
+}
+
 /**
  * Connects to `device` and places its UI: here, or this page leaves for the
  * device's own UI. A failure stays in `controllerFailure`; from the list
@@ -300,8 +389,10 @@ export async function connectControllerDevice(
       await placement.open();
       return "away";
     }
+    stopUiUpdateWatch();
     connection?.close();
     connection = await withFleetFailover(port, device.deviceId, opened, cursor, options.rankedCandidates);
+    startUiUpdateWatch(connection);
     controllerConnectMs.set(Date.now() - started);
     installBackendConnection(connection);
     controllerDevice.set(device);
@@ -326,6 +417,7 @@ export async function connectControllerDevice(
 /** Leaves the device (back to the list); the window stops driving it. */
 export async function leaveControllerDevice(): Promise<void> {
   const port = controllerPort();
+  stopUiUpdateWatch();
   connection?.close();
   connection = null;
   installBackendConnection(createIdleConnection());
@@ -343,6 +435,7 @@ export async function leaveControllerDevice(): Promise<void> {
 export async function signOutController(): Promise<void> {
   const port = controllerPort();
   if (!port) return;
+  stopUiUpdateWatch();
   connection?.close();
   connection = null;
   installBackendConnection(createIdleConnection());

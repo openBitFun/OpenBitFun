@@ -295,7 +295,10 @@ pub(crate) async fn invoke(
                     }
                 }
                 let mut child = match process.spawn().context("start CLI Remote Connect daemon") {
-                    Ok(child) => child,
+                    Ok(child) => {
+                        let _ = super::pid::write_detached_pid_file(child.id());
+                        child
+                    }
                     Err(error) => {
                         restore_caller_routing(runtime).await;
                         return Err(error);

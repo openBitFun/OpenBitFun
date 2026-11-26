@@ -1,22 +1,23 @@
 use anyhow::{anyhow, Context, Result};
-#[cfg(unix)]
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
+use openbitfun_services_core::process_manager::create_command;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
-#[cfg(unix)]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
-#[cfg(unix)]
 use tar::Archive;
 
-const GITHUB_MANIFEST: &str =
+const GITHUB_LINUX_MANIFEST: &str =
     "https://github.com/openBitFun/OpenBitFun/releases/latest/download/linux-binaries-v1.json";
-const OPENBITFUN_MANIFEST: &str = "https://openbitfun.com/release/linux-binaries-v1.json";
+const OPENBITFUN_LINUX_MANIFEST: &str = "https://openbitfun.com/release/linux-binaries-v1.json";
+const GITHUB_CLI_MANIFEST: &str =
+    "https://github.com/openBitFun/OpenBitFun/releases/latest/download/cli-binaries-v1.json";
+const OPENBITFUN_CLI_MANIFEST: &str = "https://openbitfun.com/release/cli-binaries-v1.json";
 const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Source-selection tuning. Mirrors the relay deploy path in
@@ -53,16 +54,65 @@ const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 /// indistinguishable from a hang.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlatformSpec {
+    key: &'static str,
+    target: &'static str,
+    archive_ext: &'static str,
+    github_manifest: &'static str,
+    mirror_manifest: &'static str,
+}
+
+const LINUX_X86_64: PlatformSpec = PlatformSpec {
+    key: "linux-x86_64",
+    target: "x86_64-unknown-linux-gnu",
+    archive_ext: ".tar.gz",
+    github_manifest: GITHUB_LINUX_MANIFEST,
+    mirror_manifest: OPENBITFUN_LINUX_MANIFEST,
+};
+
+const LINUX_AARCH64: PlatformSpec = PlatformSpec {
+    key: "linux-aarch64",
+    target: "aarch64-unknown-linux-gnu",
+    archive_ext: ".tar.gz",
+    github_manifest: GITHUB_LINUX_MANIFEST,
+    mirror_manifest: OPENBITFUN_LINUX_MANIFEST,
+};
+
+const DARWIN_AARCH64: PlatformSpec = PlatformSpec {
+    key: "darwin-aarch64",
+    target: "aarch64-apple-darwin",
+    archive_ext: ".tar.gz",
+    github_manifest: GITHUB_CLI_MANIFEST,
+    mirror_manifest: OPENBITFUN_CLI_MANIFEST,
+};
+
+const DARWIN_X86_64: PlatformSpec = PlatformSpec {
+    key: "darwin-x86_64",
+    target: "x86_64-apple-darwin",
+    archive_ext: ".tar.gz",
+    github_manifest: GITHUB_CLI_MANIFEST,
+    mirror_manifest: OPENBITFUN_CLI_MANIFEST,
+};
+
+const WINDOWS_X86_64: PlatformSpec = PlatformSpec {
+    key: "windows-x86_64",
+    target: "x86_64-pc-windows-msvc",
+    archive_ext: ".zip",
+    github_manifest: GITHUB_CLI_MANIFEST,
+    mirror_manifest: OPENBITFUN_CLI_MANIFEST,
+};
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LinuxBinariesManifest {
+struct CliBinariesManifest {
     schema_version: u32,
     version: String,
-    platforms: std::collections::HashMap<String, LinuxPlatform>,
+    platforms: std::collections::HashMap<String, CliPlatform>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LinuxPlatform {
+struct CliPlatform {
     target: String,
     cli: ReleaseAsset,
 }
@@ -84,11 +134,20 @@ pub(crate) enum UpdateOutcome {
     /// `--check` found a newer release but was asked not to install it.
     Available,
     Updated,
+    HomebrewManaged,
     Unsupported,
 }
 
 pub(crate) async fn run_manual(check_only: bool) -> Result<UpdateOutcome> {
-    let _lock = if check_only || current_platform_key().is_none() {
+    if let Ok(exe) = std::env::current_exe() {
+        cleanup_previous_windows_binaries(&exe);
+    }
+    let _lock = if check_only || current_platform().is_none() {
+        None
+    } else if std::env::current_exe()
+        .ok()
+        .is_some_and(|exe| is_homebrew_binary(&exe) || is_development_binary(&exe))
+    {
         None
     } else {
         Some(InstallLock::acquire()?)
@@ -112,11 +171,13 @@ pub(crate) async fn run_manual(check_only: bool) -> Result<UpdateOutcome> {
         }
         // `try_source` already printed the available version and its source.
         UpdateOutcome::Available => println!("Run `openbitfun update` to install it."),
-        UpdateOutcome::Updated => println!(
-            "OpenBitFun CLI was updated successfully. Restart this command to use the new version."
+        // `update_from_configured_sources` already printed the version and daemon restart status.
+        UpdateOutcome::Updated => {}
+        UpdateOutcome::HomebrewManaged => println!(
+            "This OpenBitFun CLI installation is managed by Homebrew. Run `brew upgrade openbitfun` to update it."
         ),
         UpdateOutcome::Unsupported => println!(
-            "OpenBitFun CLI self-update supports official Linux x86_64/ARM64 archive installations."
+            "OpenBitFun CLI self-update supports official Linux (x86_64/ARM64), macOS (Apple Silicon/Intel), and Windows (x86_64) archive installations."
         ),
     }
     Ok(outcome)
@@ -129,6 +190,12 @@ pub(crate) async fn run_manual(check_only: bool) -> Result<UpdateOutcome> {
 /// must never sit behind a transfer whose duration is set by the user's
 /// bandwidth; the previous inline download could hold the TUI for minutes.
 pub(crate) async fn maybe_run_automatic() {
+    if let Ok(exe) = std::env::current_exe() {
+        cleanup_previous_windows_binaries(&exe);
+    }
+    let Some(platform) = current_platform() else {
+        return;
+    };
     if !automatic_update_is_eligible() {
         return;
     }
@@ -151,7 +218,7 @@ pub(crate) async fn maybe_run_automatic() {
     // Even a manifest fetch gets a tight leash here: this runs before the TUI
     // paints, and a check that is 6 hours overdue can wait for the next launch.
     let Ok((manifests, errors)) =
-        tokio::time::timeout(AUTO_CHECK_BUDGET, fetch_manifests(&client)).await
+        tokio::time::timeout(AUTO_CHECK_BUDGET, fetch_manifests(&client, platform)).await
     else {
         tracing::debug!("Automatic CLI update check timed out; continuing startup.");
         return;
@@ -181,7 +248,7 @@ fn spawn_detached_install() -> Result<bool> {
         return Ok(false);
     }
     let exe = std::env::current_exe().context("resolve current OpenBitFun CLI executable")?;
-    Command::new(exe)
+    create_command(exe)
         .arg("update")
         .env(BACKGROUND_INSTALL_ENV, "1")
         .stdin(Stdio::null())
@@ -319,17 +386,20 @@ pub(crate) fn run_install_lock_helper(args: &[std::ffi::OsString]) -> Option<Res
 }
 
 async fn update_from_configured_sources(check_only: bool) -> Result<UpdateOutcome> {
-    let Some(platform_key) = current_platform_key() else {
+    let Some(platform) = current_platform() else {
         return Ok(UpdateOutcome::Unsupported);
     };
     let current_exe =
         std::env::current_exe().context("resolve current OpenBitFun CLI executable")?;
+    if is_homebrew_binary(&current_exe) {
+        return Ok(UpdateOutcome::HomebrewManaged);
+    }
     if is_development_binary(&current_exe) {
         return Ok(UpdateOutcome::Unsupported);
     }
 
     let client = build_client()?;
-    let (manifests, errors) = fetch_manifests(&client).await;
+    let (manifests, errors) = fetch_manifests(&client, platform).await;
     if manifests.is_empty() {
         return Err(anyhow!(
             "CLI update failed from both configured sources: {}",
@@ -373,7 +443,7 @@ async fn update_from_configured_sources(check_only: bool) -> Result<UpdateOutcom
         if manifest.version != newest {
             continue;
         }
-        match platform_asset(manifest, platform_key) {
+        match platform_asset(manifest, platform) {
             Ok(asset) => {
                 if *source == "GitHub" {
                     canonical_sha256_url = Some(asset.sha256_url.clone());
@@ -396,7 +466,8 @@ async fn update_from_configured_sources(check_only: bool) -> Result<UpdateOutcom
     }
     if candidates.is_empty() {
         return Err(anyhow!(
-            "no source offers a usable {platform_key} CLI asset for {newest}: {}",
+            "no source offers a usable {} CLI asset for {newest}: {}",
+            platform.key,
             skipped.join("; ")
         ));
     }
@@ -494,8 +565,9 @@ async fn update_from_configured_sources(check_only: bool) -> Result<UpdateOutcom
 
         install_archive(&buffer, &current_exe)?;
         staging.discard();
-        restart_managed_daemon();
-        println!("Updated to {newest} from {}", candidate.url);
+        let restart_outcome = crate::daemon::restart_daemon_after_update(&current_exe);
+        println!("Updated OpenBitFun CLI to {newest} from {}.", candidate.url);
+        report_daemon_restart_outcome(&newest, &restart_outcome);
         return Ok(UpdateOutcome::Updated);
     }
 
@@ -597,12 +669,13 @@ struct AssetCandidate {
 
 async fn fetch_manifests(
     client: &Client,
-) -> (Vec<(&'static str, LinuxBinariesManifest)>, Vec<String>) {
+    platform: PlatformSpec,
+) -> (Vec<(&'static str, CliBinariesManifest)>, Vec<String>) {
     // Concurrently: one unreachable source must not add its whole ceiling to
     // the other's, which matters most on the startup path.
     let (github, mirror) = tokio::join!(
-        fetch_manifest(client, GITHUB_MANIFEST),
-        fetch_manifest(client, OPENBITFUN_MANIFEST),
+        fetch_manifest(client, platform.github_manifest),
+        fetch_manifest(client, platform.mirror_manifest),
     );
 
     let mut manifests = Vec::new();
@@ -616,7 +689,7 @@ async fn fetch_manifests(
     (manifests, errors)
 }
 
-async fn fetch_manifest(client: &Client, manifest_url: &str) -> Result<LinuxBinariesManifest> {
+async fn fetch_manifest(client: &Client, manifest_url: &str) -> Result<CliBinariesManifest> {
     // Manifests are a few KB, so a short total ceiling is safe here even though
     // archive downloads deliberately have none.
     let manifest = tokio::time::timeout(MANIFEST_TIMEOUT, async {
@@ -627,7 +700,7 @@ async fn fetch_manifest(client: &Client, manifest_url: &str) -> Result<LinuxBina
             .with_context(|| format!("request {manifest_url}"))?
             .error_for_status()
             .with_context(|| format!("fetch {manifest_url}"))?
-            .json::<LinuxBinariesManifest>()
+            .json::<CliBinariesManifest>()
             .await
             .with_context(|| format!("parse {manifest_url}"))
     })
@@ -636,14 +709,14 @@ async fn fetch_manifest(client: &Client, manifest_url: &str) -> Result<LinuxBina
 
     if manifest.schema_version != 1 {
         return Err(anyhow!(
-            "unsupported Linux binaries manifest schema {}",
+            "unsupported CLI binaries manifest schema {}",
             manifest.schema_version
         ));
     }
     Ok(manifest)
 }
 
-fn newest_version(manifests: &[(&'static str, LinuxBinariesManifest)]) -> String {
+fn newest_version(manifests: &[(&'static str, CliBinariesManifest)]) -> String {
     let mut newest = manifests[0].1.version.clone();
     for (_, manifest) in manifests {
         if is_newer_version(&manifest.version, &newest) {
@@ -653,30 +726,26 @@ fn newest_version(manifests: &[(&'static str, LinuxBinariesManifest)]) -> String
     newest
 }
 
-fn platform_asset<'a>(
-    manifest: &'a LinuxBinariesManifest,
-    platform_key: &str,
-) -> Result<&'a ReleaseAsset> {
-    let platform = manifest
+fn platform_asset(manifest: &CliBinariesManifest, platform: PlatformSpec) -> Result<&ReleaseAsset> {
+    let entry = manifest
         .platforms
-        .get(platform_key)
-        .ok_or_else(|| anyhow!("manifest does not contain {platform_key}"))?;
-    let expected_target = match platform_key {
-        "linux-x86_64" => "x86_64-unknown-linux-gnu",
-        "linux-aarch64" => "aarch64-unknown-linux-gnu",
-        _ => return Err(anyhow!("unsupported updater platform {platform_key}")),
-    };
-    if platform.target != expected_target {
+        .get(platform.key)
+        .ok_or_else(|| anyhow!("manifest does not contain {}", platform.key))?;
+    if entry.target != platform.target {
         return Err(anyhow!(
             "manifest target {} does not match {}",
-            platform.target,
-            expected_target
+            entry.target,
+            platform.target
         ));
     }
-    if !platform.cli.filename.ends_with(".tar.gz") {
-        return Err(anyhow!("CLI release asset is not a tar.gz archive"));
+    if !entry.cli.filename.ends_with(platform.archive_ext) {
+        return Err(anyhow!(
+            "CLI release asset {} does not have expected extension {}",
+            entry.cli.filename,
+            platform.archive_ext
+        ));
     }
-    Ok(&platform.cli)
+    Ok(&entry.cli)
 }
 
 fn build_client() -> Result<Client> {
@@ -954,6 +1023,43 @@ fn verify_sha256(archive: &[u8], checksum_text: &str, filename: &str) -> Result<
     Ok(())
 }
 
+fn extract_tar_gz_archive(archive: &[u8], destination: &Path) -> Result<()> {
+    Archive::new(GzDecoder::new(Cursor::new(archive)))
+        .unpack(destination)
+        .context("extract CLI update tar.gz archive")
+}
+
+fn extract_zip_archive(archive: &[u8], destination: &Path) -> Result<()> {
+    let mut zip =
+        zip::ZipArchive::new(Cursor::new(archive)).context("open CLI update zip archive")?;
+    for index in 0..zip.len() {
+        let mut entry = zip
+            .by_index(index)
+            .with_context(|| format!("read zip entry #{index}"))?;
+        let Some(relative) = entry.enclosed_name().map(PathBuf::from) else {
+            return Err(anyhow!(
+                "CLI update zip contains an unsafe path: {}",
+                entry.name()
+            ));
+        };
+        let target = destination.join(relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&target)
+                .with_context(|| format!("create extracted directory {}", target.display()))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent directory {}", parent.display()))?;
+        }
+        let mut output = fs::File::create(&target)
+            .with_context(|| format!("create extracted file {}", target.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .with_context(|| format!("extract {}", target.display()))?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn install_archive(archive: &[u8], current_exe: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -969,10 +1075,8 @@ fn install_archive(archive: &[u8], current_exe: &Path) -> Result<()> {
     let plugin_host_target = install_dir.join("resources").join("ext-host");
 
     let extract_dir = tempfile::tempdir().context("create CLI update extraction directory")?;
-    Archive::new(GzDecoder::new(Cursor::new(archive)))
-        .unpack(extract_dir.path())
-        .context("extract CLI update archive")?;
-    let package_dir = find_package_dir(extract_dir.path())?;
+    extract_tar_gz_archive(archive, extract_dir.path())?;
+    let package_dir = find_package_dir(extract_dir.path(), "openbitfun")?;
     let new_primary = package_dir.join("openbitfun");
     let new_plugin_host = package_dir.join("resources").join("ext-host");
     validate_entrypoint(&new_primary)?;
@@ -1131,23 +1235,213 @@ fn install_archive(archive: &[u8], current_exe: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn install_archive(_archive: &[u8], _current_exe: &Path) -> Result<()> {
-    Err(anyhow!("CLI self-update is only available on Linux"))
+#[cfg(windows)]
+fn install_archive(archive: &[u8], current_exe: &Path) -> Result<()> {
+    let install_dir = current_exe
+        .parent()
+        .ok_or_else(|| anyhow!("current executable has no parent directory"))?;
+    let exe_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !exe_name.eq_ignore_ascii_case("openbitfun.exe") {
+        return Err(anyhow!(
+            "self-update requires the official executable name `openbitfun.exe`"
+        ));
+    }
+    let plugin_host_target = install_dir.join("resources").join("ext-host");
+
+    let extract_dir = tempfile::tempdir().context("create CLI update extraction directory")?;
+    extract_zip_archive(archive, extract_dir.path())?;
+    let package_dir = find_package_dir(extract_dir.path(), "openbitfun.exe")?;
+    let new_primary = package_dir.join("openbitfun.exe");
+    let new_plugin_host = package_dir.join("resources").join("ext-host");
+    validate_entrypoint(&new_primary)?;
+    validate_plugin_host_resources(&new_plugin_host)?;
+
+    let update_prefix = format!(
+        "{}-update.",
+        openbitfun_core_types::product_identity::hidden_data_directory()
+    );
+    let stage = tempfile::Builder::new()
+        .prefix(&update_prefix)
+        .tempdir_in(install_dir)
+        .with_context(|| {
+            format!(
+                "create update staging directory in {}",
+                install_dir.display()
+            )
+        })?;
+    let staged_primary = stage.path().join("openbitfun.exe");
+    let staged_plugin_host = stage.path().join("ext-host");
+    fs::copy(&new_primary, &staged_primary).context("stage openbitfun.exe")?;
+    copy_plugin_host_resources(&new_plugin_host, &staged_plugin_host)?;
+    validate_entrypoint(&staged_primary)?;
+    validate_plugin_host_resources(&staged_plugin_host)?;
+
+    // Windows locks a running executable against deletion, but allows renaming
+    // it within the same directory. Rename the running image to a hidden
+    // sibling that the next `openbitfun` invocation removes.
+    let previous_exe = install_dir.join(format!(
+        "{WINDOWS_PREVIOUS_EXE_PREFIX}{}.exe",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&previous_exe);
+    let plugin_host_backup = stage.path().join("previous-ext-host");
+    let plugin_host_existed = plugin_host_target.is_dir();
+
+    let mut rollback_failures: Vec<String> = Vec::new();
+    let restore = |from: &Path, to: &Path, rollback_failures: &mut Vec<String>| {
+        if let Err(error) = fs::rename(from, to) {
+            rollback_failures.push(format!("restore {}: {error}", to.display()));
+        }
+    };
+    let rollback_error = |error: std::io::Error, step: &str, failures: Vec<String>| {
+        let base = anyhow!(error).context(step.to_string());
+        if failures.is_empty() {
+            return base;
+        }
+        base.context(format!(
+            "the previous CLI could NOT be put back ({}); reinstall OpenBitFun manually",
+            failures.join("; ")
+        ))
+    };
+
+    let retained_stage = stage.keep();
+    fs::rename(current_exe, &previous_exe).context("move running openbitfun.exe aside")?;
+    if plugin_host_existed {
+        if let Err(error) = fs::rename(&plugin_host_target, &plugin_host_backup) {
+            restore(&previous_exe, current_exe, &mut rollback_failures);
+            return Err(rollback_error(
+                error,
+                "back up current plugin Host resources",
+                rollback_failures,
+            ));
+        }
+    }
+    if let Err(error) = fs::rename(&staged_primary, current_exe) {
+        if plugin_host_existed {
+            restore(
+                &plugin_host_backup,
+                &plugin_host_target,
+                &mut rollback_failures,
+            );
+        }
+        restore(&previous_exe, current_exe, &mut rollback_failures);
+        return Err(rollback_error(
+            error,
+            "install updated openbitfun.exe",
+            rollback_failures,
+        ));
+    }
+    if let Err(error) = fs::create_dir_all(
+        plugin_host_target
+            .parent()
+            .expect("plugin Host resource directory has a parent"),
+    ) {
+        let _ = fs::remove_file(current_exe);
+        if plugin_host_existed {
+            restore(
+                &plugin_host_backup,
+                &plugin_host_target,
+                &mut rollback_failures,
+            );
+        }
+        restore(&previous_exe, current_exe, &mut rollback_failures);
+        return Err(rollback_error(
+            error,
+            "create plugin Host resource directory",
+            rollback_failures,
+        ));
+    }
+    if let Err(error) = fs::rename(&staged_plugin_host, &plugin_host_target) {
+        let _ = fs::remove_file(current_exe);
+        if plugin_host_existed {
+            restore(
+                &plugin_host_backup,
+                &plugin_host_target,
+                &mut rollback_failures,
+            );
+        }
+        restore(&previous_exe, current_exe, &mut rollback_failures);
+        return Err(rollback_error(
+            error,
+            "install updated plugin Host resources",
+            rollback_failures,
+        ));
+    }
+    let validation = validate_entrypoint(current_exe)
+        .and_then(|_| validate_plugin_host_resources(&plugin_host_target));
+    if let Err(error) = validation {
+        let _ = fs::remove_file(current_exe);
+        let _ = fs::remove_dir_all(&plugin_host_target);
+        if plugin_host_existed {
+            restore(
+                &plugin_host_backup,
+                &plugin_host_target,
+                &mut rollback_failures,
+            );
+        }
+        restore(&previous_exe, current_exe, &mut rollback_failures);
+        let failed = error.context("validate installed CLI update");
+        if rollback_failures.is_empty() {
+            return Err(failed);
+        }
+        return Err(failed.context(format!(
+            "the previous CLI could NOT be put back ({}); reinstall OpenBitFun manually",
+            rollback_failures.join("; ")
+        )));
+    }
+    let _ = fs::remove_dir_all(&retained_stage);
+    Ok(())
 }
 
-fn find_package_dir(root: &Path) -> Result<PathBuf> {
+#[cfg(not(any(unix, windows)))]
+fn install_archive(_archive: &[u8], _current_exe: &Path) -> Result<()> {
+    Err(anyhow!("CLI self-update is not supported on this platform"))
+}
+
+const WINDOWS_PREVIOUS_EXE_PREFIX: &str = ".openbitfun-previous-";
+
+/// Clean up any `.openbitfun-previous-*.exe` left beside `current_exe` after a
+/// Windows self-update (best-effort; files still locked by an active process
+/// are left for the next launch).
+fn cleanup_previous_windows_binaries(current_exe: &Path) {
+    let Some(install_dir) = current_exe.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(install_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_previous = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(WINDOWS_PREVIOUS_EXE_PREFIX) && name.ends_with(".exe")
+            });
+        if is_previous {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn find_package_dir(root: &Path, binary_name: &str) -> Result<PathBuf> {
+    if root.join(binary_name).is_file() {
+        return Ok(root.to_path_buf());
+    }
     for entry in fs::read_dir(root).context("inspect CLI update archive")? {
         let path = entry?.path();
-        if path.is_dir() && path.join("openbitfun").is_file() {
+        if path.is_dir() && path.join(binary_name).is_file() {
             return Ok(path);
         }
     }
-    Err(anyhow!("CLI update archive does not contain openbitfun"))
+    Err(anyhow!("CLI update archive does not contain {binary_name}"))
 }
 
 fn validate_entrypoint(executable: &Path) -> Result<()> {
-    let status = Command::new(executable)
+    let status = create_command(executable)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1186,13 +1480,17 @@ fn copy_plugin_host_resources(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn current_platform_key() -> Option<&'static str> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    match std::env::consts::ARCH {
-        "x86_64" => Some("linux-x86_64"),
-        "aarch64" => Some("linux-aarch64"),
+fn current_platform() -> Option<PlatformSpec> {
+    platform_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn platform_for(os: &str, arch: &str) -> Option<PlatformSpec> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some(LINUX_X86_64),
+        ("linux", "aarch64") => Some(LINUX_AARCH64),
+        ("macos", "aarch64") => Some(DARWIN_AARCH64),
+        ("macos", "x86_64") => Some(DARWIN_X86_64),
+        ("windows", "x86_64") => Some(WINDOWS_X86_64),
         _ => None,
     }
 }
@@ -1201,6 +1499,17 @@ fn is_development_binary(executable: &Path) -> bool {
     executable
         .components()
         .any(|component| component.as_os_str() == "target")
+}
+
+fn is_homebrew_binary(executable: &Path) -> bool {
+    let check = |path: &Path| {
+        path.components()
+            .any(|component| component.as_os_str() == "Cellar")
+    };
+    if check(executable) {
+        return true;
+    }
+    fs::canonicalize(executable).is_ok_and(|resolved| check(&resolved))
 }
 
 fn release_core(version: &str) -> Option<(u64, u64, u64)> {
@@ -1222,9 +1531,9 @@ fn automatic_update_is_eligible() -> bool {
     {
         return false;
     }
-    std::env::current_exe()
-        .ok()
-        .is_some_and(|path| current_platform_key().is_some() && !is_development_binary(&path))
+    std::env::current_exe().ok().is_some_and(|path| {
+        current_platform().is_some() && !is_development_binary(&path) && !is_homebrew_binary(&path)
+    })
 }
 
 fn release_version_allows_automatic_update(version: &str) -> bool {
@@ -1263,27 +1572,46 @@ fn mark_automatic_check() {
     let _ = fs::write(path, env!("CARGO_PKG_VERSION"));
 }
 
-fn restart_managed_daemon() {
-    // `dirs::config_dir()` honours `XDG_CONFIG_HOME`, which is where systemd
-    // --user actually looks. Hard-coding `~/.config` missed the unit on any host
-    // that relocates it, and the daemon then kept running the old binary.
-    //
-    // Both are checked because an install predating this could have written the
-    // unit to `~/.config` on a host that sets `XDG_CONFIG_HOME` elsewhere; a
-    // `try-restart` for a unit systemd does not know is a harmless no-op, while
-    // missing one leaves a stale daemon behind.
-    let candidates = [
-        dirs::config_dir(),
-        dirs::home_dir().map(|it| it.join(".config")),
-    ];
-    let installed = candidates.iter().flatten().any(|dir| {
-        dir.join("systemd/user/openbitfun-cli-daemon.service")
-            .is_file()
-    });
-    if installed {
-        let _ = Command::new("systemctl")
-            .args(["--user", "try-restart", "openbitfun-cli-daemon.service"])
-            .status();
+fn report_daemon_restart_outcome(
+    version: &str,
+    outcome: &crate::daemon::DaemonUpdateRestartOutcome,
+) {
+    use crate::daemon::DaemonUpdateRestartOutcome;
+    match outcome {
+        DaemonUpdateRestartOutcome::ServiceRestarted { service } => {
+            println!(
+                "Restarted {service}; remote control and the web UI are now running {version}."
+            );
+        }
+        DaemonUpdateRestartOutcome::ServiceRestartFailed {
+            service,
+            command,
+            error,
+        } => {
+            eprintln!(
+                "Warning: could not restart {service} ({error}). Run `{command}` so remote control and the web UI switch to {version}."
+            );
+        }
+        DaemonUpdateRestartOutcome::DetachedRestarted => {
+            println!(
+                "Restarted the background OpenBitFun daemon; remote control and the web UI are now running {version}."
+            );
+        }
+        DaemonUpdateRestartOutcome::DetachedRestartFailed { error } => {
+            eprintln!(
+                "Warning: could not restart the background OpenBitFun daemon ({error}). Restart it manually so remote control and the web UI switch to {version}."
+            );
+        }
+        DaemonUpdateRestartOutcome::ManualRestartRequired => {
+            eprintln!(
+                "Note: a running OpenBitFun daemon was detected (not managed by a system service). Restart it so remote control and the web UI switch to {version}."
+            );
+        }
+        DaemonUpdateRestartOutcome::NoDaemonRunning => {
+            println!(
+                "Start a new `openbitfun` session (or restart any open interactive session) to use {version}."
+            );
+        }
     }
 }
 
@@ -1563,7 +1891,7 @@ mod tests {
 
     #[test]
     fn newest_version_wins_across_manifests() {
-        let manifest = |version: &str| LinuxBinariesManifest {
+        let manifest = |version: &str| CliBinariesManifest {
             schema_version: 1,
             version: version.to_string(),
             platforms: std::collections::HashMap::new(),
@@ -1580,6 +1908,146 @@ mod tests {
             ("openbitfun.com", manifest("1.0.1")),
         ];
         assert_eq!(newest_version(&reversed), "1.0.1");
+    }
+
+    #[test]
+    fn platform_specs_cover_linux_macos_and_windows_manifests() {
+        assert_eq!(
+            platform_for("linux", "x86_64").map(|p| (p.key, p.archive_ext, p.github_manifest)),
+            Some(("linux-x86_64", ".tar.gz", GITHUB_LINUX_MANIFEST))
+        );
+        assert_eq!(
+            platform_for("linux", "aarch64").map(|p| (p.key, p.archive_ext, p.github_manifest)),
+            Some(("linux-aarch64", ".tar.gz", GITHUB_LINUX_MANIFEST))
+        );
+        assert_eq!(
+            platform_for("macos", "aarch64").map(|p| (p.key, p.archive_ext, p.github_manifest)),
+            Some(("darwin-aarch64", ".tar.gz", GITHUB_CLI_MANIFEST))
+        );
+        assert_eq!(
+            platform_for("macos", "x86_64").map(|p| (p.key, p.archive_ext, p.github_manifest)),
+            Some(("darwin-x86_64", ".tar.gz", GITHUB_CLI_MANIFEST))
+        );
+        assert_eq!(
+            platform_for("windows", "x86_64").map(|p| (p.key, p.archive_ext, p.github_manifest)),
+            Some(("windows-x86_64", ".zip", GITHUB_CLI_MANIFEST))
+        );
+        assert_eq!(platform_for("freebsd", "x86_64"), None);
+    }
+
+    #[test]
+    fn platform_asset_validates_target_and_extension_for_macos_and_windows() {
+        let mut platforms = std::collections::HashMap::new();
+        platforms.insert(
+            "darwin-aarch64".to_string(),
+            CliPlatform {
+                target: "aarch64-apple-darwin".to_string(),
+                cli: ReleaseAsset {
+                    filename: "openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz".to_string(),
+                    url: "https://example.test/mac.tar.gz".to_string(),
+                    sha256_url: "https://example.test/mac.tar.gz.sha256".to_string(),
+                    sig_url: Some("https://example.test/mac.tar.gz.sig".to_string()),
+                },
+            },
+        );
+        platforms.insert(
+            "windows-x86_64".to_string(),
+            CliPlatform {
+                target: "x86_64-pc-windows-msvc".to_string(),
+                cli: ReleaseAsset {
+                    filename: "openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip".to_string(),
+                    url: "https://example.test/win.zip".to_string(),
+                    sha256_url: "https://example.test/win.zip.sha256".to_string(),
+                    sig_url: Some("https://example.test/win.zip.sig".to_string()),
+                },
+            },
+        );
+        let manifest = CliBinariesManifest {
+            schema_version: 1,
+            version: "2.0.1".to_string(),
+            platforms,
+        };
+        assert_eq!(
+            platform_asset(&manifest, DARWIN_AARCH64).unwrap().filename,
+            "openbitfun-cli-2.0.1-aarch64-apple-darwin.tar.gz"
+        );
+        assert_eq!(
+            platform_asset(&manifest, WINDOWS_X86_64).unwrap().filename,
+            "openbitfun-cli-2.0.1-x86_64-pc-windows-msvc.zip"
+        );
+        assert!(platform_asset(&manifest, DARWIN_X86_64).is_err());
+    }
+
+    #[test]
+    fn detects_homebrew_managed_installations() {
+        assert!(is_homebrew_binary(Path::new(
+            "/opt/homebrew/Cellar/openbitfun/2.0.0/bin/openbitfun"
+        )));
+        assert!(is_homebrew_binary(Path::new(
+            "/usr/local/Cellar/openbitfun/2.0.0/bin/openbitfun"
+        )));
+        assert!(!is_homebrew_binary(Path::new(
+            "/Users/alice/.local/bin/openbitfun"
+        )));
+    }
+
+    #[test]
+    fn zip_extraction_unpacks_windows_package_and_rejects_path_traversal() {
+        use std::io::Write as _;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            writer
+                .start_file(
+                    "openbitfun-cli-2.0.1-x86_64-pc-windows-msvc/openbitfun.exe",
+                    options,
+                )
+                .unwrap();
+            writer.write_all(b"fake-exe").unwrap();
+            writer
+                .start_file(
+                    "openbitfun-cli-2.0.1-x86_64-pc-windows-msvc/resources/ext-host/extension-host.js",
+                    options,
+                )
+                .unwrap();
+            writer.write_all(b"console.log('ok');").unwrap();
+            writer.finish().unwrap();
+        }
+        let dest = tempfile::tempdir().unwrap();
+        extract_zip_archive(buf.get_ref(), dest.path()).unwrap();
+        let pkg = find_package_dir(dest.path(), "openbitfun.exe").unwrap();
+        assert_eq!(fs::read(pkg.join("openbitfun.exe")).unwrap(), b"fake-exe");
+        assert!(pkg.join("resources/ext-host/extension-host.js").is_file());
+
+        // Path traversal entries must fail closed.
+        let mut evil = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut evil);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("../escape.txt", options).unwrap();
+            writer.write_all(b"nope").unwrap();
+            writer.finish().unwrap();
+        }
+        let evil_dest = tempfile::tempdir().unwrap();
+        assert!(extract_zip_archive(evil.get_ref(), evil_dest.path()).is_err());
+    }
+
+    #[test]
+    fn cleanup_removes_stale_previous_windows_executables_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("openbitfun.exe");
+        let stale = dir.path().join(".openbitfun-previous-42.exe");
+        let other = dir.path().join("notes.txt");
+        fs::write(&current, b"new").unwrap();
+        fs::write(&stale, b"old").unwrap();
+        fs::write(&other, b"keep").unwrap();
+
+        cleanup_previous_windows_binaries(&current);
+        assert!(current.is_file());
+        assert!(!stale.exists());
+        assert!(other.is_file());
     }
 
     #[test]

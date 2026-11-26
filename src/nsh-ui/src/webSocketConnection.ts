@@ -78,6 +78,8 @@ export interface ObpHello {
   lastSeq: number;
   creditBytes: number | null;
   backend: { version?: string; platform?: string; instanceId?: string; dataDir?: string };
+  /** Advisory web UI bundle id reported by the host in `hello`. */
+  uiBundleId: string | null;
   /** The fleet answer; `null` from a backend that is not a fleet entry. */
   fleet: FleetHelloAnswer | null;
 }
@@ -271,6 +273,8 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
       lastSeq: typeof result.lastSeq === "number" ? result.lastSeq : 0,
       creditBytes: typeof result.creditBytes === "number" ? result.creditBytes : null,
       backend,
+      uiBundleId:
+        typeof result.uiBundleId === "string" && /^[0-9a-f]{64}$/.test(result.uiBundleId) ? result.uiBundleId : null,
       fleet: fleetCursor ? readFleetHelloAnswer(result.fleet) : null,
     };
     if (typeof backend.instanceId === "string") instanceId = backend.instanceId;

@@ -179,6 +179,14 @@ export function controllerErrorCode(error: unknown): ControllerErrorCode {
  */
 export type ControllerUiPlacement = { kind: "here" } | { kind: "away"; open(): Promise<void> };
 
+/** A newer or changed web UI bundle advertised by the connected device or fleet. */
+export interface ControllerUiUpdate {
+  readonly bundleId: string;
+  readonly version: string | null;
+  /** Stores the bundle, refreshes the pool cookie, and navigates to the new UI. */
+  apply(): Promise<void>;
+}
+
 /** How this page was started, beyond the signed-in session. */
 export interface ControllerLaunchState {
   /** The device this page was opened for (the web handoff), to connect straight away. */
@@ -221,6 +229,12 @@ export interface ControllerPort {
    * (`device_ui_unavailable`, `page_outdated`, `unsupported`, ...).
    */
   placeUi?(connection: ControllerConnection): Promise<ControllerUiPlacement>;
+  /**
+   * Checks whether the connected device or its fleet now ships a different web
+   * UI bundle than this page is running (e.g. after a CLI or desktop update).
+   * Returns `null` when up to date or unavailable.
+   */
+  checkUiUpdate?(connection: ControllerConnection): Promise<ControllerUiUpdate | null>;
   /**
    * Leaves the device for the device list. Resolves `true` when the page
    * itself goes away for that (a device's UI page goes back to the launcher).

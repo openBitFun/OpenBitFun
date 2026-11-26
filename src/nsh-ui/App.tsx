@@ -65,7 +65,13 @@ import { installServedBackend } from "./src/servedBackend";
 import { controllerPort } from "./src/controller/controllerPort";
 import { SessionActionDialogs } from "./src/ui/sessionActions";
 import { WorkspaceActionDialogs } from "./src/ui/workspaceActions";
-import { signOutController } from "./src/controller/controllerStore";
+import {
+  applyControllerUiUpdate,
+  controllerUiUpdate,
+  controllerUiUpdating,
+  dismissControllerUiUpdate,
+  signOutController,
+} from "./src/controller/controllerStore";
 import { ControllerShell } from "./src/controller/ControllerShell";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
 import { basename, formatPlural } from "./src/format";
@@ -3273,6 +3279,44 @@ function FleetUpdateNotice() {
     </If>
   );
 }
+
+/** The connected device or fleet now ships a newer web UI bundle; reload on the user's cue. */
+function WebUiUpdateNotice() {
+  const label = () => {
+    const update = controllerUiUpdate();
+    if (!update) return "";
+    return update.version
+      ? tr("shell.webUiUpdateVersion", { version: update.version })
+      : tr("shell.webUiUpdate");
+  };
+  return (
+    <If when={Boolean(controllerPort()) && Boolean(controllerUiUpdate())}>
+      <CanvasNotice
+        icon="refresh"
+        text={label()}
+        accessibilityLabel="web-ui-update-notice"
+        action={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+            <Button
+              label={tr("common.reload")}
+              variant="secondary"
+              size="xs"
+              disabled={controllerUiUpdating()}
+              accessibilityLabel="web-ui-update-reload"
+              onPress={() => void applyControllerUiUpdate()}
+            />
+            <IconButton
+              icon="close"
+              size="xs"
+              accessibilityLabel="web-ui-update-dismiss"
+              onPress={() => dismissControllerUiUpdate()}
+            />
+          </View>
+        }
+      />
+    </If>
+  );
+}
 function StudioApp() {
   effect(() => {
     const family = fontSans();
@@ -3547,6 +3591,7 @@ function StudioApp() {
         <If when={!(compactShell() && activeScene() === "sessions")}>
           <BackendConnectionBanner />
           <FleetUpdateNotice />
+          <WebUiUpdateNotice />
         </If>
         <ErrorBanner />
 
@@ -3670,6 +3715,7 @@ function StudioApp() {
         <If when={compactShell() && activeScene() === "sessions"}>
           <BackendConnectionBanner />
           <FleetUpdateNotice />
+          <WebUiUpdateNotice />
         </If>
         <If when={compactShell() && phoneTabScenes().includes(activeScene())}>
           <PhoneTabs />

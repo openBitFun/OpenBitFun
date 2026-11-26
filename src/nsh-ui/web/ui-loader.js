@@ -36,7 +36,7 @@
   const MAX_FILE_BYTES = 64 * 1024 * 1024;
   const UNUSED_MS = 30 * 24 * 60 * 60 * 1000;
   const TOUCH_MS = 60 * 60 * 1000;
-  const MAX_DEVICES = 4;
+  const MAX_DEVICES = 8;
   const MAX_CACHED_BUNDLES = 4;
   const HEX64 = /^[0-9a-f]{64}$/;
   const STORE_MESSAGE = "obf-ui-store";
@@ -227,10 +227,14 @@
       const bundleId = await bundleIdOf(env.subtle, manifest);
       const now = env.now();
       const previous = await env.records.get(bundleId);
-      const devices = [deviceId, ...((previous && previous.devices) || []).filter(id => id !== deviceId)].slice(
-        0,
-        MAX_DEVICES,
-      );
+      const incomingHolders = Array.isArray(message.holders)
+        ? message.holders.filter(id => typeof id === "string" && id.length > 0)
+        : [];
+      const devices = [];
+      for (const id of [deviceId, ...incomingHolders, ...((previous && previous.devices) || [])]) {
+        if (!devices.includes(id)) devices.push(id);
+        if (devices.length >= MAX_DEVICES) break;
+      }
       const record = { bundleId, manifest, deviceId, devices, storedAt: now, usedAt: now };
       await env.records.put(record);
       verified.set(bundleId, record);
@@ -375,10 +379,12 @@
       const devices = record.devices && record.devices.length ? record.devices : [record.deviceId];
       let lastStatus = "network";
       for (const device of devices) {
+        const others = devices.filter(id => id !== device);
+        const holdersParam = others.length > 0 ? `&holders=${encodeURIComponent(others.join(","))}` : "";
         for (const hash of hashes) {
           let response;
           try {
-            response = await env.fetch(`${env.casUrl}${hash}?device=${encodeURIComponent(device)}`, {
+            response = await env.fetch(`${env.casUrl}${hash}?device=${encodeURIComponent(device)}${holdersParam}`, {
               credentials: "same-origin",
             });
           } catch {

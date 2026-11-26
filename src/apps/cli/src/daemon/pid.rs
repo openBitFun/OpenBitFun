@@ -14,6 +14,12 @@ fn default_pid_file_path() -> Result<PathBuf> {
     Ok(paths.product_home_dir().join("cli_daemon.pid"))
 }
 
+fn default_detached_pid_file_path() -> Result<PathBuf> {
+    let paths = openbitfun_core::infrastructure::PathManager::new()
+        .map_err(|error| anyhow!("resolve daemon storage: {error}"))?;
+    Ok(paths.product_home_dir().join("cli_daemon.detached_pid"))
+}
+
 fn write_pid_file_to(path: &Path, pid: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -48,6 +54,37 @@ pub(crate) fn remove_pid_file() {
     if let Ok(path) = default_pid_file_path() {
         remove_pid_file_at(&path);
     }
+    remove_detached_pid_file_if_self();
+}
+
+/// Record the PID of an OpenBitFun-spawned detached daemon so `openbitfun update`
+/// can distinguish it from an externally supervised `openbitfun daemon run`.
+pub(crate) fn write_detached_pid_file(pid: u32) -> Result<()> {
+    write_pid_file_to(&default_detached_pid_file_path()?, pid)
+}
+
+/// Remove the detached daemon marker when it belongs to this process.
+pub(crate) fn remove_detached_pid_file_if_self() {
+    if let Ok(path) = default_detached_pid_file_path() {
+        if read_pid_file_from(&path) == Some(std::process::id()) {
+            remove_pid_file_at(&path);
+        }
+    }
+}
+
+/// Clear the detached daemon marker unconditionally (e.g. after stopping it).
+pub(crate) fn remove_detached_pid_file() {
+    if let Ok(path) = default_detached_pid_file_path() {
+        remove_pid_file_at(&path);
+    }
+}
+
+/// Whether a daemon that OpenBitFun itself spawned detached is currently alive.
+pub(crate) fn is_detached_daemon_running() -> bool {
+    default_detached_pid_file_path()
+        .ok()
+        .and_then(|path| read_pid_file_from(&path))
+        .is_some_and(process_alive)
 }
 
 /// Whether a daemon process recorded in the pid file is alive right now.

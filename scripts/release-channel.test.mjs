@@ -197,4 +197,6 @@ test('Desktop and CLI updaters consume the versioned stable feeds', () => {
   const cli = readFileSync(new URL('../src/apps/cli/src/self_update.rs', import.meta.url), 'utf8');
   assert.ok(cli.includes(new URL('linux-binaries-v1.json', stable.primaryUpdaterEndpoint).href));
   assert.ok(cli.includes('https://openbitfun.com/release/linux-binaries-v1.json'));
+  assert.ok(cli.includes(new URL('cli-binaries-v1.json', stable.primaryUpdaterEndpoint).href));
+  assert.ok(cli.includes('https://openbitfun.com/release/cli-binaries-v1.json'));
 });

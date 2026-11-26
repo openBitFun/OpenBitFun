@@ -86,7 +86,7 @@ fn render_launch_agent(executable: &Path) -> String {
 }
 
 fn run_command(program: &str, args: &[&str]) -> Result<std::process::Output> {
-    std::process::Command::new(program)
+    openbitfun_services_core::process_manager::create_command(program)
         .args(args)
         .output()
         .with_context(|| format!("run `{program} {}`", args.join(" ")))
@@ -100,7 +100,7 @@ fn run_systemctl_user(args: &[&str]) -> Result<std::process::Output> {
     // any account secret in the environment.
     // SAFETY: getuid has no preconditions and does not dereference pointers.
     let uid = unsafe { libc::getuid() };
-    let mut command = std::process::Command::new("systemctl");
+    let mut command = openbitfun_services_core::process_manager::create_command("systemctl");
     command.arg("--user").args(args);
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         command.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
@@ -108,6 +108,101 @@ fn run_systemctl_user(args: &[&str]) -> Result<std::process::Output> {
     command
         .output()
         .with_context(|| format!("run `systemctl --user {}`", args.join(" ")))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ServiceRestartOutcome {
+    NotInstalled,
+    Restarted {
+        service: String,
+    },
+    Failed {
+        service: String,
+        command: String,
+        error: String,
+    },
+}
+
+/// Restart an installed auto-start daemon service (systemd user unit on Linux,
+/// LaunchAgent on macOS) so a freshly installed binary takes effect.
+pub(crate) fn restart_installed_service() -> ServiceRestartOutcome {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Check both XDG_CONFIG_HOME (via systemd_unit_path) and ~/.config so
+        // an older install written before XDG_CONFIG_HOME changed is still found.
+        let installed = systemd_unit_path().is_ok_and(|path| path.is_file())
+            || dirs::home_dir().is_some_and(|home| {
+                home.join(".config/systemd/user")
+                    .join(SYSTEMD_UNIT_NAME)
+                    .is_file()
+            });
+        if !installed {
+            return ServiceRestartOutcome::NotInstalled;
+        }
+        let recovery = format!("systemctl --user restart {SYSTEMD_UNIT_NAME}");
+        match run_systemctl_user(&["try-restart", SYSTEMD_UNIT_NAME]) {
+            Ok(output) if output.status.success() => ServiceRestartOutcome::Restarted {
+                service: SYSTEMD_UNIT_NAME.to_string(),
+            },
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let detail = if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                };
+                ServiceRestartOutcome::Failed {
+                    service: SYSTEMD_UNIT_NAME.to_string(),
+                    command: recovery,
+                    error: detail,
+                }
+            }
+            Err(error) => ServiceRestartOutcome::Failed {
+                service: SYSTEMD_UNIT_NAME.to_string(),
+                command: recovery,
+                error: error.to_string(),
+            },
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if !launch_agent_path().is_ok_and(|path| path.is_file()) {
+            return ServiceRestartOutcome::NotInstalled;
+        }
+        // SAFETY: getuid has no preconditions and does not dereference pointers.
+        let uid = unsafe { libc::getuid() };
+        let target = format!("gui/{uid}/{LAUNCH_AGENT_LABEL}");
+        let recovery = format!("launchctl kickstart -k {target}");
+        match run_command("launchctl", &["kickstart", "-k", &target]) {
+            Ok(output) if output.status.success() => ServiceRestartOutcome::Restarted {
+                service: LAUNCH_AGENT_LABEL.to_string(),
+            },
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let detail = if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                };
+                ServiceRestartOutcome::Failed {
+                    service: LAUNCH_AGENT_LABEL.to_string(),
+                    command: recovery,
+                    error: detail,
+                }
+            }
+            Err(error) => ServiceRestartOutcome::Failed {
+                service: LAUNCH_AGENT_LABEL.to_string(),
+                command: recovery,
+                error: error.to_string(),
+            },
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ServiceRestartOutcome::NotInstalled
+    }
 }
 
 #[cfg(target_os = "macos")]

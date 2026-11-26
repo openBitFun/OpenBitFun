@@ -3238,6 +3238,8 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "nav.openHistory": "显示对话",
   "nav.superAgent": "Super Agent",
   "shell.fleetUpdate": "请更新 OpenBitFun 以查看你的其他设备。",
+  "shell.webUiUpdate": "新版本界面已就绪。",
+  "shell.webUiUpdateVersion": "OpenBitFun {{version}} 界面已就绪。",
   "shell.unreachable": "无法连接你的设备，正在重试…",
   "shell.retryNow": "立即重试",
   "shell.restartToUpdate": "重启以更新",

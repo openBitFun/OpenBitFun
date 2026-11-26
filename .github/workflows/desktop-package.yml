@@ -793,6 +793,9 @@ jobs:
         needs.linux-binaries.result == 'success' &&
         needs.publish-relay-image.result == 'success'))
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
     env:
       # The desktop ships as the native app. `darwin-<arch>-nsh` is its in-app
       # update package; `darwin-<arch>` carries the same signed archive for
@@ -1180,6 +1183,24 @@ jobs:
           done
           echo "Beta channel manifest did not converge to ${CANDIDATE_VERSION}." >&2
           exit 1
+
+      # GitHub releases published with GITHUB_TOKEN do not trigger `on: release`
+      # workflows. Dispatch cli-package.yml so macOS and Windows CLI archives
+      # and cli-binaries-v1.json are published alongside every stable release.
+      - name: Trigger macOS and Windows CLI release
+        if: >-
+          github.event_name != 'release' &&
+          needs.prepare.outputs.release_channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run cli-package.yml \
+            --ref "${GITHUB_REF_NAME}" \
+            -f "tag_name=${RELEASE_TAG}" \
+            -f "upload_to_release=true"
 
       # Nudge the configured download mirror to sync now instead of on its next
       # 10-minute cron tick. Until the mirror has these bytes, clients have
