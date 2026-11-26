@@ -1916,8 +1916,9 @@ function segmentedLabelColumns(text: string): number {
   return cols;
 }
 
-/** Whether a choice list is short enough for a segmented control without clipping labels. */
+/** Explicit presentation wins; otherwise use label fitting to choose a segmented control. */
 function segmentedFits(spec: FieldSpec): boolean {
+  if (spec.selectPresentation) return spec.selectPresentation === "segmented";
   if (spec.dynamicOptions) return false;
   const options = fieldOptions(spec);
   if (options.length > 3) return false;

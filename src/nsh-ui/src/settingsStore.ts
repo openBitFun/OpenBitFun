@@ -51,6 +51,8 @@ export interface FieldSpec {
   field?: string;
   kind: FieldKind;
   options?: FieldOption[];
+  /** Keep a select's control consistent across locales instead of sizing it from translated labels. */
+  selectPresentation?: "segmented" | "dropdown";
   min?: number;
   max?: number;
   /**
@@ -208,6 +210,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.closeButtonDesc",
         path: "app.close_button_behavior",
         kind: "select",
+        selectPresentation: "segmented",
         options: [
           { value: "minimize_to_tray", label: "Minimize to tray", labelKey: "settings.opt.minimizeToTray" },
           { value: "quit", label: "Quit", labelKey: "settings.opt.quit" },

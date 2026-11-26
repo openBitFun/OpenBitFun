@@ -1378,6 +1378,22 @@ test("settings switches interface language live across English, Simplified Chine
   await app.waitFor("Interface language");
   await app.waitFor("Startup");
 
+  const expectCloseButtonSegments = (messages: Record<keyof typeof enUSMessages, string>) => {
+    // All choices stay directly visible; changing language must not turn this into a dropdown.
+    for (const [value, key] of [
+      ["minimize_to_tray", "settings.opt.minimizeToTray"],
+      ["quit", "settings.opt.quit"],
+      ["ask", "settings.opt.ask"],
+    ] as const) {
+      expect(app.shows(`close-button-${value}`)).toBe(true);
+      expect(app.texts()).toContain(messages[key]);
+    }
+    expect(app.shows("close-button")).toBe(false);
+  };
+  expectCloseButtonSegments(enUSMessages);
+  await app.press("close-button-quit");
+  expect(backend.settingsWrites).toContainEqual({ path: "app.close_button_behavior", value: "quit" });
+
   // Switch live to Simplified Chinese -> entire shell + settings repaint immediately.
   // The host keeps the language through `i18n_set_language`; no `app` document is
   // read and written back from here.
@@ -1390,18 +1406,25 @@ test("settings switches interface language live across English, Simplified Chine
       .filter(call => call.action === "i18n_set_language")
       .map(call => (call.request as { language?: string })?.language);
   expect(languageCalls().pop()).toBe("zh-CN");
+  expectCloseButtonSegments(zhCNMessages);
+  await app.press("close-button-ask");
+  expect(backend.settingsWrites).toContainEqual({ path: "app.close_button_behavior", value: "ask" });
 
   // Switch live to Traditional Chinese -> repaints immediately with canonical zh-TW copy.
   await app.press("app-language-zh-TW");
   await app.waitFor("介面語言");
   expect(app.shows("設定")).toBe(true);
   expect(languageCalls().pop()).toBe("zh-TW");
+  expectCloseButtonSegments(zhTWMessages);
+  await app.press("close-button-minimize_to_tray");
+  expect(backend.settingsWrites).toContainEqual({ path: "app.close_button_behavior", value: "minimize_to_tray" });
 
   // Switch back to English -> restores cleanly and persists canonical en-US.
   await app.press("app-language-en-US");
   await app.waitFor("Interface language");
   await app.waitFor("Startup");
   expect(languageCalls().pop()).toBe("en-US");
+  expectCloseButtonSegments(enUSMessages);
   expect(backend.settingsWrites.some(entry => entry.path === "app")).toBe(false);
 });
 
