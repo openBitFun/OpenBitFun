@@ -6,6 +6,7 @@
 // (`fixtures/installTestPresence.ts` records them).
 
 import { expect, open, test } from "nsh/test";
+import { PET_BUBBLE_HEIGHT, PET_BUBBLE_SINGLE_HEIGHT } from "../src/ui/companion";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, type Backend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -421,12 +422,23 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   expect(app.shows("id:pet-bubble-s-unread-2")).toBe(false);
   expect(app.shows("id:pet-bubble-s-idle")).toBe(false);
 
-  // Bubbles sit on the left side of the pet sprite.
+  // Bubbles sit on the left side of the pet sprite without redundant status text,
+  // with the status indicator on the right side of the title.
+  expect(app.shows("Running")).toBe(false);
+  expect(app.shows("Unread")).toBe(false);
+  expect(app.shows("Needs you")).toBe(false);
+  expect(app.shows("Failed")).toBe(false);
   const bubbleLayout = app.layout("id:pet-bubble-s-run");
+  const titleLayout = app.layout("id:pet-bubble-title-s-run");
+  const indicatorLayout = app.layout("id:pet-bubble-indicator-s-run");
   const petLayout = app.layout("label:pet-open-inbox");
   expect(bubbleLayout).not.toBeNull();
+  expect(titleLayout).not.toBeNull();
+  expect(indicatorLayout).not.toBeNull();
   expect(petLayout).not.toBeNull();
   expect(bubbleLayout!.x + bubbleLayout!.width).toBeLessThanOrEqual(petLayout!.x + 1);
+  expect(bubbleLayout!.height).toBe(PET_BUBBLE_HEIGHT);
+  expect(indicatorLayout!.x).toBeGreaterThanOrEqual(titleLayout!.x + titleLayout!.width - 1);
 
   // Left-clicking a bubble opens that session.
   await app.press("id:pet-bubble-s-run");
@@ -481,4 +493,8 @@ test("the pet shows at most two running/unread session bubbles on its left with 
   await app.host.send("openbitfun.obpFrames", [eventFrame("fleet://index-changed", { revision: 2, deviceIds: ["dev-a"] })]);
   await app.waitFor("id:pet-bubble-s-run");
   expect(app.shows("id:pet-bubble-s-unread-1")).toBe(false);
+  // A single visible bubble expands vertically to occupy two bubble slots.
+  const singleBubbleLayout = app.layout("id:pet-bubble-s-run");
+  expect(singleBubbleLayout).not.toBeNull();
+  expect(singleBubbleLayout!.height).toBe(PET_BUBBLE_SINGLE_HEIGHT);
 });

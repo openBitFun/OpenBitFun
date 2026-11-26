@@ -3451,10 +3451,6 @@ export const enUSMessages = {
   "pet.bubble.openSession": "Open session",
   "pet.bubble.close": "Close bubble",
   "pet.bubble.closeAll": "Close all bubbles",
-  "pet.bubble.running": "Running",
-  "pet.bubble.needsYou": "Needs you",
-  "pet.bubble.failed": "Failed",
-  "pet.bubble.unread": "Unread",
   // end wave22-p3 desktop presence
   // wave22-p5
   "goal.menu": "Set goal…",

@@ -42,7 +42,13 @@ import {
 } from "./companionStore";
 import { space } from "./theme";
 import { CardView, openCardConversation } from "./ui/cardView";
-import { PET_BUBBLE_GAP, PET_BUBBLE_HEIGHT, PET_BUBBLE_WIDTH, PetWindowContent } from "./ui/companion";
+import {
+  PET_BUBBLE_GAP,
+  PET_BUBBLE_HEIGHT,
+  PET_BUBBLE_SINGLE_HEIGHT,
+  PET_BUBBLE_WIDTH,
+  PetWindowContent,
+} from "./ui/companion";
 
 // ── Window driver ────────────────────────────────────────────────────────────
 
@@ -266,8 +272,9 @@ function petWindowSize(bubbleCount: number): { width: number; height: number } {
   const side = petHeight() + space.sm * 2;
   if (bubbleCount <= 0) return { width: side, height: side };
   const bubblesHeight =
-    bubbleCount * PET_BUBBLE_HEIGHT +
-    Math.max(0, bubbleCount - 1) * space.xs +
+    (bubbleCount === 1
+      ? PET_BUBBLE_SINGLE_HEIGHT
+      : bubbleCount * PET_BUBBLE_HEIGHT + Math.max(0, bubbleCount - 1) * space.xs) +
     space.sm * 2;
   return {
     width: PET_BUBBLE_WIDTH + PET_BUBBLE_GAP + side,

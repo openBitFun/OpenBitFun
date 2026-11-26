@@ -3450,10 +3450,6 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "pet.bubble.openSession": "開啟工作階段",
   "pet.bubble.close": "關閉此氣泡",
   "pet.bubble.closeAll": "關閉所有氣泡",
-  "pet.bubble.running": "進行中",
-  "pet.bubble.needsYou": "待確認",
-  "pet.bubble.failed": "失敗",
-  "pet.bubble.unread": "未讀",
   // end wave22-p3 desktop presence
   // wave22-p5
   "goal.menu": "設定目標…",

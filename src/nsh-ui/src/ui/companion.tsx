@@ -35,7 +35,7 @@ import {
   type PetSessionBubble,
 } from "../companionStore";
 import { tr } from "../i18n";
-import { compactLayout, elevationShadow, palette, radii, space, textLineHeight, textSize, textStyle, touchSlop } from "../theme";
+import { compactLayout, palette, radii, space, textLineHeight, textSize, textStyle, touchSlop } from "../theme";
 import { stateWord, type MarkState } from "./fleet";
 import { Icon } from "./icons";
 import { Spinner, pressTransition, tactileActiveStyle } from "./motion";
@@ -46,6 +46,8 @@ import { MoreMenu } from "./studio";
 export const PET_BUBBLE_WIDTH = 196;
 export const PET_BUBBLE_HEIGHT = 48;
 export const PET_BUBBLE_GAP = space.sm;
+/** Height of a single session bubble: spans two stacked bubble slots cleanly. */
+export const PET_BUBBLE_SINGLE_HEIGHT = PET_BUBBLE_HEIGHT * 2 + space.xs;
 
 /** Petdex cells are 192 × 208; a sheet whose size is unknown yet uses that shape. */
 const DEFAULT_CELL_ASPECT = 192 / 208;
@@ -201,19 +203,6 @@ export interface PetWindowContentProps {
   onSettings: () => void;
 }
 
-function bubbleStatusLabel(state: PetBubbleState): string {
-  switch (state) {
-    case "running":
-      return tr("pet.bubble.running");
-    case "needs_you":
-      return tr("pet.bubble.needsYou");
-    case "failed":
-      return tr("pet.bubble.failed");
-    case "unread":
-      return tr("pet.bubble.unread");
-  }
-}
-
 function bubbleBorderColor(state: PetBubbleState): string {
   switch (state) {
     case "needs_you":
@@ -241,20 +230,20 @@ function bubbleStatusColor(state: PetBubbleState): string {
 
 function PetSessionBubbleCard(props: {
   bubble: PetSessionBubble;
+  single: boolean;
   onOpenSession?: (bubble: PetSessionBubble) => void;
 }) {
   const b = () => props.bubble;
+  const isSingle = () => props.single;
+  const targetId = () => b().sessionId ?? b().conversationId ?? b().key;
   const openTarget = () => {
     if (props.onOpenSession) props.onOpenSession(b());
   };
-  const subtitle = () => {
-    const status = bubbleStatusLabel(b().state);
-    const device = b().deviceName?.trim();
-    return device ? `${status} · ${device}` : status;
-  };
+  const subtitle = () => b().deviceName?.trim() ?? "";
+  const titleLineHeight = () => (isSingle() ? textLineHeight(13, 1.35) : textLineHeight(12, 1.35));
   return (
     <View
-      testID={`pet-bubble-${b().sessionId ?? b().conversationId ?? b().key}`}
+      testID={`pet-bubble-${targetId()}`}
       role="button"
       accessibilityLabel={`pet-bubble-${b().key}`}
       onPress={openTarget}
@@ -270,29 +259,60 @@ function PetSessionBubbleCard(props: {
         )
       }
       hoverStyle={{ backgroundColor: palette().panelHover, borderColor: palette().borderStrong }}
-      activeStyle={tactileActiveStyle(0.98)}
+      activeStyle={tactileActiveStyle(0.98, reduceMotion() ? { opacity: 0.78 } : undefined)}
       focusVisibleStyle={focusRingStyle()}
       style={{
         boxSizing: "border-box",
         width: PET_BUBBLE_WIDTH,
-        minHeight: PET_BUBBLE_HEIGHT,
+        height: isSingle() ? PET_BUBBLE_SINGLE_HEIGHT : PET_BUBBLE_HEIGHT,
         paddingHorizontal: space.md,
-        paddingVertical: space.xs + 2,
+        paddingVertical: isSingle() ? space.md : space.chip,
         borderRadius: radii.md,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: bubbleBorderColor(b().state),
         backgroundColor: palette().popoverBg,
-        boxShadow: elevationShadow(2),
-        justifyContent: "center",
-        gap: 2,
+        opacity: 0.88,
+        justifyContent: isSingle() && subtitle() ? "space-between" : "center",
+        gap: isSingle() ? space.xs : space.hair,
         cursor: "pointer",
         userSelect: "none",
         ...pressTransition(120),
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs + 2, minWidth: 0 }}>
-        <View style={{ width: 14, height: textLineHeight(12, 1.35), alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: isSingle() ? "flex-start" : "center",
+          gap: space.chip,
+          minWidth: 0,
+        }}
+      >
+        <Text
+          testID={`pet-bubble-title-${targetId()}`}
+          style={{
+            ...textStyle(isSingle() ? "label" : "caption", { color: palette().text }),
+            fontSize: textSize(isSingle() ? 13 : 12),
+            fontWeight: "500",
+            lineHeight: titleLineHeight(),
+            flex: 1,
+            minWidth: 0,
+            numberOfLines: isSingle() ? (subtitle() ? 2 : 3) : 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {b().title}
+        </Text>
+        <View
+          testID={`pet-bubble-indicator-${targetId()}`}
+          style={{
+            width: 14,
+            height: titleLineHeight(),
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
           <If when={b().state === "running"}>
             <Spinner size={12} color={palette().accent} />
           </If>
@@ -310,33 +330,22 @@ function PetSessionBubbleCard(props: {
             />
           </If>
         </View>
-        <Text
-          style={{
-            ...textStyle("caption", { color: palette().text }),
-            fontSize: textSize(12),
-            fontWeight: "500",
-            lineHeight: textLineHeight(12, 1.35),
-            flex: 1,
-            minWidth: 0,
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {b().title}
-        </Text>
       </View>
-      <Text
-        style={{
-          ...textStyle("caption", { color: palette().textMuted }),
-          fontSize: textSize(11),
-          lineHeight: textLineHeight(11, 1.3),
-          paddingLeft: 14 + space.xs + 2,
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {subtitle()}
-      </Text>
+      <If when={subtitle()}>
+        {device => (
+          <Text
+            style={{
+              ...textStyle("caption", { color: palette().textMuted }),
+              fontSize: textSize(11),
+              lineHeight: textLineHeight(11, 1.3),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {device()}
+          </Text>
+        )}
+      </If>
     </View>
   );
 }
@@ -379,6 +388,7 @@ export function PetWindowContent(props: PetWindowContentProps) {
             {item => (
               <PetSessionBubbleCard
                 bubble={item()}
+                single={bubbles().length === 1}
                 onOpenSession={props.onOpenSession}
               />
             )}

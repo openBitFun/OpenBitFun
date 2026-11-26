@@ -3450,10 +3450,6 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "pet.bubble.openSession": "打开会话",
   "pet.bubble.close": "关闭该气泡",
   "pet.bubble.closeAll": "关闭所有气泡",
-  "pet.bubble.running": "进行中",
-  "pet.bubble.needsYou": "待确认",
-  "pet.bubble.failed": "失败",
-  "pet.bubble.unread": "未读",
   // end wave22-p3 desktop presence
   // wave22-p5
   "goal.menu": "设定目标…",
