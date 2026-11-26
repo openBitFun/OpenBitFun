@@ -74,6 +74,7 @@ import {
   openFile,
   openFileAt,
   openFilePaths,
+  type OpenFile,
   pasteFromClipboard,
   pdfPreviewSupported,
   pathSep,
@@ -142,6 +143,7 @@ import {
 import {
   askAiInDocument,
   documentWebViewsAvailable,
+  hasRichPreviewBlocks,
   MarkdownDocumentEditor,
   MarkdownPreview,
   visualEditBlock,
@@ -192,53 +194,121 @@ const explorerOpen = signal(true);
 const explorerWidth = signal(260);
 const fileDiffLayout = signal<"unified" | "split">("unified");
 
-// ── Documents (wave 22 P1): Markdown Preview | Edit, HTML and PDF previews ──
+// ── Documents (Markdown editable Preview | Split | Source, HTML & PDF previews) ──
 
-/** Markdown files the user chose to edit as source ("Edit as source"). */
-const markdownSourcePaths = signal<Record<string, true>>({});
-/** The rendered preview is showing over a Markdown draft that is kept. */
-const markdownPreviewing = signal(false);
+type MarkdownTab = "preview" | "split" | "source";
+type MarkdownMode = "visual" | "preview" | "split" | "source";
+
+const MARKDOWN_SPLIT_MIN_WIDTH = 680;
+
+/** Per-file Markdown view tab (`"preview"` by default: directly editable visual preview when supported). */
+const markdownTabByPath = signal<Record<string, MarkdownTab>>({});
+/** Per-file override to edit visually even when a file contains Mermaid/KaTeX rich blocks. */
+const markdownForceVisualPaths = signal<Record<string, true>>({});
+/** Bumped when returning to Preview from Source/Split so fidelity & rich-block checks see the latest draft. */
+const markdownCheckVersion = signal(0);
+/** Split-mode ratio (0.28..0.72) between the left source editor and right live preview. */
+const markdownSplitRatio = signal(0.5);
+/** Measured width of the preview pane (defaults wide so desktop tests see Split before first layout). */
+const previewPaneWidth = signal(900);
 /** HTML files showing their rendered preview instead of the source. */
 const htmlPreviewPaths = signal<Record<string, true>>({});
 
-/** Why the open Markdown file edits as source on its own (the fidelity guard), decided per file text. */
+function canSplitMarkdown(narrow: boolean): boolean {
+  return !narrow && previewPaneWidth() >= MARKDOWN_SPLIT_MIN_WIDTH;
+}
+
+/** Why the open Markdown file cannot edit visually (raw HTML, reference links, footnotes, alerts, or no kernel). */
 const markdownBlock = computed(() => {
+  markdownCheckVersion();
   const file = openFile();
   if (!file || file.kind !== "markdown" || file.large) return null;
   return visualEditBlock(untracked(() => editingContent()) ?? file.content);
 });
 
-type MarkdownMode = "preview" | "visual" | "source";
+/** Whether the open Markdown file contains Mermaid diagrams or display math (`$$...$$`) islands. */
+const markdownRichBlocks = computed(() => {
+  markdownCheckVersion();
+  const file = openFile();
+  if (!file || file.kind !== "markdown" || file.large) return false;
+  return hasRichPreviewBlocks(untracked(() => editingContent()) ?? file.content);
+});
 
-/** What the Markdown body shows: the preview, the visual editor or the source editor. */
+const markdownTab = computed<MarkdownTab>(() => {
+  const file = openFile();
+  if (!file || file.kind !== "markdown") return "preview";
+  return markdownTabByPath()[file.path] ?? "preview";
+});
+
+/**
+ * What the Markdown body shows:
+ * - `"visual"`: editable WYSIWYG preview (`MarkdownDocumentEditor`, default for standard & frontmatter docs)
+ * - `"preview"`: read-only rich preview (`MarkdownPreview`, for Mermaid/KaTeX, raw HTML, lossy syntax, or large files)
+ * - `"split"`: side-by-side live Source editor + rendered `MarkdownPreview`
+ * - `"source"`: full-pane syntax-highlighted Markdown `Editor`
+ */
 const markdownMode = computed<MarkdownMode | null>(() => {
   const file = openFile();
   if (!file || file.kind !== "markdown") return null;
-  if (editingContent() === null || markdownPreviewing()) return "preview";
-  if (file.large || markdownSourcePaths()[file.path] || markdownBlock()) return "source";
+  const tab = markdownTab();
+  if (tab === "source") return "source";
+  if (tab === "split") return previewPaneWidth() >= MARKDOWN_SPLIT_MIN_WIDTH ? "split" : "source";
+  if (file.large || editingContent() === null) return "preview";
+  if (markdownBlock() !== null) return "preview";
+  if (markdownRichBlocks() && !markdownForceVisualPaths()[file.path]) return "preview";
   return "visual";
 });
 
-function enterMarkdownEdit(): void {
-  markdownPreviewing.set(false);
-  if (editingContent() === null) beginEditFile();
+function setMarkdownForceVisual(path: string, force: boolean): void {
+  markdownForceVisualPaths.update(current => {
+    const next = { ...current };
+    if (force) next[path] = true;
+    else delete next[path];
+    return next;
+  });
 }
 
-/** Preview keeps an unsaved draft (and shows it); a clean file just leaves edit mode. */
-function showMarkdownPreview(): void {
-  if (hasUnsavedEdit()) {
-    markdownPreviewing.set(true);
+function setMarkdownTab(path: string, tab: MarkdownTab): void {
+  if (tab === "preview") {
+    setMarkdownForceVisual(path, false);
+    markdownCheckVersion.update(v => v + 1);
+  }
+  markdownTabByPath.update(current => {
+    if (tab === "preview") {
+      if (!(path in current)) return current;
+      const next = { ...current };
+      delete next[path];
+      return next;
+    }
+    return { ...current, [path]: tab };
+  });
+}
+
+function enterMarkdownSource(path: string): void {
+  if (editingContent() === null) beginEditFile();
+  setMarkdownTab(path, "source");
+}
+
+function enterMarkdownSplit(path: string): void {
+  if (editingContent() === null) beginEditFile();
+  setMarkdownTab(path, "split");
+}
+
+function enterMarkdownVisual(path: string): void {
+  const file = openFile();
+  if (!file || file.path !== path) return;
+  const block = visualEditBlock(editingContent() ?? file.content);
+  if (block) {
+    pushToast(visualEditBlockMessage(block));
     return;
   }
-  markdownPreviewing.set(false);
-  cancelEditFile();
-}
-
-function setMarkdownSource(path: string, source: boolean): void {
-  markdownSourcePaths.update(current => {
+  if (editingContent() === null) beginEditFile();
+  setMarkdownForceVisual(path, true);
+  markdownCheckVersion.update(v => v + 1);
+  markdownTabByPath.update(current => {
+    if (!(path in current)) return current;
     const next = { ...current };
-    if (source) next[path] = true;
-    else delete next[path];
+    delete next[path];
     return next;
   });
 }
@@ -251,6 +321,18 @@ function isHtmlFile(path: string): boolean {
 const htmlPreviewing = computed(() => {
   const file = openFile();
   return Boolean(file && file.kind === "code" && isHtmlFile(file.path) && htmlPreviewPaths()[file.path]);
+});
+
+const hasSourceEditor = computed(() => {
+  const file = openFile();
+  if (!file) return false;
+  if (file.kind === "code") return !htmlPreviewing();
+  if (file.kind === "text") return editingContent() !== null;
+  if (file.kind === "markdown") {
+    const mode = markdownMode();
+    return mode === "source" || mode === "split";
+  }
+  return false;
 });
 
 function setHtmlPreview(path: string, preview: boolean): void {
@@ -279,9 +361,9 @@ async function openHtmlInSystemBrowser(path: string): Promise<void> {
   }
 }
 
-function docMenuItems(): DropdownMenuItem[] {
+function docMenuItems(narrow: boolean): DropdownMenuItem[] {
   const file = openFile();
-  if (!file) return [];
+  if (!file || file.kind !== "markdown") return [];
   const mode = markdownMode();
   const items: DropdownMenuItem[] = [];
   if (mode === "visual") {
@@ -292,29 +374,55 @@ function docMenuItems(): DropdownMenuItem[] {
       accessibilityLabel: "doc-ask-ai",
       onSelect: () => askAiInDocument(file.path),
     });
+    if (canSplitMarkdown(narrow)) {
+      items.push({
+        id: "doc-split-view",
+        label: tr("doc.split"),
+        icon: "panel-right",
+        accessibilityLabel: "doc-split-view",
+        onSelect: () => enterMarkdownSplit(file.path),
+      });
+    }
     items.push({
       id: "doc-edit-source",
       label: tr("doc.editAsSource"),
       icon: "code",
       accessibilityLabel: "doc-edit-source",
-      onSelect: () => setMarkdownSource(file.path, true),
+      onSelect: () => enterMarkdownSource(file.path),
     });
-  }
-  if (mode === "source" && markdownSourcePaths()[file.path]) {
+  } else if (mode === "preview") {
+    if (!file.large && canSplitMarkdown(narrow)) {
+      items.push({
+        id: "doc-split-view",
+        label: tr("doc.splitToEdit"),
+        icon: "panel-right",
+        accessibilityLabel: "doc-split-view",
+        onSelect: () => enterMarkdownSplit(file.path),
+      });
+    }
+    items.push({
+      id: "doc-edit-source",
+      label: tr("doc.editAsSource"),
+      icon: "code",
+      accessibilityLabel: "doc-edit-source",
+      onSelect: () => enterMarkdownSource(file.path),
+    });
+    if (!file.large && !markdownBlock() && markdownRichBlocks()) {
+      items.push({
+        id: "doc-edit-visual",
+        label: tr("doc.editVisually"),
+        icon: "file-text",
+        accessibilityLabel: "doc-edit-visual",
+        onSelect: () => enterMarkdownVisual(file.path),
+      });
+    }
+  } else if ((mode === "source" || mode === "split") && !file.large && !markdownBlock()) {
     items.push({
       id: "doc-edit-visual",
       label: tr("doc.editVisually"),
       icon: "file-text",
       accessibilityLabel: "doc-edit-visual",
-      onSelect: () => {
-        // A source draft the visual editor cannot keep stays in the source editor.
-        const block = visualEditBlock(editingContent() ?? file.content);
-        if (block) {
-          pushToast(visualEditBlockMessage(block));
-          return;
-        }
-        setMarkdownSource(file.path, false);
-      },
+      onSelect: () => enterMarkdownVisual(file.path),
     });
   }
   return items;
@@ -852,71 +960,15 @@ function InlineSearchModeToggle() {
   ];
 
   return (
-    <View
-      role="tablist"
-      style={{
-        minHeight: compactLayout() ? 32 : 24,
-        padding: 2,
-        borderRadius: radii.sm,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().segmentedTrackBg,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 2,
-        flexShrink: 0,
+    <SegmentedTabs
+      size={compactLayout() ? "md" : "xs"}
+      value={searchMode()}
+      options={modes.map(item => ({ value: item.value, label: item.label(), accessibilityLabel: item.a11y }))}
+      onChange={value => {
+        searchMode.set(value);
+        void runFileSearch();
       }}
-    >
-      <Each of={modes} key={item => item.value}>
-        {item => (
-          <View
-            role="tab"
-            accessibilityLabel={item().a11y}
-            accessibilityState={{ selected: searchMode() === item().value }}
-            hitSlop={touchSlop(24)}
-            onPress={() => {
-              searchMode.set(item().value);
-              void runFileSearch();
-            }}
-            style={{
-              minHeight: compactLayout() ? 28 : 20,
-              paddingHorizontal: space.sm,
-              borderRadius: radii.xs,
-              borderCurve: "continuous",
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor:
-                searchMode() === item().value ? palette().panelRaised : "transparent",
-              cursor: "pointer",
-              userSelect: "none",
-              ...pressTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{
-              backgroundColor:
-                searchMode() === item().value
-                  ? palette().panelRaised
-                  : palette().surfaceSubtle,
-            }}
-            activeStyle={tactileActiveStyle(0.97)}
-            focusVisibleStyle={focusRingStyle()}
-          >
-            <Text
-              style={{
-                ...textStyle("caption", {
-                  color:
-                    searchMode() === item().value ? palette().text : palette().textSecondary,
-                }),
-                fontWeight: searchMode() === item().value ? "600" : "500",
-                numberOfLines: 1,
-              }}
-            >
-              {item().label()}
-            </Text>
-          </View>
-        )}
-      </Each>
-    </View>
+    />
   );
 }
 
@@ -2119,8 +2171,7 @@ const findResult = signal<EditorSearchResult | null>(null);
 const pendingRevealLine = signal<{ path: string; line: number } | null>(null);
 
 function openFind(): void {
-  const file = openFile();
-  if (!file || (file.kind !== "code" && editingContent() === null)) return;
+  if (!hasSourceEditor()) return;
   findOpen.set(true);
 }
 
@@ -2281,7 +2332,7 @@ function EditorStatusBar() {
         </View>
       </If>
       <View style={{ flex: 1 }} />
-      <If when={openFile() && isEditableKind(openFile()!.kind) ? editorCursor() : null}>
+      <If when={hasSourceEditor() ? editorCursor() : null}>
         {cursor =>
           item(
             cursor().selectedLines > 1
@@ -2580,6 +2631,128 @@ function AttentionBar(props: {
   );
 }
 
+function ReadOnlyPreviewBar(props: { file: OpenFile; compact?: boolean }) {
+  const splitAvailable = () => !props.file.large && canSplitMarkdown(Boolean(props.compact));
+  const reason = () => {
+    if (props.file.large) return tr("files.largeFileMode");
+    const block = markdownBlock();
+    if (block === "unavailable") return tr("doc.visualUnavailable");
+    if (block === "fidelity") return tr("doc.readOnlyHtmlHint");
+    return tr("doc.readOnlyRichHint");
+  };
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: space.sm,
+        paddingHorizontal: props.compact ? space.md : space.lg,
+        paddingVertical: space.xs,
+        borderBottomWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().canvasSubtle,
+      }}
+    >
+      <Text
+        accessibilityLabel={markdownBlock() ? "doc-readonly-hint" : "doc-rich-preview-hint"}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          ...textStyle("caption", { color: palette().textMuted }),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {reason()}
+      </Text>
+      <If
+        when={splitAvailable()}
+        else={
+          <Button
+            label={props.file.large ? tr("files.editAnyway") : tr("doc.editAsSource")}
+            accessibilityLabel="file-preview-edit"
+            variant="ghost"
+            size="xs"
+            leadingIcon="edit"
+            onPress={() => enterMarkdownSource(props.file.path)}
+          />
+        }
+      >
+        <Button
+          label={tr("doc.splitToEdit")}
+          accessibilityLabel="file-preview-edit"
+          variant="ghost"
+          size="xs"
+          leadingIcon="panel-right"
+          onPress={() => enterMarkdownSplit(props.file.path)}
+        />
+      </If>
+    </View>
+  );
+}
+
+function SourceEditorPane(props: { file: OpenFile; compact?: boolean; showNotice?: boolean }) {
+  return (
+    <View style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+      <If when={props.showNotice ? markdownBlock() : null}>
+        {block => <VisualEditNotice block={block()} />}
+      </If>
+      <If when={findOpen() && !props.compact}>
+        <EditorFindBar />
+      </If>
+      <Editor
+        ref={ref => editorRef.set(ref)}
+        value={editingContent() ?? props.file.content}
+        language={
+          props.file.kind === "code"
+            ? (inferCodeLanguage(props.file.path) ?? props.file.language)
+            : props.file.kind === "markdown"
+              ? "markdown"
+              : "text"
+        }
+        readOnly={editingContent() === null}
+        lineNumbers={true}
+        folding={true}
+        indentGuides={true}
+        activeLine={editingContent() !== null}
+        highlighting={!props.file.large}
+        fontFamily={fontMono}
+        fontSize={textSize(13)}
+        lineHeight={textLineHeight(13, 1.55)}
+        softWrap={props.file.kind !== "code"}
+        styles={createEditorStyles()}
+        search={
+          findOpen() && findQuery()
+            ? {
+                query: findQuery(),
+                caseSensitive: findCase(),
+                wholeWord: findWord(),
+                regex: findRegex(),
+              }
+            : null
+        }
+        accessibilityLabel="file-editor"
+        style={{ flex: 1, minHeight: 0, minWidth: 0 }}
+        onChange={event => {
+          if (editingContent() !== null) setEditingContent(event.value);
+        }}
+        onSelectionChange={event => {
+          const primary = event.selections[event.selections.length - 1];
+          if (!primary) return;
+          const sameLine = primary.anchor.line === primary.head.line;
+          editorCursor.set({
+            line: primary.head.line + 1,
+            column: primary.head.column + 1,
+            selectedLines: sameLine ? 0 : Math.abs(primary.head.line - primary.anchor.line) + 1,
+          });
+        }}
+        onSearchChange={event => findResult.set(event.result)}
+      />
+    </View>
+  );
+}
+
 function PreviewBody(props: { compact?: boolean }) {
   return (
     <If
@@ -2672,6 +2845,7 @@ function PreviewBody(props: { compact?: boolean }) {
             </If>
           </If>
           <If when={markdownMode() === "preview"}>
+            <ReadOnlyPreviewBar file={file()} compact={props.compact} />
             <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
               <View style={{ padding: props.compact ? space.lg : space.x3l, alignItems: "center" }}>
                 <View style={{ width: "100%", maxWidth: layout.conversationWidth }}>
@@ -2690,14 +2864,46 @@ function PreviewBody(props: { compact?: boolean }) {
             <MarkdownDocumentEditor
               documentKey={file().path}
               documentName={file().name}
-              text={editingContent() ?? ""}
+              text={editingContent() ?? file().content}
               onChange={setEditingContent}
               accessibilityLabel="file-editor"
               placeholder={tr("doc.placeholder")}
               compact={props.compact}
               maxWidth={layout.conversationWidth}
               ai={true}
+              renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
+              onLinkPress={url => openMarkdownLink(url, file().path)}
             />
+          </If>
+          <If when={markdownMode() === "split"}>
+            <View style={{ flex: 1, minHeight: 0, minWidth: 0, flexDirection: "row", overflow: "hidden" }}>
+              <View style={{ flex: markdownSplitRatio(), minWidth: 240, minHeight: 0, overflow: "hidden", flexDirection: "column" }}>
+                <SourceEditorPane file={file()} compact={props.compact} />
+              </View>
+              <SplitHandle
+                accessibilityLabel="Resize markdown split"
+                onReset={() => markdownSplitRatio.set(0.5)}
+                onDelta={dx => {
+                  const width = Math.max(480, previewPaneWidth());
+                  markdownSplitRatio.update(r => Math.max(0.28, Math.min(0.72, r + dx / width)));
+                }}
+              />
+              <View style={{ flex: 1 - markdownSplitRatio(), minWidth: 240, minHeight: 0, overflow: "hidden", flexDirection: "column" }}>
+                <Scroll smoothWheel style={{ flex: 1, minHeight: 0 }}>
+                  <View style={{ padding: space.xl, alignItems: "center" }}>
+                    <View style={{ width: "100%", maxWidth: layout.conversationWidth }}>
+                      <MarkdownPreview
+                        accessibilityLabel="file-markdown-preview"
+                        markdown={editingContent() ?? file().content}
+                        compact={true}
+                        renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
+                        onLinkPress={event => openMarkdownLink(event.url, file().path)}
+                      />
+                    </View>
+                  </View>
+                </Scroll>
+              </View>
+            </View>
           </If>
           <If when={htmlPreviewing()}>
             <WebView
@@ -2774,62 +2980,7 @@ function PreviewBody(props: { compact?: boolean }) {
               (editingContent() !== null && file().kind === "text")
             }
           >
-            <View style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-              <If when={markdownMode() === "source" ? markdownBlock() : null}>
-                {block => <VisualEditNotice block={block()} />}
-              </If>
-              <If when={findOpen() && !props.compact}>
-                <EditorFindBar />
-              </If>
-              <Editor
-                ref={ref => editorRef.set(ref)}
-                value={editingContent() ?? file().content}
-                language={
-                  file().kind === "code"
-                    ? (inferCodeLanguage(file().path) ?? file().language)
-                    : file().kind === "markdown"
-                      ? "markdown"
-                      : "text"
-                }
-                readOnly={editingContent() === null}
-                lineNumbers={true}
-                folding={true}
-                indentGuides={true}
-                activeLine={editingContent() !== null}
-                highlighting={!file().large}
-                fontFamily={fontMono}
-                fontSize={textSize(13)}
-                lineHeight={textLineHeight(13, 1.55)}
-                softWrap={file().kind !== "code"}
-                styles={createEditorStyles()}
-                search={
-                  findOpen() && findQuery()
-                    ? {
-                        query: findQuery(),
-                        caseSensitive: findCase(),
-                        wholeWord: findWord(),
-                        regex: findRegex(),
-                      }
-                    : null
-                }
-                accessibilityLabel="file-editor"
-                style={{ flex: 1, minHeight: 0, minWidth: 0 }}
-                onChange={event => {
-                  if (editingContent() !== null) setEditingContent(event.value);
-                }}
-                onSelectionChange={event => {
-                  const primary = event.selections[event.selections.length - 1];
-                  if (!primary) return;
-                  const sameLine = primary.anchor.line === primary.head.line;
-                  editorCursor.set({
-                    line: primary.head.line + 1,
-                    column: primary.head.column + 1,
-                    selectedLines: sameLine ? 0 : Math.abs(primary.head.line - primary.anchor.line) + 1,
-                  });
-                }}
-                onSearchChange={event => findResult.set(event.result)}
-              />
-            </View>
+            <SourceEditorPane file={file()} compact={props.compact} showNotice={markdownMode() === "source"} />
           </If>
           <If when={file().kind === "image"}>
             <View
@@ -2886,10 +3037,10 @@ function PreviewBody(props: { compact?: boolean }) {
 }
 
 /**
- * Preview | Edit for Markdown, Preview | Source for HTML. In the header on a
- * wide pane; in the path strip under it on a narrow one, so Save keeps its room.
+ * Preview | (Split) | Source for Markdown, Preview | Source for HTML.
+ * In the header on a wide pane; in the path strip under it on a narrow one, so Save keeps its room.
  */
-function DocumentModeTabs() {
+function DocumentModeTabs(props: { narrow?: boolean }) {
   return (
     <If when={openFile()}>
       {file => (
@@ -2899,14 +3050,21 @@ function DocumentModeTabs() {
               size="sm"
               options={[
                 { value: "preview", label: tr("files.preview"), accessibilityLabel: "file-preview" },
+                ...(canSplitMarkdown(Boolean(props.narrow))
+                  ? [{ value: "split", label: tr("doc.split"), accessibilityLabel: "file-split" }]
+                  : []),
                 {
-                  value: "edit",
-                  label: file().large ? tr("files.editAnyway") : tr("common.edit"),
-                  accessibilityLabel: "file-edit",
+                  value: "source",
+                  label: file().large && editingContent() === null ? tr("files.editAnyway") : tr("doc.source"),
+                  accessibilityLabel: "file-source",
                 },
               ]}
-              value={markdownMode() === "preview" ? "preview" : "edit"}
-              onChange={value => (value === "edit" ? enterMarkdownEdit() : showMarkdownPreview())}
+              value={markdownMode() === "split" ? "split" : markdownMode() === "source" ? "source" : "preview"}
+              onChange={value => {
+                if (value === "split") enterMarkdownSplit(file().path);
+                else if (value === "source") enterMarkdownSource(file().path);
+                else setMarkdownTab(file().path, "preview");
+              }}
             />
           </If>
           <If when={file().kind === "code" && isHtmlFile(file().path) && documentWebViewsAvailable() === true}>
@@ -2943,6 +3101,10 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
   const narrow = () => Boolean(props.stacked);
   return (
     <View
+      onLayout={event => {
+        const nextW = Math.round(event.bounds.size.width);
+        if (nextW > 0 && nextW !== untracked(() => previewPaneWidth())) previewPaneWidth.set(nextW);
+      }}
       style={{
         flex: 1,
         flexShrink: 1,
@@ -3000,7 +3162,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
         <If when={openFile()}>
           {file => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, paddingLeft: space.xs, flexShrink: 0 }}>
-                <If when={!narrow() && (file().kind === "code" || editingContent() !== null)}>
+                <If when={!narrow() && hasSourceEditor()}>
                   <IconButton
                     icon="search"
                     size="sm"
@@ -3055,10 +3217,10 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
                   </If>
                 </If>
                 <If when={!narrow()}>
-                  <DocumentModeTabs />
+                  <DocumentModeTabs narrow={false} />
                 </If>
                 <If when={file().kind === "markdown"}>
-                  <If when={docMenuItems().length > 0}>
+                  <If when={docMenuItems(narrow()).length > 0}>
                     <View ref={el => docMenuAnchor.set(el)} style={{ flexShrink: 0 }}>
                       <IconButton
                         icon="more"
@@ -3074,7 +3236,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
                       anchor={docMenuAnchor()}
                       align="end"
                       minWidth={200}
-                      items={docMenuItems()}
+                      items={docMenuItems(narrow())}
                       onClose={() => docMenuOpen.set(false)}
                     />
                   </If>
@@ -3263,7 +3425,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean; onBack?: () => v
                   </Text>
                 }
               >
-                <DocumentModeTabs />
+                <DocumentModeTabs narrow={true} />
               </If>
             </View>
           </View>
@@ -3284,18 +3446,28 @@ export function FilesScene(props: { compact?: boolean } = {}) {
   /** Stacked (narrow) layout: the preview is pushed over the explorer. */
   const filesStackDetail = signal(false);
   let lastStackedPath: string | null = null;
-  let lastDocumentPath: string | null = null;
   const scopeDevice = () => fleetDeviceById(deviceContext());
   const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
   const deviceLabel = () => scopeDevice()?.name || tr("device.thisDevice");
 
-  // Another file starts in its own mode: the kept-draft preview belongs to the file that was open.
+  // Drop per-file Markdown tab/override entries once their tabs close.
   effect(() => {
-    const path = openFile()?.path ?? null;
+    const open = new Set(openFilePaths());
     untracked(() => {
-      if (path === lastDocumentPath) return;
-      lastDocumentPath = path;
-      markdownPreviewing.set(false);
+      markdownTabByPath.update(current => {
+        const keys = Object.keys(current);
+        if (keys.every(k => open.has(k))) return current;
+        const next: Record<string, MarkdownTab> = {};
+        for (const k of keys) if (open.has(k)) next[k] = current[k];
+        return next;
+      });
+      markdownForceVisualPaths.update(current => {
+        const keys = Object.keys(current);
+        if (keys.every(k => open.has(k))) return current;
+        const next: Record<string, true> = {};
+        for (const k of keys) if (open.has(k)) next[k] = true;
+        return next;
+      });
     });
   });
   // Opening another file (a tree row, a tab, a search hit, a changed file, the

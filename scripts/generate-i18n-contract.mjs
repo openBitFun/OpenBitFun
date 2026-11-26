@@ -8,16 +8,8 @@ const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'local
 
 const outputs = [
   {
-    path: path.join(root, 'OpenBitFun-Installer', 'src', 'i18n', 'generatedLocaleContract.ts'),
-    generate: generateInstallerLocaleContract,
-  },
-  {
     path: path.join(root, 'src', 'crates', 'assembly', 'core', 'src', 'service', 'i18n', 'generated_locale_contract.rs'),
     generate: generateCoreRustLocaleContract,
-  },
-  {
-    path: path.join(root, 'OpenBitFun-Installer', 'src-tauri', 'src', 'installer', 'generated_locale_contract.rs'),
-    generate: generateInstallerRustLocaleContract,
   },
   {
     path: path.join(root, 'src', 'apps', 'relay-server', 'static', 'homepage', 'i18n.shared.json'),
@@ -72,7 +64,6 @@ function validateContract(contract) {
     for (const fallback of locale.contentFallbacks) {
       assert(ids.includes(fallback), `${locale.id} contentFallbacks includes unknown locale ${fallback}`);
     }
-    assert(locale.installer?.uiCode, `${locale.id} installer.uiCode is required`);
   }
 
   for (const [surface, order] of Object.entries(contract.surfaceOrders ?? {})) {
@@ -90,14 +81,6 @@ function validateContract(contract) {
 function orderedLocales(contract, surface) {
   const localeMap = getLocaleMap(contract);
   return contract.surfaceOrders[surface].map((localeId) => localeMap.get(localeId));
-}
-
-function jsonString(value) {
-  return JSON.stringify(String(value));
-}
-
-function tsArray(values) {
-  return `[${values.map(jsonString).join(', ')}]`;
 }
 
 function rustString(value) {
@@ -135,10 +118,6 @@ function rustStringArray(values) {
   return `&[${values.map(rustString).join(', ')}]`;
 }
 
-function tsObject(value) {
-  return JSON.stringify(value, null, 2);
-}
-
 function flattenSharedTerms(value, prefix = '') {
   if (value == null || Array.isArray(value) || typeof value !== 'object') {
     assert(typeof value === 'string', `shared i18n term "${prefix}" must be a string`);
@@ -166,10 +145,6 @@ function setNestedSharedTerm(target, key, value) {
   current[parts.at(-1)] = value;
 }
 
-function sharedTermsForLocales(sharedTermsByLocale, locales) {
-  return Object.fromEntries(locales.map((locale) => [locale.id, sharedTermsByLocale[locale.id]]));
-}
-
 function generatedHeader(language) {
   const comment = language === 'rust' ? '//' : '//';
   return [
@@ -177,48 +152,6 @@ function generatedHeader(language) {
     `${comment} Do not edit it by hand; edit the shared i18n contract or shared terms instead.`,
     '',
   ].join('\n');
-}
-
-function generateInstallerLocaleContract(contract, sharedTermsByLocale) {
-  const locales = orderedLocales(contract, 'installer');
-  const defaultAppLanguage = contract.surfaceDefaults.installer;
-  const defaultLocale = getLocaleMap(contract).get(defaultAppLanguage);
-  const sharedTerms = sharedTermsForLocales(sharedTermsByLocale, locales);
-
-  return `${generatedHeader('ts')}export interface InstallerLanguageDefinition {
-  uiCode: string;
-  appCode: string;
-  label: string;
-  nativeName: string;
-  continueLabel: string;
-  aliases: readonly string[];
-  contentFallbacks: readonly string[];
-}
-
-export const INSTALLER_LANGUAGE_DEFINITIONS = [
-${locales.map((locale) => `  {
-    uiCode: ${jsonString(locale.installer.uiCode)},
-    appCode: ${jsonString(locale.id)},
-    label: ${jsonString(locale.installer.label)},
-    nativeName: ${jsonString(locale.installer.nativeName)},
-    continueLabel: ${jsonString(locale.installer.continueLabel)},
-    aliases: ${tsArray(locale.aliases)},
-    contentFallbacks: ${tsArray(locale.contentFallbacks)},
-  }`).join(',\n')}
-] as const satisfies readonly InstallerLanguageDefinition[];
-
-export type InstallerUiLanguage = (typeof INSTALLER_LANGUAGE_DEFINITIONS)[number]['uiCode'];
-export type AppLanguage = (typeof INSTALLER_LANGUAGE_DEFINITIONS)[number]['appCode'];
-
-export const DEFAULT_INSTALLER_APP_LANGUAGE = ${jsonString(defaultAppLanguage)} satisfies AppLanguage;
-export const DEFAULT_INSTALLER_UI_LANGUAGE = ${jsonString(defaultLocale.installer.uiCode)} satisfies InstallerUiLanguage;
-
-export type SharedI18nTerms = {
-  readonly [key: string]: string | SharedI18nTerms;
-};
-
-export const SHARED_TERMS_BY_APP_LANGUAGE = ${tsObject(sharedTerms)} as const satisfies Record<AppLanguage, SharedI18nTerms>;
-`;
 }
 
 function generateCoreRustLocaleContract(contract, sharedTermsByLocale) {
@@ -367,36 +300,6 @@ mod tests {
             generated_shared_term(LocaleId::EnUS, "features.deepReview"),
             Some("Review: Strict")
         );
-    }
-}
-`;
-}
-
-function generateInstallerRustLocaleContract(contract) {
-  const locales = orderedLocales(contract, 'installer');
-
-  return `${generatedHeader('rust')}#[derive(Debug, Clone, Copy)]
-pub(super) struct InstallerGeneratedLocaleEntry {
-    pub code: &'static str,
-    pub aliases: &'static [&'static str],
-}
-
-pub(super) const INSTALLER_GENERATED_LOCALES: &[InstallerGeneratedLocaleEntry] = &[
-${locales.map((locale) => `    InstallerGeneratedLocaleEntry {
-        code: ${rustString(locale.id)},
-        aliases: ${rustStringArray(locale.aliases)},
-    }`).join(',\n')}
-];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generated_installer_contract_keeps_canonical_aliases() {
-        assert!(INSTALLER_GENERATED_LOCALES.iter().any(|locale| locale.code == "zh-CN" && locale.aliases.contains(&"zh")));
-        assert!(INSTALLER_GENERATED_LOCALES.iter().any(|locale| locale.code == "zh-TW" && locale.aliases.contains(&"zh-Hant")));
-        assert!(INSTALLER_GENERATED_LOCALES.iter().any(|locale| locale.code == "en-US" && locale.aliases.contains(&"en")));
     }
 }
 `;

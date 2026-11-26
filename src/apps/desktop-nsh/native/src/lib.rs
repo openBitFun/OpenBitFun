@@ -62,6 +62,12 @@ pub trait BackendBridge: Send + Sync + 'static {
         let _ = options_json;
         None
     }
+
+    /// The local file open/save dialog; `None` when the host has none.
+    fn pick_file_dialog(&self, options_json: String) -> Option<BoxFuture<Result<String, String>>> {
+        let _ = options_json;
+        None
+    }
 }
 
 /// Readiness of the backend as seen by the module.
@@ -206,6 +212,17 @@ impl Backend {
         match bridge.pick_directory(options_json) {
             Some(pick) => pick.await,
             None => Err(format!("{UNSUPPORTED_IN_NATIVE_HOST}: pick_directory")),
+        }
+    }
+
+    /// The local file open/save dialog. `optionsJson` is
+    /// `{ "mode": "open" | "save", "title"?: "...", "defaultPath"?: "...", "multiple"?: bool, "directory"?: bool, "filters"?: [{ "name": "...", "extensions": ["..."] }] }`;
+    /// resolves with JSON (`string | string[] | null`).
+    pub async fn pick_file_dialog(options_json: String) -> Result<String, String> {
+        let (bridge, _) = ready_bridge().await?;
+        match bridge.pick_file_dialog(options_json) {
+            Some(pick) => pick.await,
+            None => Err(format!("{UNSUPPORTED_IN_NATIVE_HOST}: pick_file_dialog")),
         }
     }
 }

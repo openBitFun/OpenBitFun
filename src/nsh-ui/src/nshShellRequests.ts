@@ -20,6 +20,7 @@ import { focusPane, loadWorkspaces, navigateScene, selectSession, selectWorkspac
 import { mainWindow } from "./nshDesktopShell";
 import { BROWSER_SHELL_OPERATIONS, markBrowserActuatorInstalled } from "./browserStore";
 import { PET_SHELL_OPERATIONS } from "./desktopPresence"; // wave22-p3
+import { MINIAPP_WINDOW_SHELL_OPERATIONS } from "./miniAppWindows";
 import type { WindowShell } from "./windowShell";
 
 export interface ShellRequest {
@@ -150,6 +151,8 @@ const OPERATIONS: Record<string, Operation> = {
   ...BROWSER_SHELL_OPERATIONS,
   // desktop pet window (wave22-p3): `show/hide/resize_agent_companion_desktop_pet`.
   ...PET_SHELL_OPERATIONS,
+  // standalone MiniApp native windows (`Window.open` in NSH).
+  ...MINIAPP_WINDOW_SHELL_OPERATIONS,
 };
 
 /** The operations this shell runs, as it announces them to the backend. */

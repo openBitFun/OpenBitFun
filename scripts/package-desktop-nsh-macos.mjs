@@ -4,9 +4,8 @@
 //
 // Layout (mirrors what the backend looks for; see `scripts/desktop-nsh-package-common.mjs`):
 //   Contents/MacOS/<Name>                            the NSH runner (`openbitfun-nsh`)
-//   Contents/MacOS/<binaryName> -> <Name>            the product's Tauri executable name
+//   Contents/MacOS/<binaryName> -> <Name>            the product's legacy executable name
 //                                                    (`openbitfun-desktop`, the upgrade bridge)
-//   Contents/MacOS/openbitfun-miniapp-shell          MiniApp windows (`src/apps/miniapp-shell`)
 //   Contents/Frameworks/libopenbitfun_desktop_lib.dylib  the backend, loaded in-process
 //   Contents/Resources/nsh/{bundle.nshc,app.json,assets}  the UI bundle (app.json: product id/name)
 //   Contents/Resources/nsh-web/                      the same UI for browsers/phones (OBP)
@@ -34,13 +33,13 @@ import {
   copyUiBundle,
   dshProfileResource,
   flashgrepResource,
-  miniAppShellBinary,
   parseArgs,
   productIcon,
   requireFiles,
   resolvePackageProduct,
   root,
   run,
+  runDesktopTargetGc,
   signUpdaterArchive,
   writePackageInfo,
   writeWebBundleManifest,
@@ -56,7 +55,7 @@ const { identity, productEnv } = resolvePackageProduct(options);
 const outDir = join(root, "target/desktop-nsh");
 const nshOut = join(outDir, "nsh-release");
 const webOut = join(outDir, "web-release");
-if (!options.skipBuild) await buildAll({ ...options, nshOut, webOut, productEnv });
+if (!options.skipBuild) await buildAll({ ...options, nshOut, webOut, productEnv, identity });
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const appName = identity.displayName;
@@ -84,9 +83,6 @@ if (identity.binaryName.toLowerCase() !== executable.toLowerCase()) {
   symlinkSync(executable, join(contents, "MacOS", identity.binaryName));
 }
 cpSync(dylib, join(contents, "Frameworks/libopenbitfun_desktop_lib.dylib"));
-const miniAppShell = miniAppShellBinary(options);
-if (miniAppShell) cpSync(miniAppShell, join(contents, "MacOS/openbitfun-miniapp-shell"));
-else console.warn("MiniApp shell not built (pnpm run prepare:miniapp-shell); Spaces will not open windows");
 copyUiBundle(nshOut, join(contents, "Resources/nsh"), identity);
 
 const webSite = join(webOut, "OpenBitFun");
@@ -142,4 +138,8 @@ if (options.updaterArchive) {
   run("tar", ["-czf", archive, "-C", outDir, `${appName}.app`], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   const signature = signUpdaterArchive(archive);
   console.log(`updater archive ${archive}${signature ? ` (signature ${signature})` : " (unsigned)"}`);
+}
+
+if (!options.skipBuild) {
+  runDesktopTargetGc({ profile: options.profileDir, target: options.target });
 }

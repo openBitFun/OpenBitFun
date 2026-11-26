@@ -1,30 +1,5 @@
 {
   "version": 1,
   "description": "Visual review contract for theme-token governance. This is a coverage contract, not proof that screenshots or contrast checks already passed.",
-  "surfaces": [
-    {
-      "key": "installer-shell",
-      "owner": "OpenBitFun-Installer/src/theme; OpenBitFun-Installer/src/pages; OpenBitFun-Installer/src/styles",
-      "platforms": ["installer"],
-      "formFactors": ["desktop", "narrow"],
-      "themes": ["dark", "light", "system", "openbitfun-dark", "openbitfun-light", "openbitfun-midnight", "openbitfun-china-style", "openbitfun-china-night", "openbitfun-cyber", "openbitfun-slate", "openbitfun-tokyo-night"],
-      "states": ["theme-setup", "language", "options", "loading", "progress", "error", "completed", "hover", "focus"],
-      "tokenFamilies": ["@openbitfun/theme-openbitfun", "--openbitfun-color-surface-*", "--openbitfun-color-content-*", "--openbitfun-color-border-*", "--openbitfun-color-action-*", "--openbitfun-color-accent-*", "--openbitfun-color-status-*"],
-      "evidence": [
-        {
-          "type": "theme-color-audit",
-          "command": "pnpm run theme:color-audit:installer",
-          "requirement": "Installer theme changes must keep app UI raw colors, unresolved vars, fallback vars, and unregistered dynamic families at zero."
-        },
-        {
-          "type": "focused-visual-review",
-          "requirement": "Review ThemeSetup cards plus language, options, progress, completed, and error states across light, dark, system, and named themes when installer tokens change."
-        }
-      ],
-      "risks": [
-        "Installer is a separate React/Tauri surface with its own TS theme root; Rust must not copy or extend the installer palette.",
-        "Theme cards use adjacent primary and secondary backgrounds for identity, so near colors cannot be merged without focused visual evidence."
-      ]
-    }
-  ]
+  "surfaces": []
 }

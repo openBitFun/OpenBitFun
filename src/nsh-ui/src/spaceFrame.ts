@@ -14,6 +14,7 @@
 // claimed, forwarded into the page and answered the same way.
 
 import { lifecycle, signal } from "nsh";
+import type { FileDialogFilter, FileDialogOptions } from "./windowShell";
 
 /** The page's `window.parent` is the page itself; its posts reach `onMessage`. */
 export const SPACE_FRAME_SHIM = `(function(){
@@ -39,14 +40,40 @@ export function spaceDeliverScript(message: unknown): string {
 
 export type SpaceFrameStatus = "opening" | "ready" | "released" | "replaced" | "failed" | "closed";
 
+export interface SpaceChromeAction {
+  id: string;
+  label: string;
+  icon?: string;
+  tooltip?: string;
+}
+
+export interface SpaceChromeConfig {
+  titlebar?: {
+    title?: string;
+    actions?: SpaceChromeAction[];
+  };
+}
+
+export interface SpacePermissionRequest {
+  requestId: string;
+  sessionId?: string;
+  action?: string;
+  projectPath?: string;
+  resources?: string[];
+}
+
 export interface SpaceFrameBootstrap {
   instanceId: string;
   viewId: string;
   html: string;
   name: string;
+  description?: string;
+  icon?: string;
   locale: string;
   appearanceMode: string;
   strictRuntime: boolean;
+  chrome?: SpaceChromeConfig;
+  presentationCapabilities: string[];
 }
 
 /** One agent request the device relayed into this view. */
@@ -58,25 +85,89 @@ export interface SpaceAgentEntry {
   outcome: "pending" | "answered" | "refused";
 }
 
+export interface SpaceWindowChatHooks {
+  claim(params: Record<string, unknown>): void;
+  focusSession(sessionId: string): Promise<void>;
+  release(): void;
+  clearSession(): void;
+  setDraft(text: string): void;
+  complete(params: Record<string, unknown>): unknown;
+  acceptedRun?(result: unknown, requestId: string | null): void;
+  getRequestId?(): string | null;
+}
+
 export interface SpaceFrameDeps {
   /** `miniapp_inline {method, params}` on the Space's device. */
   invoke: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   /** Hands one message to the page (`spaceDeliverScript` through the WebView). */
   deliver: (message: unknown) => void;
+  /** `"tab"` (default, in-product view) or `"window"` (native desktop NSH window). */
+  kind?: "tab" | "window";
   openUrl?: (url: string) => void;
   writeClipboard?: (text: string) => void;
+  readClipboard?: () => Promise<string>;
+  showNotification?: (title: string, body: string) => Promise<void>;
+  pickFileDialog?: (options: FileDialogOptions) => Promise<string | string[] | null>;
+  showMessageDialog?: (options: { title: string; message: string }) => Promise<boolean>;
+  chat?: SpaceWindowChatHooks;
+  onFocus?: () => void;
+  onAgentEvent?: (payload: Record<string, unknown>) => void;
+  onPermissions?: (requests: SpacePermissionRequest[]) => void;
   /** Wait between empty polls; tests shorten it. */
   pollWaitMs?: number;
   now?: () => number;
 }
 
-const SHELL_CAPABILITIES = ["miniapp_agent_bridge_v1"];
+const TAB_SHELL_CAPABILITIES = ["miniapp_agent_bridge_v1"];
+const WINDOW_SHELL_CAPABILITIES = [
+  "miniapp_custom_chrome_v1",
+  "miniapp_chat_snapshot_v1",
+  "miniapp_agent_bridge_v1",
+];
 /** Methods this client performs itself once the device authorized them. */
 const LOCAL_METHODS = new Set(["system.openExternal", "clipboard.writeText"]);
+/** Private host adapter RPCs that untrusted page content must never invoke directly. */
+const PRIVATE_HOST_RPCS = new Set(["authorizeLocal", "grantSelectedPath"]);
 /** Methods that need the desktop Shell's own UI (dialogs, its chat composer). */
 const SHELL_ONLY = /^(dialog\.|chat\.|clipboard\.readText$|system\.revealInFolder$|notifications\.system$)/;
 const AGENT_LOG_LIMIT = 20;
 const AGENT_ANSWER_TIMEOUT_MS = 15_000;
+
+function normalizeChrome(raw: unknown): SpaceChromeConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const chrome = raw as Record<string, unknown>;
+  const tb = chrome.titlebar;
+  if (!tb || typeof tb !== "object") return undefined;
+  const bar = tb as Record<string, unknown>;
+  const title = typeof bar.title === "string" && bar.title.trim() ? bar.title.trim() : undefined;
+  const actions: SpaceChromeAction[] = Array.isArray(bar.actions)
+    ? bar.actions
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+        .map(item => ({
+          id: text(item.id).trim(),
+          label: text(item.label).trim() || text(item.tooltip).trim() || text(item.id).trim(),
+          icon: typeof item.icon === "string" ? item.icon : undefined,
+          tooltip: typeof item.tooltip === "string" ? item.tooltip : undefined,
+        }))
+        .filter(item => Boolean(item.id))
+        .slice(0, 8)
+    : [];
+  if (!title && actions.length === 0) return undefined;
+  return { titlebar: { title, actions } };
+}
+
+function normalizeFilters(raw: unknown): FileDialogFilter[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map(item => ({
+      name: typeof item.name === "string" ? item.name : undefined,
+      extensions: Array.isArray(item.extensions)
+        ? item.extensions.filter((ext): ext is string => typeof ext === "string" && Boolean(ext.trim()))
+        : [],
+    }))
+    .filter(item => item.extensions.length > 0);
+}
 
 function newNonce(): string {
   const random = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID;
@@ -102,6 +193,9 @@ export class SpaceFrameSession {
   private nonce = newNonce();
   private cursor = 0;
   private generation = 0;
+  private composerGeneration = 0;
+  private bindingGeneration = 0;
+  private permissionTick = 0;
   private loaded = false;
   private capabilities: string[] = [];
   private actions: string[] = [];
@@ -113,6 +207,10 @@ export class SpaceFrameSession {
     private readonly deps: SpaceFrameDeps,
   ) {}
 
+  private isWindowMode(): boolean {
+    return this.deps.kind === "window";
+  }
+
   private identity(): Record<string, unknown> {
     const boot = this.bootstrap();
     return { instanceId: boot?.instanceId ?? "", viewId: boot?.viewId ?? "", nonce: this.nonce };
@@ -122,6 +220,42 @@ export class SpaceFrameSession {
     return this.deps.invoke(method, { ...this.identity(), ...params });
   }
 
+  /** Sends a host event (`chrome:action`, `chat:userMessage`, etc.) into the MiniApp document. */
+  sendEvent(event: string, payload: unknown): void {
+    this.event(event, payload);
+  }
+
+  /** Loads the compact chat snapshot for a session owned by this window instance. */
+  loadChatSnapshot(sessionId: string): Promise<unknown> {
+    return this.call("chatSnapshot", { sessionId });
+  }
+
+  /** Cancels an active MiniApp agent turn for this window instance. */
+  cancelAgentRun(params: Record<string, unknown>): Promise<unknown> {
+    return this.call("rpc", { method: "agent.cancel", params });
+  }
+
+  /** Lists pending permission requests owned by this instance. */
+  async refreshPermissions(): Promise<SpacePermissionRequest[]> {
+    const list = await this.call("permissions", {});
+    const requests = Array.isArray(list) ? (list as SpacePermissionRequest[]) : [];
+    this.deps.onPermissions?.(requests);
+    return requests;
+  }
+
+  /** Responds (`once` | `reject`) to a pending permission request owned by this instance. */
+  async respondPermission(requestId: string, reply: "once" | "reject"): Promise<SpacePermissionRequest[]> {
+    const list = await this.call("permissions", { requestId, reply });
+    const requests = Array.isArray(list) ? (list as SpacePermissionRequest[]) : [];
+    this.deps.onPermissions?.(requests);
+    return requests;
+  }
+
+  /** Requests moving this standalone window back into an in-product tab view. */
+  transferToTab(): Promise<unknown> {
+    return this.call("tab", {});
+  }
+
   /** Opens (or takes over) the view on the device and starts its event poll. */
   async open(appearanceMode?: string): Promise<void> {
     const generation = ++this.generation;
@@ -129,26 +263,42 @@ export class SpaceFrameSession {
     this.error.set("");
     this.loaded = false;
     this.cursor = 0;
+    this.composerGeneration += 1;
+    this.bindingGeneration += 1;
     try {
       const answer = (await this.deps.invoke("open", {
         appId: this.appId,
         workspacePath: this.workspacePath,
         nonce: this.nonce,
-        shellCapabilities: SHELL_CAPABILITIES,
+        shellCapabilities: this.isWindowMode() ? WINDOW_SHELL_CAPABILITIES : TAB_SHELL_CAPABILITIES,
+        ...(this.isWindowMode() ? { kind: "window" } : {}),
         ...(appearanceMode ? { appearanceMode } : {}),
       })) as Record<string, any>;
       if (generation !== this.generation) return;
       const app = (answer?.app ?? {}) as Record<string, unknown>;
       const html = text(app.compiled_html ?? app.compiledHtml);
       if (!html.trim()) throw new Error("MiniApp document is empty; rebuild it in OpenBitFun");
+      const locale = text(answer?.locale) || "en-US";
+      const i18nLocales =
+        app.i18n && typeof app.i18n === "object"
+          ? ((app.i18n as Record<string, unknown>).locales as Record<string, Record<string, unknown>> | undefined)
+          : undefined;
+      const localized = i18nLocales?.[locale];
+      const capabilities = Array.isArray(answer?.presentationCapabilities)
+        ? answer.presentationCapabilities.filter((cap: unknown): cap is string => typeof cap === "string")
+        : [];
       this.bootstrap.set({
         instanceId: text(answer?.instance?.instanceId ?? answer?.instance?.instance_id),
         viewId: text(answer?.view?.viewId ?? answer?.view?.view_id),
         html,
-        name: text(app.name),
-        locale: text(answer?.locale) || "en-US",
+        name: text(localized?.name) || text(app.name),
+        description: text(localized?.description) || text(app.description) || undefined,
+        icon: text(app.icon) || undefined,
+        locale,
         appearanceMode: text(answer?.appearanceMode) || "dark",
         strictRuntime: text(app.runtime_profile ?? app.runtimeProfile) === "market_strict",
+        chrome: capabilities.includes("miniapp_custom_chrome_v1") ? normalizeChrome(app.chrome) : undefined,
+        presentationCapabilities: capabilities,
       });
       void this.poll(generation);
     } catch (error) {
@@ -243,7 +393,8 @@ export class SpaceFrameSession {
           this.stop();
           return;
         }
-        for (const item of Array.isArray(batch?.events) ? batch.events : []) {
+        const events = Array.isArray(batch?.events) ? batch.events : [];
+        for (const item of events) {
           const sequence = Number(item?.sequence ?? 0);
           if (sequence <= this.cursor) continue;
           this.cursor = sequence;
@@ -253,9 +404,19 @@ export class SpaceFrameSession {
             this.stop();
             void this.open();
             return;
-          } else if (name !== "focus") this.event(name, item?.payload ?? null);
+          } else if (name === "focus") {
+            this.deps.onFocus?.();
+          } else {
+            this.event(name, item?.payload ?? null);
+            if (name === "agent:event" && item?.payload && typeof item.payload === "object") {
+              this.deps.onAgentEvent?.(item.payload as Record<string, unknown>);
+            }
+          }
         }
         this.cursor = Math.max(this.cursor, Number(batch?.cursor ?? 0));
+        if (this.isWindowMode() && this.deps.onPermissions && (events.length === 0 || this.permissionTick++ % 8 === 0)) {
+          await this.refreshPermissions().catch(() => undefined);
+        }
       } catch (error) {
         if (generation !== this.generation) return;
         failures += 1;
@@ -314,12 +475,16 @@ export class SpaceFrameSession {
         return;
       }
       if (method === "openbitfun/sandbox-wheel") return;
+      if (PRIVATE_HOST_RPCS.has(method)) {
+        throw new Error("Private MiniApp host operation");
+      }
       if (LOCAL_METHODS.has(method)) {
         // The device decides whether this app may; this client only performs it.
         await this.call("rpc", { method: "authorizeLocal", params: { action: method } });
         if (method === "system.openExternal") {
           const url = text(params.url);
-          if (!/^https?:\/\//i.test(url) || !this.deps.openUrl) throw new Error("This link cannot open here");
+          const allowed = this.isWindowMode() ? /^(https?:\/\/|mailto:)/i : /^https?:\/\//i;
+          if (!allowed.test(url) || !this.deps.openUrl) throw new Error("This link cannot open here");
           this.deps.openUrl(url);
         } else {
           if (!this.deps.writeClipboard) throw new Error("The clipboard is not available here");
@@ -329,9 +494,121 @@ export class SpaceFrameSession {
         return;
       }
       if (SHELL_ONLY.test(method)) {
-        throw new Error(`${method} needs the Space's own window; use Open in window on its desktop`);
+        if (!this.isWindowMode()) {
+          throw new Error(`${method} needs the Space's own window; use Open in window on its desktop`);
+        }
+        const assertCurrent = () => {
+          if (generation !== this.generation) throw new Error("MiniApp content view changed");
+        };
+        if (method === "dialog.open" || method === "dialog.save") {
+          await this.call("rpc", { method: "authorizeLocal", params: { action: method } });
+          assertCurrent();
+          if (!this.deps.pickFileDialog) throw new Error("Native file dialog is unavailable in this host");
+          const multiple = method === "dialog.open" && params.multiple === true;
+          const selected = await this.deps.pickFileDialog({
+            mode: method === "dialog.save" ? "save" : "open",
+            title: typeof params.title === "string" ? params.title : undefined,
+            defaultPath: typeof params.defaultPath === "string" ? params.defaultPath : undefined,
+            multiple,
+            directory: method === "dialog.open" && params.directory === true,
+            filters: normalizeFilters(params.filters),
+          });
+          assertCurrent();
+          if (selected === null) {
+            reply(null);
+            return;
+          }
+          const paths = Array.isArray(selected) ? selected : [selected];
+          for (const path of paths) {
+            await this.call("rpc", { method: "grantSelectedPath", params: { path } });
+            assertCurrent();
+          }
+          reply(multiple ? paths : (paths[0] ?? null));
+          return;
+        }
+        if (method === "dialog.message") {
+          await this.call("rpc", { method: "authorizeLocal", params: { action: method } });
+          assertCurrent();
+          if (!this.deps.showMessageDialog) throw new Error("Message dialog is unavailable in this host");
+          const answered = await this.deps.showMessageDialog({
+            title: typeof params.title === "string" && params.title.trim() ? params.title : (boot?.name || "MiniApp"),
+            message: text(params.message),
+          });
+          assertCurrent();
+          reply(answered);
+          return;
+        }
+        if (method === "clipboard.readText") {
+          await this.call("rpc", { method: "authorizeLocal", params: { action: method } });
+          assertCurrent();
+          if (!this.deps.readClipboard) throw new Error("The clipboard is not available here");
+          reply(await this.deps.readClipboard());
+          return;
+        }
+        if (method === "notifications.system") {
+          await this.call("rpc", { method: "authorizeLocal", params: { action: method } });
+          assertCurrent();
+          const title = text(params.title);
+          if (!title) throw new Error("Missing MiniApp notification title");
+          if (!this.deps.showNotification) throw new Error("System notifications are unavailable in this host");
+          await this.deps.showNotification(title, text(params.body));
+          reply(null);
+          return;
+        }
+        if (method === "system.revealInFolder") {
+          reply(await this.call("rpc", { method, params }));
+          return;
+        }
+        if (method === "chat.claimComposer") {
+          const claim = ++this.composerGeneration;
+          await this.call("rpc", { method: "authorizeLocal", params: { action: method } });
+          assertCurrent();
+          if (claim !== this.composerGeneration) throw new Error("MiniApp composer claim changed");
+          this.deps.chat?.claim(params);
+          reply(null);
+          return;
+        }
+        if (method === "chat.focusSession") {
+          const binding = ++this.bindingGeneration;
+          await this.call("rpc", {
+            method: "authorizeLocal",
+            params: { action: method, sessionId: params.sessionId },
+          });
+          assertCurrent();
+          if (binding !== this.bindingGeneration) throw new Error("MiniApp chat binding changed");
+          await this.deps.chat?.focusSession(text(params.sessionId));
+          assertCurrent();
+          reply(null);
+          return;
+        }
+        if (method === "chat.releaseComposer") {
+          this.composerGeneration += 1;
+          this.bindingGeneration += 1;
+          this.deps.chat?.release();
+          reply(null);
+          return;
+        }
+        if (method === "chat.clearSession") {
+          this.bindingGeneration += 1;
+          this.deps.chat?.clearSession();
+          reply(null);
+          return;
+        }
+        if (method === "chat.setComposerDraft") {
+          this.deps.chat?.setDraft(text(params.text));
+          reply(null);
+          return;
+        }
+        if (method === "chat.completeUserMessage") {
+          reply(this.deps.chat?.complete(params) ?? null);
+          return;
+        }
       }
-      reply(await this.call("rpc", { method, params }));
+      const chatRequestId = this.deps.chat?.getRequestId?.() ?? null;
+      const result = await this.call("rpc", { method, params });
+      if (generation !== this.generation) throw new Error("MiniApp content view changed");
+      if (method === "agent.run") this.deps.chat?.acceptedRun?.(result, chatRequestId);
+      reply(result);
     } catch (error) {
       if (/identity mismatch|lease expired/i.test(errorText(error))) this.fail(error);
       refuse(error);

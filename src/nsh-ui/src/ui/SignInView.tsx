@@ -24,9 +24,10 @@ import {
   textStyle,
   touchSlop,
 } from "../theme";
-import { DeviceBadge, MatrixMark, type DeviceException } from "./fleet";
+import { DeviceBadge, type DeviceException } from "./fleet";
 import { enterMotion, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { Button, TextField, focusRingStyle } from "./primitives";
+import { OpenBitFunLogoMark } from "./studio";
 import { superAgentUi } from "../productGates"; // wave23-E
 
 /**
@@ -132,12 +133,14 @@ export function signInStepBody(props: Pick<SignInViewProps, "step" | "codeEmail"
   }
 }
 
-/** The static Bit Matrix: OpenBitFun's mark, a 3×3 grid in the accent. */
-export function BitMatrixMark(props: { size: number }) {
+/** OpenBitFun's canonical fine-line hexagonal brand mark (`assets/brand/source/openbitfun-mark.svg`). */
+export function BitMatrixMark(props: { size: number; color?: string }) {
   return (
-    <View accessibilityLabel={tr("product.name")} style={{ flexShrink: 0 }}>
-      <MatrixMark size={props.size} color={palette().accent} />
-    </View>
+    <OpenBitFunLogoMark
+      size={props.size}
+      color={props.color ?? palette().text}
+      accessibilityLabel={tr("product.name")}
+    />
   );
 }
 
@@ -150,11 +153,11 @@ function Header(outer: { p: SignInViewProps }) {
   const props = outer.p;
   return (
     <View style={{ alignItems: "center", width: "100%" }}>
-      <BitMatrixMark size={MARK_SIZE} />
+      <OpenBitFunLogoMark size={MARK_SIZE} color={palette().text} accessibilityLabel={tr("product.name")} />
       <Text
         style={{
           ...textStyle("display"),
-          marginTop: space.xxl,
+          marginTop: space.xl,
           textAlign: "center",
         }}
       >
@@ -177,7 +180,7 @@ function Header(outer: { p: SignInViewProps }) {
   );
 }
 
-const MARK_SIZE = 40;
+const MARK_SIZE = 56;
 
 /** Phone buttons are 48 high (visual spec §4.1), the code field's height. */
 function tallButton() {

@@ -688,13 +688,13 @@ export async function openFileAt(path: string): Promise<void> {
     diskVersions.set(path, version);
     setChangedOnDisk(path, null);
     openFile.set({ path, name, kind, language: languageOf(path), content: content ?? "", ...(large ? { large } : {}) });
-    // Code and text open straight into the editor, as the desktop's editor does;
-    // Markdown opens as its rendered preview and edits on request.
+    // Code, text, and Markdown open straight into an editable draft (clean until modified);
+    // oversized files (> LARGE_FILE_BYTES) stay read-only until the user opts in.
     if (EDIT_ON_OPEN_KINDS.has(kind) && !large) editingContent.set(content ?? "");
   });
 }
 
-const EDIT_ON_OPEN_KINDS = new Set<PreviewKind>(["code", "text"]);
+const EDIT_ON_OPEN_KINDS = new Set<PreviewKind>(["code", "text", "markdown"]);
 
 /** Re-reads the active file from disk, dropping its draft (Reload from disk). */
 export async function reloadFromDisk(path: string): Promise<void> {
@@ -1061,12 +1061,12 @@ export function beginEditFile(): void {
 }
 
 /**
- * Discards the unsaved text. Code and text stay in the editor with the disk
- * copy; Markdown returns to its rendered preview.
+ * Discards the unsaved text. Editable files stay open with the disk copy;
+ * oversized files return to read-only.
  */
 export function cancelEditFile(): void {
   const file = openFile();
-  if (file && (file.kind === "code" || file.kind === "text") && !file.large) {
+  if (file && EDIT_ON_OPEN_KINDS.has(file.kind) && !file.large) {
     editingContent.set(file.content);
   } else {
     editingContent.set(null);
@@ -1154,8 +1154,8 @@ export async function saveEditedFile(options: { force?: boolean } = {}): Promise
         current && current.path === file.path ? { ...current, content } : current,
       );
       if (openFile()?.path === file.path) {
-        // Markdown goes back to its preview; code stays in the editor, now clean.
-        editingContent.set(file.kind === "markdown" ? null : content);
+        // Keep the user in place (clean) after saving instead of kicking Markdown out of editing.
+        editingContent.set(content);
       }
       fileNotice.set(`Saved ${file.name}`);
       void loadGitStatus();

@@ -7,7 +7,6 @@ import { canonicalizeIcns } from './icns-container.mjs';
 
 const GENERATED_ICNS_FILES = [
   'src/apps/desktop/icons/openbitfun-app-icon.icns',
-  'OpenBitFun-Installer/src-tauri/icons/openbitfun-app-icon.icns',
 ];
 
 
@@ -52,11 +51,9 @@ test('ICNS canonicalization is independent of Tauri chunk order', () => {
 });
 
 test('generated macOS icons use the canonical ICNS layout', () => {
-  const [desktop, installer] = GENERATED_ICNS_FILES.map(filePath => readFileSync(filePath));
+  const [desktop] = GENERATED_ICNS_FILES.map(filePath => readFileSync(filePath));
 
   assert.ok(desktop.equals(canonicalizeIcns(desktop)), 'desktop ICNS is not canonical');
-  assert.ok(installer.equals(canonicalizeIcns(installer)), 'installer ICNS is not canonical');
-  assert.ok(desktop.equals(installer), 'desktop and installer ICNS files differ');
   assert.deepEqual(desktop, readFileSync('assets/brand/exports/openbitfun-app-icon.icns'));
 });
 
@@ -91,18 +88,12 @@ test('macOS ICNS PNG representations preserve a visible body and transparent Doc
   assert.equal(checked, 8);
 });
 
-test('desktop and installer retain independent Windows/Linux icons alongside the macOS fallback', () => {
+test('desktop retains independent Windows/Linux icons alongside the macOS fallback', () => {
   // The native desktop packages copy these files directly (scripts/package-desktop-nsh-*.mjs).
-  for (const configPath of ['OpenBitFun-Installer/src-tauri/tauri.conf.json']) {
-    const { bundle } = JSON.parse(readFileSync(configPath, 'utf8'));
-    assert.equal(bundle.icon.find(icon => icon.endsWith('.icns')), 'icons/openbitfun-app-icon.icns');
-    assert.equal(bundle.icon.find(icon => icon.endsWith('.png')), 'icons/openbitfun-app-icon.png');
-    assert.equal(bundle.icon.find(icon => icon.endsWith('.ico')), 'icons/openbitfun-app-icon.ico');
-  }
-  for (const iconDir of ['src/apps/desktop/icons', 'OpenBitFun-Installer/src-tauri/icons']) {
-    assert.deepEqual(readFileSync(`${iconDir}/openbitfun-app-icon.png`),
-      readFileSync('assets/brand/exports/openbitfun-app-icon-1024.png'));
-  }
+  assert.deepEqual(
+    readFileSync('src/apps/desktop/icons/openbitfun-app-icon.png'),
+    readFileSync('assets/brand/exports/openbitfun-app-icon-1024.png'),
+  );
   for (const size of [16, 32, 48, 64, 96, 128, 256, 512]) {
     assert.deepEqual(readFileSync(`src/apps/desktop/icons/hicolor/${size}x${size}/apps/openbitfun-desktop.png`),
       readFileSync(`assets/brand/exports/openbitfun-app-icon-${size}.png`));
@@ -169,7 +160,6 @@ test('Windows ICO frames contain the size-specific app PNGs', async () => {
     sizes.push(size);
   }
   assert.deepEqual(sizes.sort((a, b) => a - b), [16, 24, 32, 48, 64, 256]);
-  assert.deepEqual(ico, readFileSync('OpenBitFun-Installer/src-tauri/icons/openbitfun-app-icon.ico'));
 });
 
 test('small icons retain a bright rim around the entire silhouette', async () => {
@@ -204,7 +194,6 @@ test('the native desktop tray uses the bundled template mark', () => {
 test('browser entry points reference generated application favicons', () => {
   for (const [htmlPath, assetDir] of [
     ['src/apps/relay-server/static/index.html', 'src/apps/relay-server/static/brand'],
-    ['OpenBitFun-Installer/index.html', 'OpenBitFun-Installer/src/assets'],
   ]) {
     const html = readFileSync(htmlPath, 'utf8');
     for (const size of [16, 32]) {

@@ -13,7 +13,6 @@ export function setBuildVersion(root, version) {
 
   for (const relative of [
     'package.json',
-    'OpenBitFun-Installer/package.json',
     // The native desktop app's manifest; its other fields stay untouched.
     'src/apps/desktop-nsh/nsh.json',
     'src/miniapp-market-web/package.json',
@@ -33,11 +32,6 @@ export function setBuildVersion(root, version) {
     path.join(root, 'src/apps/relay-server/Cargo.toml'),
     /^version = "[^"]+" # x-release-please-version$/m,
     `version = "${version}" # x-release-please-version`,
-  );
-  replaceVersion(
-    path.join(root, 'OpenBitFun-Installer/src-tauri/Cargo.toml'),
-    /^version = "[^"]+"$/m,
-    `version = "${version}"`,
   );
   for (const relative of [
     'src/crates/services/relay-service/Cargo.toml',
@@ -60,7 +54,7 @@ export function setBuildVersion(root, version) {
 // miss members that pin a version of their own.
 //
 // This cannot run with --offline: resolving the workspace walks every source,
-// and the git dependencies (tauri) are not in a cold CI cargo home yet.
+// and git dependencies may not be in a cold CI cargo home yet.
 function syncCargoLock(root) {
   if (!existsSync(path.join(root, 'Cargo.lock'))) {
     return;

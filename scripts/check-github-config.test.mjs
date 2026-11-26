@@ -451,9 +451,9 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
     'Rust validation must not download frontend artifacts',
   );
   assert.match(
-    rustJob.steps.find((step) => step.name === 'Create Tauri resource directories')
+    rustJob.steps.find((step) => step.name === 'Create workspace resource placeholders')
       ?.run ?? '',
-    /mkdir -p dist src\/apps\/extension-host\/dist/,
+    /mkdir -p src\/apps\/extension-host\/dist/,
   );
   assert.equal(
     frontendJob.steps.some(
@@ -527,8 +527,8 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
   const checkCompilation = rustJob.steps.find(
     (step) => step.name === 'Check compilation',
   );
-  const createTauriResources = rustJob.steps.find(
-    (step) => step.name === 'Create Tauri resource directories',
+  const createWorkspaceResources = rustJob.steps.find(
+    (step) => step.name === 'Create workspace resource placeholders',
   );
   const saveSherpaCache = rustJob.steps.find(
     (step) => step.name === 'Save Sherpa native libraries',
@@ -548,14 +548,14 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
   assert.equal(saveSherpaCache?.with?.path, 'target/sherpa-onnx-prebuilt');
   assert.equal(saveSherpaCache?.with?.key, sherpaCacheKey);
   assert.match(
-    createTauriResources?.run ?? '',
+    createWorkspaceResources?.run ?? '',
     /src\/apps\/extension-host\/dist\/extension-host\.js/,
     'clean Rust checks must provide the generated extension Host resource path without building the Host',
   );
   assert.ok(
-    rustJob.steps.indexOf(createTauriResources) <
+    rustJob.steps.indexOf(createWorkspaceResources) <
       rustJob.steps.indexOf(checkCompilation),
-    'Tauri resource placeholders must exist before cargo check',
+    'workspace resource placeholders must exist before cargo check',
   );
   assert.equal(
     saveSherpaCache?.if,
@@ -587,14 +587,6 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
     commandByStep.get('Run subscription authentication tests'),
     'cargo test --locked -p openbitfun-ai-adapters --features subscription-auth --lib subscription_auth',
   );
-  const installerCheck = rustJob.steps.find(
-    (step) => step.name === 'Check installer compilation',
-  );
-  assert.equal(installerCheck?.if, "runner.os == 'Windows'");
-  assert.equal(
-    installerCheck?.run,
-    'cargo check --manifest-path OpenBitFun-Installer/src-tauri/Cargo.toml',
-  );
   const coreLibraryTests = rustJob.steps.find(
     (step) => step.name === 'Run core library tests',
   );
@@ -608,9 +600,6 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
   );
   const desktopLibraryTests = rustJob.steps.find(
     (step) => step.name === 'Run desktop library tests',
-  );
-  const windowsDesktopProbe = rustJob.steps.find(
-    (step) => step.name === 'Probe Windows desktop library tests',
   );
   const productControlContracts = rustJob.steps.find(
     (step) => step.name === 'Run product-control domain and delivery-profile contracts',
@@ -658,21 +647,11 @@ test('keeps Rust CI independent, restore-only on PRs, and target-focused', () =>
     ],
     'Core library validation must contain exactly the reviewed complementary steps',
   );
-  assert.equal(desktopLibraryTests?.if, "runner.os != 'Windows'");
+  assert.equal(desktopLibraryTests?.if, undefined);
   assert.equal(
     desktopLibraryTests?.run,
     'cargo test --locked -p openbitfun-desktop --lib',
   );
-  assert.equal(windowsDesktopProbe?.if, "runner.os == 'Windows'");
-  assert.equal(windowsDesktopProbe?.shell, 'pwsh');
-  assert.match(
-    windowsDesktopProbe?.run ?? '',
-    /cargo test --locked -p openbitfun-desktop --lib 2>&1/,
-  );
-  assert.match(windowsDesktopProbe?.run ?? '', /0xc0000139/);
-  assert.match(windowsDesktopProbe?.run ?? '', /STATUS_ENTRYPOINT_NOT_FOUND/);
-  assert.match(windowsDesktopProbe?.run ?? '', /test result: FAILED/);
-  assert.match(windowsDesktopProbe?.run ?? '', /exit \$testExitCode/);
   assert.equal(
     productControlContracts?.if,
     undefined,
@@ -995,12 +974,6 @@ test('nightly validates generated inputs and projected lockfiles before packagin
   const patchIndex = steps.findIndex(
     (step) => step.name === 'Patch nightly version',
   );
-  const tauriAlignmentIndex = steps.findIndex(
-    (step) => step.name === 'Verify Installer Tauri package alignment',
-  );
-  const installerI18nIndex = steps.findIndex(
-    (step) => step.name === 'Verify Installer i18n projection',
-  );
   const metadataIndex = steps.findIndex(
     (step) => step.name === 'Verify projected Cargo metadata',
   );
@@ -1055,13 +1028,9 @@ test('nightly validates generated inputs and projected lockfiles before packagin
   assert.equal(upload?.if, '${{ inputs.upload_artifacts }}');
 
   assert.notEqual(committedMetadataIndex, -1);
-  assert.notEqual(installerI18nIndex, -1);
-  assert.notEqual(tauriAlignmentIndex, -1);
   assert.notEqual(nshIndex, -1);
   assert.ok(
     committedMetadataIndex < patchIndex &&
-      installerI18nIndex < patchIndex &&
-      tauriAlignmentIndex < patchIndex &&
       nshIndex < buildIndex &&
       patchIndex < metadataIndex &&
       metadataIndex < buildIndex,
@@ -1070,16 +1039,6 @@ test('nightly validates generated inputs and projected lockfiles before packagin
   const expectedMetadata = 'cargo metadata --locked --no-deps';
   assert.equal(steps[committedMetadataIndex].run, expectedMetadata);
   assert.equal(steps[metadataIndex].run, expectedMetadata);
-  assert.equal(steps[installerI18nIndex].if, "runner.os == 'Windows'");
-  assert.equal(
-    steps[installerI18nIndex].run,
-    'pnpm --dir OpenBitFun-Installer run sync:i18n',
-  );
-  assert.equal(steps[tauriAlignmentIndex].if, "runner.os == 'Windows'");
-  assert.match(
-    steps[tauriAlignmentIndex].run,
-    /Found version mismatched Tauri packages/,
-  );
   assert.equal(
     steps.some((step) => step.run?.includes('cargo generate-lockfile')),
     false,

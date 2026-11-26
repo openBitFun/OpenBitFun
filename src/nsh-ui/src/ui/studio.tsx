@@ -804,6 +804,17 @@ const OPENBITFUN_LOGO_PATHS: ReadonlyArray<{ d: string; opacity: number; width: 
   { opacity: 1.0, width: 1.0, d: "M51.7579 5.27798C57.2526 2.10569 62.7474 2.10569 68.2421 5.27798L103.27 25.5013C108.764 28.6736 111.512 33.4321 111.512 39.7766V80.2233C111.512 86.5679 108.764 91.3264 103.27 94.4987L68.2421 114.722C62.7474 117.894 57.2526 117.894 51.7579 114.722L16.7303 94.4987C11.2355 91.3264 8.48816 86.5679 8.48816 80.2233V39.7766C8.48816 33.4321 11.2355 28.6736 16.7303 25.5013L51.7579 5.27798Z" },
 ];
 
+let cachedLogoPaths: ReadonlyArray<Path2D> | null = null;
+function getLogoPaths(): ReadonlyArray<Path2D> {
+  if (!cachedLogoPaths) {
+    cachedLogoPaths = OPENBITFUN_LOGO_PATHS.map(contour => new Path2D(contour.d));
+  }
+  return cachedLogoPaths;
+}
+
+const SMALL_LOGO_INDICES = [0, 7, 14] as const;
+const MEDIUM_LOGO_INDICES = [0, 3, 7, 11, 14] as const;
+
 export function OpenBitFunLogoMark(props: { size?: number; color?: string; accessibilityLabel?: string }) {
   const size = () => props.size ?? 56;
   return (
@@ -815,17 +826,38 @@ export function OpenBitFunLogoMark(props: { size?: number; color?: string; acces
         style={{ width: size(), height: size(), pointerEvents: "none" }}
         draw={(cx, box) => {
           if (box.width <= 0 || box.height <= 0) return;
+          const dim = Math.min(box.width, box.height);
           const color = props.color ?? palette().text;
-          const scale = Math.min(box.width, box.height) / 120;
+          const scale = dim / 120;
+          const paths = getLogoPaths();
           cx.save();
           cx.scale(scale, scale);
           cx.strokeStyle = color;
           cx.lineCap = "round";
           cx.lineJoin = "round";
-          for (const contour of OPENBITFUN_LOGO_PATHS) {
-            cx.globalAlpha = contour.opacity * 0.82;
-            cx.lineWidth = contour.width;
-            cx.stroke(new Path2D(contour.d));
+          if (dim <= 24) {
+            for (const index of SMALL_LOGO_INDICES) {
+              const contour = OPENBITFUN_LOGO_PATHS[index]!;
+              const strokePx = index === 14 ? 1.15 : index === 0 ? 0.85 : 0.62;
+              cx.globalAlpha = index === 14 ? 0.96 : index === 0 ? 0.84 : 0.65;
+              cx.lineWidth = Math.max(contour.width, strokePx / scale);
+              cx.stroke(paths[index]!);
+            }
+          } else if (dim < 40) {
+            for (const index of MEDIUM_LOGO_INDICES) {
+              const contour = OPENBITFUN_LOGO_PATHS[index]!;
+              const strokePx = index === 14 ? 1.05 : index === 0 ? 0.7 : 0.52;
+              cx.globalAlpha = index === 14 ? 0.94 : index === 0 ? 0.84 : 0.68;
+              cx.lineWidth = Math.max(contour.width, strokePx / scale);
+              cx.stroke(paths[index]!);
+            }
+          } else {
+            for (let index = 0; index < OPENBITFUN_LOGO_PATHS.length; index++) {
+              const contour = OPENBITFUN_LOGO_PATHS[index]!;
+              cx.globalAlpha = contour.opacity * 0.85;
+              cx.lineWidth = contour.width;
+              cx.stroke(paths[index]!);
+            }
           }
           cx.restore();
         }}

@@ -10,8 +10,6 @@ const dynamicKeyAllowlistPath = path.join(root, 'scripts', 'i18n-dynamic-key-all
 const l10nIdenticalAllowlistPath = path.join(root, 'scripts', 'i18n-l10n-identical-allowlist.json');
 const governanceBaselinePath = path.join(root, 'scripts', 'i18n-governance-baseline.json');
 const sharedTermsDir = path.join(root, 'src', 'shared', 'i18n', 'resources', 'shared');
-const installerSourceDir = path.join(root, 'OpenBitFun-Installer', 'src');
-const installerLocalesDir = path.join(installerSourceDir, 'i18n', 'locales');
 const coreLocalesDir = path.join(root, 'src', 'crates', 'assembly', 'core', 'locales');
 const relayHomepageDir = path.join(root, 'src', 'apps', 'relay-server', 'static', 'homepage');
 const relayHomepageI18nPath = path.join(relayHomepageDir, 'i18n.json');
@@ -396,33 +394,12 @@ function readSharedTermMap(locale) {
   }
 }
 
-function readInstallerJsonKeys(uiLocale) {
-  const file = path.join(installerLocalesDir, `${uiLocale}.json`);
-  try {
-    return flattenKeys(readJsonFile(file));
-  } catch (error) {
-    reportError(`Failed to parse ${toPosixPath(path.relative(root, file))}: ${error.message}`);
-    return [];
-  }
-}
-
-function readInstallerJsonEntries(uiLocale) {
-  const file = path.join(installerLocalesDir, `${uiLocale}.json`);
-  try {
-    return new Map(flattenStringEntries(readJsonFile(file)));
-  } catch (error) {
-    reportError(`Failed to parse ${toPosixPath(path.relative(root, file))}: ${error.message}`);
-    return new Map();
-  }
-}
-
 function diffSets(left, right) {
   const rightSet = new Set(right);
   return left.filter((item) => !rightSet.has(item));
 }
 
 function auditSurfaceResourceRoots() {
-  const localeById = new Map(localeContract.locales.map((locale) => [locale.id, locale]));
   for (const [surface, config] of Object.entries(localeContract.surfaces ?? {})) {
     const resourceRoot = path.join(root, config.resourceRoot);
     if (!fs.existsSync(resourceRoot)) {
@@ -431,12 +408,7 @@ function auditSurfaceResourceRoots() {
     }
 
     for (const localeId of localeContract.surfaceOrders?.[surface] ?? []) {
-      if (surface === 'installer') {
-        const installerLocale = localeById.get(localeId)?.installer?.uiCode;
-        if (!installerLocale || !fs.existsSync(path.join(resourceRoot, `${installerLocale}.json`))) {
-          reportError(`${surface} is missing ${localeId} resource JSON`);
-        }
-      } else if (surface === 'core') {
+      if (surface === 'core') {
         if (!fs.existsSync(path.join(resourceRoot, `${localeId}.ftl`))) {
           reportError(`${surface} is missing ${localeId} Fluent resource`);
         }
@@ -532,41 +504,6 @@ function auditSharedTermPlaceholderParity(namespaces) {
         const actual = extractI18nextPlaceholders(localeEntries.get(key));
         reportPlaceholderParity(namespace, locale, key, expected, actual);
       }
-    }
-  }
-}
-
-function auditInstallerKeyParity() {
-  const baselineKeys = readInstallerJsonKeys('en');
-  for (const uiLocale of ['zh', 'zh-TW']) {
-    const keys = readInstallerJsonKeys(uiLocale);
-    const missing = diffSets(baselineKeys, keys);
-    const extra = diffSets(keys, baselineKeys);
-
-    if (missing.length > 0) {
-      reportError(`installer ${uiLocale}.json is missing ${missing.length} key(s): ${missing.slice(0, 8).join(', ')}`);
-    }
-    if (extra.length > 0) {
-      reportError(`installer ${uiLocale}.json has ${extra.length} extra key(s): ${extra.slice(0, 8).join(', ')}`);
-    }
-  }
-}
-
-function auditInstallerPlaceholderParity() {
-  const baselineEntries = readInstallerJsonEntries('en');
-  const baselinePlaceholders = new Map(
-    Array.from(baselineEntries.entries()).map(([key, value]) => [
-      key,
-      extractI18nextPlaceholders(value),
-    ]),
-  );
-
-  for (const uiLocale of ['zh', 'zh-TW']) {
-    const entries = readInstallerJsonEntries(uiLocale);
-    for (const [key, expected] of baselinePlaceholders.entries()) {
-      if (!entries.has(key)) continue;
-      const actual = extractI18nextPlaceholders(entries.get(key));
-      reportPlaceholderParity('installer', uiLocale, key, expected, actual);
     }
   }
 }
@@ -759,7 +696,6 @@ function pushResourceEntry(entries, { surface, locale, namespace = null, key, va
 
 function collectI18nResourceEntries(namespaces) {
   const entries = [];
-  const localeById = new Map(localeContract.locales.map((locale) => [locale.id, locale]));
 
   for (const locale of supportedLocales) {
     for (const namespace of namespaces) {
@@ -774,20 +710,6 @@ function collectI18nResourceEntries(namespaces) {
           file,
         });
       }
-    }
-  }
-
-  for (const localeId of localeContract.surfaceOrders?.installer ?? []) {
-    const uiLocale = localeById.get(localeId)?.installer?.uiCode;
-    if (!uiLocale) continue;
-    for (const [key, value] of readInstallerJsonEntries(uiLocale).entries()) {
-      pushResourceEntry(entries, {
-        surface: 'installer',
-        locale: localeId,
-        key,
-        value,
-        file: `OpenBitFun-Installer/src/i18n/locales/${uiLocale}.json`,
-      });
     }
   }
 
@@ -1387,18 +1309,6 @@ function auditI18nGovernanceReport(namespaces) {
   auditGovernanceBaseline();
 }
 
-function shouldSkipInstallerSourceScan(file) {
-  const normalized = toPosixPath(path.relative(root, file));
-  return (
-    normalized.includes('/i18n/locales/') ||
-    normalized.endsWith('/i18n/generatedLocaleContract.ts') ||
-    normalized.endsWith('.test.ts') ||
-    normalized.endsWith('.test.tsx') ||
-    normalized.endsWith('.spec.ts') ||
-    normalized.endsWith('.spec.tsx')
-  );
-}
-
 function countCjkSourceLines(scanRoot, predicate) {
   const cjkPattern = /\p{Script=Han}/u;
   const findings = [];
@@ -1417,30 +1327,8 @@ function countCjkSourceLines(scanRoot, predicate) {
   return findings;
 }
 
-function shouldSkipLocaleFormatSourceScan(file) {
-  const normalized = toPosixPath(path.relative(root, file));
-  return (
-    // Surface i18n owners are the only approved locations for direct Intl usage;
-    // product code must call their exported formatting helpers instead.
-    normalized.endsWith('/generatedLocaleContract.ts') ||
-    normalized.endsWith('.test.ts') ||
-    normalized.endsWith('.test.tsx') ||
-    normalized.endsWith('.spec.ts') ||
-    normalized.endsWith('.spec.tsx')
-  );
-}
-
 function createLocaleFormatScanSpecs() {
   return [
-    {
-      surface: 'installer',
-      root: installerSourceDir,
-      predicate: (file) => (
-        (file.endsWith('.ts') || file.endsWith('.tsx')) &&
-        !shouldSkipInstallerSourceScan(file) &&
-        !shouldSkipLocaleFormatSourceScan(file)
-      ),
-    },
     {
       surface: 'core-miniapp',
       root: path.join(root, 'src', 'crates', 'contracts', 'product-domains', 'src', 'miniapp', 'builtin', 'assets'),
@@ -1539,11 +1427,6 @@ function auditHardcodedSourceBudgets() {
   // owned locale resources; do not raise them for new user-facing text.
   const specs = [
     {
-      id: 'installer-source',
-      root: installerSourceDir,
-      predicate: (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipInstallerSourceScan(file),
-    },
-    {
       id: 'relay-static-homepage',
       root: relayHomepageDir,
       predicate: (file) => file.endsWith('.html') || file.endsWith('.js') || file.endsWith('.css'),
@@ -1573,8 +1456,6 @@ auditSurfaceResourceRoots();
 const namespaces = SHARED_NAMESPACES;
 auditKeyParity(namespaces);
 auditSharedTermPlaceholderParity(namespaces);
-auditInstallerKeyParity();
-auditInstallerPlaceholderParity();
 auditCoreFluentParity();
 auditRelayStaticHomepageResources();
 auditLocaleFormatUsageBudget();

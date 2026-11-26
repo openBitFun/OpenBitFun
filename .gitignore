@@ -13,7 +13,6 @@ node_modules
 
 # These packages share pnpm-lock.yaml. Standalone npm packages keep their own lockfile.
 /package-lock.json
-/OpenBitFun-Installer/package-lock.json
 /tests/e2e/package-lock.json
 
 # Build outputs - Frontend
@@ -34,9 +33,6 @@ sdk/typescript/src/internal/wire-validators.ts
 # The deployable Rust services use the workspace lockfile for reproducible
 # container builds.
 !Cargo.lock
-# The standalone Installer resolves against the shared source tree and owns a
-# generated lockfile that must not be committed.
-/OpenBitFun-Installer/src-tauri/Cargo.lock
 
 # Monaco Editor - copied from node_modules
 public/monaco-editor/
@@ -49,10 +45,9 @@ src/generated/version.ts
 src/generated/version-injection.html
 public/version.json
 
-# Tauri generated files
+# Legacy generated files
 apps/desktop/gen/
 src/apps/desktop/gen/
-src/apps/miniapp-shell/gen/
 src-tauri/gen/
 
 # Updater signing private key (never commit; release builds receive the pubkey as TAURI_UPDATER_PUBKEY)

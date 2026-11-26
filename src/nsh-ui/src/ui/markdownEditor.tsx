@@ -19,7 +19,9 @@
 import { cleanup, effect, openUrl, Scroll, signal, Text, untracked, View, WebView, type JSX } from "nsh";
 import {
   createRichEditor,
+  Input,
   RichEditor,
+  RichImage,
   RichTable,
   RichTableCell,
   RichTableHeader,
@@ -28,6 +30,8 @@ import {
   TextView,
   type RichEditorSession,
   type RichEditorStyles,
+  type RichExtension,
+  type RichExtensionClass,
   type TextViewImage,
   type TextViewLinkPressEvent,
 } from "nsh/base";
@@ -43,6 +47,7 @@ import {
 import { windowShellId } from "../bridge";
 import { currentLocale, localizeHostError, tr } from "../i18n";
 import {
+  cjkTypography,
   fontMono,
   fontSans,
   palette,
@@ -52,6 +57,7 @@ import {
   textLineHeight,
   textSize,
   textStyle,
+  textTracking,
   typeScale,
   uiFontBasePx,
   type Palette,
@@ -65,20 +71,209 @@ import {
   resolveWorkspaceMarkdownLink,
   STATIC_MARKDOWN_OPTIONS,
 } from "./markdown";
-import { popoverEnterMotion, Spinner } from "./motion";
+import { MOTION_DURATION, paintTransition, popoverEnterMotion, pressTransition, rotatingChevronStyle, Spinner, tactileActiveStyle } from "./motion";
 import { registerEscapeDismiss } from "./overlays";
-import { Button, InputBox } from "./primitives";
+import { Button, focusRingStyle, InputBox } from "./primitives";
 import { rendererAssets } from "../documentRenderers";
+
+// ── Frontmatter splitting & Markdown analysis ──────────────────────────────
+
+export interface MarkdownFrontmatterSplit {
+  /** Exact leading YAML frontmatter block including delimiters and trailing gap, or `""`. */
+  frontmatter: string;
+  /** The Markdown body following the frontmatter. */
+  body: string;
+  /** The YAML content inside the `---` delimiters. */
+  yaml: string;
+  /** The exact whitespace/newlines between the closing `---` and `body`. */
+  separator: string;
+  /** Line ending used by the frontmatter block. */
+  eol: "\r\n" | "\n";
+}
+
+const FRONTMATTER_RE = /^---(\r?\n)([\s\S]*?)\r?\n---([ \t]*(?:\r?\n)*)/;
+
+/**
+ * Splits a leading YAML frontmatter block (`---\n...\n---`) from the Markdown
+ * body without altering a single byte (`frontmatter + body === text`).
+ */
+export function splitFrontmatter(text: string): MarkdownFrontmatterSplit {
+  const match = FRONTMATTER_RE.exec(text);
+  if (!match) {
+    return { frontmatter: "", body: text, yaml: "", separator: "", eol: "\n" };
+  }
+  const eol: "\r\n" | "\n" = match[1] === "\r\n" ? "\r\n" : "\n";
+  const yaml = match[2];
+  const separator = match[3] ?? "";
+  // Confirm the block is YAML metadata, not a horizontal rule followed by prose.
+  const lines = yaml.split(/\r?\n/);
+  let hasKey = false;
+  for (const line of lines) {
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    if (/^[ \t]/.test(line)) continue;
+    if (/^[A-Za-z0-9_.-]+[ \t]*:/.test(line)) {
+      hasKey = true;
+      continue;
+    }
+    return { frontmatter: "", body: text, yaml: "", separator: "", eol: "\n" };
+  }
+  if (!hasKey) {
+    return { frontmatter: "", body: text, yaml: "", separator: "", eol: "\n" };
+  }
+  const frontmatter = match[0];
+  return { frontmatter, body: text.slice(frontmatter.length), yaml, separator, eol };
+}
+
+function frontmatterSummary(yaml: string): string {
+  const pairs: string[] = [];
+  for (const raw of yaml.split(/\r?\n/)) {
+    const match = /^([A-Za-z0-9_.-]+)[ \t]*:[ \t]*(.*)$/.exec(raw);
+    if (!match) continue;
+    const key = match[1];
+    const value = match[2].trim().replace(/^["']|["']$/g, "");
+    pairs.push(value ? `${key}: ${value}` : key);
+    if (pairs.length >= 2) break;
+  }
+  return pairs.join(" · ");
+}
+
+interface MarkdownSyntaxScan {
+  hasLossySyntax: boolean;
+  hasRichBlocks: boolean;
+  linkDestinations: string[];
+}
+
+/** Strips inline code spans so syntax checks ignore code examples like `` `<div>` ``. */
+function stripInlineCode(line: string): string {
+  return line.replace(/(`+)([^`]*?)\1/g, " ");
+}
+
+/**
+ * Scans Markdown outside fenced code blocks and inline code for:
+ * - truly lossy constructs that `RichEditor` escapes or drops (raw HTML tags/comments,
+ *   reference-style links/definitions, footnotes, GitHub callout alerts);
+ * - rich preview blocks (` ```mermaid ` fences, display math `$$...$$`) that
+ *   `MarkdownPreview` renders as interactive SVG/KaTeX web view islands.
+ */
+function scanMarkdownSyntax(body: string): MarkdownSyntaxScan {
+  const lines = body.replace(/\r\n?/g, "\n").split("\n");
+  let fenceChar: "`" | "~" | null = null;
+  let fenceLen = 0;
+  let inMathFence = false;
+  let hasLossySyntax = false;
+  let hasRichBlocks = false;
+  const linkDestinations: string[] = [];
+
+  for (const line of lines) {
+    if (fenceChar) {
+      const closeRe = new RegExp(`^[ \\t]{0,3}${fenceChar}{${fenceLen},}[ \\t]*$`);
+      if (closeRe.test(line)) {
+        fenceChar = null;
+        fenceLen = 0;
+      }
+      continue;
+    }
+
+    const fenceOpen = /^[ \t]{0,3}(`{3,}|~{3,})([ \t]*([^\s`~]*))?/.exec(line);
+    if (fenceOpen) {
+      fenceChar = fenceOpen[1][0] as "`" | "~";
+      fenceLen = fenceOpen[1].length;
+      const lang = (fenceOpen[3] ?? "").toLowerCase();
+      if (lang === "mermaid") hasRichBlocks = true;
+      continue;
+    }
+
+    if (/^[ \t]{0,3}\$\$[ \t]*$/.test(line)) {
+      inMathFence = !inMathFence;
+      hasRichBlocks = true;
+      continue;
+    }
+    if (inMathFence) continue;
+    if (/^[ \t]{0,3}\$\$[^\n$]+\$\$[ \t]*$/.test(line)) {
+      hasRichBlocks = true;
+      continue;
+    }
+
+    // GitHub-style alerts (`> [!NOTE]`) are escaped by RichEditor's serializer.
+    if (/^[ \t]*>[ \t]*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s|$)/i.test(line)) {
+      hasLossySyntax = true;
+    }
+    // Reference link definitions (`[id]: https://...`) and footnote definitions (`[^1]: ...`).
+    if (/^[ \t]{0,3}\[[^\]]+\]:[ \t]+\S/.test(line)) {
+      hasLossySyntax = true;
+    }
+
+    const plain = stripInlineCode(line);
+    // Footnote references (`[^1]`).
+    if (/\[\^[^\]]+\]/.test(plain)) {
+      hasLossySyntax = true;
+    }
+    // Full or collapsed reference links (`[text][ref]` or `[text][]`).
+    if (/\[[^\]\n]+\]\[[^\]\n]*\]/.test(plain)) {
+      hasLossySyntax = true;
+    }
+    // Raw HTML comments or tags (skipping autolinks like `<https://...>` and `<a@b.c>`).
+    if (/<!--/.test(plain) || /<\/?[a-zA-Z][a-zA-Z0-9-]*(?:[\s/][^>\n]*)?>/.test(plain)) {
+      hasLossySyntax = true;
+    }
+
+    // Collect simple inline link destinations so round-trip verification catches any dropped URL.
+    const linkRe = /\]\(([^\s()]+)(?:\s+["'][^"']*["'])?\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = linkRe.exec(plain)) !== null) {
+      linkDestinations.push(m[1]);
+    }
+  }
+
+  return { hasLossySyntax, hasRichBlocks, linkDestinations };
+}
+
+/** Whether the document contains Mermaid diagrams or display math (`$$...$$`) islands. */
+export function hasRichPreviewBlocks(text: string): boolean {
+  const { body } = splitFrontmatter(text);
+  return scanMarkdownSyntax(body).hasRichBlocks;
+}
 
 // ── The visual editor's schema and the fidelity guard ──────────────────────
 
 /** Paragraphs, headings, lists, task lists, quotes, code, rules, images, links, marks and tables. */
-function markdownExtensions() {
-  return [StarterKit, RichTable, RichTableRow, RichTableHeader, RichTableCell];
+function markdownExtensions(
+  renderImage?: (image: TextViewImage) => JSX.Element,
+): Array<RichExtension | RichExtensionClass> {
+  if (!renderImage) {
+    return [StarterKit, RichTable, RichTableRow, RichTableHeader, RichTableCell];
+  }
+  const WorkspaceImage = RichImage.extend({
+    addNodeView: () => nodeProps => {
+      const attrs = (nodeProps.node.attrs ?? {}) as Record<string, unknown>;
+      return renderImage({
+        src: String(attrs.src ?? ""),
+        alt: String(attrs.alt ?? ""),
+        title: typeof attrs.title === "string" ? attrs.title : undefined,
+        width: typeof attrs.width === "number" ? attrs.width : undefined,
+        height: typeof attrs.height === "number" ? attrs.height : undefined,
+      });
+    },
+  });
+  return [
+    StarterKit.configure({ image: false }),
+    WorkspaceImage,
+    RichTable,
+    RichTableRow,
+    RichTableHeader,
+    RichTableCell,
+  ];
 }
 
-function createMarkdownSession(text: string): RichEditorSession {
-  return createRichEditor({ content: text, format: "markdown", extensions: markdownExtensions() });
+function createMarkdownSession(
+  text: string,
+  renderImage?: (image: TextViewImage) => JSX.Element,
+): RichEditorSession {
+  return createRichEditor({
+    content: text,
+    format: "markdown",
+    extensions: markdownExtensions(renderImage),
+  });
 }
 
 let visualEditorProbe: boolean | null = null;
@@ -96,7 +291,7 @@ export function visualEditorAvailable(): boolean {
   return visualEditorProbe;
 }
 
-/** Text compared the way the guard compares it: line endings, BOM, trailing whitespace and extra blank runs outside fenced code blocks do not count. */
+/** Text compared for clean-state/undo checks: line endings, BOM, trailing whitespace and extra blank runs outside fenced code blocks do not count. */
 function normalizeMarkdown(text: string): string {
   let value = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   value = value.replace(/\r\n?/g, "\n");
@@ -129,15 +324,32 @@ export function sameMarkdown(left: string, right: string): boolean {
 
 const fidelityCache = new Map<string, boolean>();
 
-/** Whether the visual editor writes `text` back as it is (modulo trailing whitespace). */
+/**
+ * Whether the visual editor can edit `text` without losing or corrupting content.
+ *
+ * Benign formatting canonicalization (`*` vs `-` bullets, `_italic_` vs `*italic*`,
+ * nested list blank lines, tight table spacing, heading spacing) is allowed because
+ * untouched documents never emit edits and edited documents keep full semantics.
+ * YAML frontmatter is split and preserved verbatim outside the rich editor.
+ * Genuinely lossy constructs (raw HTML, reference links, footnotes, GitHub alerts,
+ * or round-trip URL/HTML corruption) are blocked so the source stays safe.
+ */
 export function visualEditKeepsText(text: string): boolean {
   const cached = fidelityCache.get(text);
   if (cached !== undefined) return cached;
   let keeps = false;
   try {
-    const session = createMarkdownSession(text);
-    keeps = sameMarkdown(session.getMarkdown(), text);
-    session.dispose();
+    const { body } = splitFrontmatter(text);
+    const scan = scanMarkdownSyntax(body);
+    if (!scan.hasLossySyntax) {
+      const session = createMarkdownSession(body);
+      const out = session.getMarkdown();
+      session.dispose();
+      const nonEmptyDropped = body.trim().length > 0 && out.trim().length === 0;
+      const escapedHtmlAdded = /\\<[a-zA-Z!/]/.test(out) && !/\\<[a-zA-Z!/]/.test(body);
+      const linksPreserved = scan.linkDestinations.every(dest => out.includes(dest));
+      keeps = !nonEmptyDropped && !escapedHtmlAdded && linksPreserved;
+    }
   } catch {
     keeps = false;
   }
@@ -596,14 +808,18 @@ export interface MarkdownPreviewProps {
   accessibilityLabel?: string;
 }
 
-function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
+function openDefaultMarkdownUrl(url: string): void {
   const isRemote = isRemoteWorkspace(activeWorkspace());
-  const resolved = resolveWorkspaceMarkdownLink(event.url, activeWorkspaceRoot(), isRemote);
+  const resolved = resolveWorkspaceMarkdownLink(url, activeWorkspaceRoot(), isRemote);
   if (resolved.kind === "external") {
     void openUrl(resolved.url).catch(() => undefined);
   } else if (resolved.kind === "workspace") {
     openInAuxPane("files", resolved.path);
   }
+}
+
+function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
+  openDefaultMarkdownUrl(event.url);
 }
 
 /** A Markdown document as a reader sees it, with Mermaid diagrams and display formulas. */
@@ -668,6 +884,10 @@ export interface MarkdownDocumentEditorProps {
   maxWidth?: number;
   /** Inline AI (`editor_ai_stream`) on the device that owns the document. */
   ai?: boolean;
+  /** Workspace-aware image renderer (`read_file_content` base64 for local and remote workspaces). */
+  renderImage?: (image: TextViewImage) => JSX.Element;
+  /** Link opener for links clicked in the visual editor's link bubble. */
+  onLinkPress?: (url: string) => void;
 }
 
 /** The sessions of the mounted editors, so a surface's own menu can ask AI about the selection. */
@@ -692,6 +912,7 @@ let editorStylesCache: {
   palette: Palette;
   fontPx: number;
   loc: string;
+  cjk: boolean;
   compact: boolean;
   styles: RichEditorStyles;
 } | null = null;
@@ -700,61 +921,202 @@ function editorStyles(compact: boolean): RichEditorStyles {
   const p = palette();
   const fontPx = uiFontBasePx();
   const loc = currentLocale();
+  const cjk = cjkTypography();
   if (
     editorStylesCache &&
     editorStylesCache.palette === p &&
     editorStylesCache.fontPx === fontPx &&
     editorStylesCache.loc === loc &&
+    editorStylesCache.cjk === cjk &&
     editorStylesCache.compact === compact
   ) {
     return editorStylesCache.styles;
   }
-  const prose = typeScale.prose;
+  const base = compact ? 13 : typeScale.prose;
+  const codeBase = Math.max(11, base - 2);
+  const tableBase = Math.max(12, base - 1);
+  const h1Size = base + (compact ? 5 : 6);
+  const h2Size = base + 3;
+  const h3Size = base + 1;
+  const h5Size = Math.max(12, base - 1);
+  const h6Size = Math.max(11, base - 2);
+
   const styles: RichEditorStyles = {
-    root: { color: p.text, fontFamily: fontSans(), fontSize: textSize(prose), lineHeight: textLineHeight(prose, 1.6) },
+    root: {
+      color: p.text,
+      fontFamily: fontSans(),
+      fontSize: textSize(base),
+      lineHeight: textLineHeight(base, 1.6),
+      letterSpacing: textTracking(base),
+    },
     content: {
       paddingHorizontal: compact ? space.lg : space.x3l,
       paddingVertical: compact ? space.lg : space.xxl,
     },
     caret: { backgroundColor: p.accent },
+    selection: { backgroundColor: p.accentSoft },
     placeholder: { color: p.textMuted },
+    listMarker: { color: p.textMuted, fontVariant: ["tabular-nums"] },
+    taskCheckbox: { borderColor: p.borderStrong, borderRadius: radii.xs },
     nodes: {
-      paragraph: { marginBottom: space.md },
-      heading: { marginTop: space.lg, marginBottom: space.sm },
-      bulletList: { marginBottom: space.md },
-      orderedList: { marginBottom: space.md },
-      taskList: { marginBottom: space.md },
-      table: { marginBottom: space.md },
-      "heading[level=1]": { fontSize: textSize(typeScale.pageTitle), fontWeight: "600" as const, lineHeight: textLineHeight(typeScale.pageTitle, 1.3) },
-      "heading[level=2]": { fontSize: textSize(typeScale.modalTitle), fontWeight: "600" as const, lineHeight: textLineHeight(typeScale.modalTitle, 1.35) },
-      "heading[level=3]": { fontSize: textSize(prose), fontWeight: "600" as const },
-      codeBlock: {
-        fontFamily: fontMono,
-        fontSize: textSize(typeScale.label),
-        lineHeight: textLineHeight(typeScale.label, 1.55),
-        backgroundColor: p.surfaceTertiary,
-        borderRadius: radii.md,
-        padding: space.md,
-        marginBottom: space.md,
+      paragraph: { marginBottom: compact ? space.sm : space.md },
+      heading: { color: p.text, fontWeight: "600" as const, marginTop: compact ? space.md : space.lg, marginBottom: space.xs },
+      bulletList: { marginBottom: compact ? space.sm : space.md },
+      orderedList: { marginBottom: compact ? space.sm : space.md },
+      taskList: { marginBottom: compact ? space.sm : space.md },
+      table: { marginBottom: compact ? space.sm : space.md },
+      "heading[level=1]": {
+        fontSize: textSize(h1Size),
+        fontWeight: "600" as const,
+        lineHeight: textLineHeight(h1Size, 1.28),
+        letterSpacing: textTracking(h1Size),
+        marginTop: compact ? space.md : space.lg,
+        marginBottom: space.sm,
       },
-      blockquote: {
-        borderLeftWidth: 2,
-        borderColor: p.border,
-        paddingLeft: space.md,
-        marginBottom: space.md,
+      "heading[level=2]": {
+        fontSize: textSize(h2Size),
+        fontWeight: "600" as const,
+        lineHeight: textLineHeight(h2Size, 1.34),
+        letterSpacing: textTracking(h2Size),
+        marginTop: compact ? space.md : space.lg,
+        marginBottom: space.xs,
+      },
+      "heading[level=3]": {
+        fontSize: textSize(h3Size),
+        fontWeight: "600" as const,
+        lineHeight: textLineHeight(h3Size, 1.38),
+        letterSpacing: textTracking(h3Size),
+        marginTop: space.sm,
+        marginBottom: space.xs,
+      },
+      "heading[level=4]": {
+        fontSize: textSize(base),
+        fontWeight: "600" as const,
+        lineHeight: textLineHeight(base, 1.42),
+        letterSpacing: textTracking(base),
+      },
+      "heading[level=5]": {
+        fontSize: textSize(h5Size),
+        fontWeight: "600" as const,
+        lineHeight: textLineHeight(h5Size, 1.42),
         color: p.textSecondary,
       },
-      horizontalRule: { backgroundColor: p.border, height: 1, marginVertical: space.md },
-      tableHeader: { fontWeight: "600" as const, borderWidth: 1, borderColor: p.border, padding: space.sm },
-      tableCell: { borderWidth: 1, borderColor: p.borderSubtle, padding: space.sm },
+      "heading[level=6]": {
+        fontSize: textSize(h6Size),
+        fontWeight: "600" as const,
+        lineHeight: textLineHeight(h6Size, 1.42),
+        color: p.textMuted,
+      },
+      codeBlock: {
+        fontFamily: fontMono,
+        fontSize: textSize(codeBase),
+        lineHeight: textLineHeight(codeBase, 1.54),
+        color: p.text,
+        backgroundColor: p.surfaceTertiary,
+        borderWidth: 1,
+        borderColor: p.borderSubtle,
+        borderRadius: radii.lg,
+        paddingHorizontal: space.md,
+        paddingVertical: space.md,
+        marginBottom: compact ? space.sm : space.md,
+      },
+      blockquote: {
+        borderLeftWidth: 3,
+        borderColor: p.borderStrong,
+        paddingLeft: space.md,
+        paddingVertical: space.xs,
+        marginBottom: compact ? space.sm : space.md,
+        color: p.textSecondary,
+      },
+      horizontalRule: { backgroundColor: p.borderSubtle, height: 1, marginVertical: space.md },
+      tableHeader: {
+        fontWeight: "600" as const,
+        fontSize: textSize(tableBase),
+        lineHeight: textLineHeight(tableBase, 1.48),
+        color: p.text,
+        backgroundColor: p.surfaceSubtle,
+        borderWidth: 1,
+        borderColor: p.borderSubtle,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm,
+      },
+      tableCell: {
+        fontSize: textSize(tableBase),
+        lineHeight: textLineHeight(tableBase, 1.48),
+        color: p.text,
+        borderWidth: 1,
+        borderColor: p.borderSubtle,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm,
+      },
     },
     marks: {
-      code: { fontFamily: fontMono, backgroundColor: p.surfaceTertiary, borderRadius: radii.xs },
+      bold: { fontWeight: "600" as const, color: p.text },
+      italic: { fontStyle: "italic" as const },
+      strike: { color: p.textMuted },
+      code: {
+        fontFamily: fontMono,
+        fontSize: textSize(codeBase),
+        color: p.text,
+        backgroundColor: p.surfaceTertiary,
+        borderRadius: radii.xs,
+        paddingHorizontal: space.xs,
+      },
       link: { color: p.accent },
     },
   };
-  editorStylesCache = { palette: p, fontPx, loc, compact, styles };
+  editorStylesCache = { palette: p, fontPx, loc, cjk, compact, styles };
   return styles;
+}
+
+function BubbleFormatButton(props: {
+  label: string;
+  active: boolean;
+  accessibilityLabel: string;
+  mono?: boolean;
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <View
+      role="button"
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{ selected: props.active }}
+      onPress={props.onPress}
+      style={{
+        minWidth: 26,
+        height: 24,
+        paddingHorizontal: space.xs,
+        borderRadius: radii.sm,
+        borderCurve: "continuous",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: props.active ? palette().accentSoft : "transparent",
+        cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: props.active ? palette().accentSoft : palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.96)}
+      focusVisibleStyle={focusRingStyle()}
+    >
+      <Text
+        style={{
+          fontFamily: props.mono ? fontMono : fontSans(),
+          fontSize: textSize(typeScale.caption),
+          lineHeight: textLineHeight(typeScale.caption, 1.2),
+          fontWeight: props.bold ? "600" : "500",
+          fontStyle: props.italic ? "italic" : "normal",
+          textDecorationLine: props.strike ? "line-through" : "none",
+          color: props.active ? palette().accent : palette().text,
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
 }
 
 /** One editor over one document; remade when the document changes. */
@@ -763,11 +1125,23 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
   const key = untracked(() => owner.documentKey);
   /** The text the document was last set from: an edit that returns to it reads as that text. */
   let baseline = untracked(() => owner.text);
+  let baselineSplit = splitFrontmatter(baseline);
   let lastEmitted = baseline;
-  let normalizedBaseline: string | null = null;
-  const session = createMarkdownSession(baseline);
+  let normalizedBaselineBody: string | null = null;
+  const frontmatterText = signal(baselineSplit.frontmatter);
+  const frontmatterYaml = signal(baselineSplit.yaml);
+  const frontmatterExpanded = signal(false);
+
+  const session = createMarkdownSession(baselineSplit.body, untracked(() => owner.renderImage));
+  let normalizedInitialBody = normalizeMarkdown(session.getMarkdown());
   let quietRevision = session.revision;
   const hasSelection = signal(false);
+  const activeLinkHref = signal("");
+  const activeBold = signal(false);
+  const activeItalic = signal(false);
+  const activeStrike = signal(false);
+  const activeCode = signal(false);
+
   mountedSessions.set(key, session);
   cleanup(() => {
     if (mountedSessions.get(key) === session) mountedSessions.delete(key);
@@ -776,30 +1150,92 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
     session.dispose();
   });
 
-  // A reload from disk (or a reset) replaces the text from outside: the
-  // document follows it without counting as an edit.
+  const syncSelectionState = (empty: boolean) => {
+    hasSelection.set(!empty);
+    const linkAttrs = session.isActive("link")
+      ? (session.getAttributes("link") as { href?: unknown } | null)
+      : null;
+    activeLinkHref.set(typeof linkAttrs?.href === "string" ? linkAttrs.href : "");
+    if (!empty) {
+      activeBold.set(session.isActive("bold"));
+      activeItalic.set(session.isActive("italic"));
+      activeStrike.set(session.isActive("strike"));
+      activeCode.set(session.isActive("code"));
+    } else {
+      activeBold.set(false);
+      activeItalic.set(false);
+      activeStrike.set(false);
+      activeCode.set(false);
+    }
+  };
+
+  // A reload from disk (or a reset / switch from Source) replaces the text from outside:
+  // the document follows it without counting as an edit.
   effect(() => {
     const text = owner.text;
     untracked(() => {
       if (text === lastEmitted) return;
       baseline = text;
-      normalizedBaseline = null;
+      baselineSplit = splitFrontmatter(text);
+      normalizedBaselineBody = null;
       lastEmitted = text;
-      session.setContent(text, "markdown");
+      frontmatterText.set(baselineSplit.frontmatter);
+      frontmatterYaml.set(baselineSplit.yaml);
+      session.setContent(baselineSplit.body, "markdown");
+      normalizedInitialBody = normalizeMarkdown(session.getMarkdown());
       quietRevision = session.revision;
     });
   });
 
+  const composeFullMarkdown = (serializedBody: string, fm: string): string => {
+    if (normalizedBaselineBody === null) normalizedBaselineBody = normalizeMarkdown(baselineSplit.body);
+    const normOut = normalizeMarkdown(serializedBody);
+    const bodyUnchanged =
+      serializedBody === baselineSplit.body ||
+      normOut === normalizedBaselineBody ||
+      normOut === normalizedInitialBody;
+    const fmUnchanged = fm === baselineSplit.frontmatter;
+    if (bodyUnchanged && fmUnchanged) return baseline;
+    return fm + (bodyUnchanged ? baselineSplit.body : serializedBody);
+  };
+
   const emit = (revision: number) => {
     if (revision <= quietRevision) return;
-    const serialized = session.getMarkdown();
-    // The baseline is normalized once per baseline, not on every keystroke.
-    if (normalizedBaseline === null) normalizedBaseline = normalizeMarkdown(baseline);
-    const text =
-      serialized === baseline || normalizeMarkdown(serialized) === normalizedBaseline ? baseline : serialized;
+    const text = composeFullMarkdown(session.getMarkdown(), frontmatterText());
     if (text === lastEmitted) return;
     lastEmitted = text;
     owner.onChange(text);
+  };
+
+  const updateFrontmatterYaml = (nextYaml: string) => {
+    frontmatterYaml.set(nextYaml);
+    const nextFm =
+      nextYaml === baselineSplit.yaml
+        ? baselineSplit.frontmatter
+        : `---${baselineSplit.eol}${nextYaml}${baselineSplit.eol}---${
+            baselineSplit.separator || `${baselineSplit.eol}${baselineSplit.eol}`
+          }`;
+    frontmatterText.set(nextFm);
+    const text = composeFullMarkdown(session.getMarkdown(), nextFm);
+    if (text === lastEmitted) return;
+    lastEmitted = text;
+    owner.onChange(text);
+  };
+
+  const toggleMark = (mark: "bold" | "italic" | "strike" | "code") => {
+    if (!session.run({ command: "toggleMark", name: mark })) return;
+    emit(session.revision);
+    syncSelectionState(false);
+  };
+
+  const openActiveLink = () => {
+    const href = activeLinkHref();
+    if (!href) return;
+    if (owner.onLinkPress) {
+      owner.onLinkPress(href);
+      return;
+    }
+    openDefaultMarkdownUrl(href);
   };
 
   const insertAnswer = () => {
@@ -809,6 +1245,8 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
     finishInlineAi();
     emit(session.revision);
   };
+
+  const showBubble = () => hasSelection() || Boolean(activeLinkHref());
 
   return (
     <View style={{ flex: 1, minHeight: 0, minWidth: 0, flexDirection: "column" }}>
@@ -820,12 +1258,104 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
             void askInlineAi(key, {
               instruction,
               documentName: owner.documentName,
-              document: session.getMarkdown(),
+              document: frontmatterText() + session.getMarkdown(),
               selection: inlineAiComposer()?.selection ?? "",
             })
           }
           onInsert={insertAnswer}
         />
+      </If>
+      <If when={Boolean(frontmatterText())}>
+        <View
+          style={{
+            alignSelf: "center",
+            width: "100%",
+            maxWidth: owner.maxWidth,
+            paddingHorizontal: owner.compact ? space.lg : space.x3l,
+            paddingTop: space.sm,
+          }}
+        >
+          <View
+            style={{
+              borderBottomWidth: 1,
+              borderColor: palette().borderSubtle,
+              paddingBottom: space.xs,
+            }}
+          >
+            <View
+              role="button"
+              accessibilityLabel="doc-frontmatter-toggle"
+              accessibilityState={{ expanded: frontmatterExpanded() }}
+              onPress={() => frontmatterExpanded.set(!frontmatterExpanded())}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: space.xs,
+                minHeight: 26,
+                paddingHorizontal: space.xs,
+                borderRadius: radii.sm,
+                cursor: "pointer",
+                userSelect: "none",
+                ...paintTransition(MOTION_DURATION.fast),
+              }}
+              hoverStyle={{ backgroundColor: palette().panelHover }}
+              focusVisibleStyle={focusRingStyle()}
+            >
+              <View style={rotatingChevronStyle(frontmatterExpanded())}>
+                <Icon name="chevron-right" size={12} color={palette().textMuted} />
+              </View>
+              <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "600", flexShrink: 0 }}>
+                {tr("doc.frontmatter")}
+              </Text>
+              <If when={!frontmatterExpanded() ? frontmatterSummary(frontmatterYaml()) : ""}>
+                {summary => (
+                  <Text
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      ...textStyle("caption", { color: palette().textMuted }),
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {summary()}
+                  </Text>
+                )}
+              </If>
+            </View>
+            <If when={frontmatterExpanded()}>
+              <View
+                style={{
+                  marginTop: space.xs,
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.xs,
+                  borderRadius: radii.md,
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().surfaceTertiary,
+                }}
+              >
+                <Input
+                  value={frontmatterYaml()}
+                  accessibilityLabel="doc-frontmatter-input"
+                  multiline={true}
+                  submitBehavior="newline"
+                  style={{
+                    minHeight: 56,
+                    maxHeight: 180,
+                    color: palette().text,
+                    placeholderColor: palette().textMuted,
+                    caretColor: palette().accent,
+                    fontFamily: fontMono,
+                    fontSize: textSize(typeScale.caption),
+                    lineHeight: textLineHeight(typeScale.caption, 1.5),
+                  }}
+                  onChange={event => updateFrontmatterYaml(event.value)}
+                />
+              </View>
+            </If>
+          </View>
+        </View>
       </If>
       <RichEditor
         editor={session}
@@ -834,13 +1364,15 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
         styles={editorStyles(Boolean(owner.compact))}
         style={{ flex: 1, minHeight: 0, minWidth: 0, alignSelf: "center", width: "100%", maxWidth: owner.maxWidth }}
         onChange={event => emit(event.change.revision)}
-        onSelectionChange={event => hasSelection.set(!event.selection.empty)}
+        onSelectionChange={event => syncSelectionState(event.selection.empty)}
         bubbleMenu={
-          owner.ai && hasSelection() ? (
+          showBubble() ? (
             <View
               {...popoverEnterMotion("top")}
               style={{
                 flexDirection: "row",
+                alignItems: "center",
+                gap: 2,
                 padding: space.xs,
                 borderRadius: radii.lg,
                 borderWidth: 1,
@@ -849,14 +1381,60 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
                 boxShadow: palette().shadowOverlay,
               }}
             >
-              <Button
-                label={tr("doc.askAi")}
-                leadingIcon="sparkles"
-                variant="ghost"
-                size="xs"
-                accessibilityLabel="doc-ask-ai-selection"
-                onPress={() => askAiInDocument(key)}
-              />
+              <If when={hasSelection()}>
+                <BubbleFormatButton
+                  label="B"
+                  bold
+                  active={activeBold()}
+                  accessibilityLabel="doc-format-bold"
+                  onPress={() => toggleMark("bold")}
+                />
+                <BubbleFormatButton
+                  label="I"
+                  italic
+                  active={activeItalic()}
+                  accessibilityLabel="doc-format-italic"
+                  onPress={() => toggleMark("italic")}
+                />
+                <BubbleFormatButton
+                  label="S"
+                  strike
+                  active={activeStrike()}
+                  accessibilityLabel="doc-format-strike"
+                  onPress={() => toggleMark("strike")}
+                />
+                <BubbleFormatButton
+                  label="<>"
+                  mono
+                  active={activeCode()}
+                  accessibilityLabel="doc-format-code"
+                  onPress={() => toggleMark("code")}
+                />
+              </If>
+              <If when={Boolean(activeLinkHref())}>
+                <If when={hasSelection()}>
+                  <View style={{ width: 1, height: 14, backgroundColor: palette().borderSubtle, marginHorizontal: 2 }} />
+                </If>
+                <Button
+                  label={tr("doc.openLink")}
+                  leadingIcon="external-link"
+                  variant="ghost"
+                  size="xs"
+                  accessibilityLabel="doc-open-link"
+                  onPress={openActiveLink}
+                />
+              </If>
+              <If when={owner.ai && hasSelection()}>
+                <View style={{ width: 1, height: 14, backgroundColor: palette().borderSubtle, marginHorizontal: 2 }} />
+                <Button
+                  label={tr("doc.askAi")}
+                  leadingIcon="sparkles"
+                  variant="ghost"
+                  size="xs"
+                  accessibilityLabel="doc-ask-ai-selection"
+                  onPress={() => askAiInDocument(key)}
+                />
+              </If>
             </View>
           ) : undefined
         }

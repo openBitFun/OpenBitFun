@@ -409,18 +409,17 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
   // The save names the disk text it was edited against; the host enforces it.
   expect(backend.fileWrites[0].expectedHash).toMatch(/^[0-9a-f]{64}$/);
 
-  // Markdown opens as a preview and edits on request.
+  // Markdown opens directly editable in visual Preview and stays editable after Save.
   await app.press("README.md");
   await app.waitFor("Markdown preview from the host.");
   await app.waitFor("file-tab-README.md");
-  await app.press("file-edit");
+  await app.waitFor("file-editor");
   await app.type("file-editor", "More notes.\n");
   await app.press("file-save");
   await app.waitFor("Saved README.md");
   expect(backend.fileWrites).toHaveLength(2);
 
   // A save that finds a newer disk copy stops and asks; Overwrite writes anyway.
-  await app.press("file-edit");
   await app.type("file-editor", "Mine.\n");
   backend.externalWrite("/repo/README.md", "# Agent rewrote this\n");
   await app.press("file-save");

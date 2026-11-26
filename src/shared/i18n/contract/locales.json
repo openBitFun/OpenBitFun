@@ -8,16 +8,10 @@
   ],
   "surfaceDefaults": {
     "android": "zh-CN",
-    "installer": "en-US",
     "core": "zh-CN",
     "superagent": "en-US"
   },
   "surfaceOrders": {
-    "installer": [
-      "en-US",
-      "zh-CN",
-      "zh-TW"
-    ],
     "core": [
       "zh-CN",
       "zh-TW",
@@ -30,10 +24,6 @@
     ]
   },
   "surfaces": {
-    "installer": {
-      "resourceRoot": "OpenBitFun-Installer/src/i18n/locales",
-      "loading": "surface-minimal"
-    },
     "core": {
       "resourceRoot": "src/crates/assembly/core/locales",
       "loading": "backend-service"
@@ -70,13 +60,7 @@
         "en-US"
       ],
       "modelLanguageName": "Simplified Chinese",
-      "shortModelInstruction": "使用简体中文",
-      "installer": {
-        "uiCode": "zh",
-        "label": "Chinese",
-        "nativeName": "简体中文",
-        "continueLabel": "继续"
-      }
+      "shortModelInstruction": "使用简体中文"
     },
     {
       "id": "en-US",
@@ -99,13 +83,7 @@
         "zh-CN"
       ],
       "modelLanguageName": "English",
-      "shortModelInstruction": "Use English",
-      "installer": {
-        "uiCode": "en",
-        "label": "English",
-        "nativeName": "English",
-        "continueLabel": "Continue"
-      }
+      "shortModelInstruction": "Use English"
     },
     {
       "id": "zh-TW",
@@ -131,13 +109,7 @@
         "en-US"
       ],
       "modelLanguageName": "Traditional Chinese",
-      "shortModelInstruction": "使用繁體中文",
-      "installer": {
-        "uiCode": "zh-TW",
-        "label": "Traditional Chinese",
-        "nativeName": "繁體中文",
-        "continueLabel": "繼續"
-      }
+      "shortModelInstruction": "使用繁體中文"
     }
   ]
 }

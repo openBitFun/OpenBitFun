@@ -48,6 +48,14 @@ const shell = createNshDesktopShell({
     const value: unknown = text ? JSON.parse(text) : null;
     return typeof value === "string" && value ? value : null;
   },
+  pickFileDialog: async options => {
+    const text = await host.call<string>("openbitfun.wirePickFileDialog", options);
+    const value: unknown = text ? JSON.parse(text) : null;
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === "string" && Boolean(item));
+    }
+    return typeof value === "string" && value ? value : null;
+  },
 });
 
 installWindowShell(shell);

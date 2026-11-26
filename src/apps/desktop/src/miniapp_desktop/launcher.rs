@@ -280,33 +280,36 @@ pub(super) fn desktop_exec_arg(path: &Path) -> Result<String, String> {
     ))
 }
 
-/// Bundled as a sibling executable by Tauri on every desktop platform. Missing
-/// resources are an explicit packaging error; never copy the full Desktop host.
-pub(crate) fn shell_executable(host: &Path) -> Result<PathBuf, String> {
-    let name = if cfg!(windows) {
-        "openbitfun-miniapp-shell.exe"
-    } else {
-        "openbitfun-miniapp-shell"
-    };
-    let path = host
-        .parent()
-        .ok_or("Missing OpenBitFun application directory")?
-        .join(name);
-    if !path.is_file() {
-        return Err("The lightweight MiniApp shell is missing. Reinstall OpenBitFun, or run pnpm run prepare:miniapp-shell for a source build.".into());
+/// Resolves the OpenBitFun desktop runner executable used by exported OS
+/// launchers (`--miniapp-launch <launch.json>`). Independent MiniApp windows
+/// now run inside the native NSH desktop host with zero Tauri sidecar.
+pub(crate) fn launcher_executable(host: &Path) -> Result<PathBuf, String> {
+    if !host.is_file() {
+        return Err(format!(
+            "OpenBitFun executable is missing at {}",
+            host.display()
+        ));
     }
-    Ok(path)
+    Ok(host.to_path_buf())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn posix_single_quote(value: &str) -> Result<String, String> {
+    if value.chars().any(char::is_control) {
+        return Err("MiniApp launcher paths cannot contain control characters".into());
+    }
+    Ok(format!("'{}'", value.replace('\'', "'\\''")))
 }
 
 pub(crate) fn install(record: &LaunchRecord, svg: Option<&str>) -> Result<PathBuf, String> {
-    let shell = shell_executable(&record.host_executable)?;
+    let host = launcher_executable(&record.host_executable)?;
     let path = write_record(record)?;
     let dir = path.parent().ok_or("Missing launcher directory")?;
     prepare_icons(record, svg)?;
     #[cfg(target_os = "macos")]
     {
         let applications = super::system_install::applications_directory()?;
-        return install_macos(record, dir, &applications, &shell);
+        return install_macos(record, dir, &applications, &host, &path);
     }
     #[cfg(target_os = "linux")]
     {
@@ -318,7 +321,7 @@ pub(crate) fn install(record: &LaunchRecord, svg: Option<&str>) -> Result<PathBu
         ));
         let exec = format!(
             "{} --miniapp-launch {}",
-            desktop_exec_arg(&shell)?,
+            desktop_exec_arg(&host)?,
             desktop_exec_arg(&path)?
         );
         let icon = dir.join("icon-256.png");
@@ -327,21 +330,10 @@ pub(crate) fn install(record: &LaunchRecord, svg: Option<&str>) -> Result<PathBu
     }
     #[cfg(target_os = "windows")]
     {
-        return install_windows(record, &path, dir, &shell);
+        return install_windows(record, &path, dir, &host);
     }
     #[allow(unreachable_code)]
     Err("System MiniApp launchers are unsupported on this platform".into())
-}
-
-/// Internal windows keep their bundle in managed data; publishing a system
-/// application is a separate explicit operation.
-#[cfg(target_os = "macos")]
-pub(crate) fn runtime_bundle(record: &LaunchRecord) -> Result<PathBuf, String> {
-    let shell = shell_executable(&record.host_executable)?;
-    let path = write_record(record)?;
-    let dir = path.parent().ok_or("Missing launcher directory")?;
-    prepare_icons(record, None)?;
-    install_macos(record, dir, &dir.join("runtime"), &shell)
 }
 
 #[cfg(target_os = "macos")]
@@ -349,18 +341,31 @@ fn install_macos(
     record: &LaunchRecord,
     dir: &Path,
     applications: &Path,
-    shell: &Path,
+    host: &Path,
+    manifest: &Path,
 ) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
     std::fs::create_dir_all(&applications).map_err(|e| e.to_string())?;
     let bundle = launcher_destination(record, applications, "app", |candidate| {
         read_record(&candidate.join("Contents/Resources/openbitfun-miniapp.json"))
             .is_ok_and(|previous| previous.launch_id == record.launch_id)
     })?;
-    let metadata = std::fs::metadata(shell).map_err(|e| e.to_string())?;
+    let host_str = host
+        .to_str()
+        .ok_or("OpenBitFun executable path is not UTF-8")?;
+    let manifest_str = manifest
+        .to_str()
+        .ok_or("MiniApp launch manifest path is not UTF-8")?;
+    let launcher_script = format!(
+        "#!/bin/sh\nexec {} --miniapp-launch {}\n",
+        posix_single_quote(host_str)?,
+        posix_single_quote(manifest_str)?
+    );
     let fingerprint = serde_json::json!({
-        "format": 2, "record": record, "shellBytes": metadata.len(),
-        "shellHash": format!("{:x}", Sha256::digest(std::fs::read(shell).map_err(|e| e.to_string())?)),
-        "executableModified": metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|time| time.as_nanos().to_string()),
+        "format": 3,
+        "record": record,
+        "launcherHash": format!("{:x}", Sha256::digest(launcher_script.as_bytes())),
         "iconHash": format!("{:x}", Sha256::digest(std::fs::read(dir.join("icon.icns")).map_err(|e| e.to_string())?))
     });
     let fingerprint_path = bundle.join("Contents/Resources/build.json");
@@ -377,7 +382,10 @@ fn install_macos(
     let contents = staged_bundle.join("Contents");
     std::fs::create_dir_all(contents.join("MacOS")).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(contents.join("Resources")).map_err(|e| e.to_string())?;
-    std::fs::copy(shell, contents.join("MacOS/MiniApp")).map_err(|e| e.to_string())?;
+    let script_path = contents.join("MacOS/MiniApp");
+    std::fs::write(&script_path, launcher_script).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
     std::fs::copy(dir.join("icon.icns"), contents.join("Resources/icon.icns"))
         .map_err(|e| e.to_string())?;
     std::fs::copy(
@@ -560,21 +568,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_shell_never_resolves_to_the_full_host() {
+    fn missing_host_executable_is_rejected_explicitly() {
         let root = tempfile::tempdir().unwrap();
-        let host = root.path().join("OpenBitFun");
-        std::fs::write(&host, "full host executable").unwrap();
-        assert!(shell_executable(&host)
+        let missing = root.path().join("OpenBitFun");
+        assert!(launcher_executable(&missing)
             .unwrap_err()
-            .contains("lightweight MiniApp shell is missing"));
-        let name = if cfg!(windows) {
-            "openbitfun-miniapp-shell.exe"
-        } else {
-            "openbitfun-miniapp-shell"
-        };
-        let shell = root.path().join(name);
-        std::fs::write(&shell, "window-only executable").unwrap();
-        assert_eq!(shell_executable(&host).unwrap(), shell);
+            .contains("OpenBitFun executable is missing"));
+        std::fs::write(&missing, "host executable").unwrap();
+        assert_eq!(launcher_executable(&missing).unwrap(), missing);
+    }
+
+    #[test]
+    fn posix_single_quote_escapes_quotes_and_rejects_control_chars() {
+        assert_eq!(
+            posix_single_quote("/Applications/OpenBitFun's App/OpenBitFun").unwrap(),
+            "'/Applications/OpenBitFun'\\''s App/OpenBitFun'"
+        );
+        assert!(posix_single_quote("/tmp/bad\npath").is_err());
     }
 
     #[test]
@@ -627,20 +637,14 @@ mod tests {
     fn macos_bundle_is_signed_cached_and_updates_without_changing_pinned_path() {
         let root = tempfile::tempdir().unwrap();
         let mut record = fixture(root.path());
-        // The host is deliberately not a runnable binary. Export must only
-        // copy the independently supplied shell and keep this bootstrap pointer.
-        record.host_executable = root.path().join("full-host");
-        std::fs::write(
-            &record.host_executable,
-            "full backend must never be exported",
-        )
-        .unwrap();
+        record.host_executable = root.path().join("OpenBitFun");
+        std::fs::write(&record.host_executable, "native desktop host").unwrap();
         let path = write_record(&record).unwrap();
         let dir = path.parent().unwrap();
         write_icons(dir, &record.app_id, None).unwrap();
         let applications = root.path().join("Applications");
         let bundle =
-            install_macos(&record, dir, &applications, Path::new("/usr/bin/true")).unwrap();
+            install_macos(&record, dir, &applications, &record.host_executable, &path).unwrap();
         assert_eq!(bundle.file_name().unwrap(), "Notes & Files.app");
         assert!(create_command("/usr/bin/codesign")
             .args(["--verify", "--strict"])
@@ -649,12 +653,15 @@ mod tests {
             .unwrap()
             .success());
         assert!(bundle.join("Contents/Resources/icon-256.png").is_file());
+        let launcher_text = std::fs::read_to_string(bundle.join("Contents/MacOS/MiniApp")).unwrap();
+        assert!(launcher_text.starts_with("#!/bin/sh\nexec "));
+        assert!(launcher_text.contains("--miniapp-launch"));
         let before = std::fs::metadata(bundle.join("Contents/MacOS/MiniApp"))
             .unwrap()
             .modified()
             .unwrap();
         assert_eq!(
-            install_macos(&record, dir, &applications, Path::new("/usr/bin/true")).unwrap(),
+            install_macos(&record, dir, &applications, &record.host_executable, &path).unwrap(),
             bundle
         );
         assert_eq!(
@@ -669,7 +676,7 @@ mod tests {
         let legacy = applications.join(format!("Notes & Files — {}.app", &record.launch_id[..8]));
         std::fs::rename(&bundle, &legacy).unwrap();
         assert_eq!(
-            install_macos(&record, dir, &applications, Path::new("/usr/bin/true")).unwrap(),
+            install_macos(&record, dir, &applications, &record.host_executable, &path).unwrap(),
             bundle
         );
         assert!(!legacy.exists());
@@ -688,7 +695,7 @@ mod tests {
         );
         record.name = "Renamed App".into();
         assert_eq!(
-            install_macos(&record, dir, &applications, Path::new("/usr/bin/true")).unwrap(),
+            install_macos(&record, dir, &applications, &record.host_executable, &path).unwrap(),
             bundle
         );
         assert_eq!(
@@ -700,73 +707,6 @@ mod tests {
         assert!(std::fs::read_to_string(bundle.join("Contents/Info.plist"))
             .unwrap()
             .contains("Renamed App"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "requires a separately built lightweight MiniApp shell"]
-    fn macos_real_shell_export_is_compact_and_runs_headless_diagnostics() {
-        let shell = std::env::var_os("OPENBITFUN_MINIAPP_SHELL_TEST_BINARY")
-            .map(PathBuf::from)
-            .expect("set OPENBITFUN_MINIAPP_SHELL_TEST_BINARY to the optimized sidecar");
-        let root = tempfile::tempdir().unwrap();
-        let mut record = fixture(root.path());
-        record.host_executable = root.path().join("full-host");
-        let host = std::fs::File::create(&record.host_executable).unwrap();
-        host.set_len(600 * 1024 * 1024).unwrap();
-        let path = write_record(&record).unwrap();
-        let dir = path.parent().unwrap();
-        write_icons(dir, &record.app_id, None).unwrap();
-        let bundle =
-            install_macos(&record, dir, &root.path().join("Applications"), &shell).unwrap();
-        let binary = bundle.join("Contents/MacOS/MiniApp");
-        let bytes = std::fs::metadata(&binary).unwrap().len();
-        // Budget leaves room for platform/toolchain growth while catching any
-        // accidental return to copying the hundreds-of-MiB host.
-        assert!(
-            bytes < 16 * 1024 * 1024,
-            "MiniApp shell exceeded the 16 MiB artifact budget: {bytes}"
-        );
-        assert!(create_command("/usr/bin/codesign")
-            .args(["--verify", "--strict"])
-            .arg(&bundle)
-            .status()
-            .unwrap()
-            .success());
-        let output = create_command(&binary)
-            .arg("--miniapp-shell-info")
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let info: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(info["role"], "miniapp-shell");
-        assert_eq!(info["protocolVersion"], 1);
-        assert_eq!(
-            info["tauriDevMode"], false,
-            "Tauri dev mode overrides the macOS bundle's Dock icon"
-        );
-        println!(
-            "Exported MiniApp shell: {bytes} bytes ({:.2} MiB)",
-            bytes as f64 / 1048576.0
-        );
-        fn total_bytes(path: &Path) -> u64 {
-            std::fs::read_dir(path)
-                .unwrap()
-                .map(|entry| {
-                    let entry = entry.unwrap();
-                    if entry.file_type().unwrap().is_dir() {
-                        total_bytes(&entry.path())
-                    } else {
-                        entry.metadata().unwrap().len()
-                    }
-                })
-                .sum()
-        }
-        let total = total_bytes(&bundle);
-        println!(
-            "Complete exported .app: {total} bytes ({:.2} MiB)",
-            total as f64 / 1048576.0
-        );
     }
 
     #[test]

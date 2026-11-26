@@ -89,8 +89,8 @@ jobs:
         with:
           ref: ${{ inputs.checkout_ref }}
 
-      # The native runner uses GTK 4 + WebKitGTK 6; the backend and the MiniApp
-      # window shell (still a Tauri/WebKitGTK 4.1 executable) need the rest.
+      # The native runner uses GTK 4 + WebKitGTK 6; the backend needs GStreamer,
+      # xdo, and Tesseract.
       - name: Install Linux system dependencies (native desktop)
         if: runner.os == 'Linux'
         shell: bash
@@ -103,9 +103,6 @@ jobs:
             libadwaita-1-dev \
             libwebkitgtk-6.0-dev \
             libsoup-3.0-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
             librsvg2-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
@@ -168,7 +165,10 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          shared-key: "nightly-native-v1-${{ github.base_ref || github.ref_name }}-${{ matrix.platform }}"
+          workspaces: |
+            . -> target
+            src/apps/desktop-nsh/native -> ../../../../target/desktop-nsh-runner
+          shared-key: "nightly-native-v2-${{ github.base_ref || github.ref_name }}-${{ matrix.platform }}"
           cache-bin: false
           # A PR merge ref can never become a reusable base cache. Even a
           # trusted caller cannot override this guard.
@@ -183,24 +183,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      # The Windows Installer is no longer packaged here (it wraps the retired
-      # Tauri desktop executable), but its i18n projection and Tauri packages
-      # stay verified until it is moved to the native app.
-      - name: Verify Installer i18n projection
-        if: runner.os == 'Windows'
-        run: pnpm --dir OpenBitFun-Installer run sync:i18n
-
-      - name: Verify Installer Tauri package alignment
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          info="$(pnpm --dir OpenBitFun-Installer exec tauri info 2>&1)"
-          printf '%s\n' "$info"
-          if grep -Fq 'Error: Found version mismatched Tauri packages.' <<<"$info"; then
-            exit 1
-          fi
 
       - name: Build plugin Host resources
         run: |
@@ -235,7 +217,7 @@ jobs:
               pnpm run desktop:package:linux -- --target x86_64-unknown-linux-gnu
               ;;
             linux-arm64)
-              CARGO_PROFILE_RELEASE_LTO=thin pnpm run desktop:package:linux -- --target aarch64-unknown-linux-gnu
+              pnpm run desktop:package:linux -- --target aarch64-unknown-linux-gnu
               ;;
             macos-arm64 | macos-x64)
               pnpm run desktop:package:mac

@@ -15,6 +15,7 @@ import trayMark from "../assets/tray-mark.svg";
 /** Members the contract marks optional: a host that lacks them is refused per call, loudly. */
 interface OptionalBackendMembers {
   pickDirectory?: (optionsJson: string) => Promise<string>;
+  pickFileDialog?: (optionsJson: string) => Promise<string>;
 }
 
 const optional = Backend as unknown as OptionalBackendMembers;
@@ -28,6 +29,17 @@ const shell = createNshDesktopShell({
       ? async options => {
           const text = await optional.pickDirectory!(JSON.stringify(options));
           const value: unknown = text ? JSON.parse(text) : null;
+          return typeof value === "string" && value ? value : null;
+        }
+      : undefined,
+  pickFileDialog:
+    typeof optional.pickFileDialog === "function"
+      ? async options => {
+          const text = await optional.pickFileDialog!(JSON.stringify(options));
+          const value: unknown = text ? JSON.parse(text) : null;
+          if (Array.isArray(value)) {
+            return value.filter((item): item is string => typeof item === "string" && Boolean(item));
+          }
           return typeof value === "string" && value ? value : null;
         }
       : undefined,

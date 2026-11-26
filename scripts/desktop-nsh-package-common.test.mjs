@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,13 +8,19 @@ import {
   backendEnv,
   backendResources,
   cargoOutDir,
+  computeNativeUiFingerprint,
   copyUiBundle,
   dshProfileResource,
   flashgrepResource,
+  nativeUiStampPath,
   parseArgs,
+  planNativeUiBuild,
   productIcon,
   resolvePackageProduct,
   root,
+  runnerTargetDir,
+  shouldParallelizeCargo,
+  stageRunnerBinary,
   writeWebBundleManifest,
 } from './desktop-nsh-package-common.mjs';
 import { bundleIdOf, readUiBundleManifest } from './write-ui-bundle-manifest.mjs';
@@ -148,4 +154,63 @@ test('the packaged web bundle carries its ui-bundle.json, over the untouched fil
   const empty = mkdtempSync(join(tmpdir(), 'nsh-web-empty-'));
   assert.equal(writeWebBundleManifest(empty, { productId: 'openbitfun' }), null);
   assert.equal(existsSync(join(empty, 'ui-bundle.json')), false);
+});
+
+test('native UI build planning skips up-to-date bundles and keeps stamps outside nshOut', (t) => {
+  const work = mkdtempSync(join(tmpdir(), 'openbitfun-native-ui-plan-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  mkdirSync(join(work, 'src/nsh-ui/src'), { recursive: true });
+  mkdirSync(join(work, 'src/apps/desktop-nsh/src'), { recursive: true });
+  writeFileSync(join(work, 'package.json'), JSON.stringify({ version: '2.0.0' }));
+  writeFileSync(join(work, 'src/nsh-ui/App.tsx'), 'export const a = 1;\n');
+  writeFileSync(join(work, 'src/apps/desktop-nsh/App.tsx'), 'export const b = 1;\n');
+
+  const fp1 = computeNativeUiFingerprint({ rootDir: work, target: 'aarch64-apple-darwin', release: false, nshVersion: '0.7.0' });
+  const fpRelease = computeNativeUiFingerprint({ rootDir: work, target: 'aarch64-apple-darwin', release: true, nshVersion: '0.7.0' });
+  const fpWin = computeNativeUiFingerprint({ rootDir: work, target: 'x86_64-pc-windows-msvc', release: false, nshVersion: '0.7.0' });
+  assert.equal(fp1.apple, true);
+  assert.equal(fpWin.apple, false);
+  assert.notEqual(fp1.fingerprint, fpRelease.fingerprint);
+  assert.notEqual(fp1.fingerprint, fpWin.fingerprint);
+
+  const nshOut = join(work, 'out', 'nsh');
+  mkdirSync(nshOut, { recursive: true });
+  writeFileSync(join(nshOut, 'bundle.nshc'), 'bytecode');
+  writeFileSync(join(nshOut, 'app.json'), '{"name":"OpenBitFun"}');
+  const stampFile = nativeUiStampPath(nshOut);
+  assert.equal(stampFile.startsWith(`${nshOut}${join('/', '')}`), false, 'stamp must live outside nshOut');
+  assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: true }).shouldBuild, true);
+
+  writeFileSync(stampFile, JSON.stringify({ schema: 1, fingerprint: fp1.fingerprint }));
+  assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: true }).shouldBuild, false);
+  assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: true, force: true }).shouldBuild, true);
+  // Non-Apple bundles also require font notices.
+  assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: false }).shouldBuild, true);
+});
+
+test('runner builds in isolated target/desktop-nsh-runner and stages next to backend lib', (t) => {
+  const work = mkdtempSync(join(tmpdir(), 'openbitfun-runner-stage-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const env = { CARGO_TARGET_DIR: work };
+  assert.equal(runnerTargetDir(env), join(work, 'desktop-nsh-runner'));
+
+  const binName = process.platform === 'win32' ? 'openbitfun-nsh.exe' : 'openbitfun-nsh';
+  const runnerSrc = join(runnerTargetDir(env), 'desktop-dev', binName);
+  mkdirSync(join(runnerTargetDir(env), 'desktop-dev'), { recursive: true });
+  writeFileSync(runnerSrc, 'runner-v1');
+  const dest = stageRunnerBinary({ profileDir: 'desktop-dev', target: undefined, env });
+  assert.equal(dest, join(work, 'desktop-dev', binName));
+  assert.equal(readFileSync(dest, 'utf8'), 'runner-v1');
+  // Re-staging unchanged binary is a no-op; missing target fails loudly.
+  assert.equal(stageRunnerBinary({ profileDir: 'desktop-dev', target: undefined, env }), dest);
+  assert.throws(
+    () => stageRunnerBinary({ profileDir: 'desktop-dev', target: 'x86_64-pc-windows-msvc', env }),
+    /Runner binary was not produced/,
+  );
+
+  assert.equal(shouldParallelizeCargo({ profile: 'desktop-dev', env: { CI: 'true' }, totalMemBytes: 8e9 }), true);
+  assert.equal(shouldParallelizeCargo({ profile: 'release', env: { CI: 'true' }, totalMemBytes: 32e9 }), false);
+  assert.equal(shouldParallelizeCargo({ profile: 'release', env: {}, totalMemBytes: 32 * 1024 ** 3 }), true);
+  assert.equal(shouldParallelizeCargo({ profile: 'release', env: { OPENBITFUN_PARALLEL_CARGO: '0' }, totalMemBytes: 64 * 1024 ** 3 }), false);
+  assert.equal(shouldParallelizeCargo({ profile: 'release', env: { OPENBITFUN_PARALLEL_CARGO: '1', CI: 'true' }, totalMemBytes: 8e9 }), true);
 });

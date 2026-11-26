@@ -1,12 +1,10 @@
 import fs from 'node:fs';
 
 const CONTRACT_URL = new URL('./theme-visual-governance-contract.json', import.meta.url);
-// The React desktop UI surfaces (app shell, flow chat, tool cards, editor, terminal,
-// markdown, generated widget, appearance settings) were retired with src/web-ui.
-const REQUIRED_SURFACE_KEYS = [
-  'installer-shell',
-];
-const ALLOWED_PLATFORMS = new Set(['web', 'installer']);
+// The React desktop UI surfaces (src/web-ui) and Windows Installer
+// (OpenBitFun-Installer) were retired.
+const REQUIRED_SURFACE_KEYS = [];
+const ALLOWED_PLATFORMS = new Set(['web']);
 const ALLOWED_FORM_FACTORS = new Set(['desktop', 'narrow', 'mobile', 'iframe']);
 const ALLOWED_THEMES = new Set([
   'dark',

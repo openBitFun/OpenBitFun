@@ -201,7 +201,44 @@ pub(crate) async fn call(
             }
             Ok(Value::Null)
         }
+        "system.revealInFolder" => {
+            let is_window = instance
+                .primary_view
+                .iter()
+                .chain(instance.pending_view.iter())
+                .any(|view| view.view_id == view_id && view.kind == MiniAppViewKind::Window);
+            if !is_window {
+                return Err("system.revealInFolder is only available in an independent desktop window".into());
+            }
+            if strict
+                && !miniapp
+                    .permissions
+                    .host
+                    .as_ref()
+                    .is_some_and(|p| p.reveal_in_folder)
+            {
+                return Err("MiniApp lacks permission for system.revealInFolder".into());
+            }
+            let path = string(&params, "path")?;
+            tokio::task::spawn_blocking(move || {
+                crate::api::commands::reveal_local_path_in_explorer(
+                    std::path::Path::new(&path),
+                    &path,
+                )
+            })
+            .await
+            .map_err(|e| format!("Failed to reveal in folder: {e}"))??;
+            Ok(Value::Null)
+        }
         "grantSelectedPath" => {
+            let is_window = instance
+                .primary_view
+                .iter()
+                .chain(instance.pending_view.iter())
+                .any(|view| view.view_id == view_id && view.kind == MiniAppViewKind::Window);
+            if !is_window {
+                return Err("grantSelectedPath is only available in an independent desktop window".into());
+            }
             miniapp_api::grant_miniapp_path(
                 state,
                 instance.app_id.clone(),

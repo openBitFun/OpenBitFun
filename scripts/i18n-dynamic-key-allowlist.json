@@ -1,38 +1,4 @@
 {
   "version": 1,
-  "entries": [
-    {
-      "id": "installer-install-path-errors",
-      "surface": "installer",
-      "owner": "OpenBitFun-Installer/src/utils/installPathErrors.ts",
-      "description": "Installer backend returns INSTALL_PATH::snake_case codes that the frontend maps to errors.installPath.camelCase.",
-      "sourceReferences": [
-        "const key = `errors.installPath.${snakeToCamelKey(code)}`",
-        "installPathErrorShowsAdminHint"
-      ],
-      "keys": [
-        "errors.installPath.notAbsolute",
-        "errors.installPath.filesystemRoot",
-        "errors.installPath.pathNotDirectory",
-        "errors.installPath.directoryMustBeEmptyOrOpenBitFun",
-        "errors.installPath.inspectDirectoryFailed",
-        "errors.installPath.directoryNotWritable",
-        "errors.installPath.parentNotWritable"
-      ]
-    },
-    {
-      "id": "installer-model-provider-metadata",
-      "surface": "installer",
-      "owner": "OpenBitFun-Installer/src/data/modelProviders.ts",
-      "description": "Installer model-provider templates resolve nameKey, descriptionKey, and noteKey metadata at render time.",
-      "sourceReferences": [
-        "nameKey: `model.providers.${provider.id}.name`",
-        "descriptionKey: `model.providers.${provider.id}.description`",
-        "noteKey: `model.providers.${provider.id}.urlOptions.${endpoint.label}`"
-      ],
-      "keyPrefixes": [
-        "model.providers."
-      ]
-    }
-  ]
+  "entries": []
 }

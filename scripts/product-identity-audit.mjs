@@ -41,7 +41,6 @@ const retiredIdentityDataBoundaryFiles = new Set([
   'src/apps/mobile/harmonyos/entry/src/main/resources/base/profile/backup_config.json',
 ]);
 const retiredIdentityDataBoundaryPrefixes = Object.freeze([
-  'src/apps/data-tools/',
   'src/crates/assembly/core/src/legacy_migration/',
   'src/crates/services/legacy-migration/',
   'src/crates/services/legacy-migration-adapters/',

@@ -6,18 +6,16 @@
 // Layout (what `nsh-windows-app` and the backend look for; see
 // `scripts/desktop-nsh-package-common.mjs`):
 //   <binaryName>.exe                     the NSH runner (`openbitfun-nsh`, Win32 + WebView2),
-//                                        named like the product's Tauri executable
-//                                        (`openbitfun-desktop.exe`): shortcuts, the
-//                                        uninstall entry and the Windows Installer
-//                                        (`OpenBitFun-Installer`) keep pointing at it
+//                                        named like the product's legacy executable
+//                                        (`openbitfun-desktop.exe`): shortcuts and existing
+//                                        installations keep pointing at it
 //   openbitfun_desktop_lib.dll           the backend, loaded in-process
-//   openbitfun-miniapp-shell.exe         MiniApp windows
 //   nsh\{bundle.nshc,app.json,assets,icon.ico}   the UI bundle (app.json: product id/name)
 //   nsh-web\                             the same UI for browsers/phones (OBP)
 //   resources\{worker_host.js,ext-host\extension-host.js,dsh-profile\}
 //   flashgrep\flashgrep-<triple>.exe     workspace search daemon
 // `<Name>.package.json` next to the directory records the profile, target and
-// product it was built for (read by `OpenBitFun-Installer/scripts/build-installer.cjs`).
+// product it was built for.
 //
 // Usage: node scripts/package-desktop-nsh-windows.mjs [--profile release|release-fast]
 //          [--target x86_64-pc-windows-msvc] [--skip-build] [--product-config <product.jsonc>]
@@ -36,13 +34,13 @@ import {
   copyUiBundle,
   dshProfileResource,
   flashgrepResource,
-  miniAppShellBinary,
   parseArgs,
   productIcon,
   requireFiles,
   resolvePackageProduct,
   root,
   run,
+  runDesktopTargetGc,
   writePackageInfo,
   writeWebBundleManifest,
 } from "./desktop-nsh-package-common.mjs";
@@ -58,7 +56,7 @@ if (process.platform !== "win32" && !crossTarget) {
 const outDir = join(root, "target/desktop-nsh");
 const nshOut = join(outDir, "nsh-release");
 const webOut = join(outDir, "web-release");
-if (!options.skipBuild) await buildAll({ ...options, nshOut, webOut, productEnv });
+if (!options.skipBuild) await buildAll({ ...options, nshOut, webOut, productEnv, identity });
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const appName = identity.fileStem;
@@ -75,10 +73,6 @@ cpSync(dll, join(app, "openbitfun_desktop_lib.dll"));
 copyUiBundle(nshOut, join(app, "nsh"), identity);
 const icon = productIcon(identity, "windows");
 if (existsSync(icon)) cpSync(icon, join(app, "nsh/icon.ico"));
-
-const shell = miniAppShellBinary(options);
-if (shell) cpSync(shell, join(app, "openbitfun-miniapp-shell.exe"));
-else console.warn("MiniApp shell not built (pnpm run prepare:miniapp-shell); Spaces will not open windows");
 
 writeWebBundleManifest(join(webOut, "OpenBitFun"), identity);
 copyResources(
@@ -104,3 +98,6 @@ if (process.platform === "win32") {
   run("zip", ["-qr", archive, appName], { cwd: join(outDir, "windows") });
 }
 console.log(`packaged ${app}\narchive ${archive}`);
+if (!options.skipBuild) {
+  runDesktopTargetGc({ profile: options.profileDir, target: options.target });
+}

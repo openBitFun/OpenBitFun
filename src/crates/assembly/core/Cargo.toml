@@ -480,9 +480,6 @@ remote-workspace = [
     "openbitfun-services-integrations/remote-ssh",
 ]
 tool-packs = ["dep:openbitfun-tool-packs"]
-# Deprecated compatibility feature. Tauri integration is desktop-owned now;
-# keep the public feature name as a no-op for downstream manifests.
-tauri-support = []
 ssh-remote = [
     "remote-workspace",
     "openbitfun-services-integrations/remote-ssh-concrete",

@@ -114,6 +114,10 @@ impl BackendBridge for NativeBridge {
     fn pick_directory(&self, options_json: String) -> Option<BoxFuture<Result<String, String>>> {
         Some(crate::folder_picker::pick_directory(options_json))
     }
+
+    fn pick_file_dialog(&self, options_json: String) -> Option<BoxFuture<Result<String, String>>> {
+        Some(crate::folder_picker::pick_file_dialog(options_json))
+    }
 }
 
 /// Starts the backend; attaches the bridge (or reports the fatal error)

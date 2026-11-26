@@ -6,20 +6,24 @@ hosts retain the original `miniapp-desktop` discovery and launcher paths.
 Development launchers select a debug/devtools-only `development` subdirectory
 for host coordination; they can share product configuration and sessions with
 the installed host without replacing its endpoint or launcher records. Existing
-session-writer and scheduler leases remain shared. The separate
-`src/apps/miniapp-shell` executable never links AppState or an Agent runtime.
-A macOS launcher copies only that compact executable into its locally signed
-bundle; Windows and Linux launch the installed sidecar with a persisted record.
-The old Desktop launch flag delegates to the sidecar for existing shortcuts.
-Missing sidecars fail explicitly; never copy the full host as a fallback.
+session-writer and scheduler leases remain shared. Standalone MiniApp windows
+are opened natively by the NSH desktop shell (`src/nsh-ui/src/miniAppWindows.tsx`)
+through the shell channel (`miniapp.window.open`, `miniapp.window.focus`,
+`miniapp.window.close`) and bind their view via `miniapp_inline` (`kind: "window"`).
+Exported macOS app bundles carry a small `#!/bin/sh` launcher script (`Contents/MacOS/MiniApp`)
+plus the MiniApp ICNS icon and invoke the installed OpenBitFun host with
+`--miniapp-launch <manifest>`; Windows and Linux entries pass the same flag to
+the installed OpenBitFun host executable. Missing host executables fail
+explicitly; never copy the full host binary into an export.
 
 Keep identity, lease, and transfer rules in the MiniApp contracts/services owners.
 This directory owns native launchers, icon conversion, the closed local IPC
 adapter and Desktop command wiring. Shared v1 wire and versioned launch-record mechanics belong to
-`adapters/miniapp-ipc`; shell presentation belongs to `apps/miniapp-shell`. IPC uses a private Unix
-socket or named pipe with bounded frames and per-host credentials. Never expose
-arbitrary Tauri invocation or arbitrary JS evaluation to MiniApps. Shell SDK
-dispatch binds app/workspace identity from the authenticated view lease.
+`adapters/miniapp-ipc`; standalone window presentation belongs to `src/nsh-ui/src/miniAppWindows.tsx`.
+IPC uses a private Unix socket or named pipe with bounded frames and per-host
+credentials (forwarding `--miniapp-launch` to an already-running host). Never
+expose arbitrary host invocation or arbitrary JS evaluation to MiniApps. Shell
+SDK dispatch binds app/workspace identity from the authenticated view lease.
 
 The main window observes revisioned snapshots and uses the existing sceneStore.
 MiniApp chrome is portable metadata, not a launch-record field or executable
@@ -107,7 +111,8 @@ user a second copy of the state they are looking at.
 
 Focused checks (no browser/computer-use validation):
 
-For custom chrome, also run `pnpm run test:miniapp-shell` (shell, chat, titlebar and injected-SDK tests)
+For custom chrome and standalone windows, also run `pnpm run test:miniapp-shell`
+(injected-SDK tests), `cd src/nsh-ui && nsh test test/miniapp-window.test.tsx`,
 and `cargo test --locked -p openbitfun-desktop --lib openbitfun_control_host::miniapps::tests`.
 
 
@@ -117,6 +122,7 @@ cargo test --locked -p openbitfun-desktop --lib miniapp_web_host
 cargo test --locked -p openbitfun-desktop --lib remote_workspace_policy
 cargo build -p openbitfun-desktop
 pnpm run test:miniapp-shell
+cd src/nsh-ui && nsh test test/miniapp-window.test.tsx        # Standalone MiniApp windows
 cd src/nsh-ui && nsh test test/routines-git-spaces.test.tsx   # Spaces scene
 ```
 

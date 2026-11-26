@@ -6,7 +6,6 @@ packages:
   - "design-system/tooling/*"
   - "design-system/apps/*"
   - "src/miniapp-market-web"
-  - "OpenBitFun-Installer"
   - "website"
 
 patchedDependencies:

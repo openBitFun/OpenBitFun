@@ -3,8 +3,6 @@ members = [
     "src/apps/cli",
     "src/apps/sdk-host",
     "src/apps/desktop",
-    "src/apps/miniapp-shell",
-    "src/apps/data-tools",
     "src/apps/server",
     "src/apps/relay-server",
     "src/apps/relay-server/link-node",
@@ -64,7 +62,6 @@ members = [
 ]
 
 exclude = [
-    "OpenBitFun-Installer/src-tauri",
     # The native NSH desktop runner resolves its own graph: NSH's crates need
     # a newer unicode-width than the CLI's ratatui pins.
     "src/apps/desktop-nsh/native",
@@ -74,8 +71,6 @@ exclude = [
     # OpenBitFun Link: the EasyTier fork keeps its own workspace (upstream
     # manifests inherit from it); consumed by path from openbitfun-link.
     "third_party/easytier",
-    "third_party/tao",
-    "third_party/wry",
 ]
 
 resolver = "2"
@@ -144,18 +139,9 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "cloc
 chrono-tz = "0.10.4"
 fern = { version = "0.7.1", default-features = false }
 cron = "0.15.0"
-# Tauri 2.9.2 utilities conflict with time 0.3.48 on current stable Rust
-# (pinned through the Tauri users: src/apps/miniapp-shell).
-time = { version = "=0.3.47", default-features = false }
-# brotli-decompressor 5.0.2 / alloc-stdlib 0.2.3 pull alloc-no-stdlib 3.x while brotli still uses 2.x.
-brotli-decompressor = "=5.0.0"
-alloc-no-stdlib = "=2.0.4"
-alloc-stdlib = "=0.2.2"
 regex = "1"
 tokenizers = { version = "0.22.2", default-features = false }
 base64 = "0.22"
-# Keep macOS Tauri's dispatch2/bitflags expansion on the known-good bitflags release.
-bitflags = "=2.11.1"
 image = { version = "0.25", default-features = false }
 md5 = "0.7"
 dashmap = "6"
@@ -232,18 +218,9 @@ sse-stream = "0.2.3"
 which = "8.0"
 similar = "2.5"
 urlencoding = "2.1"
-oxc = { version = "0.138.0", default-features = false, features = ["ast_visit", "codegen", "semantic", "transformer"] }
 oxc-parse = { package = "oxc", version = "0.138.0", default-features = false }
 sqlx = { version = "0.8", default-features = false }
 rusqlite = { version = "0.32", default-features = false }
-
-# Tauri: the MiniApp window shell sidecar (`src/apps/miniapp-shell`) and Data
-# Tools. The desktop app itself is the native NSH app and does not use Tauri.
-tauri = { version = "2.11" }
-tauri-plugin-opener = "2.5"
-tauri-plugin-dialog = "2.7"
-tauri-plugin-notification = "2.3"
-tauri-build = { version = "2.6", features = [] }
 keepawake = "0.6.0"
 
 # Desktop support
@@ -279,7 +256,6 @@ sha2 = "0.10"
 hkdf = "0.12"
 minisign-verify = "0.2"
 sha1 = "0.10"
-argon2 = "0.5"
 rand = "0.8"
 
 # Device/Network info (Remote Connect)
@@ -321,18 +297,6 @@ tokio-rustls = { version = "0.26", default-features = false }
 [patch.crates-io]
 # Restore compatibility with Rust's never-type fallback in the Linux D-Bus calls.
 screenshots = { path = "third_party/screenshots" }
-# Restore macOS traffic-light geometry after the queued native style reset.
-# See third_party/tao/OPENBITFUN-PATCH.md for the upstream source and removal condition.
-tao = { path = "third_party/tao" }
-# Keep macOS HTML drags in WebKit while preserving native file-drop paths.
-# See third_party/wry/OPENBITFUN-PATCH.md for source and removal conditions.
-wry = { path = "third_party/wry" }
-# Tauri 2.11 loses keyboard focus for child webviews after Windows reactivates
-# an `unstable` multi-webview window. Use the upstream fix until released;
-# this revision also adopts tao 0.36, which includes the Windows input deadlock fix.
-tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
-tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
-tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
 
 [profile.dev]
 # Line tables only: keeps panic backtrace line numbers while shrinking PDB/DWARF
@@ -357,11 +321,10 @@ overflow-checks = false
 
 [profile.release]
 opt-level = 3
-# Thin LTO instead of fat LTO: 30-60% faster release codegen/link for ~0-2%
-# runtime cost. This was already proven on the Linux aarch64 packaging runner.
-# NOTE: needs one packaging regression round across all platforms (medium risk).
+# Thin LTO with Cargo's default `codegen-units = 16`: keeps cross-CGU inlining
+# and DCE while letting LLVM compile and ThinLTO-optimize in parallel across
+# cores (a forced `codegen-units = 1` serializes LLVM codegen per crate).
 lto = "thin"
-codegen-units = 1
 strip = true
 # Keep unwinding enabled for scoped `catch_unwind` recovery, such as the relay
 # client's TLS connector construction. Aborting would turn those recoverable
@@ -373,12 +336,3 @@ lto = false
 codegen-units = 16
 strip = false
 incremental = true
-
-# Build the window-only sidecar independently, including during Desktop dev.
-# Never inherit Desktop's large debug artifact or its unified dependency features.
-[profile.miniapp-shell]
-inherits = "release"
-opt-level = "z"
-lto = "fat"
-debug = false
-strip = true

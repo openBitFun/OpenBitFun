@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "No-growth baseline for i18n governance candidates. Lower counts when shared-term or l10n debt is removed; do not raise without review. The web-ui surface was removed with the retired React desktop UI (src/web-ui).",
+  "description": "No-growth baseline for i18n governance candidates. Lower counts when shared-term or l10n debt is removed; do not raise without review. The web-ui and installer surfaces were removed when those apps were retired.",
   "budgets": {
     "confirmedUnusedKeys": {
       "maxTotal": 0
@@ -9,7 +9,6 @@
       "maxTotal": 15,
       "bySurface": {
         "core": 15,
-        "installer": 0,
         "relay-static-homepage": 0
       },
       "bySharedKey": {
@@ -45,7 +44,6 @@
       "maxTotal": 0,
       "bySurface": {
         "core": 0,
-        "installer": 0,
         "relay-static-homepage": 0
       }
     }

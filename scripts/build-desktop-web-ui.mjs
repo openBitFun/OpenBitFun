@@ -17,7 +17,7 @@
 // Usage: node scripts/build-desktop-web-ui.mjs [--force] [--out <dir>]
 // Set OPENBITFUN_DESKTOP_WEB_UI=off to skip in local workflows.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -56,21 +56,21 @@ export function readNshVersion(env = process.env) {
   return String(result.stdout ?? '').match(/\b(\d+\.\d+\.\d+[^\s]*)/)?.[1] ?? 'unknown';
 }
 
-function isIgnoredSourceEntry(name, isDirectory) {
+function isIgnoredSourceEntry(name, isDirectory, skipDirs = SKIP_DIRS) {
   if (name.startsWith('.')) return true;
-  if (isDirectory) return SKIP_DIRS.has(name);
+  if (isDirectory) return skipDirs.has(name);
   return /\.test\.[^.]+$/i.test(name);
 }
 
-function collectSourceFiles(dir, prefix = '', out = []) {
+export function collectSourceFiles(dir, prefix = '', out = [], skipDirs = SKIP_DIRS) {
   if (!existsSync(dir)) return out;
   const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const entry of entries) {
-    if (isIgnoredSourceEntry(entry.name, entry.isDirectory())) continue;
+    if (isIgnoredSourceEntry(entry.name, entry.isDirectory(), skipDirs)) continue;
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      collectSourceFiles(full, relative, out);
+      collectSourceFiles(full, relative, out, skipDirs);
     } else if (entry.isFile()) {
       out.push({ relative, full });
     }
@@ -86,11 +86,15 @@ function collectSourceFiles(dir, prefix = '', out = []) {
 export function computeDesktopWebSourceFingerprint({
   rootDir = ROOT,
   nshVersion = 'unknown',
+  product = undefined,
 } = {}) {
   const hash = createHash('sha256');
   const pkgPath = path.join(rootDir, 'package.json');
   const version = existsSync(pkgPath) ? String(JSON.parse(readFileSync(pkgPath, 'utf8')).version ?? '0.0.0') : '0.0.0';
   hash.update(`schema:${STAMP_SCHEMA}\nversion:${version}\nnsh:${nshVersion}\n`);
+  if (product && product !== 'openbitfun') {
+    hash.update(`product:${product}\n`);
+  }
 
   const manifestWriterPath = path.join(rootDir, 'scripts', 'write-ui-bundle-manifest.mjs');
   if (existsSync(manifestWriterPath)) {
@@ -172,19 +176,41 @@ export function swapBundleDirectory(stagedBundleDir, targetOutDir) {
   return { bundleDirName, finalBundleDir };
 }
 
+function finalizeStagedWebBundle({ rootDir, outDir, stagingDir, fingerprint, nsh, product }) {
+  const { bundleDir: stagedBundleDir, bundleId } = writeUiBundleManifest(stagingDir, {
+    nsh,
+    ...(product ? { product } : {}),
+  });
+  const { bundleDirName, finalBundleDir } = swapBundleDirectory(stagedBundleDir, outDir);
+  writeFileSync(
+    path.join(outDir, STAMP_FILE),
+    `${JSON.stringify({ schema: STAMP_SCHEMA, fingerprint, bundleDirName, bundleId, nsh, ...(product ? { product } : {}) }, null, 2)}\n`,
+  );
+  console.log(`[desktop-web] Ready: ${path.relative(rootDir, finalBundleDir)} (bundleId ${bundleId})`);
+  return { built: true, bundleId, bundleDir: finalBundleDir };
+}
+
 export function buildDesktopWebUi({
   rootDir = ROOT,
   outDir = DEFAULT_OUT_DIR,
   force = false,
+  product = undefined,
   env = process.env,
 } = {}) {
   const nshEnv = resolveNshEnvironment(env);
   const nsh = readNshVersion(nshEnv);
-  const fingerprint = computeDesktopWebSourceFingerprint({ rootDir, nshVersion: nsh });
+  const fingerprint = computeDesktopWebSourceFingerprint({ rootDir, nshVersion: nsh, product });
   const plan = planDesktopWebBuild({ outDir, fingerprint, force, env: nshEnv });
   if (!plan.shouldBuild) {
+    const stampPath = path.join(outDir, STAMP_FILE);
+    const bundleDirName = existsSync(stampPath) ? JSON.parse(readFileSync(stampPath, 'utf8')).bundleDirName : null;
     console.log(`[desktop-web] Web UI bundle ${plan.reason}${plan.bundleId ? ` (bundleId ${plan.bundleId})` : ''}`);
-    return { built: false, bundleId: plan.bundleId, reason: plan.reason };
+    return {
+      built: false,
+      bundleId: plan.bundleId,
+      bundleDir: bundleDirName ? path.join(outDir, bundleDirName) : null,
+      reason: plan.reason,
+    };
   }
 
   console.log(`[desktop-web] Building web UI bundle (${plan.reason})...`);
@@ -198,17 +224,63 @@ export function buildDesktopWebUi({
       windowsHide: true,
       shell: process.platform === 'win32',
     });
-    if (built.status !== 0) {
-      throw new Error(`nsh package src/nsh-ui/WebApp.tsx --target web failed (status ${built.status ?? 'unknown'})`);
+    if (built.error || built.status !== 0) {
+      throw new Error(
+        `nsh package src/nsh-ui/WebApp.tsx --target web failed (${built.error?.message ?? `status ${built.status ?? 'unknown'}`})`,
+      );
     }
-    const { bundleDir: stagedBundleDir, bundleId } = writeUiBundleManifest(stagingDir, { nsh });
-    const { bundleDirName, finalBundleDir } = swapBundleDirectory(stagedBundleDir, outDir);
-    writeFileSync(
-      path.join(outDir, STAMP_FILE),
-      `${JSON.stringify({ schema: STAMP_SCHEMA, fingerprint, bundleDirName, bundleId, nsh }, null, 2)}\n`,
-    );
-    console.log(`[desktop-web] Ready: ${path.relative(rootDir, finalBundleDir)} (bundleId ${bundleId})`);
-    return { built: true, bundleId, bundleDir: finalBundleDir };
+    return finalizeStagedWebBundle({ rootDir, outDir, stagingDir, fingerprint, nsh, product });
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
+}
+
+export async function buildDesktopWebUiAsync({
+  rootDir = ROOT,
+  outDir = DEFAULT_OUT_DIR,
+  force = false,
+  product = undefined,
+  env = process.env,
+} = {}) {
+  const nshEnv = resolveNshEnvironment(env);
+  const nsh = readNshVersion(nshEnv);
+  const fingerprint = computeDesktopWebSourceFingerprint({ rootDir, nshVersion: nsh, product });
+  const plan = planDesktopWebBuild({ outDir, fingerprint, force, env: nshEnv });
+  if (!plan.shouldBuild) {
+    const stampPath = path.join(outDir, STAMP_FILE);
+    const bundleDirName = existsSync(stampPath) ? JSON.parse(readFileSync(stampPath, 'utf8')).bundleDirName : null;
+    console.log(`[desktop-web] Web UI bundle ${plan.reason}${plan.bundleId ? ` (bundleId ${plan.bundleId})` : ''}`);
+    return {
+      built: false,
+      bundleId: plan.bundleId,
+      bundleDir: bundleDirName ? path.join(outDir, bundleDirName) : null,
+      reason: plan.reason,
+    };
+  }
+
+  console.log(`[desktop-web] Building web UI bundle (${plan.reason})...`);
+  const stagingDir = `${outDir}.staging-${process.pid}-${Date.now()}`;
+  rmSync(stagingDir, { recursive: true, force: true });
+  try {
+    await new Promise((resolvePromise, rejectPromise) => {
+      const child = spawn('nsh', ['package', 'src/nsh-ui/WebApp.tsx', '--target', 'web', '-o', stagingDir], {
+        cwd: rootDir,
+        stdio: 'inherit',
+        env: nshEnv,
+        windowsHide: true,
+        shell: process.platform === 'win32',
+      });
+      child.on('error', rejectPromise);
+      child.on('close', (code, signal) => {
+        if (code === 0) resolvePromise();
+        else {
+          rejectPromise(
+            new Error(`nsh package src/nsh-ui/WebApp.tsx --target web failed (status ${code ?? signal ?? 'unknown'})`),
+          );
+        }
+      });
+    });
+    return finalizeStagedWebBundle({ rootDir, outDir, stagingDir, fingerprint, nsh, product });
   } finally {
     rmSync(stagingDir, { recursive: true, force: true });
   }

@@ -1566,7 +1566,7 @@ export function setPendingTurn(
   images?: ImageAttachment[],
 ): void {
   const trimmed = userText.trim();
-  if (!sessionId || !trimmed) return;
+  if (!sessionId || (!trimmed && !(images && images.length > 0))) return;
   const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
   pendingTurnState.set({
     sessionId,

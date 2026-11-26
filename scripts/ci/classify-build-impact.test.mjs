@@ -131,14 +131,6 @@ test('maps representative changes to the smallest predictive validation', () => 
       result: expected({ rustRequired: true, reason: 'rust-build-input' }),
     },
     {
-      paths: ['OpenBitFun-Installer/scripts/build-installer.cjs'],
-      result: expected({
-        rustRequired: true,
-        desktopPlatforms: ['windows-x64'],
-        reason: 'platform-package-input',
-      }),
-    },
-    {
       paths: ['scripts/ci/setup-macos-signing.sh'],
       result: expected({
         rustRequired: true,
@@ -166,7 +158,6 @@ test('maps representative changes to the smallest predictive validation', () => 
     ...[
       'scripts/package-desktop-nsh-linux.mjs',
       'scripts/desktop-nsh-package-common.mjs',
-      'scripts/prepare-miniapp-shell.mjs',
       'scripts/ci/install-nsh.mjs',
       'src/apps/desktop-nsh/nsh.json',
       'src/apps/desktop/icons/openbitfun-app-icon.icns',
@@ -327,10 +318,10 @@ test('uses a merge-base range for pull requests and emits every workflow output'
   commit(root, 'baseline');
 
   git(root, ['switch', '-c', 'feature']);
-  const installer = path.join(root, 'OpenBitFun-Installer/scripts/build-installer.cjs');
-  mkdirSync(path.dirname(installer), { recursive: true });
-  writeFileSync(installer, 'export {};\n');
-  const head = commit(root, 'installer change');
+  const winPackager = path.join(root, 'scripts/cli/package-windows.ps1');
+  mkdirSync(path.dirname(winPackager), { recursive: true });
+  writeFileSync(winPackager, 'Write-Host "ok"\n');
+  const head = commit(root, 'windows packaging change');
 
   git(root, ['switch', 'main']);
   writeFileSync(path.join(root, 'Cargo.lock'), 'version = 4\n');

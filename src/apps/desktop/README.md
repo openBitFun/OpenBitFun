@@ -255,29 +255,25 @@ the document and retains saved data; save unsaved page state before confirming.
 The source closes only after the destination is ready. One installed app is bound
 to one workspace per host until its instance is stopped.
 
-Each native window uses a separately built **MiniApp Shell**, which contains only
-the window, local system adapters and private IPC. Agent execution, storage,
-tasks and instance management stay in the shared OpenBitFun host. macOS exports
-copy this small executable plus the icon and app identity; Windows/Linux entries
-point to the installed shell. The full Desktop program is never copied into an
-export. Updating an older system app upgrades its executable while retaining
-its launch identity and saved data.
+Each standalone MiniApp window is opened directly by the native NSH desktop
+shell (`src/nsh-ui/src/miniAppWindows.tsx`) over the host shell channel, sharing
+the OpenBitFun host's instance registry, storage, worker runtime, and native OS
+dialogs without a separate sidecar binary. macOS exports write a lightweight
+shell launcher script plus the MiniApp ICNS icon and app identity; Windows and
+Linux entries invoke the installed OpenBitFun executable with
+`--miniapp-launch <manifest>`. The full Desktop binary is never copied into an
+export. Updating an older system app upgrades its launcher and icon while
+retaining its launch identity and saved data.
 
-On macOS, Dock icons come from each MiniApp bundle's own ICNS. Independent
-windows and system installations use the same catalog glyph and fixed brand
-watermark, with a rounded body and transparent canvas inset. The shell always
-uses bundled resources, including beside a development host, so Tauri cannot
-replace the Dock icon with the OpenBitFun development icon. After upgrading an
-older exported app, choose **Update system app**, then quit and reopen that
-MiniApp to load the new executable and icon.
+On macOS, Dock icons for exported MiniApp bundles come from each bundle's own
+ICNS, using the catalog glyph and fixed brand watermark with a rounded body and
+transparent canvas inset. After upgrading an older exported app, choose
+**Update system app**, then quit and reopen that MiniApp to load the updated
+launcher and icon.
 
-The normal development and packaging commands prepare the optimized shell
-automatically. After changing shell Rust/HTML during an existing development
-session, run `pnpm run prepare:miniapp-shell` before reopening the MiniApp.
-Direct Cargo Desktop builds need the same preparation once. Packaging places
-`openbitfun-miniapp-shell` next to the native runner (`Contents/MacOS` on macOS)
-and signs it with the app; raw builds require the adjacent executable (`.exe` on
-Windows).
+Standalone MiniApp windows are built as part of the standard NSH desktop bundle
+(`pnpm run desktop:dev` / `pnpm run desktop:build`) with no separate sidecar
+build step.
 
 An independent window displays its own Agent permission requests through the
 shared runtime mailbox. Legacy MiniApps that call `agent.cancelStaleRuns` on every

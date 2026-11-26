@@ -13,10 +13,9 @@ const SOURCE_GROUPS = Object.freeze({
     'packages/flow-chat-presentation/src',
   ],
   // Product web surfaces outside the design system. The React desktop UI (src/web-ui)
-  // was retired; the native desktop client (src/nsh-ui) styles through NSH, not CSS.
-  products: [
-    'OpenBitFun-Installer/src',
-  ],
+  // and Windows Installer (OpenBitFun-Installer) were retired; the native desktop client
+  // (src/nsh-ui) styles through NSH, not CSS.
+  products: [],
 });
 
 const RETIRED_ONLY_ROOTS = ['scripts'];
@@ -37,12 +36,11 @@ const SEMANTIC_ROLE_COMPONENT_STYLE_EXCEPTIONS = new Set([
 
 const SEMANTIC_ROLE_PRODUCT_STYLE_ROOTS = [
   'packages/flow-chat-presentation/src/',
-  'OpenBitFun-Installer/src/',
   'design-system/apps/design-lab/src/',
 ];
 
 const COMPLETE_PRODUCT_STYLE_ROOTS = [
-  'OpenBitFun-Installer/src/',
+  'packages/flow-chat-presentation/src/',
 ];
 
 const TYPOGRAPHY_PROPERTIES = new Set([

@@ -1,8 +1,7 @@
-// Documents in the Files pane (wave 22 P1): Markdown Preview | Edit with the
-// visual editor and its fidelity guard, the source editor on request, save and
-// conflict through `write_file_content`, inline AI over `editor_ai_*`, the
-// HTML preview, and PDFs (a web view in the desktop app, "open elsewhere" in a
-// browser tab or on the phone).
+// Documents in the Files pane: Markdown directly editable Preview | Split | Source
+// with lossless YAML frontmatter, workspace images in the visual editor, semantic
+// fidelity guard for raw HTML / reference links / footnotes / alerts, save & conflict
+// through `write_file_content`, inline AI over `editor_ai_*`, HTML preview, and PDFs.
 import { expect, open, test } from "nsh/test";
 import { createBackend, openToolScene, type Backend, type BackendOptions } from "./support";
 
@@ -12,17 +11,22 @@ const PHONE = { width: 375, height: 812, platform: "web" as const };
 const FILES = [
   { name: "README.md", path: "/repo/README.md", isDirectory: false },
   { name: "notes.md", path: "/repo/notes.md", isDirectory: false },
+  { name: "guide.md", path: "/repo/guide.md", isDirectory: false },
   { name: "page.md", path: "/repo/page.md", isDirectory: false },
+  { name: "logo.png", path: "/repo/logo.png", isDirectory: false },
   { name: "index.html", path: "/repo/index.html", isDirectory: false },
   { name: "manual.pdf", path: "/repo/manual.pdf", isDirectory: false, size: 2048 },
 ];
 
 const TEXT: Record<string, string> = {
   "/repo/README.md": "# Project\n\nMarkdown preview from the host.",
-  // Front matter: the visual editor would rewrite it, so it opens as source.
+  // YAML frontmatter is preserved verbatim while the body edits visually.
   "/repo/notes.md": "---\ntitle: Notes\n---\n\n# Notes\n\nKept as written.\n",
-  // Raw HTML: the same.
+  // Common real-world Markdown: `*` bullets, nested lists, `_italic_`, tight table, workspace image.
+  "/repo/guide.md": "# Guide\n\n* item one\n  * nested item\n\nUse _italic_ and ![Logo](./logo.png).\n\n|A|B|\n|---|---|\n|1|2|\n",
+  // Raw HTML: cannot round-trip visually, so Preview stays read-only with Split/Source editing.
   "/repo/page.md": '<div align="center">Centered</div>\n\nBody text.\n',
+  "/repo/logo.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "/repo/index.html": "<!doctype html><html><body><h1>Hello page</h1></body></html>\n",
   "/repo/manual.pdf": "JVBERi0xLjQK",
 };
@@ -132,30 +136,38 @@ async function openFiles(app: Awaited<ReturnType<typeof open>>): Promise<void> {
   await app.waitFor("Explorer");
 }
 
-test("Markdown opens as a preview, edits visually and saves the serialized Markdown", async () => {
+test("Markdown opens directly editable in Preview, supports Split & Source, and stays editable after Save", async () => {
   const backend = documentsBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openFiles(app);
 
   await app.press("README.md");
-  await app.waitFor("file-markdown-preview");
-  await app.waitFor("Markdown preview from the host.");
-  // The rendered preview, not the source.
-  expect(app.texts().join("\n")).not.toContain("# Project");
-
-  // Edit is the visual editor: the heading is a heading, not "# ".
-  await app.press("file-edit");
   await app.waitFor("file-editor");
+  await app.waitFor("Markdown preview from the host.");
+  // Rendered heading directly in editable Preview (no raw `# ` prefix, clean on open).
+  expect(app.texts().join("\n")).not.toContain("# Project");
+  expect(app.shows("Unsaved changes")).toBe(false);
   expect(app.shows("doc-source-fallback")).toBe(false);
+  expect(app.shows("file-preview")).toBe(true);
+  expect(app.shows("file-split")).toBe(true);
+  expect(app.shows("file-source")).toBe(true);
+
+  // Type immediately without clicking a separate Edit button.
   await app.type("file-editor", "Intro ");
   await app.waitFor("Unsaved changes");
 
-  // Preview keeps the draft and shows it rendered; Edit comes back to it.
-  await app.press("file-preview");
+  // Split shows the source editor and live rendered preview side by side.
+  await app.press("file-split");
   await app.waitFor("file-markdown-preview");
   await app.waitFor("Intro Project");
+  expect(app.shows("file-editor")).toBe(true);
   expect(app.shows("Unsaved changes")).toBe(true);
-  await app.press("file-edit");
+
+  // Source shows raw Markdown and preserves the draft; Preview returns to editable visual mode.
+  await app.press("file-source");
+  await app.waitFor("file-markdown-preview", { state: "gone" });
+  expect(app.value("file-editor")).toContain("# Intro Project");
+  await app.press("file-preview");
   await app.waitFor("file-editor");
 
   await app.press("file-save");
@@ -164,11 +176,12 @@ test("Markdown opens as a preview, edits visually and saves the serialized Markd
   expect(backend.writes[0]).toMatchObject({ workspaceId: "workspace-1", filePath: "/repo/README.md" });
   expect(backend.writes[0].content).toBe("# Intro Project\n\nMarkdown preview from the host.\n");
   expect(backend.writes[0].expectedHash).toMatch(/^[0-9a-f]{64}$/);
-  // A saved Markdown file goes back to its preview.
-  await app.waitFor("file-markdown-preview");
+  // Saving keeps the user right in editable Preview, now clean.
+  expect(app.shows("file-editor")).toBe(true);
+  expect(app.shows("Unsaved changes")).toBe(false);
 });
 
-test("Mermaid blocks and display formulas render from bundled renderers in a web view island and fall back to source", async () => {
+test("Mermaid blocks and display formulas render from bundled renderers in Preview and edit live in Split", async () => {
   const backend = documentsBackend({
     fileContent: {
       ...TEXT,
@@ -179,6 +192,7 @@ test("Mermaid blocks and display formulas render from bundled renderers in a web
   await openFiles(app);
   await app.press("README.md");
   await app.waitFor("file-markdown-preview");
+  await app.waitFor("doc-rich-preview-hint");
   // `WebApp.tsx` registers the renderers this directory ships; they are read on demand.
   await app.waitFor("doc-mermaid-view");
   await app.waitFor("doc-math-view");
@@ -189,6 +203,10 @@ test("Mermaid blocks and display formulas render from bundled renderers in a web
   await app.waitFor("doc-math-source");
   expect(app.shows("doc-mermaid-view")).toBe(false);
   expect(app.texts().join("\n")).toContain("graph TD; A-->B");
+  // One press on the quiet preview bar enters Split view to edit alongside live preview.
+  await app.press("file-preview-edit");
+  await app.waitFor("file-editor");
+  expect(app.shows("file-markdown-preview")).toBe(true);
 }, 30000);
 
 test("an entry that registered no renderers shows diagrams and formulas as their source", async () => {
@@ -203,33 +221,77 @@ test("an entry that registered no renderers shows diagrams and formulas as their
   expect(app.shows("doc-mermaid-view")).toBe(false);
 });
 
-test("the fidelity guard opens front matter and raw HTML as source, and Edit as source is one menu away", async () => {
+test("YAML frontmatter and common Markdown lists/tables/images edit visually without losing metadata", async () => {
   const backend = documentsBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openFiles(app);
 
+  // YAML frontmatter: body opens directly in editable visual Preview with collapsible Frontmatter bar.
   await app.press("notes.md");
   await app.waitFor("file-tab-notes.md");
-  await app.press("file-edit");
-  await app.waitFor("doc-source-fallback");
-  await app.waitFor("This file uses Markdown the visual editor can't keep exactly, so it opens as source.");
-  expect(app.value("file-editor")).toBe(TEXT["/repo/notes.md"]);
-  // The source editor saves exactly what was typed.
+  await app.waitFor("file-editor");
+  await app.waitFor("doc-frontmatter-toggle");
+  expect(app.shows("doc-source-fallback")).toBe(false);
+  expect(app.shows("Unsaved changes")).toBe(false);
   await app.type("file-editor", "Draft ");
   await app.press("file-save");
   await app.waitFor("Saved notes.md");
-  expect(backend.writes[0].content).toContain("---\ntitle: Notes\n---");
+  expect(backend.writes[0].content).toBe("---\ntitle: Notes\n---\n\n# Draft Notes\n\nKept as written.\n");
+
+  // Expanding Frontmatter edits YAML metadata cleanly in place.
+  await app.press("doc-frontmatter-toggle");
+  await app.waitFor("doc-frontmatter-input");
+  await app.clear("doc-frontmatter-input");
+  await app.type("doc-frontmatter-input", "title: Updated Notes");
+  await app.press("file-save");
+  await app.waitFor("Saved notes.md");
+  expect(backend.writes[1].content).toContain("---\ntitle: Updated Notes\n---");
+  expect(backend.writes[1].content).toContain("# Draft Notes");
+
+  // Common Markdown with `*` bullets, nested lists, `_italic_`, tight tables, and workspace images edits visually.
+  await app.press("guide.md");
+  await app.waitFor("file-tab-guide.md");
+  await app.waitFor("file-editor");
+  expect(app.shows("doc-source-fallback")).toBe(false);
+  expect(app.shows("Unsaved changes")).toBe(false);
+  // Workspace-relative image is read through the host inside the visual editor too.
+  await app.waitUntil(() =>
+    backend.calls.some(call => call.action === "read_file_content" && call.payload.filePath === "/repo/logo.png" && call.payload.encoding === "base64"),
+  );
+  await app.type("file-editor", "Quick ");
+  await app.press("file-save");
+  await app.waitFor("Saved guide.md");
+  expect(backend.writes[2].content).toContain("# Quick Guide");
+  expect(backend.writes[2].content).toContain("![Logo](./logo.png)");
+});
+
+test("raw HTML stays read-only in Preview and edits safely via Split or Source without corruption", async () => {
+  const backend = documentsBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openFiles(app);
 
   await app.press("page.md");
   await app.waitFor("file-tab-page.md");
-  await app.press("file-edit");
-  await app.waitFor("doc-source-fallback");
+  await app.waitFor("file-markdown-preview");
+  await app.waitFor("doc-readonly-hint");
+
+  // One click opens live Split mode (source + preview) without corrupting raw HTML.
+  await app.press("file-preview-edit");
+  await app.waitFor("file-editor");
+  expect(app.shows("file-markdown-preview")).toBe(true);
   expect(app.value("file-editor")).toBe(TEXT["/repo/page.md"]);
 
-  // A file the visual editor keeps: the user still may choose the source.
+  // Source mode shows the fidelity notice and saves raw HTML verbatim.
+  await app.press("file-source");
+  await app.waitFor("doc-source-fallback");
+  await app.type("file-editor", "<!-- note -->\n");
+  await app.press("file-save");
+  await app.waitFor("Saved page.md");
+  expect(backend.writes[0].content).toContain('<div align="center">Centered</div>');
+
+  // A visually editable file can still switch between visual and source via the document menu.
   await app.press("README.md");
   await app.waitFor("file-tab-README.md");
-  await app.press("file-edit");
   await app.waitFor("file-doc-menu");
   await app.press("file-doc-menu");
   await app.press("doc-edit-source");
@@ -246,8 +308,6 @@ test("a visual save that finds a newer disk copy still stops at the conflict ban
   await openFiles(app);
 
   await app.press("README.md");
-  await app.waitFor("file-markdown-preview");
-  await app.press("file-edit");
   await app.waitFor("file-editor");
   await app.type("file-editor", "Mine ");
   backend.externalWrite("/repo/README.md", "# Agent rewrote this\n");
@@ -267,8 +327,6 @@ test("inline AI asks the document's device and inserts the answer as Markdown", 
   await openFiles(app);
 
   await app.press("README.md");
-  await app.waitFor("file-markdown-preview");
-  await app.press("file-edit");
   await app.waitFor("file-editor");
   await app.press("file-doc-menu");
   await app.press("doc-ask-ai");
@@ -306,8 +364,7 @@ test("inline AI asks the document's device and inserts the answer as Markdown", 
   expect(backend.writes[0].content).toContain("**Summary:** a tidy project.");
   expect(backend.writes[0].content).toContain("Markdown preview from the host.");
 
-  // A failed answer says why, in the panel, and inserts nothing.
-  await app.press("file-edit");
+  // A failed answer says why, in the panel, and inserts nothing (still in visual Preview after save).
   await app.waitFor("file-editor");
   await app.press("file-doc-menu");
   await app.press("doc-ask-ai");
@@ -386,8 +443,6 @@ test("a remote workspace's document saves through its own workspace id", async (
   await openFiles(app);
 
   await app.press("README.md");
-  await app.waitFor("file-markdown-preview");
-  await app.press("file-edit");
   await app.waitFor("file-editor");
   await app.type("file-editor", "Remote ");
   await app.press("file-save");
@@ -398,23 +453,22 @@ test("a remote workspace's document saves through its own workspace id", async (
   expect(reads.every(call => call.payload.workspaceId === "ws-remote")).toBe(true);
 });
 
-test("phone: the document pane is full screen with the same Preview | Edit", async () => {
+test("phone: the document pane opens directly editable in Preview with Preview | Source", async () => {
   const backend = documentsBackend();
   const app = await open("../App.tsx", { ...PHONE, width: 1440, height: 900, host: { handlers: backend.handlers } });
   await openFiles(app);
   await app.setViewport(PHONE.width, PHONE.height);
   await app.waitFor("README.md");
   await app.press("README.md");
-  await app.waitFor("file-markdown-preview");
-  await app.waitFor("file-edit");
-  await app.press("file-edit");
   await app.waitFor("file-editor");
+  await app.waitFor("file-source");
+  expect(app.shows("file-split")).toBe(false);
   await app.type("file-editor", "Phone ");
-  // Preview | Edit sit in the path strip on a narrow pane, so Save keeps its room.
+  // Preview | Source sit in the path strip on a narrow pane, so Save keeps its room.
   await app.press("file-save");
   await app.waitUntil(() => backend.writes.length === 1);
   expect(backend.writes[0].content).toContain("Phone Project");
-  await app.waitFor("file-markdown-preview");
+  expect(app.shows("file-editor")).toBe(true);
 });
 
 test("workspaceUtils handles POSIX roots, Windows drives, remote backslashes, prefix boundaries, and markdown links", async () => {

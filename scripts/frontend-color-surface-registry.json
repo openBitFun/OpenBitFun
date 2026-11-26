@@ -105,66 +105,6 @@
       }
     },
     {
-      "id": "installer",
-      "label": "OpenBitFun Installer",
-      "kind": "canonical-web",
-      "owner": "@openbitfun/theme-openbitfun with the installer preset owner",
-      "root": "OpenBitFun-Installer",
-      "audit": {
-        "engine": "theme",
-        "baseline": "scripts/theme-color-governance-baseline.installer.json"
-      }
-    },
-    {
-      "id": "data-tools",
-      "label": "Offline Data Tools",
-      "kind": "canonical-web",
-      "owner": "@openbitfun/design-tokens and @openbitfun/theme-openbitfun public CSS exports",
-      "root": "src/apps/data-tools/ui",
-      "audit": {
-        "engine": "theme",
-        "policy": "canonical-ui-zero",
-        "packageContracts": ["@openbitfun/design-tokens", "@openbitfun/theme-openbitfun"],
-        "excludePaths": ["generated"]
-      }
-    },
-    {
-      "id": "miniapp-chrome",
-      "label": "Shared MiniApp titlebar",
-      "kind": "canonical-web",
-      "owner": "MiniApp host chrome using canonical design tokens",
-      "root": "src/shared/miniapp-chrome",
-      "audit": {
-        "engine": "theme",
-        "policy": "canonical-ui-zero",
-        "packageContracts": [
-          "@openbitfun/design-tokens",
-          "@openbitfun/theme-openbitfun"
-        ],
-        "excludePaths": [
-          "generated"
-        ]
-      }
-    },
-    {
-      "id": "miniapp-shell",
-      "label": "Standalone MiniApp Shell",
-      "kind": "canonical-web",
-      "owner": "MiniApp host chrome using canonical design tokens",
-      "root": "src/apps/miniapp-shell",
-      "audit": {
-        "engine": "theme",
-        "policy": "canonical-ui-zero",
-        "packageContracts": [
-          "@openbitfun/design-tokens",
-          "@openbitfun/theme-openbitfun"
-        ],
-        "excludePaths": [
-          "src/generated"
-        ]
-      }
-    },
-    {
       "id": "cli",
       "label": "CLI and TUI",
       "kind": "terminal",
@@ -383,26 +323,6 @@
       "command": ["node", "scripts/check-subagent-avatar-assets.mjs"]
     },
     {
-      "id": "data-tools-design-system",
-      "surfaceIds": ["data-tools"],
-      "command": ["node", "scripts/generate-data-tools-theme.mjs", "--check"]
-    },
-    {
-      "id": "miniapp-chat-styles",
-      "surfaceIds": ["miniapp-shell"],
-      "command": ["node", "scripts/generate-miniapp-chat-styles.mjs", "--check"]
-    },
-    {
-      "id": "miniapp-chrome-theme",
-      "surfaceIds": ["miniapp-chrome", "miniapp-shell"],
-      "command": ["node", "scripts/generate-miniapp-chrome-theme.mjs", "--check"]
-    },
-    {
-      "id": "miniapp-chrome-assets",
-      "surfaceIds": ["miniapp-chrome", "miniapp-shell"],
-      "command": ["node", "scripts/generate-miniapp-chrome-assets.mjs", "--check"]
-    },
-    {
       "id": "miniapp-appearance-projection",
       "surfaceKinds": ["miniapp"],
       "command": ["node", "scripts/generate-miniapp-appearance-contract.mjs", "--check"]
@@ -457,13 +377,6 @@
       "kind": "generated-output",
       "owner": "PPT Live build-openbitfun.mjs",
       "reason": "Bundled JavaScript is generated from the registered PPT source owner."
-    },
-    {
-      "id": "data-tools-generated",
-      "path": "src/apps/data-tools/ui/generated",
-      "kind": "generated-output",
-      "owner": "scripts/generate-data-tools-theme.mjs",
-      "reason": "Offline CSS is bundled from public design-system exports and checked for drift."
     },
     {
       "id": "desktop-bootstrap-generated",

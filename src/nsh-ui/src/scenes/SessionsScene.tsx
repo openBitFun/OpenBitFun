@@ -1145,6 +1145,11 @@ const activeQuestions = computed(() => questionsForSession(activeSessionId()));
 const headerState = computed<MarkState | null>(() => {
   if (runningTurnId() || isStreamDraining()) return "working";
   if (activePermissions().length > 0 || activeQuestions().length > 0) return "needs_you";
+  const pending = pendingTurnState();
+  const openKey = activeSessionKey();
+  const pendingMatches =
+    Boolean(pending && (!pending.sessionKey || !openKey || pending.sessionKey === openKey)) || Boolean(pendingTurn());
+  if (pendingMatches && !turnError()) return "working";
   const id = activeSessionId();
   const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
   if (row?.status === "waiting" || row?.needsAttention) return row.status === "error" ? "failed" : "needs_you";
@@ -3244,6 +3249,88 @@ function buildLiveDisplayBlocks(rounds: LiveModelRound[], pane: 0 | 1 = 0): Live
 
 const liveDisplayBlocks = computed<LiveDisplayBlock[]>(() => buildLiveDisplayBlocks(liveRounds(), 0));
 
+/**
+ * True when live blocks already carry an active visual pulse (live thinking,
+ * a running/preparing tool, or actively streaming text in an open round), so
+ * the standalone waiting indicator can hand off without duplicating spinners.
+ */
+function liveBlocksHaveActiveMotion(
+  blocks: ReadonlyArray<LiveDisplayBlock>,
+  rounds: ReadonlyArray<LiveModelRound>,
+  pane: 0 | 1,
+): boolean {
+  for (const block of blocks) {
+    if (block.kind === "thinking" && block.live) return true;
+    if (block.kind === "tool") {
+      if (persistedToolState(block.call) === "running") return true;
+    }
+    if (block.kind === "explore") {
+      for (const entry of block.items) {
+        if (entry.kind === "thinking" && entry.live) return true;
+        if (entry.kind === "tool") {
+          if (persistedToolState(entry.call) === "running") return true;
+        }
+      }
+    }
+  }
+  const latestRound = rounds[rounds.length - 1];
+  if (latestRound && !latestRound.completed) {
+    const hasText = pane === 1 ? hasSecondaryLiveRoundText(latestRound.roundId) : hasLiveRoundText(latestRound.roundId);
+    const hasTailText =
+      pane === 1 ? hasSecondaryLiveRoundTailText(latestRound.roundId) : hasLiveRoundTailText(latestRound.roundId);
+    if (latestRound.tools.length === 0 ? hasText : hasTailText) return true;
+  }
+  return false;
+}
+
+/**
+ * Calm, zero-jump waiting row shown immediately after sending a message (before
+ * TTFT) and between finished tool rounds while waiting for the next LLM chunk.
+ */
+function TurnWaitingIndicator(props: { startedAt?: () => number | undefined; accessibilityLabel: string }) {
+  const mountedAt = Date.now();
+  const originMs = () => {
+    const reported = props.startedAt?.();
+    return typeof reported === "number" && reported > 0 ? Math.min(reported, mountedAt) : mountedAt;
+  };
+  const elapsedSec = signal(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
+  const timer = setInterval(() => {
+    elapsedSec.set(Math.max(0, Math.floor((Date.now() - originMs()) / 1000)));
+  }, 1000);
+  cleanup(() => clearInterval(timer));
+  const motion = enterMotion("fadeIn", MOTION_DURATION.fast);
+  return (
+    <View
+      accessibilityLabel={props.accessibilityLabel}
+      style={[
+        transcriptRowStyle(false),
+        {
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+          paddingVertical: 0,
+        },
+        motion.style,
+      ]}
+    >
+      <TranscriptRowIconSlot>
+        <BrandSpinner size={12} color={palette().accent} variant="matrix" />
+      </TranscriptRowIconSlot>
+      <Text style={textStyle("label", { color: palette().textMuted })}>
+        {tr("state.thinking")}
+      </Text>
+      <If when={elapsedSec() >= 2}>
+        <Text
+          style={{
+            ...textStyle("caption", { color: palette().textMuted, tabular: true }),
+            opacity: 0.72,
+          }}
+        >
+          {`· ${formatDuration(elapsedSec() * 1000)}`}
+        </Text>
+      </If>
+    </View>
+  );
+}
+
 /** Fine-grained streaming text slice: subscribes only to its own round's text channel. */
 function LiveTextSegment(props: { roundId: string; start: number; end?: number; pane: 0 | 1; itemKey: string }) {
   const slice = computed(() => {
@@ -3826,6 +3913,23 @@ const pendingTurnImages = computed<UserImage[]>(() => {
     ...(img.dataUrl ? { dataUrl: img.dataUrl } : {}),
     ...(img.imagePath ? { imagePath: img.imagePath } : {}),
   }));
+});
+
+const primaryAwaitingResponse = computed<boolean>(() => {
+  if (turnError()) return false;
+  if (activePermissions().length > 0 || activeQuestions().length > 0) return false;
+  const live = liveTurn();
+  if (live?.settling) return false;
+  const hasPending = Boolean(optimisticUserText() || pendingTurnImages().length > 0);
+  const hasRunning = Boolean(runningTurnId());
+  if (!hasPending && !hasRunning) return false;
+  if (liveFallbackItems().length > 0) return false;
+  return !liveBlocksHaveActiveMotion(liveDisplayBlocks(), liveRounds(), 0);
+});
+
+const primaryWaitingStartedAt = computed<number | undefined>(() => {
+  const sid = activeSessionId();
+  return pendingTurnState()?.createdAt ?? (sid ? turnStartedAt(sid) : undefined);
 });
 
 
@@ -4713,6 +4817,8 @@ interface SessionTranscriptListProps {
   pendingCreatedAt: () => number | undefined;
   liveDisplayBlocks: () => LiveDisplayBlock[];
   liveFallbackItems?: () => TranscriptItem[];
+  awaitingResponse?: () => boolean;
+  waitingStartedAt?: () => number | undefined;
   cardPrefix?: string;
   turnError: () => string;
   onDismissTurnError: () => void;
@@ -4800,6 +4906,7 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
         props.pendingImages().length > 0 ||
         props.liveDisplayBlocks().length > 0 ||
         fallbackItems().length > 0 ||
+        Boolean(props.awaitingResponse?.()) ||
         Boolean(props.turnError()) ||
         Boolean(props.sendNotice())
       }
@@ -4811,7 +4918,8 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
               Boolean(props.optimisticUserText()) ||
               props.pendingImages().length > 0 ||
               props.liveDisplayBlocks().length > 0 ||
-              fallbackItems().length > 0
+              fallbackItems().length > 0 ||
+              Boolean(props.awaitingResponse?.())
             }
           >
             {/* Mirrors settled turn spacing and footer height so settling into a persisted turn causes 0px vertical jump. */}
@@ -4832,8 +4940,18 @@ function SessionTranscriptList(props: SessionTranscriptListProps) {
               <If when={fallbackItems().length > 0}>
                 <TranscriptItems items={fallbackItems()} live={true} pane={props.pane} />
               </If>
-              <If when={props.liveDisplayBlocks().length > 0 || fallbackItems().length > 0}>
-                <View style={{ height: compactLayout() ? layout.touchTarget : controlHeight.sm }} />
+              <If
+                when={Boolean(props.awaitingResponse?.())}
+                else={
+                  <If when={props.liveDisplayBlocks().length > 0 || fallbackItems().length > 0}>
+                    <View style={{ height: compactLayout() ? layout.touchTarget : controlHeight.sm }} />
+                  </If>
+                }
+              >
+                <TurnWaitingIndicator
+                  startedAt={props.waitingStartedAt}
+                  accessibilityLabel={`${prefix}turn-waiting-indicator`}
+                />
               </If>
             </View>
           </If>
@@ -4987,6 +5105,7 @@ function Transcript() {
     streamScrollTick();
     live?.rounds.length;
     hasLiveContent();
+    primaryAwaitingResponse();
     isStreamDraining();
     stickToTranscriptEnd();
   });
@@ -5037,6 +5156,8 @@ function Transcript() {
       pendingCreatedAt={() => pendingTurnState()?.createdAt}
       liveDisplayBlocks={liveDisplayBlocks}
       liveFallbackItems={liveFallbackItems}
+      awaitingResponse={primaryAwaitingResponse}
+      waitingStartedAt={primaryWaitingStartedAt}
       turnError={turnError}
       onDismissTurnError={() => turnError.set("")}
       showAuthActionOnError={true}
@@ -9464,7 +9585,9 @@ const secondaryQuestions = computed(() => questionsForSession(secondarySessionId
 const secondaryHeaderState = computed<MarkState | null>(() => {
   if (secondaryRunningTurnId()) return "working";
   if (secondaryPermissions().length > 0 || secondaryQuestions().length > 0) return "needs_you";
+  const pending = secondaryPendingTurnState();
   const id = secondarySessionId();
+  if (pending && id && pending.sessionId === id && !secondaryTurnError()) return "working";
   const row = id ? fleetSessionRow(secondarySessionDevice(), id) : null;
   if (row?.status === "waiting" || row?.needsAttention) return row.status === "error" ? "failed" : "needs_you";
   if (row?.status === "error") return "failed";
@@ -9494,6 +9617,22 @@ const secondaryPendingImages = computed<UserImage[]>(() => {
     ...(img.dataUrl ? { dataUrl: img.dataUrl } : {}),
     ...(img.imagePath ? { imagePath: img.imagePath } : {}),
   }));
+});
+
+const secondaryAwaitingResponse = computed<boolean>(() => {
+  if (secondaryTurnError()) return false;
+  if (secondaryPermissions().length > 0 || secondaryQuestions().length > 0) return false;
+  const live = secondaryLiveTurn();
+  if (live?.settling) return false;
+  const hasPending = Boolean(secondaryOptimisticUserText() || secondaryPendingImages().length > 0);
+  const hasRunning = Boolean(secondaryRunningTurnId());
+  if (!hasPending && !hasRunning) return false;
+  return !liveBlocksHaveActiveMotion(secondaryLiveDisplayBlocks(), secondaryLiveRounds(), 1);
+});
+
+const secondaryWaitingStartedAt = computed<number | undefined>(() => {
+  const sid = secondarySessionId();
+  return secondaryPendingTurnState()?.createdAt ?? (sid ? turnStartedAt(sid) : undefined);
 });
 
 const secondaryVisibleTurnRows = computed(() => {
@@ -9836,6 +9975,7 @@ function SecondaryTranscript() {
     secondaryOptimisticUserText();
     secondaryStreamScrollTick();
     secondaryLiveRounds().length;
+    secondaryAwaitingResponse();
     if (secFollowLatest()) {
       listRef?.scrollToEnd({ animated: false });
       syncSecRailForLatest();
@@ -9907,6 +10047,8 @@ function SecondaryTranscript() {
       pendingTurnId={() => secondaryPendingTurnState()?.turnId ?? ""}
       pendingCreatedAt={() => secondaryPendingTurnState()?.createdAt}
       liveDisplayBlocks={secondaryLiveDisplayBlocks}
+      awaitingResponse={secondaryAwaitingResponse}
+      waitingStartedAt={secondaryWaitingStartedAt}
       cardPrefix="sec-"
       turnError={secondaryTurnError}
       onDismissTurnError={() => secondaryTurnError.set("")}

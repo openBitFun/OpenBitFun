@@ -20,15 +20,12 @@ import {
 
 const root = process.cwd();
 const SOURCE_OWNER_ROOTS = [
-  'OpenBitFun-Installer/src',
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
   // Brand vector assets (assetMetadata colors).
   'design-system/packages/ui/src/brand/assets',
 ];
-const NEAR_PAIR_DECISION_AUDIT_ROOTS = [
-  { root: 'OpenBitFun-Installer/src', args: ['--root', 'OpenBitFun-Installer/src', '--json', '--no-baseline', '--top', '0'] },
-];
+const NEAR_PAIR_DECISION_AUDIT_ROOTS = [];
 
 function contractOwnerHasKnownSource(owner) {
   return String(owner ?? '')
@@ -319,7 +316,7 @@ test('theme color audit emits scoped machine-readable reports', (t) => {
       '}',
       '',
     ].join('\n'),
-    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': [
+    'app/theme/themeRuntime.ts': [
       "document.documentElement.style.setProperty('--runtime-only', '1px');",
       '',
     ].join('\n'),
@@ -531,9 +528,8 @@ test('theme color audit reports fallback tokens that lack a boundary contract', 
 test('theme color audit reports specialized color domains separately from app UI', (t) => {
   const { dir, sourceRoot } = createFixture({
     'design-system/packages/theme-openbitfun/src/test.tokens.css': ':root { --openbitfun-appearance-token-color-text-primary: #111111; }\n',
-    'OpenBitFun-Installer/src/theme/presets.ts': "export const bg = '#222222';\n",
     'public/assets/brand.svg': '<svg><path fill="#333333"/></svg>\n',
-    // Paths that only had a specialized owner in the retired React desktop UI are ordinary app UI.
+    // Paths that only had a specialized owner in retired web surfaces are ordinary app UI.
     'tools/editor/editorColor.ts': "export const editorBg = '#444444';\n",
     'shared/prism/prismTheme.ts': "export const prism = { keyword: '#555555' };\n",
     'app/App.scss': '.app { color: #aaaaaa; }\n',
@@ -547,7 +543,6 @@ test('theme color audit reports specialized color domains separately from app UI
   const report = readJson(reportPath);
   assert.deepEqual(Object.keys(report.colorDomainScopes).sort(), [...COLOR_DOMAIN_KEYS].sort());
   assert.equal(report.colorDomainScopes.tokenContract.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.themePreset.uniqueColors, 1);
   assert.equal(report.colorDomainScopes.assetMetadata.uniqueColors, 1);
   assert.equal(report.colorDomainScopes.appUi.uniqueColors, 3);
   assert.equal(report.colorDomainContracts.activeUncontractedUnique, 0);
@@ -717,7 +712,7 @@ test('theme color audit counts full CSS var governance debt before row truncatio
     (_, index) => `.loose-${index} { color: var(--loose-${index}); }`,
   );
   const { dir, sourceRoot } = createFixture({
-    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': `${runtimeDefinitions.join('\n')}\n`,
+    'app/theme/themeRuntime.ts': `${runtimeDefinitions.join('\n')}\n`,
     'app/App.scss': `${missingRules.join('\n')}\n${fallbackRules.join('\n')}\n${runtimeRules.join('\n')}\n`,
     'app/LooseVar.tsx': [
       'export function LooseVar() {',
@@ -823,11 +818,7 @@ test('theme color audit reports near color pair sources and enforces pair budget
 
 test('theme color audit reports near color pairs inside specialized color domains', (t) => {
   const { dir, sourceRoot } = createFixture({
-    'OpenBitFun-Installer/src/theme/presets.ts': [
-      "export const lightNode = '#111111';",
-      "export const darkNode = '#111112';",
-      '',
-    ].join('\n'),
+    'public/assets/brand.svg': '<svg><path fill="#111111"/><path fill="#111112"/></svg>\n',
     'design-system/packages/theme-openbitfun/src/near.tokens.css': [
       ':root { --near-a: #222222; --near-b: #222225; }',
       '',
@@ -842,16 +833,16 @@ test('theme color audit reports near color pairs inside specialized color domain
   assert.match(reportResult.stdout, /Specialized color-domain near pairs:/);
 
   const report = readJson(reportPath);
-  assert.equal(report.colorDomainNearPairs.themePreset.indistinguishableTotal, 1);
+  assert.equal(report.colorDomainNearPairs.assetMetadata.indistinguishableTotal, 1);
   assert.equal(report.colorDomainNearPairs.tokenContract.nearTotal, 1);
   assert.equal(report.colorDomainNearPairs.appUi.indistinguishableTotal, 0);
   assert.equal(report.colorDomainNearPairs.indistinguishableTotal, 1);
   assert.equal(report.colorDomainNearPairs.nearTotal, 1);
   assert.deepEqual(
-    report.colorDomainNearPairs.themePreset.indistinguishable[0].files.map(file => (
+    report.colorDomainNearPairs.assetMetadata.indistinguishable[0].files.map(file => (
       file.replace(/\\/g, '/').split('/').slice(-3).join('/')
     )),
-    ['src/theme/presets.ts'],
+    ['public/assets/brand.svg'],
   );
 });
 
@@ -929,7 +920,7 @@ test('theme color audit fails when fallback tokens lack a boundary contract', (t
 
 test('theme color audit requires dynamic CSS var families to be registered', (t) => {
   const { dir, sourceRoot } = createFixture({
-    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': [
+    'app/theme/themeRuntime.ts': [
       "for (const [key, value] of Object.entries(theme.extra)) {",
       "  document.documentElement.style.setProperty(`--unregistered-${key}`, value);",
       '}',
@@ -962,7 +953,7 @@ test('theme color audit requires exact exports for dynamic-family CSS var usages
       '}',
       '',
     ].join('\n'),
-    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': [
+    'app/theme/themeRuntime.ts': [
       "for (const [key, value] of Object.entries(theme.colors.purple)) {",
       "  document.documentElement.style.setProperty(`--openbitfun-appearance-token-color-purple-${key}`, value);",
       '}',

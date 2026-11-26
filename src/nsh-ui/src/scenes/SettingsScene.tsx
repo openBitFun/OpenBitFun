@@ -2883,25 +2883,17 @@ function PermissionsSection() {
                   >
                     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.xs }}>
                       <Badge label={`#${index() + 1}`} tone="neutral" />
-                      <Each of={PERMISSION_EFFECTS} key={effect => effect.value}>
-                        {effect => (
-                          <SelectableChip
-                            label={tr(PERMISSION_EFFECT_KEYS[effect().value])}
-                            active={rule().effect === effect().value}
-                            tone={
-                              rule().effect === effect().value
-                                ? effect().value === "deny"
-                                  ? "danger"
-                                  : effect().value === "allow"
-                                    ? "accent"
-                                    : "warning"
-                                : undefined
-                            }
-                            accessibilityLabel={`permission-rule-${rule().localId}-effect-${effect().value}`}
-                            onPress={() => patchPermissionRule(rule().localId, { effect: effect().value })}
-                          />
-                        )}
-                      </Each>
+                      <SegmentedTabs
+                        size={compactLayout() ? "md" : "sm"}
+                        value={rule().effect}
+                        options={PERMISSION_EFFECTS.map(effect => ({
+                          value: effect.value,
+                          label: tr(PERMISSION_EFFECT_KEYS[effect.value]),
+                          tone: effect.value === "deny" ? "danger" : effect.value === "allow" ? "accent" : "warning",
+                          accessibilityLabel: `permission-rule-${rule().localId}-effect-${effect.value}`,
+                        }))}
+                        onChange={value => patchPermissionRule(rule().localId, { effect: value })}
+                      />
                       <View style={{ flex: 1 }} />
                       <IconButton
                         icon="arrow-up"

@@ -22,6 +22,8 @@ mod backend_library;
 mod bridge;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod folder_picker;
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+mod miniapp_launch;
 
 use std::process::ExitCode;
 
@@ -62,6 +64,9 @@ mod platform {
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn main() -> ExitCode {
+    if miniapp_launch::handle_cli_launch() {
+        return ExitCode::SUCCESS;
+    }
     let backend = match backend_library::BackendLibrary::load() {
         Ok(backend) => Some(backend),
         Err(error) => {

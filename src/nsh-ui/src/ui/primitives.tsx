@@ -16,6 +16,7 @@ import {
   type JSX,
   type Placement,
   type StyleProp,
+  type ViewRef,
   type ViewStyle,
 } from "nsh";
 import { Input, Tooltip } from "nsh/base";
@@ -1374,12 +1375,17 @@ export interface SegmentedTabOption<T extends string> {
   badge?: string | number;
   icon?: IconName;
   accessibilityLabel?: string;
+  /** The selected option's text says what it means (Allow / Ask / Deny); plain text otherwise. */
+  tone?: "accent" | "warning" | "danger";
 }
 
 export interface SegmentedTabsProps<T extends string> {
   options: ReadonlyArray<SegmentedTabOption<T>>;
   value: T;
-  size?: "sm" | "md";
+  /** 24 (`xs`, inline toolbars), 28 (`sm`) or 32 (`md`, default) high. */
+  size?: "xs" | "sm" | "md";
+  /** Options share the row's width equally (a mode switch filling its column). */
+  fill?: boolean;
   /** When inside a horizontal `<Scroll>`, keep each tab at its intrinsic width instead of truncating. */
   scrollable?: boolean;
   style?: StyleProp<ViewStyle>;
@@ -1387,141 +1393,169 @@ export interface SegmentedTabsProps<T extends string> {
 }
 
 const SEGMENT_OUTER_RADIUS = radii.md;
-const SEGMENT_PADDING = 3;
+const SEGMENT_PADDING = 2;
 const SEGMENT_INNER_RADIUS = concentricRadius(SEGMENT_OUTER_RADIUS, SEGMENT_PADDING);
+/** The thumb's glide between options: a quick spring that settles without a bounce. */
+const SEGMENT_THUMB_SPRING = { type: "spring", stiffness: 520, damping: 44 } as const;
 
+/**
+ * The one segmented control (a language, a mode, a view switch): a quiet
+ * borderless track and a raised thumb behind the selected option that glides
+ * to the next one. The thumb is laid out from the options' own frames, so
+ * options of any width line up; until they are measured the selected option
+ * draws the thumb itself. Unselected options change only their text on hover.
+ */
 export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
+  const size = () => props.size ?? "md";
+  const height = () => controlHeight[size()];
+  const fontPx = () => (size() === "md" ? 13 : 12);
+  const frames = signal<Record<string, { x: number; width: number }>>({});
+  const thumb = signal<ViewRef | null>(null);
+  const frame = () => frames()[props.value] ?? null;
+  const select = (value: T) => {
+    if (value === props.value) return;
+    // The thumb's frame moves in this turn: glide it there (at once under reduced motion).
+    if (!reduceMotion() && frame()) thumb()?.animateLayout(SEGMENT_THUMB_SPRING);
+    props.onChange(value);
+  };
+  const thumbStyle = (): ViewStyle => ({
+    backgroundColor: palette().segmentedThumbBg,
+    borderRadius: SEGMENT_INNER_RADIUS,
+    borderCurve: "continuous",
+    boxShadow: isLightAppearance() ? elevationShadow(1) : undefined,
+  });
   return (
     <View
       role="tablist"
       style={[
         {
           boxSizing: "border-box",
-          height: controlHeight[props.size ?? "md"],
+          position: "relative",
+          height: height(),
           flexDirection: "row",
           alignItems: "center",
-          width: "fit-content",
+          width: props.fill ? "100%" : "fit-content",
           flexShrink: 0,
           maxWidth: props.scrollable ? undefined : "100%",
-          gap: 2,
           padding: SEGMENT_PADDING,
           borderRadius: SEGMENT_OUTER_RADIUS,
           borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: isLightAppearance()
-            ? palette().segmentedTrackBg
-            : palette().canvasSubtle,
+          backgroundColor: palette().segmentedTrackBg,
         },
         props.style,
       ]}
     >
-      <Each of={props.options} key={option => option.value}>
-        {option => (
+      <If when={frame()}>
+        {measured => (
           <View
-            role="tab"
-            hitSlop={touchSlop(controlHeight[props.size ?? "md"])}
-            accessibilityLabel={option().accessibilityLabel}
-            accessibilityState={{ selected: option().value === props.value }}
-            onPress={() => props.onChange(option().value)}
+            ref={el => thumb.set(el)}
             style={{
-              boxSizing: "border-box",
-              height: "100%",
-              flexDirection: "row",
-              alignItems: "center",
-              flexShrink: props.scrollable ? 0 : 1,
-              minWidth: props.scrollable ? undefined : 0,
-              gap: space.xs,
-              paddingHorizontal: (props.size ?? "md") === "sm" ? 10 : 14,
-              paddingVertical: 0,
-              borderRadius: SEGMENT_INNER_RADIUS,
-              borderCurve: "continuous",
-              borderWidth: option().value === props.value ? 1 : 0,
-              borderColor:
-                option().value === props.value
-                  ? isLightAppearance()
-                    ? palette().borderSubtle
-                    : palette().border
-                  : "transparent",
-              backgroundColor:
-                option().value === props.value
-                  ? isLightAppearance()
-                    ? palette().panelRaised
-                    : palette().panelHover
-                  : "transparent",
-              // No inset top-edge highlight on controls: it reads as a white seam on fills.
-              boxShadow:
-                option().value === props.value && isLightAppearance()
-                  ? elevationShadow(1)
-                  : undefined,
-              cursor: "pointer",
-              userSelect: "none",
-              ...pressTransition(MOTION_DURATION.fast),
+              ...thumbStyle(),
+              pointerEvents: "none",
+              position: "absolute",
+              top: SEGMENT_PADDING,
+              bottom: SEGMENT_PADDING,
+              left: measured().x,
+              width: measured().width,
             }}
-            hoverStyle={{
-              backgroundColor:
-                option().value === props.value
-                  ? isLightAppearance()
-                    ? palette().panelRaised
-                    : palette().panelHover
-                  : palette().surfaceSubtle,
-            }}
-            activeStyle={tactileActiveStyle(0.98)}
-            focusVisibleStyle={focusRingStyle()}
-          >
-            <If when={option().icon ?? ""}>
-              {iconName => (
-                <Icon
-                  name={iconName() as IconName}
-                  size={12}
-                  color={
-                    option().value === props.value ? palette().text : palette().textMuted
-                  }
-                />
-              )}
-            </If>
-            <Text
+          />
+        )}
+      </If>
+      <Each of={props.options} key={option => option.value}>
+        {option => {
+          const selected = () => option().value === props.value;
+          const hovered = signal(false);
+          const selectedColor = () => {
+            const tone = option().tone;
+            if (tone === "danger") return palette().danger;
+            if (tone === "warning") return palette().warning;
+            if (tone === "accent") return palette().accent;
+            return palette().text;
+          };
+          const textColor = () =>
+            selected() ? selectedColor() : hovered() ? palette().textSecondary : palette().textMuted;
+          return (
+            <View
+              role="tab"
+              hitSlop={touchSlop(height())}
+              accessibilityLabel={option().accessibilityLabel}
+              accessibilityState={{ selected: selected() }}
+              onPress={() => select(option().value)}
+              onMouseEnter={() => hovered.set(true)}
+              onMouseLeave={() => hovered.set(false)}
+              onLayout={event => {
+                const x = event.bounds.origin.x;
+                const width = event.bounds.size.width;
+                const held = frames()[option().value];
+                if (held && held.x === x && held.width === width) return;
+                frames.update(all => ({ ...all, [option().value]: { x, width } }));
+              }}
               style={{
+                boxSizing: "border-box",
+                height: "100%",
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                flexGrow: props.fill ? 1 : 0,
+                flexBasis: props.fill ? 0 : "auto",
                 flexShrink: props.scrollable ? 0 : 1,
                 minWidth: props.scrollable ? undefined : 0,
-                color:
-                  option().value === props.value ? palette().text : palette().textMuted,
-                fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
-                fontWeight: option().value === props.value ? "600" : "400",
-                lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.24),
-                numberOfLines: 1,
-                textOverflow: props.scrollable ? undefined : "ellipsis",
+                gap: space.xs,
+                paddingHorizontal: size() === "md" ? 14 : size() === "sm" ? 10 : 8,
+                borderRadius: SEGMENT_INNER_RADIUS,
+                borderCurve: "continuous",
+                // Before the options are measured the selected one draws the thumb itself.
+                ...(selected() && !frame() ? thumbStyle() : { backgroundColor: "transparent" }),
+                cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
               }}
+              activeStyle={tactileActiveStyle(0.97)}
+              focusVisibleStyle={focusRingStyle()}
             >
-              {option().label}
-            </Text>
-            <If
-              when={
-                option().badge !== undefined && option().badge !== null
-                  ? String(option().badge)
-                  : ""
-              }
-            >
-              {badgeText => (
-                <Text
-                  style={{
-                    flexShrink: 0,
-                    color:
-                      option().value === props.value
-                        ? palette().accent
-                        : palette().textMuted,
-                    fontSize: textSize(11),
-                    fontWeight: "600",
-                    fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(11, 1.24),
-                  }}
-                >
-                  {badgeText()}
-                </Text>
-              )}
-            </If>
-          </View>
-        )}
+              <If when={option().icon ?? ""}>
+                {iconName => <Icon name={iconName() as IconName} size={size() === "md" ? 14 : 12} color={textColor()} />}
+              </If>
+              <Text
+                style={{
+                  flexShrink: props.scrollable ? 0 : 1,
+                  minWidth: props.scrollable ? undefined : 0,
+                  color: textColor(),
+                  fontSize: textSize(fontPx()),
+                  fontWeight: selected() ? "600" : "500",
+                  lineHeight: textLineHeight(fontPx(), 1.24),
+                  numberOfLines: 1,
+                  textOverflow: props.scrollable ? undefined : "ellipsis",
+                  ...paintTransition(MOTION_DURATION.fast),
+                }}
+              >
+                {option().label}
+              </Text>
+              <If
+                when={
+                  option().badge !== undefined && option().badge !== null
+                    ? String(option().badge)
+                    : ""
+                }
+              >
+                {badgeText => (
+                  <Text
+                    style={{
+                      flexShrink: 0,
+                      color: selected() ? palette().accent : palette().textMuted,
+                      fontSize: textSize(11),
+                      fontWeight: "600",
+                      fontVariant: ["tabular-nums"],
+                      lineHeight: textLineHeight(11, 1.24),
+                    }}
+                  >
+                    {badgeText()}
+                  </Text>
+                )}
+              </If>
+            </View>
+          );
+        }}
       </Each>
     </View>
   );

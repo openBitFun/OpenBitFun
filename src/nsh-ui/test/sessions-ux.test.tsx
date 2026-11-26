@@ -2287,3 +2287,102 @@ test("interleaved thinking and non-explore commands fold both live and settled w
   await app.waitFor("footprint -p 123");
   expect(app.texts()).not.toContain("Thinking…");
 });
+
+test("sending a message immediately shows a waiting indicator until streaming starts and between tool rounds", async () => {
+  const backend = createBackend({
+    sessions: [
+      {
+        sessionId: "session-wait",
+        sessionName: "Wait flow",
+        lastUpdated: 1763150000000,
+        messageCount: 0,
+        agentType: "Standard",
+      },
+    ],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Wait flow");
+  await app.waitFor("How can I help today?");
+
+  // Frame-0 feedback right after pressing Send (before turn-started or any model chunks arrive).
+  await app.type("composer", "Explain the boot flow");
+  await app.press("Send");
+  await app.waitFor("Explain the boot flow");
+  await app.waitFor("label:turn-waiting-indicator");
+
+  // Still visible after dialog-turn-started while awaiting first token (TTFT).
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-wait", turnId: "turn-wait-1", userInput: "Explain the boot flow" },
+  });
+  await app.waitFor("label:turn-waiting-indicator");
+
+  // Hides once a tool starts running, then returns cleanly after the tool finishes while waiting for the next round.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-wait",
+      turnId: "turn-wait-1",
+      roundId: "r-1",
+      toolEvent: {
+        event_type: "Started",
+        tool_id: "read-1",
+        tool_name: "Read",
+        params: { file_path: "src/main.rs" },
+      },
+    },
+  });
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://tool-event",
+    payload: {
+      sessionId: "session-wait",
+      turnId: "turn-wait-1",
+      roundId: "r-1",
+      toolEvent: {
+        event_type: "Completed",
+        tool_id: "read-1",
+        tool_name: "Read",
+        result: { content: "fn main() {}" },
+      },
+    },
+  });
+  await app.waitFor("label:turn-waiting-indicator");
+
+  // Hides while waiting on a user permission prompt, then resumes when resolved.
+  await app.host.send("openbitfun.event", {
+    event: "permission://event",
+    payload: {
+      event: "asked",
+      request: {
+        requestId: "perm-wait-1",
+        action: "run_command",
+        resources: ["cargo check"],
+        sessionId: "session-wait",
+        agentId: "Standard",
+      },
+    },
+  });
+  await app.waitFor("allow-once-perm-wait-1");
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+
+  await app.press("allow-once-perm-wait-1");
+  await app.waitFor("allow-once-perm-wait-1", { state: "gone" });
+  await app.waitFor("label:turn-waiting-indicator");
+
+  // Hides as soon as assistant text begins streaming in the next round.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-wait", turnId: "turn-wait-1", roundId: "r-2", contentType: "text", text: "Boot starts in main." },
+  });
+  await app.waitFor("Boot starts in main.");
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+
+  // Stays hidden once the turn completes.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-completed",
+    payload: { sessionId: "session-wait", turnId: "turn-wait-1" },
+  });
+  await app.waitUntil(() => !app.shows("label:turn-waiting-indicator"));
+});

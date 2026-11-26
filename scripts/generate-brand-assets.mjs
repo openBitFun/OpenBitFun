@@ -1,6 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -41,10 +39,6 @@ const LEGACY_APPLICATION_ASSETS = [
   'src/apps/desktop/icons/Square284x284Logo.png',
   'src/apps/desktop/icons/Square310x310Logo.png',
   'src/apps/desktop/icons/StoreLogo.png',
-  'OpenBitFun-Installer/src/Logo-ICON.png',
-  'OpenBitFun-Installer/src-tauri/icons/icon.png',
-  'OpenBitFun-Installer/src-tauri/icons/icon.ico',
-  'OpenBitFun-Installer/src-tauri/icons/icon.icns',
   'src/apps/relay-server/static/assets/Logo-ICON-BOaKcXgO.png',
 ];
 
@@ -153,39 +147,35 @@ async function createApplicationIcon(applicationMark) {
 }
 
 
-async function generateWindowsIcon(applicationIcon, renderIcon) {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'openbitfun-tauri-icons-'));
-  const inputPath = path.join(tempDir, 'openbitfun-app-icon.png');
-  const tauriCliPath = path.join(ROOT_DIR, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
-  try {
-    await writeFile(inputPath, applicationIcon);
-    execFileSync(
-      process.execPath,
-      [tauriCliPath, 'icon', inputPath, '--output', tempDir],
-      { cwd: ROOT_DIR, stdio: 'ignore', windowsHide: true },
-    );
+const WINDOWS_ICO_SIZES = [16, 24, 32, 48, 64, 256];
 
-    // Keep Tauri's directory metadata, but rasterize each Windows size from
-    // the canonical application artwork so the container matches the exports.
-    const icoTemplate = await readFile(path.join(tempDir, 'icon.ico'));
-    const frameCount = icoTemplate.readUInt16LE(4);
-    const icoDirectory = Buffer.from(icoTemplate.subarray(0, 6 + frameCount * 16));
-    const icoFrames = [];
-    let icoOffset = icoDirectory.length;
-    for (let index = 0; index < frameCount; index++) {
-      const entry = 6 + index * 16;
-      const size = icoDirectory[entry] || 256;
-      const png = await renderIcon(size);
-      icoDirectory.writeUInt32LE(png.length, entry + 8);
-      icoDirectory.writeUInt32LE(icoOffset, entry + 12);
-      icoFrames.push(png);
-      icoOffset += png.length;
-    }
+async function generateWindowsIcon(renderIcon) {
+  // Encode a standard multi-resolution PNG-in-ICO container directly without
+  // shelling out to `@tauri-apps/cli icon`.
+  const icoFrames = await Promise.all(WINDOWS_ICO_SIZES.map(size => renderIcon(size)));
+  const icoDirectory = Buffer.alloc(6 + WINDOWS_ICO_SIZES.length * 16);
+  icoDirectory.writeUInt16LE(0, 0); // reserved
+  icoDirectory.writeUInt16LE(1, 2); // image type: ICO
+  icoDirectory.writeUInt16LE(WINDOWS_ICO_SIZES.length, 4);
 
-    return Buffer.concat([icoDirectory, ...icoFrames]);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
+  let icoOffset = icoDirectory.length;
+  for (let index = 0; index < WINDOWS_ICO_SIZES.length; index++) {
+    const size = WINDOWS_ICO_SIZES[index];
+    const png = icoFrames[index];
+    const entry = 6 + index * 16;
+    const dim = size >= 256 ? 0 : size;
+    icoDirectory[entry] = dim;
+    icoDirectory[entry + 1] = dim;
+    icoDirectory[entry + 2] = 0; // color palette count
+    icoDirectory[entry + 3] = 0; // reserved
+    icoDirectory.writeUInt16LE(0, entry + 4); // color planes (0 for PNG frames)
+    icoDirectory.writeUInt16LE(32, entry + 6); // bits per pixel
+    icoDirectory.writeUInt32LE(png.length, entry + 8);
+    icoDirectory.writeUInt32LE(icoOffset, entry + 12);
+    icoOffset += png.length;
   }
+
+  return Buffer.concat([icoDirectory, ...icoFrames]);
 }
 
 async function removeLegacyApplicationAssets() {
@@ -220,7 +210,7 @@ async function generateBrandAssets() {
     }
     return iconCache.get(size);
   };
-  const windowsIcon = await generateWindowsIcon(applicationIconLarge, renderIcon);
+  const windowsIcon = await generateWindowsIcon(renderIcon);
 
   const exportDir = outputPath('assets', 'brand', 'exports');
   await mkdir(exportDir, { recursive: true });
@@ -231,19 +221,23 @@ async function generateBrandAssets() {
   await copyFile(SOURCE_APP_MARK, path.join(legacySourceDir, 'openbitfun-app-mark.png'));
   const componentAssetDir = outputPath('design-system', 'packages', 'ui', 'src', 'brand', 'assets');
   await mkdir(componentAssetDir, { recursive: true });
-  for (const size of [16, 32, 128, 256, 512]) {
-    await writePng(path.join(componentAssetDir, `openbitfun-app-icon-${size}.png`), await renderIcon(size));
-  }
-  for (const size of EXPORT_SIZES) {
-    const dark = await renderMark(svg, size, '#202020');
-    const light = await renderMark(svg, size, '#e8e8e8');
-    await writePng(path.join(exportDir, `openbitfun-mark-dark-${size}.png`), dark);
-    await writePng(path.join(exportDir, `openbitfun-mark-light-${size}.png`), light);
-    await writePng(
-      path.join(exportDir, `openbitfun-app-icon-${size}.png`),
-      await renderIcon(size),
-    );
-  }
+  await Promise.all([
+    ...[16, 32, 128, 256, 512].map(async size => {
+      await writePng(path.join(componentAssetDir, `openbitfun-app-icon-${size}.png`), await renderIcon(size));
+    }),
+    ...EXPORT_SIZES.map(async size => {
+      const [dark, light, appIcon] = await Promise.all([
+        renderMark(svg, size, '#202020'),
+        renderMark(svg, size, '#e8e8e8'),
+        renderIcon(size),
+      ]);
+      await Promise.all([
+        writePng(path.join(exportDir, `openbitfun-mark-dark-${size}.png`), dark),
+        writePng(path.join(exportDir, `openbitfun-mark-light-${size}.png`), light),
+        writePng(path.join(exportDir, `openbitfun-app-icon-${size}.png`), appIcon),
+      ]);
+    }),
+  ]);
   await writeFile(path.join(exportDir, 'openbitfun-app-icon.ico'), windowsIcon);
   await writeFile(path.join(exportDir, 'openbitfun-app-icon.icns'), macosFallback);
 
@@ -265,25 +259,10 @@ async function generateBrandAssets() {
     );
   }
 
-  await writePng(
-    outputPath('src', 'apps', 'relay-server', 'static', 'brand', 'openbitfun-app-icon.png'),
-    applicationIcon,
-  );
-
-  const installerBrandDir = outputPath('OpenBitFun-Installer', 'src', 'assets');
-  await writePng(path.join(installerBrandDir, 'openbitfun-mark-dark.png'), darkMark);
-  await writePng(path.join(installerBrandDir, 'openbitfun-mark-light.png'), lightMark);
-  await writePng(path.join(installerBrandDir, 'openbitfun-app-icon.png'), applicationIcon);
-  const installerIconDir = outputPath('OpenBitFun-Installer', 'src-tauri', 'icons');
-  await writePng(path.join(installerIconDir, 'openbitfun-app-icon.png'), applicationIconLarge);
-  await writePng(path.join(installerIconDir, 'openbitfun-app-icon.ico'), windowsIcon);
-  await writePng(path.join(installerIconDir, 'openbitfun-app-icon.icns'), macosFallback);
-
-  for (const directory of [installerBrandDir,
-    outputPath('src', 'apps', 'relay-server', 'static', 'brand')]) {
-    for (const size of [16, 32]) {
-      await writePng(path.join(directory, `openbitfun-app-icon-${size}.png`), await renderIcon(size));
-    }
+  const relayBrandDir = outputPath('src', 'apps', 'relay-server', 'static', 'brand');
+  await writePng(path.join(relayBrandDir, 'openbitfun-app-icon.png'), applicationIcon);
+  for (const size of [16, 32]) {
+    await writePng(path.join(relayBrandDir, `openbitfun-app-icon-${size}.png`), await renderIcon(size));
   }
 
   await removeLegacyApplicationAssets();

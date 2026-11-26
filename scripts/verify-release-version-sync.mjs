@@ -7,8 +7,6 @@ const expected = args.version || readJsonVersion('package.json');
 const versions = new Map([
   ['package.json', readJsonVersion('package.json')],
   ['Cargo.toml', readTomlVersion('Cargo.toml', /version = "([^"]+)" # x-release-please-version/)],
-  ['OpenBitFun-Installer/package.json', readJsonVersion('OpenBitFun-Installer/package.json')],
-  ['OpenBitFun-Installer/src-tauri/Cargo.toml', readTomlVersion('OpenBitFun-Installer/src-tauri/Cargo.toml', /^version = "([^"]+)"/m)],
   // The native desktop app's manifest (`nsh build` reads its version).
   ['src/apps/desktop-nsh/nsh.json', readJsonVersion('src/apps/desktop-nsh/nsh.json')],
   ['src/miniapp-market-web/package.json', readJsonVersion('src/miniapp-market-web/package.json')],

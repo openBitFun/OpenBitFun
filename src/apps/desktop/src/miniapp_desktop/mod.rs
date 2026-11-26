@@ -18,11 +18,48 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-/// Retain the old Desktop command name for installed clients. Shell commands
-/// are now implemented exclusively by the independent window executable.
+/// Retain the old Desktop command name for installed clients. Independent
+/// MiniApp windows are now native NSH windows driven through `miniapp_inline`.
 pub(crate) fn miniapp_shell_call(request: Value) -> Result<Value, String> {
     let _ = request;
     Err("MiniApp Shell command is unavailable on this surface".into())
+}
+
+/// Opens a MiniApp window requested via `--miniapp-launch <launch.json>` on
+/// cold startup once the native NSH shell attaches with `miniapp.window.open`.
+pub(crate) fn maybe_open_pending_cli_launch(app: &HostHandle) {
+    static CONSUMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if CONSUMED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let Ok(raw_path) = std::env::var("OPENBITFUN_PENDING_MINIAPP_LAUNCH") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(raw_path.trim());
+    if path.as_os_str().is_empty() || app.try_state::<DesktopMiniApps>().is_none() {
+        return;
+    }
+    let handle = app.clone();
+    tokio::spawn(async move {
+        let record = match launcher::read_record(&path) {
+            Ok(record) => record,
+            Err(error) => {
+                log::warn!(
+                    "Failed to read pending MiniApp launch record: path={}, error={}",
+                    path.display(),
+                    error
+                );
+                return;
+            }
+        };
+        if let Err(error) = open_window(&handle, record, None).await {
+            log::warn!(
+                "Failed to open pending MiniApp window on startup: path={}, error={}",
+                path.display(),
+                error
+            );
+        }
+    });
 }
 
 /// Arbitrate before initializing the Agent runtime. OS locks are released on
@@ -646,67 +683,90 @@ async fn record(
 async fn open_window(
     app: &HostHandle,
     record: launcher::LaunchRecord,
-    icon_svg: Option<String>,
+    _icon_svg: Option<String>,
 ) -> Result<Ticket, String> {
-    let icon_record = record.clone();
-    tokio::task::spawn_blocking(move || launcher::prepare_icons(&icon_record, icon_svg.as_deref()))
-        .await
-        .map_err(|e| e.to_string())??;
+    let workspace = local_workspace(app, record.workspace_path.clone()).await?;
+    let miniapp = miniapp_api::get_miniapp(
+        crate::host::State::from(app.state()),
+        miniapp_api::GetMiniAppRequest {
+            app_id: record.app_id.clone(),
+            appearance_mode: Some(crate::appearance::AppearanceConfig::miniapp_mode().into()),
+            workspace_path: workspace.clone(),
+        },
+    )
+    .await?;
+    if miniapp.compiled_html.trim().is_empty() {
+        return Err("MiniApp document is empty; rebuild it in OpenBitFun".into());
+    }
+
     let host = app.state::<DesktopMiniApps>();
     let (instance, view) = host.instances.prepare(
         record.app_id.clone(),
-        record.workspace_path.clone(),
+        workspace.clone(),
         MiniAppViewKind::Window,
     )?;
-    if let Some(lease) = host
-        .shells
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get_mut(&view.view_id)
-    {
-        lease.push("focus", Value::Null);
+    let already_open = {
+        let mut shells = host.shells.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(lease) = shells.get_mut(&view.view_id) {
+            lease.push("focus", Value::Null);
+            true
+        } else {
+            false
+        }
+    };
+    if already_open {
+        let _ = app
+            .native()
+            .shell_request(
+                "miniapp.window.open",
+                json!({
+                    "appId": record.app_id,
+                    "workspacePath": workspace,
+                    "name": record.name,
+                    "launchId": record.launch_id,
+                    "transferConfirmed": true,
+                }),
+                crate::host::shell::SHELL_REQUEST_TIMEOUT,
+            )
+            .await;
         changed(app);
         return Ok(Ticket { instance, view });
     }
     // The main surface already asked before transferring an existing tab.
-    if instance
+    let transfer_confirmed = instance
         .primary_view
         .as_ref()
-        .is_some_and(|view| view.kind == MiniAppViewKind::Tab)
-    {
+        .is_some_and(|view| view.kind == MiniAppViewKind::Tab);
+    if transfer_confirmed {
         host.confirmed_transfers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(view.view_id.clone());
     }
-    let path = launcher::write_record(&record)?;
-    #[cfg(target_os = "macos")]
-    let spawn = {
-        let native = tokio::task::spawn_blocking(move || launcher::runtime_bundle(&record))
-            .await
-            .map_err(|e| e.to_string())??;
-        create_command("/usr/bin/open")
-            .arg("-n")
-            .arg(native)
-            .spawn()
-    };
-    #[cfg(not(target_os = "macos"))]
-    let spawn = create_command(launcher::shell_executable(&record.host_executable)?)
-        .arg("--miniapp-launch")
-        .arg(path)
-        .spawn();
-    let _ = path;
-    let mut child = match spawn {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = host.instances.detach(&instance.instance_id, &view.view_id);
-            return Err(error.to_string());
-        }
-    };
-    // Reap launchers without making Tokio shutdown wait for an independent shell.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    let _ = launcher::write_record(&record);
+    let open_result = app
+        .native()
+        .shell_request(
+            "miniapp.window.open",
+            json!({
+                "appId": record.app_id,
+                "workspacePath": workspace,
+                "name": record.name,
+                "launchId": record.launch_id,
+                "transferConfirmed": transfer_confirmed,
+            }),
+            crate::host::shell::SHELL_REQUEST_TIMEOUT,
+        )
+        .await;
+    if let Err(error) = open_result {
+        let _ = host.instances.detach(&instance.instance_id, &view.view_id);
+        host.confirmed_transfers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&view.view_id);
+        return Err(error);
+    }
+    host.liveness_wake.notify_one();
     changed(app);
     Ok(Ticket { instance, view })
 }
@@ -969,6 +1029,25 @@ async fn dispatch(app: &HostHandle, method: &str, params: Value) -> Result<Value
         crate::handle_secondary_launch_host(app);
         return Ok(Value::Null);
     }
+    if method == "openLaunch" {
+        let _guard = host.launches.lock().await;
+        let launch_id = string(&params, "launchId")?;
+        uuid::Uuid::parse_str(&launch_id).map_err(|_| "Invalid MiniApp launch identity")?;
+        let data_dir = app
+            .state::<AppState>()
+            .miniapp_manager
+            .path_manager()
+            .user_data_dir();
+        let path = host
+            .channel
+            .directory(&data_dir)
+            .join("launchers")
+            .join(launch_id)
+            .join("launch.json");
+        let record = launcher::read_record(&path)?;
+        let ticket = open_window(app, record, None).await?;
+        return Ok(json!(ticket));
+    }
     if method == "open" {
         let _guard = host.launches.lock().await;
         let launch_id = string(&params, "launchId")?;
@@ -1034,27 +1113,13 @@ async fn dispatch(app: &HostHandle, method: &str, params: Value) -> Result<Value
         let locale =
             crate::api::i18n_api::i18n_get_current_language(crate::host::State::from(app.state()))
                 .await?;
-        let catalog =
-            include_str!("../../../../shared/miniapp-chrome/presentation-labels.generated.json");
-        let catalog: Value = serde_json::from_str(catalog).map_err(|e| e.to_string())?;
-        let shared_terms = match locale.as_str() {
-            "zh-CN" => include_str!("../../../../shared/i18n/resources/shared/zh-CN/terms.json"),
-            "zh-TW" => include_str!("../../../../shared/i18n/resources/shared/zh-TW/terms.json"),
-            _ => include_str!("../../../../shared/i18n/resources/shared/en-US/terms.json"),
-        };
-        let shared_terms: Value = serde_json::from_str(shared_terms).map_err(|e| e.to_string())?;
-        let mut ui = catalog.get(&locale).unwrap_or(&catalog["en-US"]).clone();
-        for key in ["minimize", "maximize", "restore", "close"] {
-            ui[key] = shared_terms["window"][key].clone();
-        }
-
         let transfer_confirmed = host
             .confirmed_transfers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&view.view_id);
         return Ok(
-            json!({"presentationCapabilities":[ipc::MINIAPP_CUSTOM_CHROME_CAPABILITY,ipc::MINIAPP_CHAT_SNAPSHOT_CAPABILITY,ipc::MINIAPP_AGENT_BRIDGE_CAPABILITY],"transferConfirmed":transfer_confirmed,"instance":instance,"view":view,"app":miniapp,"hostEpoch":host.instances.snapshot().host_epoch,"locale":locale,"appearanceMode":crate::appearance::AppearanceConfig::miniapp_mode(),"ui":ui}),
+            json!({"presentationCapabilities":[ipc::MINIAPP_CUSTOM_CHROME_CAPABILITY,ipc::MINIAPP_CHAT_SNAPSHOT_CAPABILITY,ipc::MINIAPP_AGENT_BRIDGE_CAPABILITY],"transferConfirmed":transfer_confirmed,"instance":instance,"view":view,"app":miniapp,"hostEpoch":host.instances.snapshot().host_epoch,"locale":locale,"appearanceMode":crate::appearance::AppearanceConfig::miniapp_mode(),"ui":{}}),
         );
     }
     let instance_id = string(&params, "instanceId")?;

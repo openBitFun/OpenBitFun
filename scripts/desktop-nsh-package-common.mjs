@@ -1,7 +1,7 @@
 // Shared steps of the native NSH desktop packaging scripts
 // (`package-desktop-nsh-{macos,windows,linux}.mjs`): resolving the product
 // definition (`products/`, `scripts/product-customization/`), building the UI
-// bundle, the backend library, the runner and the MiniApp window shell, the
+// bundle, the backend library and the runner, the
 // resource list the backend looks for, and the in-app updater archive.
 //
 // The backend finds its resources relative to the executable, so each
@@ -26,11 +26,32 @@
 // product-scoped Cargo target directory. The default product keeps the
 // regular target directory and the compiled-in defaults.
 
-import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { totalmem } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildDesktopWebUiAsync,
+  collectSourceFiles,
+  readNshVersion,
+  resolveNshEnvironment,
+} from "./build-desktop-web-ui.mjs";
+import { runGcBestEffort } from "./cargo-target-gc.mjs";
 import { ensureFlashgrepBinary, flashgrepBinaryName } from "./prepare-flashgrep-resource.mjs";
 import { syncVendorAssets } from "./sync-nsh-vendor-assets.mjs";
 import { extractProductConfigArg } from "./product-customization/cli.mjs";
@@ -47,6 +68,9 @@ export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The build stamp of a compiled DeepSeek Harness profile (`scripts/prepare-dsh-profile.mjs`). */
 const DSH_PROFILE_DIR = join(root, "packages/dsh-acp/dist-profile");
 const DSH_PROFILE_STAMP = ".openbitfun-bridge.json";
+const NATIVE_UI_STAMP_SCHEMA = 1;
+const DESKTOP_NSH_SKIP_DIRS = new Set([".nsh", "native", "target", "node_modules", "test", "vendor"]);
+const PARALLEL_RELEASE_MIN_RAM_BYTES = 24 * 1024 * 1024 * 1024;
 
 /**
  * `--profile <p>`, `--target <triple>`, `--skip-build`, `--updater-archive`,
@@ -102,6 +126,24 @@ export function run(cmd, cmdArgs, opts = {}) {
   });
 }
 
+export function runAsync(cmd, cmdArgs, opts = {}) {
+  console.log(`$ ${cmd} ${cmdArgs.join(" ")}`);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(cmd, cmdArgs, {
+      cwd: root,
+      stdio: "inherit",
+      windowsHide: true,
+      shell: process.platform === "win32" && !cmd.endsWith(".exe"),
+      ...opts,
+    });
+    child.on("error", rejectPromise);
+    child.on("close", (code, signal) => {
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error(`${cmd} ${cmdArgs.join(" ")} failed (status ${code ?? signal ?? "unknown"})`));
+    });
+  });
+}
+
 /**
  * Where cargo puts `profileDir` outputs for `target` (or the host), under
  * `env`'s `CARGO_TARGET_DIR` (a non-default product's backend build) or the
@@ -110,6 +152,88 @@ export function run(cmd, cmdArgs, opts = {}) {
 export function cargoOutDir({ profileDir, target }, env = process.env) {
   const targetDir = env.CARGO_TARGET_DIR ? resolve(root, env.CARGO_TARGET_DIR) : join(root, "target");
   return join(targetDir, ...(target ? [target] : []), profileDir);
+}
+
+/**
+ * Isolated Cargo target directory for the standalone NSH runner workspace
+ * (`src/apps/desktop-nsh/native`), matching CI (`target/desktop-nsh-runner`) so
+ * the runner compiles concurrently with `openbitfun-desktop` without contending
+ * on root `target/.cargo-lock`.
+ */
+export function runnerTargetDir(env = process.env) {
+  const baseTargetDir = env.CARGO_TARGET_DIR ? resolve(root, env.CARGO_TARGET_DIR) : join(root, "target");
+  return join(baseTargetDir, "desktop-nsh-runner");
+}
+
+export function runnerBinaryName(target) {
+  const windows = target ? target.includes("windows") : process.platform === "win32";
+  return windows ? "openbitfun-nsh.exe" : "openbitfun-nsh";
+}
+
+/**
+ * Stages the compiled `openbitfun-nsh` runner binary next to the workspace's
+ * `libopenbitfun_desktop_lib` in `target/<target?>/<profileDir>/` so all dev
+ * launchers, smoke tests, and packaging scripts keep their existing paths.
+ */
+export function stageRunnerBinary({ profileDir, target, env = process.env }) {
+  const name = runnerBinaryName(target);
+  const src = join(runnerTargetDir(env), ...(target ? [target] : []), profileDir, name);
+  const dest = join(cargoOutDir({ profileDir, target }, env), name);
+  if (!existsSync(src)) {
+    throw new Error(`Runner binary was not produced: ${src}`);
+  }
+  const srcStat = statSync(src);
+  if (existsSync(dest)) {
+    const destStat = statSync(dest);
+    if (destStat.size === srcStat.size && Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < 1) {
+      return dest;
+    }
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  const tmp = `${dest}.stage-${process.pid}-${Date.now()}`;
+  try {
+    copyFileSync(src, tmp);
+    if (!name.endsWith(".exe")) {
+      chmodSync(tmp, srcStat.mode | 0o111);
+    }
+    utimesSync(tmp, srcStat.atime, srcStat.mtime);
+    renameSync(tmp, dest);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+  return dest;
+}
+
+/**
+ * Whether `openbitfun-desktop` and `openbitfun-nsh` runner builds should run
+ * concurrently. Non-LTO profiles (`dev`, `desktop-dev`, `release-fast`) always
+ * parallelize; `release` (ThinLTO) parallelizes on high-RAM developer hosts and
+ * stays sequential on memory-constrained CI runners unless overridden.
+ */
+export function shouldParallelizeCargo({
+  profile = "release",
+  env = process.env,
+  totalMemBytes = totalmem(),
+} = {}) {
+  const override = String(env.OPENBITFUN_PARALLEL_CARGO ?? "").trim().toLowerCase();
+  if (override === "0" || override === "false" || override === "off") return false;
+  if (override === "1" || override === "true" || override === "on") return true;
+  if (profile !== "release") return true;
+  return !env.CI && totalMemBytes >= PARALLEL_RELEASE_MIN_RAM_BYTES;
+}
+
+/**
+ * Best-effort Cargo target GC after local (non-CI) dev/package runs, covering
+ * both root `target/` and the isolated `target/desktop-nsh-runner/`.
+ */
+export function runDesktopTargetGc({ profile, target = null, env = process.env } = {}) {
+  if (env.CI) return;
+  const enabled = !["0", "false", "no"].includes(String(env.OPENBITFUN_TARGET_GC ?? "1").toLowerCase());
+  if (!enabled) return;
+  const baseTargetDir = env.CARGO_TARGET_DIR ? resolve(root, env.CARGO_TARGET_DIR) : join(root, "target");
+  runGcBestEffort({ rootDir: root, targetDir: baseTargetDir, profile, triple: target });
+  runGcBestEffort({ rootDir: root, targetDir: runnerTargetDir(env), profile, triple: target });
 }
 
 /**
@@ -125,13 +249,58 @@ export function backendEnv(productEnv = {}, base = process.env) {
   return env;
 }
 
-/** Build the native UI for the target OS, including the notices for its font assets. */
-export function buildNativeUi({ nshOut, target, release = false }) {
-  syncVendorAssets();
-  const app = "src/apps/desktop-nsh";
+export function nativeUiStampPath(nshOut) {
+  return `${resolve(nshOut)}.build-stamp.json`;
+}
+
+export function computeNativeUiFingerprint({
+  rootDir = root,
+  target = undefined,
+  release = false,
+  nshVersion = "unknown",
+} = {}) {
   const apple = target ? target.includes("apple-darwin") : process.platform === "darwin";
-  const entry = apple ? app : `${app}/BundledFontsApp.tsx`;
-  run("nsh", ["build", entry, ...(release ? ["--release"] : []), "--out", relative(root, nshOut)]);
+  const hash = createHash("sha256");
+  const pkgPath = join(rootDir, "package.json");
+  const version = existsSync(pkgPath) ? String(JSON.parse(readFileSync(pkgPath, "utf8")).version ?? "0.0.0") : "0.0.0";
+  hash.update(`schema:${NATIVE_UI_STAMP_SCHEMA}\nversion:${version}\nnsh:${nshVersion}\nrelease:${release}\napple:${apple}\n`);
+
+  for (const entry of collectSourceFiles(join(rootDir, "src", "nsh-ui"))) {
+    hash.update(`file:src/nsh-ui/${entry.relative}\0`);
+    hash.update(readFileSync(entry.full));
+    hash.update("\0");
+  }
+  for (const entry of collectSourceFiles(join(rootDir, "src", "apps", "desktop-nsh"), "", [], DESKTOP_NSH_SKIP_DIRS)) {
+    hash.update(`file:src/apps/desktop-nsh/${entry.relative}\0`);
+    hash.update(readFileSync(entry.full));
+    hash.update("\0");
+  }
+  return { fingerprint: hash.digest("hex"), apple };
+}
+
+export function planNativeUiBuild({ nshOut, fingerprint, apple, force = false } = {}) {
+  if (force) return { shouldBuild: true, reason: "forced rebuild (--force)" };
+  const stampPath = nativeUiStampPath(nshOut);
+  if (!existsSync(stampPath)) return { shouldBuild: true, reason: "missing build stamp" };
+  let stamp;
+  try {
+    stamp = JSON.parse(readFileSync(stampPath, "utf8"));
+  } catch {
+    return { shouldBuild: true, reason: "unreadable build stamp" };
+  }
+  if (stamp?.schema !== NATIVE_UI_STAMP_SCHEMA || stamp?.fingerprint !== fingerprint) {
+    return { shouldBuild: true, reason: "native UI sources changed" };
+  }
+  if (!existsSync(join(nshOut, "bundle.nshc")) || !existsSync(join(nshOut, "app.json"))) {
+    return { shouldBuild: true, reason: "native UI bundle output incomplete" };
+  }
+  if (!apple && !existsSync(join(nshOut, "third-party/fonts/harmonyos-sans/LICENSE.txt"))) {
+    return { shouldBuild: true, reason: "bundled font notices missing" };
+  }
+  return { shouldBuild: false, reason: "up to date" };
+}
+
+function finalizeNativeUiBuild({ nshOut, app, apple, fingerprint, nshVersion }) {
   if (!apple) {
     const notices = join(nshOut, "third-party/fonts/harmonyos-sans");
     mkdirSync(notices, { recursive: true });
@@ -139,40 +308,122 @@ export function buildNativeUi({ nshOut, target, release = false }) {
       cpSync(join(root, app, "assets/fonts/harmonyos-sans", file), join(notices, file));
     }
   }
+  const stampPath = nativeUiStampPath(nshOut);
+  mkdirSync(dirname(stampPath), { recursive: true });
+  writeFileSync(
+    stampPath,
+    `${JSON.stringify({ schema: NATIVE_UI_STAMP_SCHEMA, fingerprint, nsh: nshVersion }, null, 2)}\n`,
+  );
 }
 
-/**
- * Builds the UI bundle, the web bundle, the backend library, the runner, the
- * MiniApp shell and the DeepSeek Harness profile. The runner and the MiniApp
- * shell carry no product identity, so they stay in the regular target dir.
- */
-export async function buildAll({ profile, target, nshOut, webOut, productEnv = {} }) {
+/** Build the native UI for the target OS, including the notices for its font assets. */
+export function buildNativeUi({ nshOut, target, release = false, force = false, env = process.env }) {
+  const nshEnv = resolveNshEnvironment(env);
+  const nshVersion = readNshVersion(nshEnv);
+  const { fingerprint, apple } = computeNativeUiFingerprint({ rootDir: root, target, release, nshVersion });
+  const plan = planNativeUiBuild({ nshOut, fingerprint, apple, force });
+  if (!plan.shouldBuild) {
+    console.log(`[desktop-nsh] Native UI bundle ${plan.reason}`);
+    return { built: false, reason: plan.reason };
+  }
+  syncVendorAssets();
   // NSH leaves unreferenced assets on disk. A cross-build must ship only its own fonts.
   rmSync(nshOut, { recursive: true, force: true });
-  buildNativeUi({ nshOut, target, release: true });
-  rmSync(webOut, { recursive: true, force: true });
-  run("nsh", ["package", "src/nsh-ui/WebApp.tsx", "--target", "web", "-o", webOut]);
-  const targetArgs = target ? ["--target", target] : [];
-  run("cargo", ["build", "-p", "openbitfun-desktop", "--lib", "--profile", profile, ...targetArgs], {
-    env: backendEnv(productEnv),
+  const app = "src/apps/desktop-nsh";
+  const entry = apple ? app : `${app}/BundledFontsApp.tsx`;
+  run("nsh", ["build", entry, ...(release ? ["--release"] : []), "--out", relative(root, nshOut)], { env: nshEnv });
+  finalizeNativeUiBuild({ nshOut, app, apple, fingerprint, nshVersion });
+  return { built: true, reason: plan.reason };
+}
+
+/** Async variant of `buildNativeUi` for parallel build orchestration. */
+export async function buildNativeUiAsync({ nshOut, target, release = false, force = false, env = process.env }) {
+  const nshEnv = resolveNshEnvironment(env);
+  const nshVersion = readNshVersion(nshEnv);
+  const { fingerprint, apple } = computeNativeUiFingerprint({ rootDir: root, target, release, nshVersion });
+  const plan = planNativeUiBuild({ nshOut, fingerprint, apple, force });
+  if (!plan.shouldBuild) {
+    console.log(`[desktop-nsh] Native UI bundle ${plan.reason}`);
+    return { built: false, reason: plan.reason };
+  }
+  syncVendorAssets();
+  rmSync(nshOut, { recursive: true, force: true });
+  const app = "src/apps/desktop-nsh";
+  const entry = apple ? app : `${app}/BundledFontsApp.tsx`;
+  await runAsync("nsh", ["build", entry, ...(release ? ["--release"] : []), "--out", relative(root, nshOut)], {
+    env: nshEnv,
   });
-  run("cargo", [
+  finalizeNativeUiBuild({ nshOut, app, apple, fingerprint, nshVersion });
+  return { built: true, reason: plan.reason };
+}
+
+export function runnerCargoArgs({ profile, target, env = process.env }) {
+  const targetArgs = target ? ["--target", target] : [];
+  const profileArgs = profile && profile !== "dev" ? ["--profile", profile] : [];
+  return [
     "build",
+    "--locked",
     "--manifest-path",
     "src/apps/desktop-nsh/native/Cargo.toml",
     "--features",
     "runner",
     "--target-dir",
-    process.env.CARGO_TARGET_DIR ?? "target",
-    "--profile",
-    profile,
+    runnerTargetDir(env),
+    ...profileArgs,
     ...targetArgs,
-  ]);
-  const { prepareMiniAppShell } = await import("./prepare-miniapp-shell.mjs");
-  prepareMiniAppShell({ target, profile: profile === "dev" ? "debug" : profile });
-  // The DeepSeek Harness bridge (a TypeScript compile; fails the build unless
-  // OPENBITFUN_SKIP_DSH_PROFILE=1 opts out deliberately).
-  run(process.execPath, ["scripts/prepare-dsh-profile.mjs"]);
+  ];
+}
+
+export function backendCargoArgs({ profile, target }) {
+  const targetArgs = target ? ["--target", target] : [];
+  const profileArgs = profile && profile !== "dev" ? ["--profile", profile] : [];
+  return ["build", "-p", "openbitfun-desktop", "--lib", ...profileArgs, ...targetArgs];
+}
+
+/**
+ * Builds the UI bundle, the web bundle, the backend library, the runner and
+ * the DeepSeek Harness profile. Independent steps run in parallel: UI/JS/network
+ * work overlaps with Cargo, and the runner builds in its own
+ * `target/desktop-nsh-runner` target dir so it never contends on root
+ * `target/.cargo-lock`.
+ */
+export async function buildAll({ profile, target, nshOut, webOut, productEnv = {}, identity = null }) {
+  const profileDir = profile === "dev" ? "debug" : profile;
+  const parallelCargo = shouldParallelizeCargo({ profile });
+  const startedAt = performance.now();
+
+  const buildRunner = async () => {
+    await runAsync("cargo", runnerCargoArgs({ profile, target }));
+    stageRunnerBinary({ profileDir, target });
+  };
+
+  const nonCargoTasks = [
+    buildNativeUiAsync({ nshOut, target, release: true }),
+    buildDesktopWebUiAsync({ outDir: webOut, product: identity?.productId }),
+    // The DeepSeek Harness bridge (a TypeScript compile; fails the build unless
+    // OPENBITFUN_SKIP_DSH_PROFILE=1 opts out deliberately).
+    runAsync(process.execPath, ["scripts/prepare-dsh-profile.mjs"]),
+    // Ensure the OpenCode extension Host bundle exists when Bun is available.
+    runAsync(process.execPath, ["scripts/prepare-plugin-host.mjs", "--optional"]),
+    // Pre-warm the pinned Flashgrep daemon download/verification in parallel.
+    runAsync(process.execPath, ["scripts/prepare-flashgrep-resource.mjs", ...(target ? ["--target", target] : [])]),
+  ];
+
+  const backendTask = runAsync("cargo", backendCargoArgs({ profile, target }), {
+    env: backendEnv(productEnv),
+  });
+
+  if (parallelCargo) {
+    await Promise.all([...nonCargoTasks, backendTask, buildRunner()]);
+  } else {
+    // On memory-constrained release runners, avoid two simultaneous ThinLTO links:
+    // overlap all non-Cargo work with `openbitfun-desktop`, then build the runner
+    // in `target/desktop-nsh-runner`.
+    await Promise.all([...nonCargoTasks, backendTask]);
+    await buildRunner();
+  }
+
+  console.log(`[desktop-package] buildAll finished in ${((performance.now() - startedAt) / 1000).toFixed(1)}s`);
 }
 
 /** The Rust triple packages are built for: `--target`, or the host. */
@@ -211,21 +462,6 @@ export function dshProfileResource(source = DSH_PROFILE_DIR) {
     console.warn(`DeepSeek Harness profile has no build stamp; this package ships no DeepSeek bridge: ${source}`);
   }
   return [source, "resources/dsh-profile"];
-}
-
-/**
- * The MiniApp window executable (`src/apps/miniapp-shell`): the backend
- * launches it next to its own executable (`miniapp_desktop::launcher`).
- */
-export function miniAppShellBinary({ profileDir, target }) {
-  const windows = target ? target.includes("windows") : process.platform === "win32";
-  const extension = windows ? ".exe" : "";
-  const name = `openbitfun-miniapp-shell${extension}`;
-  const candidates = [
-    join(cargoOutDir({ profileDir, target }), name),
-    join(root, "target", ...(target ? [target] : []), "miniapp-shell", name),
-  ];
-  return candidates.find(candidate => existsSync(candidate)) ?? null;
 }
 
 /**
@@ -306,8 +542,7 @@ export function requireFiles(files) {
 
 /**
  * Records how a package directory was built next to it (not inside it):
- * `<package dir>.package.json`. The Windows Installer reads it to package
- * only the profile it was asked for.
+ * `<package dir>.package.json`.
  */
 export function writePackageInfo(packageDir, { profile, target, identity, version, executable }) {
   const info = {
@@ -326,17 +561,28 @@ export function writePackageInfo(packageDir, { profile, target, identity, versio
 }
 
 /**
- * Signs `archive` for the in-app updater with the release key, as the Tauri
- * build signs its updater artifacts (`TAURI_SIGNING_PRIVATE_KEY`, minisign),
- * writing `<archive>.sig`. Without the key the archive stays unsigned and the
- * release cannot list it.
+ * Signs `archive` for the in-app updater with the release minisign key
+ * (`scripts/sign-release-assets.sh`), writing `<archive>.sig`. Without the key
+ * the archive stays unsigned and the release cannot list it.
  */
 export function signUpdaterArchive(archive) {
-  if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
+  const signingKey = process.env.OPENBITFUN_SIGNING_KEY || process.env.TAURI_SIGNING_PRIVATE_KEY;
+  if (!signingKey) {
     console.warn(`TAURI_SIGNING_PRIVATE_KEY is not set; ${basename(archive)} is not signed for in-app updates`);
     return null;
   }
-  // The minisign format of the Tauri updater key (root `@tauri-apps/cli`).
-  run("pnpm", ["exec", "tauri", "signer", "sign", archive]);
-  return `${archive}.sig`;
+  const signingPassword =
+    process.env.OPENBITFUN_SIGNING_PASSWORD || process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || "";
+  const signingPubkey = process.env.OPENBITFUN_SIGNING_PUBKEY || process.env.TAURI_UPDATER_PUBKEY || "";
+  const signature = `${archive}.sig`;
+  rmSync(signature, { force: true });
+  run("bash", ["scripts/sign-release-assets.sh", archive], {
+    env: {
+      ...process.env,
+      OPENBITFUN_SIGNING_KEY: signingKey,
+      OPENBITFUN_SIGNING_PASSWORD: signingPassword,
+      OPENBITFUN_SIGNING_PUBKEY: signingPubkey,
+    },
+  });
+  return signature;
 }

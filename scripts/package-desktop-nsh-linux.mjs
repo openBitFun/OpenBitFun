@@ -7,7 +7,6 @@
 // `scripts/desktop-nsh-package-common.mjs`):
 //   openbitfun-nsh                       the NSH runner (GTK 4 + WebKitGTK 6)
 //   libopenbitfun_desktop_lib.so         the backend, loaded in-process
-//   openbitfun-miniapp-shell             MiniApp windows
 //   nsh/{bundle.nshc,app.json,assets}    the UI bundle (app.json: product id/name)
 //   nsh-web/                             the same UI for browsers/phones (OBP)
 //   resources/{worker_host.js,ext-host/extension-host.js,dsh-profile/}
@@ -31,13 +30,13 @@ import {
   copyUiBundle,
   dshProfileResource,
   flashgrepResource,
-  miniAppShellBinary,
   parseArgs,
   productIcon,
   requireFiles,
   resolvePackageProduct,
   root,
   run,
+  runDesktopTargetGc,
   writePackageInfo,
   writeWebBundleManifest,
 } from "./desktop-nsh-package-common.mjs";
@@ -53,7 +52,7 @@ if (process.platform !== "linux" && !crossTarget) {
 const outDir = join(root, "target/desktop-nsh");
 const nshOut = join(outDir, "nsh-release");
 const webOut = join(outDir, "web-release");
-if (!options.skipBuild) await buildAll({ ...options, nshOut, webOut, productEnv });
+if (!options.skipBuild) await buildAll({ ...options, nshOut, webOut, productEnv, identity });
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const appName = identity.fileStem;
@@ -68,14 +67,6 @@ cpSync(runner, join(app, "openbitfun-nsh"));
 chmodSync(join(app, "openbitfun-nsh"), 0o755);
 cpSync(so, join(app, "libopenbitfun_desktop_lib.so"));
 copyUiBundle(nshOut, join(app, "nsh"), identity);
-
-const shell = miniAppShellBinary(options);
-if (shell) {
-  cpSync(shell, join(app, "openbitfun-miniapp-shell"));
-  chmodSync(join(app, "openbitfun-miniapp-shell"), 0o755);
-} else {
-  console.warn("MiniApp shell not built (pnpm run prepare:miniapp-shell); Spaces will not open windows");
-}
 
 writeWebBundleManifest(join(webOut, "OpenBitFun"), identity);
 copyResources(
@@ -107,3 +98,6 @@ const archive = join(outDir, `${appName}-nsh_${pkg.version}_${arch}-linux.tar.gz
 rmSync(archive, { force: true });
 run("tar", ["-czf", archive, "-C", join(outDir, "linux"), appName]);
 console.log(`packaged ${app}\narchive ${archive}`);
+if (!options.skipBuild) {
+  runDesktopTargetGc({ profile: options.profileDir, target: options.target });
+}

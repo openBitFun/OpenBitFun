@@ -7,9 +7,10 @@
 import { computed, effect, Notifications, platform, signal, type ImageAsset } from "nsh";
 import { Application, isAvailable, Menu, Tray, Window, type MenuItem, type WindowRef } from "nsh/desktop";
 import { startDesktopPresence } from "./desktopPresence";
+import { startMiniAppWindows } from "./miniAppWindows";
 import { tr } from "./i18n";
 import { effectiveKeystroke, SHORTCUT_DEFINITIONS } from "./shortcutsStore";
-import type { ShellActions, WindowChromeSink, WindowShell } from "./windowShell";
+import type { FileDialogOptions, ShellActions, WindowChromeSink, WindowShell } from "./windowShell";
 
 export interface NshDesktopShellDeps {
   /**
@@ -17,6 +18,11 @@ export interface NshDesktopShellDeps {
    * native host supplies one; without it the picker is refused with a reason.
    */
   pickDirectory?: (options: { title: string; defaultPath?: string }) => Promise<string | null>;
+  /**
+   * Native OS open/save file dialog returning host filesystem path(s) for
+   * standalone desktop MiniApp windows.
+   */
+  pickFileDialog?: (options: FileDialogOptions) => Promise<string | string[] | null>;
   /**
    * The menu-bar / tray icon (a template image). It is an asset of the app that
    * packages the shell (NSH keeps assets inside the app's directory), so the
@@ -214,6 +220,10 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
       if (!deps.pickDirectory) throw new Error("unsupported_in_native_host: pickDirectory");
       return deps.pickDirectory(options);
     },
+    async pickFileDialog(options) {
+      if (!deps.pickFileDialog) throw new Error("unsupported_in_native_host: pickFileDialog");
+      return deps.pickFileDialog(options);
+    },
     async appVersion() {
       return null;
     },
@@ -235,8 +245,9 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
     },
     startIntegration(actions) {
       if (!isAvailable) return () => undefined;
-      // Desktop cards and the companion pet: floating windows of this app,
-      // installed here so they outlive scenes and never exist elsewhere.
+      // Desktop cards, the companion pet, and standalone MiniApp windows:
+      // native secondary windows of this app, installed here so they outlive
+      // scenes and never exist on a phone or in a browser.
       const stopPresence = startDesktopPresence({
         showMain: () => showMainWindow(),
         openInbox: () => {
@@ -247,6 +258,11 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
           showMainWindow();
           (actions.openPetSettings ?? actions.openSettings)();
         },
+      });
+      const stopMiniAppWindows = startMiniAppWindows({
+        showMain: () => showMainWindow(),
+        pickFileDialog: deps.pickFileDialog,
+        showNotification: (title, body) => showSystemNotification(title, body),
       });
       effect(() => Menu.setApplicationMenu(buildApplicationMenu(actions)));
       const windowVisible = computed(() => mainWindow()?.state()?.visible ?? false);
@@ -262,6 +278,7 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
         });
       });
       return () => {
+        stopMiniAppWindows();
         stopPresence();
         stopNotificationPress?.();
         stopNotificationPress = null;
@@ -272,16 +289,18 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
     async setTrayUnreadCount(count) {
       trayUnread.set(count);
     },
-    async showSystemNotification(title, body) {
-      let permission = await Notifications.permission();
-      if (permission === "default" && !notificationPermissionAsked) {
-        notificationPermissionAsked = true;
-        permission = await Notifications.requestPermission();
-      }
-      if (permission !== "granted") return;
-      // A pressed notification brings the window back.
-      stopNotificationPress ??= Notifications.on("press", () => showMainWindow());
-      await Notifications.show({ id: `openbitfun-${Date.now()}`, title, body });
-    },
+    showSystemNotification,
   };
+
+  async function showSystemNotification(title: string, body: string): Promise<void> {
+    let permission = await Notifications.permission();
+    if (permission === "default" && !notificationPermissionAsked) {
+      notificationPermissionAsked = true;
+      permission = await Notifications.requestPermission();
+    }
+    if (permission !== "granted") return;
+    // A pressed notification brings the window back.
+    stopNotificationPress ??= Notifications.on("press", () => showMainWindow());
+    await Notifications.show({ id: `openbitfun-${Date.now()}`, title, body });
+  }
 }

@@ -97,7 +97,6 @@ export const COLOR_EXTENSIONS = new Set([
 ]);
 
 export const TOKEN_PATH_PARTS = [
-  'OpenBitFun-Installer/src/theme',
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
 ];
@@ -106,8 +105,12 @@ export const TOKEN_ALIAS_SOURCE_PATH_PARTS = [
   'design-system/packages/theme-openbitfun/src',
 ];
 
+export const RUNTIME_CONTRACT_VAR_DEFINITION_PATH_PARTS = [
+  'themeRuntime.ts',
+];
+
 export const CONTRACT_VAR_DEFINITION_PATH_PARTS = [
-  'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts',
+  ...RUNTIME_CONTRACT_VAR_DEFINITION_PATH_PARTS,
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
 ];
@@ -115,10 +118,6 @@ export const CONTRACT_VAR_DEFINITION_PATH_PARTS = [
 export const STATIC_CONTRACT_VAR_DEFINITION_PATH_PARTS = [
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
-];
-
-export const RUNTIME_CONTRACT_VAR_DEFINITION_PATH_PARTS = [
-  'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts',
 ];
 
 export const EXCEPTION_PATH_PARTS = [
@@ -138,11 +137,6 @@ export const COLOR_DOMAIN_RULES = [
     label: 'Static asset and install metadata',
     pathParts: ['assets', 'public/favicon', 'site.webmanifest', 'src/assets'],
     extensions: ['.svg', '.webmanifest'],
-  },
-  {
-    key: 'themePreset',
-    label: 'Appearance palettes',
-    pathParts: ['OpenBitFun-Installer/src/theme'],
   },
   {
     key: 'tokenContract',
@@ -167,12 +161,6 @@ export const COLOR_DOMAIN_CONTRACTS = [
     owner: 'src/miniapp-market-web/public; design-system/packages/ui/src/brand/assets',
     reason: 'Favicons, install metadata, and self-contained vector assets cannot consume runtime CSS variables and therefore own their serialized colors at the asset boundary.',
     mergePolicy: 'Keep only identity or platform metadata colors here; any rendered application UI color must move to a canonical theme token.',
-  },
-  {
-    key: 'themePreset',
-    owner: 'OpenBitFun-Installer/src/theme',
-    reason: 'Builtin appearances own primitive palette mapping and must keep per-appearance personality instead of being folded into shared app tokens.',
-    mergePolicy: 'Only merge exact duplicate primitive values after confirming the theme still exposes distinct semantic roles.',
   },
   {
     key: 'tokenContract',

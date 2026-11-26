@@ -50,7 +50,8 @@ import {
 } from "../theme";
 import { answerPrompt } from "../attentionStore";
 import { ATTENTION_INDENT, PromptAttention, formatAge } from "./attention";
-import { DeviceBadge, MatrixMark, StateLabel, StateMark, deviceException as fleetDeviceException, markState, type DeviceException, type MarkState } from "./fleet";
+import { DeviceBadge, StateLabel, StateMark, deviceException as fleetDeviceException, markState, type DeviceException, type MarkState } from "./fleet";
+import { OpenBitFunLogoMark } from "./studio";
 import { Icon } from "./icons";
 import { MOTION_DURATION, MOTION_EASE_STANDARD, drawerEnterMotion, enterMotion, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { DropdownMenu, ModalDialog, pushToast, registerEscapeDismiss } from "./overlays";
@@ -175,11 +176,11 @@ export function citedHighlightStyle(active: boolean): ViewStyle {
   };
 }
 
-// ── The Bit Matrix ───────────────────────────────────────────────────────────
+// ── Brand mark glyph ─────────────────────────────────────────────────────────
 
-/** OpenBitFun's static mark: the 3×3 Bit Matrix (spec §1), drawn in one color. */
+/** OpenBitFun's static hexagonal brand glyph, drawn in one color with optical sizing. */
 export function BitMatrixGlyph(props: { size?: number; color?: string }) {
-  return <MatrixMark size={props.size ?? 12} color={props.color ?? palette().textMuted} />;
+  return <OpenBitFunLogoMark size={props.size ?? 12} color={props.color ?? palette().textMuted} />;
 }
 
 // ── Job cards ────────────────────────────────────────────────────────────────

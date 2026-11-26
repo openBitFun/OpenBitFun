@@ -52,7 +52,7 @@ test('rejects raw font stacks and private typography tokens in product styleshee
       font-weight: 650;
       --feature-font-family: Inter, sans-serif;
     }
-  `, 'OpenBitFun-Installer/src/styles/fonts.css');
+  `, 'packages/flow-chat-presentation/src/styles/fonts.css');
 
   assert.equal(codes.filter(code => code === 'raw-css-typography').length, 3);
   assert.equal(codes.filter(code => code === 'raw-private-typography-token').length, 1);
@@ -106,7 +106,7 @@ test('requires semantic roles in the complete component library and every React 
       font-size: var(--openbitfun-font-size-xs);
       line-height: var(--openbitfun-line-height-tight);
     }
-  `, 'OpenBitFun-Installer/src/styles/LegacyPair.scss');
+  `, 'packages/flow-chat-presentation/src/styles/LegacyPair.scss');
 
   assert.equal(
     productCodes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
@@ -118,7 +118,7 @@ test('requires semantic roles in the complete component library and every React 
       --local-title-font: var(--openbitfun-font-family-sans);
       min-height: calc(var(--openbitfun-font-size-sm) * var(--openbitfun-line-height-base));
     }
-  `, 'OpenBitFun-Installer/src/styles/LegacyTitle.scss');
+  `, 'packages/flow-chat-presentation/src/styles/LegacyTitle.scss');
 
   assert.equal(
     productIndirectCodes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
@@ -126,7 +126,7 @@ test('requires semantic roles in the complete component library and every React 
   );
 
   for (const productPath of [
-    'OpenBitFun-Installer/src/styles/LegacyLabel.css',
+    'packages/flow-chat-presentation/src/styles/LegacyLabel.css',
     'design-system/apps/design-lab/src/LegacyLabel.css',
   ]) {
     const productCodes = codesFor(`
@@ -161,7 +161,7 @@ test('requires semantic roles in product frontend inline styles and embedded CSS
   const codes = codesFor(`
     const style = { fontSize: 'var(--openbitfun-font-size-sm)' };
     const shell = \`<style>.title { font-weight: var(--openbitfun-font-weight-semibold); }</style>\`;
-  `, 'OpenBitFun-Installer/src/fixture.tsx');
+  `, 'packages/flow-chat-presentation/src/fixture.tsx');
 
   assert.equal(
     codes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
@@ -171,12 +171,12 @@ test('requires semantic roles in product frontend inline styles and embedded CSS
   const semanticIssues = auditTypographyText(`
     const style = { fontSize: 'var(--openbitfun-type-label-md-font-size)' };
     const shell = \`<style>.title { font-weight: var(--openbitfun-type-heading-card-font-weight); }</style>\`;
-  `, 'OpenBitFun-Installer/src/fixture.tsx');
+  `, 'packages/flow-chat-presentation/src/fixture.tsx');
 
   assert.deepEqual(semanticIssues, []);
 
   for (const productPath of [
-    'OpenBitFun-Installer/src/fixture.tsx',
+    'packages/flow-chat-presentation/src/fixture.tsx',
   ]) {
     const productCodes = codesFor(`
       const style = { fontSize: 'var(--openbitfun-font-size-sm)' };

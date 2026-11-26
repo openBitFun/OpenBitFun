@@ -47,6 +47,22 @@ export interface ShellActions {
   openPetSettings?(): void;
 }
 
+/** File filter group for native OS file dialogs. */
+export interface FileDialogFilter {
+  name?: string;
+  extensions: string[];
+}
+
+/** Options for native OS file open/save dialogs (desktop runner). */
+export interface FileDialogOptions {
+  mode: "open" | "save";
+  title?: string;
+  defaultPath?: string;
+  multiple?: boolean;
+  directory?: boolean;
+  filters?: FileDialogFilter[];
+}
+
 export interface WindowShell {
   /** `host-page`: the Tauri webview; `nsh-desktop`: a native NSH window; `browser`: a tab of a backend-served page; `mobile`: the phone app. */
   readonly id: "host-page" | "nsh-desktop" | "browser" | "mobile";
@@ -66,6 +82,8 @@ export interface WindowShell {
   isFocused(): Promise<boolean>;
   /** The local folder picker; rejects where none exists, resolves `null` on cancel. */
   pickDirectory(options: { title: string; defaultPath?: string }): Promise<string | null>;
+  /** Native OS file open/save dialog returning local filesystem path(s), or `null` on cancel. */
+  pickFileDialog?(options: FileDialogOptions): Promise<string | string[] | null>;
   /** This window's own build version, when the shell knows it; `null` defers to the backend's `ready()`. */
   appVersion(): Promise<string | null>;
   /** The user asked to close the main window. */

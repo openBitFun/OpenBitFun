@@ -20,6 +20,7 @@ import {
   type SurfacePlane,
 } from "../theme";
 import { Icon } from "./icons";
+import { OpenBitFunLogoMark } from "./studio";
 import {
   BrandSpinner,
   MOTION_DURATION,
@@ -499,7 +500,7 @@ export function PhoneTabBar(props: { tabs: PhoneTab[]; bottomInset?: number }) {
                     when={tab().icon === "matrix"}
                     else={<Icon name={tab().icon as never} size={20} color={color()} />}
                   >
-                    <MatrixMark size={18} color={color()} />
+                    <OpenBitFunLogoMark size={19} color={color()} />
                   </If>
                   <If when={(tab().badge ?? 0) > 0}>
                     <View style={{ position: "absolute", left: space.md, top: -space.xs }}>

@@ -91,10 +91,24 @@ test('every Desktop package platform builds through a native packaging script', 
 });
 
 test('desktop:dev keeps the installed data by default and isolates it on request', async () => {
-  const { resolveDesktopDevDataMode, resolveDesktopDevStorageEnvironment } = await import('../desktop-nsh-dev.mjs');
+  const { resolveDesktopDevDataMode, resolveDesktopDevStorageEnvironment, resolveDesktopDevWebMode } = await import('../desktop-nsh-dev.mjs');
+  const { parseDesktopBuildArgs } = await import('../desktop-nsh-build.mjs');
   assert.equal(resolveDesktopDevDataMode([]), 'shared');
   assert.equal(resolveDesktopDevDataMode(['--isolated-data']), 'isolated');
   assert.throws(() => resolveDesktopDevDataMode(['--shared-data', '--isolated-data']), /only one/);
+  assert.equal(resolveDesktopDevWebMode([], {}, false), 'sync');
+  assert.equal(resolveDesktopDevWebMode([], {}, true), 'background');
+  assert.equal(resolveDesktopDevWebMode(['--wait-web'], {}, true), 'sync');
+  assert.equal(resolveDesktopDevWebMode(['--no-web'], {}, false), 'off');
+  assert.equal(resolveDesktopDevWebMode([], { OPENBITFUN_DESKTOP_WEB_UI: 'off' }, false), 'off');
+  assert.throws(() => resolveDesktopDevWebMode(['--no-web', '--wait-web'], {}, true), /only one/);
+  assert.deepEqual(parseDesktopBuildArgs(['--profile', 'desktop-dev', '--no-web']), {
+    profile: 'desktop-dev',
+    profileDir: 'desktop-dev',
+    target: undefined,
+    skipWeb: true,
+    force: false,
+  });
   assert.deepEqual(resolveDesktopDevStorageEnvironment({}, '/repo', 'shared'), {});
   assert.deepEqual(resolveDesktopDevStorageEnvironment({}, '/repo', 'isolated'), {
     OPENBITFUN_USER_ROOT: path.join('/repo', '.openbitfun', 'desktop-dev', 'user'),

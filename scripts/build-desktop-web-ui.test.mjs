@@ -101,7 +101,10 @@ test('swapBundleDirectory replaces the previous bundle atomically without leavin
 test('desktop-nsh:build keeps the web UI bundle in lockstep with the native bundle', () => {
   const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
   const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  const buildScript = readFileSync(path.join(repoRoot, 'scripts', 'desktop-nsh-build.mjs'), 'utf8');
   assert.match(pkg.scripts['desktop-nsh:web'], /build-desktop-web-ui\.mjs/);
-  assert.match(pkg.scripts['desktop-nsh:build'], /desktop-nsh:bundle/);
-  assert.match(pkg.scripts['desktop-nsh:build'], /desktop-nsh:web/);
+  assert.match(pkg.scripts['desktop-nsh:build'], /desktop-nsh-build\.mjs/);
+  assert.match(pkg.scripts['desktop-nsh:build:dev'], /desktop-nsh-build\.mjs.*--profile desktop-dev/);
+  assert.match(buildScript, /buildNativeUiAsync/);
+  assert.match(buildScript, /buildDesktopWebUiAsync/);
 });

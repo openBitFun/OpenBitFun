@@ -9,10 +9,7 @@ import test from 'node:test';
 const checker = fileURLToPath(new URL('./check-repo-hygiene.mjs', import.meta.url));
 const localOnlyPaths = [
   'package-lock.json',
-  'OpenBitFun-Installer/package-lock.json',
   'tests/e2e/package-lock.json',
-  'OpenBitFun-Installer/src-tauri/Cargo.lock',
-  'OpenBitFun-Installer/src-tauri/gen/schemas/capabilities.json',
   'docs/superpowers/plans/local.md',
 ];
 
@@ -40,7 +37,6 @@ function fixture(t) {
     'packages/dsh-acp/package-lock.json',
     'src/apps/extension-host/bun.lock',
     'src/apps/mobile/harmonyos/oh-package-lock.json5',
-    'OpenBitFun-Installer/src-tauri/capabilities/default.json',
   ]) write(file);
   git('add', '.');
   commit();

@@ -4116,19 +4116,6 @@ export const forbiddenContentUnderRules = [
     ],
   },
   {
-    path: 'OpenBitFun-Installer',
-    reason:
-      'installer surfaces must consume capability-surface projections instead of raw plugin runtime client contracts',
-    patterns: [
-      {
-        regex:
-          /\b(?:PluginRuntimeReadResponse|PluginStatusSnapshot|PluginResponseEnvelope|PluginDispatchEnvelope|PluginEffectCandidate|PluginQuarantineState|PluginRuntimeClient|PluginRuntimeBinding|openbitfun_plugin_runtime_client|openbitfun_agent_runtime::runtime)\b/,
-        message:
-          'installer surfaces must not consume raw plugin runtime client contracts; project through the capability surface contract first',
-      },
-    ],
-  },
-  {
     path: 'src',
     reason:
       'OpenCode adapter production imports are limited to the reviewed composition root',
@@ -4155,19 +4142,6 @@ export const forbiddenContentUnderRules = [
         ],
         message:
           'only a reviewed product composition root may import openbitfun-opencode-adapter through a capability-specific provider boundary',
-      },
-    ],
-  },
-  {
-    path: 'OpenBitFun-Installer/src-tauri',
-    reason:
-      'OpenCode adapter production imports are limited to the reviewed composition root',
-    patterns: [
-      {
-        regex:
-          /\b(?:use\s+openbitfun_opencode_adapter\b|extern\s+crate\s+openbitfun_opencode_adapter\b|openbitfun_opencode_adapter::)/,
-        message:
-          'only a reviewed product composition root may import openbitfun-opencode-adapter and inject it into PluginRuntimeClient',
       },
     ],
   },

@@ -61,11 +61,13 @@ const ALL_PACKAGE_INPUTS = new Set([
 // standalone Linux CLI/Relay archives, so selecting those producers would add
 // cost without validating the changed input.
 const DESKTOP_PACKAGE_INPUTS = collectLocalModuleInputs([
+  'scripts/desktop-nsh-build.mjs',
   'scripts/desktop-nsh-package.mjs',
   'scripts/desktop-nsh-package-common.mjs',
   'scripts/package-desktop-nsh-macos.mjs',
   'scripts/package-desktop-nsh-windows.mjs',
   'scripts/package-desktop-nsh-linux.mjs',
+  'scripts/prepare-plugin-host.mjs',
   'scripts/ci/desktop-release-env.mjs',
   'scripts/ci/install-nsh.mjs',
 ]);
@@ -75,7 +77,6 @@ const DESKTOP_PACKAGE_PREFIXES = [
   'src/apps/desktop/dmg-extras/',
   'src/apps/desktop/icons/',
   'src/apps/desktop/resources/',
-  'src/apps/miniapp-shell/',
   'src/nsh-ui/',
 ];
 
@@ -283,7 +284,7 @@ function isFullPackageInput(file) {
   ) {
     return true;
   }
-  if (name === 'Cargo.toml' && !file.startsWith('OpenBitFun-Installer/')) {
+  if (name === 'Cargo.toml') {
     return true;
   }
   if (
@@ -306,8 +307,7 @@ function isFrontendOnlyInput(file) {
 }
 
 function isWindowsPackageInput(file) {
-  return file.startsWith('OpenBitFun-Installer/')
-    || file === 'scripts/cli/package-windows.ps1'
+  return file === 'scripts/cli/package-windows.ps1'
     || file.startsWith('scripts/windows/')
     || file.includes('/windows/')
     || /(?:^|\/)(?:nsis|wix)(?:\/|\.|$)/i.test(file);

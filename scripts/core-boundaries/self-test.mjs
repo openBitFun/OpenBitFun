@@ -1991,7 +1991,7 @@ export function runManifestParserSelfTest({
       throw new Error(`${dependencyName} must have a workspace-wide manifest dependency guard`);
     }
   }
-  for (const scanRoot of ['src/apps', 'src/crates', 'OpenBitFun-Installer/src-tauri']) {
+  for (const scanRoot of ['src/apps', 'src/crates']) {
     if (!opencodeManifestRule.scanRoots?.includes(scanRoot)) {
       throw new Error(`OpenCode adapter manifest guard must scan ${scanRoot}`);
     }
@@ -2016,7 +2016,7 @@ export function runManifestParserSelfTest({
   const opencodeSourceRules = forbiddenContentUnderRules.filter((rule) =>
     rule.reason.includes('OpenCode adapter production imports are limited'),
   );
-  for (const scanRoot of ['src', 'OpenBitFun-Installer/src-tauri']) {
+  for (const scanRoot of ['src']) {
     if (!opencodeSourceRules.some((rule) => rule.path === scanRoot)) {
       throw new Error(`OpenCode adapter source guard must scan ${scanRoot}`);
     }

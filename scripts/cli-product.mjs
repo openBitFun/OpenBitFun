@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { buildDesktopWebUi } from './build-desktop-web-ui.mjs';
 import { extractProductConfigArg } from './product-customization/cli.mjs';
 import { ensureProductOutputDirectory, productBuildEnvironment } from './product-customization/projections.mjs';
 import { ProductDefinitionError, resolveProductDefinition } from './product-customization/resolver.mjs';
@@ -27,6 +28,29 @@ export function prepareCliWebUi(plan, { spawn = spawnSync, write = writeUiBundle
   if (plan.environment.OPENBITFUN_CLI_WEB_UI === 'off') {
     console.warn('[product] OPENBITFUN_CLI_WEB_UI=off: this CLI ships no web UI; browsers cannot open it');
     return null;
+  }
+  // Default path: reuse the fingerprint-cached web bundle builder so repeated
+  // local `cli:build` runs skip the ~15s `nsh package --target web` when UI
+  // sources have not changed.
+  if (spawn === spawnSync && write === writeUiBundleManifest) {
+    try {
+      const { bundleDir, bundleId } = buildDesktopWebUi({
+        rootDir: ROOT,
+        outDir: plan.webUiOutPath,
+        product: plan.resolution.assembly.productId,
+        env: plan.environment,
+      });
+      if (!bundleDir) {
+        throw new Error('web UI bundle directory was not produced');
+      }
+      plan.environment[CLI_WEB_UI_VARIABLE] = bundleDir;
+      console.log(`[product] embedding the web UI ${bundleId}: ${bundleDir}`);
+      return bundleDir;
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; install the NSH toolchain, or set OPENBITFUN_CLI_WEB_UI=off to build a CLI without the web UI`,
+      );
+    }
   }
   rmSync(plan.webUiOutPath, { recursive: true, force: true });
   const built = spawn('nsh', ['package', 'src/nsh-ui/WebApp.tsx', '--target', 'web', '-o', plan.webUiOutPath], {

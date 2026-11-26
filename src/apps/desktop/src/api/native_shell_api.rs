@@ -30,6 +30,9 @@ pub async fn host_shell_attach(
 ) -> Result<HostShellAttachResponse, String> {
     let ops = app.native().shell().attach(request.ops);
     log::info!("Native desktop shell attached: ops={}", ops.join(","));
+    if ops.iter().any(|op| op == "miniapp.window.open") {
+        crate::miniapp_desktop::maybe_open_pending_cli_launch(&app);
+    }
     Ok(HostShellAttachResponse { ops })
 }
 

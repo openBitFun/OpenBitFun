@@ -11,9 +11,7 @@ const skipAuditIntegrationTests = contractTestProfile === 'ci' && !runAuditInteg
 const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'locales.json');
 const sharedTermsDir = path.join(root, 'src', 'shared', 'i18n', 'resources', 'shared');
 const expectedGeneratedFiles = [
-  'OpenBitFun-Installer/src/i18n/generatedLocaleContract.ts',
   'src/crates/assembly/core/src/service/i18n/generated_locale_contract.rs',
-  'OpenBitFun-Installer/src-tauri/src/installer/generated_locale_contract.rs',
 ];
 const expectedGeneratedJsonFiles = [
   'src/apps/relay-server/static/homepage/i18n.shared.json',
@@ -145,17 +143,8 @@ test('core runtime uses the generated locale contract for language identity', ()
 });
 
 test('shared i18n terms are consumed by each product surface runtime', () => {
-  const installerLanguagesSource = readText('OpenBitFun-Installer/src/i18n/languages.ts');
-  assert.match(installerLanguagesSource, /SHARED_TERMS_BY_APP_LANGUAGE/, 'installer should merge shared terms into its i18next resources');
-
   const coreServiceSource = readText('src/crates/assembly/core/src/service/i18n/service.rs');
   assert.match(coreServiceSource, /generated_shared_term/, 'core i18n service should resolve generated shared terms');
-});
-
-test('frontend runtimes use generated locale defaults and fallback chains', () => {
-  const installerI18nSource = readText('OpenBitFun-Installer/src/i18n/index.ts');
-  assert.match(installerI18nSource, /DEFAULT_INSTALLER_UI_LANGUAGE/, 'installer i18next should use the generated default UI language');
-  assert.match(installerI18nSource, /getInstallerUiFallbackChain/, 'installer i18next should use the generated locale fallback chain');
 });
 
 test('i18n audit enforces the checked-in hardcoded source candidate budget', () => {
@@ -173,7 +162,6 @@ test('i18n audit treats locale key parity as an error', () => {
 
   assert.match(parityFunction, /reportError\(`\$\{locale\}\/\$\{namespace\}\.json is missing/, 'missing locale keys should fail i18n:audit');
   assert.match(parityFunction, /reportError\(`\$\{locale\}\/\$\{namespace\}\.json has/, 'extra locale keys should fail i18n:audit');
-  assert.match(auditSource, /auditInstallerKeyParity/, 'installer locale keys should be covered by i18n:audit');
 });
 
 test('CI runs i18n contract and audit guards', () => {
@@ -190,7 +178,6 @@ test('i18n audit enforces interpolation parameter parity across resource formats
   const auditSource = readText('scripts/i18n-audit.mjs');
 
   assert.match(auditSource, /auditSharedTermPlaceholderParity/, 'shared term JSON placeholders should be audited');
-  assert.match(auditSource, /auditInstallerPlaceholderParity/, 'installer placeholders should be audited');
   assert.match(auditSource, /auditCoreFluentParity/, 'core Fluent keys and placeholders should be audited');
   assert.match(auditSource, /auditRelayStaticHomepageResources/, 'relay static homepage resources should be audited');
   assert.match(auditSource, /extractI18nextPlaceholders/, 'i18next placeholder extraction should be explicit');
@@ -246,8 +233,8 @@ auditIntegrationTest('i18n audit reports locale formatting candidate baselines',
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const report = readJson(reportPath);
     assert.equal(
-      report.summary.byCategory.localeFormatCandidates.bySurface.installer,
-      report.localeFormatCandidates.filter((entry) => entry.surface === 'installer').length,
+      report.summary.byCategory.localeFormatCandidates.bySurface['core-miniapp'],
+      report.localeFormatCandidates.filter((entry) => entry.surface === 'core-miniapp').length,
       'report should summarize direct locale formatting candidates by surface',
     );
   } finally {
@@ -257,7 +244,7 @@ auditIntegrationTest('i18n audit reports locale formatting candidate baselines',
   const baselinePath = 'scripts/i18n-locale-format-baseline.json';
   const baseline = readJson(baselinePath);
   baseline.budgets.push({
-    path: 'OpenBitFun-Installer/src/__removed_locale_format_fixture__.ts',
+    path: 'src/crates/contracts/product-domains/src/miniapp/builtin/assets/regex-playground/__removed_locale_format_fixture__.js',
     maxLocaleFormatCalls: 1,
   });
 
@@ -271,12 +258,12 @@ auditIntegrationTest('i18n audit reports locale formatting candidate baselines',
     );
   });
 
-  withTemporaryTextFile('OpenBitFun-Installer/src/__locale_format_fixture__.ts', 'export const value = Intl.NumberFormat().format(1234);\n', () => {
+  withTemporaryTextFile('src/crates/contracts/product-domains/src/miniapp/builtin/assets/regex-playground/__locale_format_fixture__.js', 'export const value = Intl.NumberFormat().format(1234);\n', () => {
     const result = runI18nAudit();
     assert.notEqual(result.status, 0, 'direct Intl format calls without new must fail audit');
     assert.match(
       `${result.stdout}\n${result.stderr}`,
-      /__locale_format_fixture__\.ts has 1 direct locale formatting call/,
+      /__locale_format_fixture__\.js has 1 direct locale formatting call/,
       'audit output should report direct Intl format calls without new',
     );
   });
@@ -324,13 +311,13 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
       );
     }
     assert.equal(
-      report.summary.byCategory.l10nQualityCandidates.bySurface.installer ?? 0,
-      report.l10nQualityCandidates.filter((entry) => entry.surface === 'installer').length,
+      report.summary.byCategory.l10nQualityCandidates.bySurface.core ?? 0,
+      report.l10nQualityCandidates.filter((entry) => entry.surface === 'core').length,
       'report should summarize l10n candidates by surface',
     );
     assert.equal(
-      report.summary.byCategory.sameTextLocaleInventory.bySurface.installer ?? 0,
-      report.sameTextLocaleInventory.filter((entry) => entry.surface === 'installer').length,
+      report.summary.byCategory.sameTextLocaleInventory.bySurface.core ?? 0,
+      report.sameTextLocaleInventory.filter((entry) => entry.surface === 'core').length,
       'report should summarize same-text locale inventory by surface',
     );
     assert.ok(
@@ -343,21 +330,13 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
       'report should summarize l10n candidates by namespace',
     );
     assert.equal(
-      report.summary.byCategory.dynamicKeyCandidates.byProofState['source-proven'],
+      report.summary.byCategory.dynamicKeyCandidates.byProofState['source-proven'] ?? 0,
       report.dynamicKeyCandidates.length,
       'report should summarize source-proven dynamic key contracts separately from unproved candidates',
     );
     assert.ok(
       report.dynamicKeyCandidates.every((entry) => entry.proofState === 'source-proven'),
       'dynamic key contracts should include their proof state for review and metrics',
-    );
-    assert.ok(
-      report.dynamicKeyCandidates.some((entry) => (
-        entry.allowlistId === 'installer-install-path-errors' &&
-        entry.surface === 'installer' &&
-        entry.key === 'errors.installPath.notAbsolute'
-      )),
-      'installer backend error-code mapping should be reported as a dynamic key contract',
     );
     assert.ok(
       report.sharedTermDuplicates.every((entry) => entry.resourceKey !== entry.sharedResourceKey),
@@ -378,81 +357,50 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
 });
 
 auditIntegrationTest('i18n audit reports same-text zh-TW copy with a terminology signal', { concurrency: false }, () => {
-  const simplifiedPath = 'OpenBitFun-Installer/src/i18n/locales/zh.json';
-  const traditionalPath = 'OpenBitFun-Installer/src/i18n/locales/zh-TW.json';
+  const englishPath = 'src/crates/assembly/core/locales/en-US.ftl';
+  const simplifiedPath = 'src/crates/assembly/core/locales/zh-CN.ftl';
+  const traditionalPath = 'src/crates/assembly/core/locales/zh-TW.ftl';
   const reportPath = 'scripts/.tmp-i18n-l10n-signal-report.json';
   const absoluteReportPath = path.join(root, reportPath);
   const sameText = '安装路径必须是绝对路径，请了解后重试。';
-  const withSameText = (relativePath) => {
-    const resource = readJson(relativePath);
-    assert.equal(typeof resource.errors?.installPath?.notAbsolute, 'string', `${relativePath} fixture key should exist`);
-    resource.errors.installPath.notAbsolute = sameText;
-    return `${JSON.stringify(resource, null, 2)}\n`;
-  };
-  const simplifiedFixture = withSameText(simplifiedPath);
-  const traditionalFixture = withSameText(traditionalPath);
+  const englishFixture = `${readText(englishPath)}\ntest-l10n-signal-key = Absolute path required.\n`;
+  const simplifiedFixture = `${readText(simplifiedPath)}\ntest-l10n-signal-key = ${sameText}\n`;
+  const traditionalFixture = `${readText(traditionalPath)}\ntest-l10n-signal-key = ${sameText}\n`;
   fs.rmSync(absoluteReportPath, { force: true });
 
   try {
-    withTemporaryTextFile(simplifiedPath, simplifiedFixture, () => withTemporaryTextFile(traditionalPath, traditionalFixture, () => {
-      const result = runI18nAudit(['--report-json', reportPath]);
-      assert.notEqual(result.status, 0, 'same-text zh-TW terminology debt should exceed the zero l10n baseline');
+    withTemporaryTextFile(englishPath, englishFixture, () =>
+      withTemporaryTextFile(simplifiedPath, simplifiedFixture, () =>
+        withTemporaryTextFile(traditionalPath, traditionalFixture, () => {
+          const result = runI18nAudit(['--report-json', reportPath]);
+          assert.notEqual(result.status, 0, 'same-text zh-TW terminology debt should exceed the zero l10n baseline');
 
-      const report = readJson(reportPath);
-      assert.ok(
-        report.l10nQualityCandidates.some((entry) => (
-          entry.surface === 'installer' &&
-          entry.key === 'errors.installPath.notAbsolute' &&
-          entry.locale === 'zh-TW' &&
-          entry.comparisonLocale === 'zh-CN' &&
-          entry.signal?.type === 'terminology' &&
-          entry.signal?.match === '了解'
-        )),
-        'audit report should include the concrete same-text terminology signal',
-      );
-      assert.ok(
-        report.sameTextLocaleInventory.some((entry) => (
-          entry.surface === 'installer' &&
-          entry.key === 'errors.installPath.notAbsolute' &&
-          entry.locale === 'zh-TW' &&
-          entry.comparisonLocale === 'zh-CN' &&
-          entry.signalType === 'terminology' &&
-          entry.allowlistState === 'unreviewed'
-        )),
-        'audit inventory should retain the same-text pair even though only signal-bearing entries are governance candidates',
-      );
-    }));
+          const report = readJson(reportPath);
+          assert.ok(
+            report.l10nQualityCandidates.some((entry) => (
+              entry.surface === 'core' &&
+              entry.key === 'test-l10n-signal-key' &&
+              entry.locale === 'zh-TW' &&
+              entry.comparisonLocale === 'zh-CN' &&
+              entry.signal?.type === 'terminology' &&
+              entry.signal?.match === '了解'
+            )),
+            'audit report should include the concrete same-text terminology signal',
+          );
+          assert.ok(
+            report.sameTextLocaleInventory.some((entry) => (
+              entry.surface === 'core' &&
+              entry.key === 'test-l10n-signal-key' &&
+              entry.locale === 'zh-TW' &&
+              entry.comparisonLocale === 'zh-CN' &&
+              entry.signalType === 'terminology' &&
+              entry.allowlistState === 'unreviewed'
+            )),
+            'audit inventory should retain the same-text pair even though only signal-bearing entries are governance candidates',
+          );
+        })));
   } finally {
     fs.rmSync(absoluteReportPath, { force: true });
-  }
-});
-
-test('installer uses the shared product name for titlebar defaults', { concurrency: false }, () => {
-  const appSource = readText('OpenBitFun-Installer/src/App.tsx');
-  const localePaths = [
-    'OpenBitFun-Installer/src/i18n/locales/en.json',
-    'OpenBitFun-Installer/src/i18n/locales/zh.json',
-    'OpenBitFun-Installer/src/i18n/locales/zh-TW.json',
-  ];
-
-  assert.match(
-    appSource,
-    /shared\.product\.name/,
-    'installer titlebar default should read the canonical shared product name',
-  );
-  assert.doesNotMatch(
-    appSource,
-    /titlebar\.default/,
-    'installer source should not call the removed copied titlebar.default key',
-  );
-
-  for (const localePath of localePaths) {
-    const resource = readJson(localePath);
-    assert.equal(
-      resource.titlebar,
-      undefined,
-      `${localePath} should not duplicate the shared product name under titlebar.default`,
-    );
   }
 });
 
@@ -622,10 +570,11 @@ auditIntegrationTest('i18n audit fails stale dynamic key allowlist entries', { c
 
   allowlist.entries.push({
     id: 'stale-test-dynamic-key',
-    surface: 'installer',
+    surface: 'core',
     owner: 'scripts/i18n-contract.test.mjs',
     description: 'Test fixture for stale dynamic key governance.',
-    keys: ['errors.installPath.__missingGovernanceKey__'],
+    sourceReferences: ['stale-test-dynamic-key'],
+    keys: ['__missingGovernanceKey__'],
   });
 
   fs.rmSync(absoluteReportPath, { force: true });
@@ -635,7 +584,7 @@ auditIntegrationTest('i18n audit fails stale dynamic key allowlist entries', { c
       assert.notEqual(result.status, 0, 'stale allowlist keys must fail i18n audit');
       assert.match(
         `${result.stdout}\n${result.stderr}`,
-        /stale-test-dynamic-key.*errors\.installPath\.__missingGovernanceKey__/,
+        /stale-test-dynamic-key.*__missingGovernanceKey__/,
         'audit output should identify the stale allowlist key',
       );
     } finally {
@@ -653,7 +602,14 @@ auditIntegrationTest('i18n audit fails stale dynamic key source references', { c
     'dynamic key allowlist entries should include sourceReferences that prove the owning code path',
   );
 
-  allowlist.entries[0].sourceReferences = ['__missing_i18n_dynamic_key_source_reference__'];
+  allowlist.entries.push({
+    id: 'stale-test-source-reference',
+    surface: 'core',
+    owner: 'scripts/i18n-audit.mjs',
+    description: 'Test fixture for stale dynamic key source reference governance.',
+    sourceReferences: ['__missing_i18n_dynamic_key_source_reference__'],
+    keys: ['__missingGovernanceKey__'],
+  });
 
   withTemporaryTextFile(allowlistPath, `${JSON.stringify(allowlist, null, 2)}\n`, () => {
     const result = runI18nAudit();
@@ -673,28 +629,15 @@ test('i18n generation checks are stable across line endings', () => {
   assert.match(generatorSource, /currentContentForCheck/, 'generated contract check should compare normalized current content');
 });
 
-test('installer Rust locale contract is generated from the installer surface order', () => {
-  const generatorSource = readText('scripts/generate-i18n-contract.mjs');
-  const installerRustGenerator = generatorSource.match(/function generateInstallerRustLocaleContract\(contract\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-
-  assert.match(installerRustGenerator, /orderedLocales\(contract, 'installer'\)/);
-  assert.doesNotMatch(installerRustGenerator, /orderedLocales\(contract, 'core'\)/);
-});
-
 test('i18n contract surface resource roots point at existing owned resources', () => {
   const contract = readJson('src/shared/i18n/contract/locales.json');
-  const localeById = new Map(contract.locales.map((locale) => [locale.id, locale]));
 
   for (const [surface, config] of Object.entries(contract.surfaces)) {
     const resourceRoot = path.join(root, config.resourceRoot);
     assert.ok(fs.existsSync(resourceRoot), `${surface} resourceRoot does not exist: ${config.resourceRoot}`);
 
     for (const localeId of contract.surfaceOrders[surface] ?? []) {
-      if (surface === 'installer') {
-        const locale = localeById.get(localeId);
-        assert.ok(locale?.installer?.uiCode, `${localeId} is missing installer.uiCode`);
-        assert.ok(fs.existsSync(path.join(resourceRoot, `${locale.installer.uiCode}.json`)), `${surface} is missing ${localeId} resource JSON`);
-      } else if (surface === 'core') {
+      if (surface === 'core') {
         assert.ok(fs.existsSync(path.join(resourceRoot, `${localeId}.ftl`)), `${surface} is missing ${localeId} Fluent resource`);
       }
     }

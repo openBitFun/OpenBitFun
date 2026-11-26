@@ -70,7 +70,6 @@ test('build version projection and verification work without npm workspace lockf
   const root = mkdtempSync(path.join(tmpdir(), 'openbitfun-build-version-'));
   const jsonFiles = [
     'package.json',
-    'OpenBitFun-Installer/package.json',
     'src/apps/desktop-nsh/nsh.json',
     'src/miniapp-market-web/package.json',
   ];
@@ -89,7 +88,7 @@ edition = "2021"
 
 [workspace]
 members = []
-exclude = ["src/apps/relay-server", "OpenBitFun-Installer/src-tauri"]
+exclude = ["src/apps/relay-server"]
 `,
   );
   writeFixture(root, 'src/lib.rs', 'pub fn fixture() {}\n');
@@ -98,7 +97,6 @@ exclude = ["src/apps/relay-server", "OpenBitFun-Installer/src-tauri"]
     'src/apps/relay-server/Cargo.toml',
     'version = "1.0.0" # x-release-please-version\n',
   );
-  writeFixture(root, 'OpenBitFun-Installer/src-tauri/Cargo.toml', 'version = "1.0.0"\n');
   writeFixture(root, 'src/crates/services/relay-service/Cargo.toml', 'version = "1.0.0"\n');
   writeFixture(
     root,
@@ -135,7 +133,6 @@ exclude = ["src/apps/relay-server", "OpenBitFun-Installer/src-tauri"]
   }
   for (const relative of [
     'package-lock.json',
-    'OpenBitFun-Installer/package-lock.json',
   ]) {
     assert.equal(existsSync(path.join(root, relative)), false, relative);
   }

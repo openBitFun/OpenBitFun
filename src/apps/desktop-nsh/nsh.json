@@ -19,7 +19,8 @@
     "openUrl": {
       "schemes": [
         "https",
-        "http"
+        "http",
+        "mailto"
       ]
     },
     "windows": true

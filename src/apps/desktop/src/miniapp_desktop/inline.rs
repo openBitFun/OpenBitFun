@@ -22,9 +22,7 @@
 
 use super::*;
 
-/// What the in-product view may ask after `open`. `tab` (a window asking to move
-/// into the product window), `ping`, `showMain` and the launcher `open` stay
-/// with the Shell transport.
+/// What every in-product (`tab`) view may ask after `open`.
 const INLINE_METHODS: &[&str] = &[
     "poll",
     "rpc",
@@ -35,6 +33,27 @@ const INLINE_METHODS: &[&str] = &[
     "agentClaim",
     "agentResponse",
 ];
+
+/// Additional methods allowed only for a desktop standalone NSH window view
+/// (`MiniAppViewKind::Window`), never for remote or in-product `Tab` views.
+const WINDOW_ONLY_METHODS: &[&str] = &["chatSnapshot", "tab"];
+
+fn is_window_view(host: &DesktopMiniApps, params: &Value) -> bool {
+    let Some(instance_id) = params.get("instanceId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(view_id) = params.get("viewId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(instance) = host.instances.get(instance_id) else {
+        return false;
+    };
+    instance
+        .primary_view
+        .iter()
+        .chain(instance.pending_view.iter())
+        .any(|view| view.view_id == view_id && view.kind == MiniAppViewKind::Window)
+}
 
 /// A view nonce long enough that another client cannot guess it, and short
 /// enough to bound the lease table.
@@ -49,7 +68,8 @@ pub(crate) struct MiniAppInlineRequest {
     params: Value,
 }
 
-/// The in-product MiniApp view (open, then the closed Shell protocol).
+/// The NSH MiniApp view protocol (`open`, then the closed Shell protocol for
+/// both in-product `tab` views and native desktop `window` views).
 // @backend-command
 pub(crate) async fn miniapp_inline(
     app: HostHandle,
@@ -68,6 +88,15 @@ pub(crate) async fn miniapp_inline(
     match request.method.as_str() {
         "open" => open(&app, params).await,
         method if INLINE_METHODS.contains(&method) => dispatch(&app, method, params).await,
+        method if WINDOW_ONLY_METHODS.contains(&method) => {
+            let host = app.state::<DesktopMiniApps>();
+            if !is_window_view(&host, &params) {
+                return Err(format!(
+                    "Unsupported in-product MiniApp operation: {method}"
+                ));
+            }
+            dispatch(&app, method, params).await
+        }
         other => Err(format!("Unsupported in-product MiniApp operation: {other}")),
     }
 }
@@ -84,11 +113,24 @@ fn nonce(params: &Value) -> Result<String, String> {
     Ok(nonce)
 }
 
-/// Prepare (or take over) the in-product view and return what the frame needs:
-/// the document, the instance and view identity, locale and appearance.
+/// Prepare (or take over) an in-product (`tab`) or desktop standalone (`window`)
+/// view and return what the frame needs: the document, the instance and view
+/// identity, locale and appearance.
 async fn open(app: &HostHandle, params: Value) -> Result<Value, String> {
     let app_id = string(&params, "appId")?;
     let nonce = nonce(&params)?;
+    let view_kind = match params.get("kind").and_then(Value::as_str).unwrap_or("tab") {
+        "tab" => MiniAppViewKind::Tab,
+        "window" => {
+            if !app.native().shell().offers("miniapp.window.open") {
+                return Err(crate::host::unsupported_in_native_host(
+                    "miniapp_inline (independent MiniApp windows require the local native desktop shell)",
+                ));
+            }
+            MiniAppViewKind::Window
+        }
+        other => return Err(format!("Unsupported MiniApp view kind: {other}")),
+    };
     let workspace_path = params
         .get("workspacePath")
         .and_then(Value::as_str)
@@ -116,9 +158,7 @@ async fn open(app: &HostHandle, params: Value) -> Result<Value, String> {
     if miniapp.compiled_html.trim().is_empty() {
         return Err("MiniApp document is empty; rebuild it in OpenBitFun".into());
     }
-    let (instance, view) = host
-        .instances
-        .prepare(app_id, workspace, MiniAppViewKind::Tab)?;
+    let (instance, view) = host.instances.prepare(app_id, workspace, view_kind)?;
     {
         let mut shells = host.shells.lock().unwrap_or_else(|p| p.into_inner());
         let bridge = shell_advertises_agent_bridge(&params);
@@ -147,6 +187,7 @@ async fn open(app: &HostHandle, params: Value) -> Result<Value, String> {
             }
         }
     }
+    host.liveness_wake.notify_one();
     changed(app);
     let locale =
         crate::api::i18n_api::i18n_get_current_language(crate::host::State::from(app.state()))
@@ -157,8 +198,26 @@ async fn open(app: &HostHandle, params: Value) -> Result<Value, String> {
         object.remove("source");
         object.remove("ai_context");
     }
+    let transfer_confirmed = if view_kind == MiniAppViewKind::Window {
+        host.confirmed_transfers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&view.view_id)
+    } else {
+        false
+    };
+    let capabilities: Vec<&str> = if view_kind == MiniAppViewKind::Window {
+        vec![
+            ipc::MINIAPP_CUSTOM_CHROME_CAPABILITY,
+            ipc::MINIAPP_CHAT_SNAPSHOT_CAPABILITY,
+            ipc::MINIAPP_AGENT_BRIDGE_CAPABILITY,
+        ]
+    } else {
+        vec![ipc::MINIAPP_AGENT_BRIDGE_CAPABILITY]
+    };
     Ok(json!({
-        "presentationCapabilities": [ipc::MINIAPP_AGENT_BRIDGE_CAPABILITY],
+        "presentationCapabilities": capabilities,
+        "transferConfirmed": transfer_confirmed,
         "instance": instance,
         "view": view,
         "app": document,
@@ -250,6 +309,30 @@ mod tests {
             host.tab_presentation("demo"),
             Some(instance.instance_id.clone())
         );
+    }
+
+    #[test]
+    fn window_only_methods_are_gated_to_window_views() {
+        let host = DesktopMiniApps::new(ipc::HostChannel::Development);
+        let (tab_instance, tab_view) = host
+            .instances
+            .prepare("demo-tab".into(), None, MiniAppViewKind::Tab)
+            .expect("tab view");
+        assert!(!is_window_view(
+            &host,
+            &json!({"instanceId": tab_instance.instance_id, "viewId": tab_view.view_id})
+        ));
+
+        let (win_instance, win_view) = host
+            .instances
+            .prepare("demo-win".into(), None, MiniAppViewKind::Window)
+            .expect("window view");
+        assert!(is_window_view(
+            &host,
+            &json!({"instanceId": win_instance.instance_id, "viewId": win_view.view_id})
+        ));
+        assert!(WINDOW_ONLY_METHODS.contains(&"chatSnapshot"));
+        assert!(WINDOW_ONLY_METHODS.contains(&"tab"));
     }
 
     #[test]

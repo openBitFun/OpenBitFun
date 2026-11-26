@@ -9,7 +9,6 @@ export const COMPOSER_ICON = join(MACOS_ICON_DIR, 'openbitfun.icon');
 export const ICNS_OUTPUTS = [
   'assets/brand/exports/openbitfun-app-icon.icns',
   'src/apps/desktop/icons/openbitfun-app-icon.icns',
-  'OpenBitFun-Installer/src-tauri/icons/openbitfun-app-icon.icns',
 ];
 
 export function sha256(bytes) {

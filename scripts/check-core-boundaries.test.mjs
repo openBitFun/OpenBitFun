@@ -1566,7 +1566,6 @@ test('explicit product entrypoint openbitfun-core feature selections pass', () =
   const consumers = [
     packageAt('app', 'src/apps/example/Cargo.toml'),
     packageAt('interface', 'src/crates/interfaces/acp/Cargo.toml'),
-    packageAt('installer', 'OpenBitFun-Installer/src-tauri/Cargo.toml'),
   ].map((pkg) => ({
     ...pkg,
     dependencies: [pathDependency('src/crates/assembly/core', {
@@ -3112,12 +3111,12 @@ test('direct Reqwest clients reject extra decoded dependency and package feature
   assert.match(messages, /openbitfun-cli.*unexpected dependency features: __native-tls/);
   assert.match(messages, /openbitfun-cli:default.*unreviewed Reqwest feature reference reqwest\?\/http3/);
 
-  const installerMessages = findReqwestDependencyFeatureViolations([{
+  const runnerMessages = findReqwestDependencyFeatureViolations([{
     ...pkg,
-    name: 'openbitfun-installer',
-    manifest_path: join(TEST_ROOT, 'OpenBitFun-Installer', 'src-tauri', 'Cargo.toml'),
+    name: 'openbitfun-desktop-nsh-native',
+    manifest_path: join(TEST_ROOT, 'src', 'apps', 'desktop-nsh', 'native', 'Cargo.toml'),
   }]).map((violation) => violation.message).join('\n');
-  assert.match(installerMessages, /openbitfun-installer.*missing a reviewed owner profile/);
+  assert.match(runnerMessages, /openbitfun-desktop-nsh-native.*missing a reviewed owner profile/);
 });
 
 test('AI adapters Reqwest profile owns the supported SOCKS transport', () => {
@@ -3609,13 +3608,13 @@ test('Cargo metadata Tokio policy catches table-style and renamed full dependenc
   assert.equal(violations.length, 1);
   assert.match(violations[0].message, /table-style must not enable tokio\/full/);
 
-  const installerViolations = findTokioDependencyFeatureViolations([{
+  const standaloneViolations = findTokioDependencyFeatureViolations([{
     ...pkg,
-    name: 'openbitfun-installer',
-    manifest_path: join(TEST_ROOT, 'OpenBitFun-Installer', 'src-tauri', 'Cargo.toml'),
+    name: 'openbitfun-desktop-nsh-native',
+    manifest_path: join(TEST_ROOT, 'src', 'apps', 'desktop-nsh', 'native', 'Cargo.toml'),
   }]);
-  assert.equal(installerViolations.length, 1);
-  assert.match(installerViolations[0].message, /openbitfun-installer must not enable tokio\/full/);
+  assert.equal(standaloneViolations.length, 1);
+  assert.match(standaloneViolations[0].message, /openbitfun-desktop-nsh-native must not enable tokio\/full/);
 });
 
 test('cargo layer checker allows documented downward and peer dependencies', () => {
@@ -3726,20 +3725,20 @@ test('cargo layer checker rejects repository packages without a known layer', ()
 test('cargo metadata collection scans standalone manifests not covered by the workspace', () => {
   const workspaceManifest = join(TEST_ROOT, 'Cargo.toml');
   const memberManifest = join(TEST_ROOT, 'src', 'apps', 'example', 'Cargo.toml');
-  const installerManifest = join(TEST_ROOT, 'OpenBitFun-Installer', 'src-tauri', 'Cargo.toml');
+  const standaloneManifest = join(TEST_ROOT, 'src', 'apps', 'desktop-nsh', 'native', 'Cargo.toml');
   const calls = [];
 
   const packages = collectCargoMetadataPackages({
     root: TEST_ROOT,
-    manifestPaths: [workspaceManifest, memberManifest, installerManifest],
+    manifestPaths: [workspaceManifest, memberManifest, standaloneManifest],
     loadMetadata(manifestPath, options) {
       calls.push([manifestPath, options]);
       if (manifestPath === workspaceManifest) {
         const entry = packageAt('entry', 'src/apps/example/Cargo.toml');
         return { packages: [entry], workspace_members: [entry.id] };
       }
-      if (manifestPath === installerManifest) {
-        return { packages: [packageAt('installer', 'OpenBitFun-Installer/src-tauri/Cargo.toml')] };
+      if (manifestPath === standaloneManifest) {
+        return { packages: [packageAt('desktop-nsh-native', 'src/apps/desktop-nsh/native/Cargo.toml')] };
       }
       throw new Error(`workspace member metadata should not be loaded twice: ${manifestPath}`);
     },
@@ -3747,9 +3746,9 @@ test('cargo metadata collection scans standalone manifests not covered by the wo
 
   assert.deepEqual(calls, [
     [workspaceManifest, { noDeps: false }],
-    [installerManifest, { noDeps: true }],
+    [standaloneManifest, { noDeps: true }],
   ]);
-  assert.deepEqual(packages.map((pkg) => pkg.name), ['entry', 'installer']);
+  assert.deepEqual(packages.map((pkg) => pkg.name), ['entry', 'desktop-nsh-native']);
 });
 
 test('cargo metadata collection rescans standalone packages discovered by the workspace', () => {
@@ -5080,45 +5079,6 @@ test('vendored screenshots keeps its reviewed external identity and image profil
     }),
   }).packages.some(pkg => pkg.name === 'screenshots'));
 });
-
-test('vendored Tao is external only at its reviewed version and stays in feature audits', () => {
-  const owner = packageAt('owner', 'src/apps/example/Cargo.toml');
-  const vendor = { ...packageAt('tao', 'third_party/tao/Cargo.toml'), version: '0.36.0' };
-  const collect = (pkg = vendor, members = [owner.id]) => collectCargoMetadataGraph({
-    root: TEST_ROOT,
-    manifestPaths: [join(TEST_ROOT, 'Cargo.toml')],
-    loadMetadata: () => ({
-      packages: [owner, pkg], workspace_members: members,
-      resolve: { nodes: [{ id: pkg.id, features: ['rwh_06'], deps: [] }] },
-    }),
-  });
-  const graph = collect();
-  assert.deepEqual(graph.packages.map(pkg => pkg.name), ['owner']);
-  assert.ok(graph.resolvedPackageFeatures.some(record => record.name === 'tao'));
-  assert.ok(collect(vendor, [owner.id, vendor.id]).packages.some(pkg => pkg.name === 'tao'));
-  assert.ok(collect({ ...vendor, version: '0.37.0' }).packages.some(pkg => pkg.name === 'tao'));
-  assert.ok(collect({ ...vendor, name: 'product-owner' }).packages.some(pkg => pkg.name === 'product-owner'));
-});
-
-test('vendored Wry is external only at its reviewed version and stays in feature audits', () => {
-  const owner = packageAt('owner', 'src/apps/example/Cargo.toml');
-  const vendor = { ...packageAt('wry', 'third_party/wry/Cargo.toml'), version: '0.56.0' };
-  const collect = (pkg = vendor, members = [owner.id]) => collectCargoMetadataGraph({
-    root: TEST_ROOT,
-    manifestPaths: [join(TEST_ROOT, 'Cargo.toml')],
-    loadMetadata: () => ({
-      packages: [owner, pkg], workspace_members: members,
-      resolve: { nodes: [{ id: pkg.id, features: ['os-webview'], deps: [] }] },
-    }),
-  });
-  const graph = collect();
-  assert.deepEqual(graph.packages.map(pkg => pkg.name), ['owner']);
-  assert.ok(graph.resolvedPackageFeatures.some(record => record.name === 'wry'));
-  assert.ok(collect(vendor, [owner.id, vendor.id]).packages.some(pkg => pkg.name === 'wry'));
-  assert.ok(collect({ ...vendor, version: '0.57.0' }).packages.some(pkg => pkg.name === 'wry'));
-  assert.ok(collect({ ...vendor, name: 'product-owner' }).packages.some(pkg => pkg.name === 'product-owner'));
-});
-
 
 test('workspace transfer admits IO without process or networking capabilities', () => {
   const pkg = {
