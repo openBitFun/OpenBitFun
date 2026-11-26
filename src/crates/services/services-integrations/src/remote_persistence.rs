@@ -975,7 +975,19 @@ pub fn load_or_create_device_secret(
             .map_err(|_| anyhow!("stored device key has an invalid length")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             // Preserve the key of an already authenticated install on first migration.
-            let previous = read_current_account_session(directory, &MachineBinding::current())?;
+            // A record this machine cannot open (another product build, a changed
+            // hostname) has no key to preserve: it stays on disk untouched and the
+            // new account gets a fresh key instead of failing its registration.
+            let previous = match read_current_account_session(directory, &MachineBinding::current())
+            {
+                Ok(previous) => previous,
+                Err(error) => {
+                    log::warn!(
+                        "Saved account session is unreadable; creating a new device key: {error}"
+                    );
+                    None
+                }
+            };
             let secret = previous
                 .filter(|session| {
                     session.user_id == user_id
@@ -1173,6 +1185,30 @@ mod tests {
         let ciphertext =
             std::fs::read_to_string(target.path().join("account_session.enc")).unwrap();
         assert!(!ciphertext.contains("synthetic-token"));
+    }
+
+    #[test]
+    fn unreadable_saved_session_does_not_block_a_new_device_key() {
+        let store = test_tempdir("unreadable-session");
+        // A record sealed by another build or hostname: right shape, wrong key.
+        std::fs::write(store.path().join("account_session.key"), [0x11; 32]).unwrap();
+        let mut packed = vec![0u8; NONCE_SIZE];
+        packed.extend_from_slice(&[0x5a; 48]);
+        let unreadable = BASE64.encode(packed);
+        std::fs::write(store.path().join("account_session.enc"), &unreadable).unwrap();
+        assert!(read_current_account_session(store.path(), &MachineBinding::current()).is_err());
+
+        let id = "0123456789abcdef0123456789abcdef";
+        let relay = "https://relay.example.invalid";
+        let secret = load_or_create_device_secret(store.path(), relay, "account", id).unwrap();
+        assert_eq!(
+            load_or_create_device_secret(store.path(), relay, "account", id).unwrap(),
+            secret
+        );
+        assert_eq!(
+            std::fs::read_to_string(store.path().join("account_session.enc")).unwrap(),
+            unreadable
+        );
     }
 
     #[test]
