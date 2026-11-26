@@ -209,7 +209,7 @@ function MutedLine(props: { text: string; mono?: boolean; accessibilityLabel?: s
       style={{
         minWidth: 0,
         color: palette().textMuted,
-        fontFamily: props.mono ? fontMono : undefined,
+        fontFamily: props.mono ? fontMono() : undefined,
         fontSize: textSize(12),
         lineHeight: textLineHeight(12, 1.45),
       }}

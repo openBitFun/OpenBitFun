@@ -119,7 +119,7 @@ function MonoWell(props: { text: string; muted?: boolean }) {
       <Text
         style={{
           color: props.muted ? palette().textMuted : palette().text,
-          fontFamily: fontMono,
+          fontFamily: fontMono(),
           fontSize: textSize(13),
           lineHeight: textLineHeight(13, 20 / 13),
           fontVariant: ["tabular-nums"],
@@ -636,7 +636,7 @@ export function PromptAttention(props: PromptAttentionProps) {
                 testID={`prompt-always-context-${props.prompt.promptId}`}
                 style={{
                   ...textStyle("caption", { color: palette().textMuted }),
-                  fontFamily: fontMono,
+                  fontFamily: fontMono(),
                   numberOfLines: 2,
                   textOverflow: "ellipsis",
                 }}

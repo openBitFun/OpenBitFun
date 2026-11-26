@@ -465,7 +465,7 @@ function BackgroundCommandRow(props: { command: BackgroundCommand }) {
       <Text
         style={{
           ...textStyle("mono", { color: palette().text }),
-          fontFamily: fontMono,
+          fontFamily: fontMono(),
           flex: 1,
           minWidth: 0,
           numberOfLines: 1,
@@ -545,7 +545,7 @@ function BackgroundCommandsDialog(): JSX.Element {
               <Text
                 style={{
                   ...textStyle("mono", { color: palette().text }),
-                  fontFamily: fontMono,
+                  fontFamily: fontMono(),
                   flex: 1,
                   minWidth: 0,
                   numberOfLines: 1,
@@ -570,7 +570,7 @@ function BackgroundCommandsDialog(): JSX.Element {
                 accessibilityLabel="background-output-text"
                 style={{
                   ...textStyle("monoBlock", { color: palette().text }),
-                  fontFamily: fontMono,
+                  fontFamily: fontMono(),
                   padding: space.md,
                   userSelect: "text",
                 }}

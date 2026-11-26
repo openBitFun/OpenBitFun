@@ -179,7 +179,7 @@ export function TooltipBubble(props: TooltipBubbleProps) {
                   style={{
                     flexShrink: 0,
                     color: palette().textElevatedMuted,
-                    fontFamily: fontMono,
+                    fontFamily: fontMono(),
                     fontSize: textSize(11),
                     fontWeight: "500",
                     fontVariant: ["tabular-nums"],
@@ -928,7 +928,7 @@ export function KbdHint(props: KbdHintProps) {
         style={{
           color:
             props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
-          fontFamily: fontMono,
+          fontFamily: fontMono(),
           fontSize: textSize(11),
           fontWeight: "500",
           fontVariant: ["tabular-nums"],
@@ -2861,7 +2861,7 @@ export function TextField(props: TextFieldProps) {
             placeholderColor:
               props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
             caretColor: palette().accent,
-            fontFamily: props.monospace ? fontMono : inputFontSans(),
+            fontFamily: props.monospace ? fontMono() : inputFontSans(),
             fontSize: inputFontSize(),
             lineHeight: props.multiline
               ? textLineHeight(props.monospace ? 12 : 13, 1.5)

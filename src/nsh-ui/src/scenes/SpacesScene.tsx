@@ -687,7 +687,7 @@ function SpaceInspectorModal() {
                         style={{
                           minWidth: 0,
                           color: palette().textSecondary,
-                          fontFamily: fontMono,
+                          fontFamily: fontMono(),
                           fontSize: textSize(12),
                           fontWeight: "500",
                           lineHeight: textLineHeight(12, 1.35),
@@ -702,7 +702,7 @@ function SpaceInspectorModal() {
                       style={{
                         flexShrink: 0,
                         color: palette().textMuted,
-                        fontFamily: fontMono,
+                        fontFamily: fontMono(),
                         fontSize: textSize(12),
                         fontVariant: ["tabular-nums"],
                         lineHeight: textLineHeight(12, 1.35),

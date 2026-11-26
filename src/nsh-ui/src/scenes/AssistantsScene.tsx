@@ -1508,7 +1508,7 @@ function PersonaStudioPane() {
                               flex: 1,
                               minWidth: 0,
                               color: palette().textMuted,
-                              fontFamily: fontMono,
+                              fontFamily: fontMono(),
                               fontSize: textSize(12),
                               lineHeight: textLineHeight(12, 1.35),
                               numberOfLines: 1,
@@ -1638,7 +1638,7 @@ function PersonaStudioPane() {
                                         color: palette().text,
                                         placeholderColor: palette().textMuted,
                                         caretColor: palette().accent,
-                                        fontFamily: fontMono,
+                                        fontFamily: fontMono(),
                                         fontSize: compactLayout() ? Math.max(16, textSize(13)) : textSize(13),
                                         lineHeight: textLineHeight(13, 1.62),
                                       }}

@@ -573,7 +573,7 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
       return <GenCode node={props.node} />;
     case "Math":
       return (
-        <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.5), userSelect: "text" }}>
+        <Text style={{ color: palette().text, fontFamily: fontMono(), fontSize: textSize(13), lineHeight: textLineHeight(13, 1.5), userSelect: "text" }}>
           {display(p().tex)}
         </Text>
       );
@@ -902,7 +902,7 @@ function GenCode(props: { node: GenElement }) {
         />
       </View>
       <Scroll smoothWheel horizontal style={{ minHeight: 0 }}>
-        <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.55), userSelect: "text" }}>
+        <Text style={{ color: palette().text, fontFamily: fontMono(), fontSize: textSize(12), lineHeight: textLineHeight(12, 1.55), userSelect: "text" }}>
           {display(props.node.props.code)}
         </Text>
       </Scroll>

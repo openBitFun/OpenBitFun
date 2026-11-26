@@ -597,7 +597,7 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
           <Text
             style={{
               color: props.danger ? stateColor("failed") : palette().textSecondary,
-              fontFamily: fontMono,
+              fontFamily: fontMono(),
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 18 / 12),
               userSelect: "text",
@@ -793,7 +793,7 @@ function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
               indicators="bars"
               inline="wordAlt"
               lineNumbers={true}
-              fontFamily={fontMono}
+              fontFamily={fontMono()}
               fontSize={textSize(12)}
               lineHeight={textLineHeight(12, 18 / 12)}
               styles={createDiffViewStyles()}
@@ -913,7 +913,7 @@ function ListBody(props: { call: ToolCallView; cardId: string; openFiles: boolea
                 <Text
                   style={{
                     color: palette().textSecondary,
-                    fontFamily: fontMono,
+                    fontFamily: fontMono(),
                     fontSize: textSize(12),
                     lineHeight: textLineHeight(12, 1.5),
                     numberOfLines: 1,
@@ -1226,7 +1226,7 @@ function ToolImagePreview(props: { src: string }) {
         <Text
           style={{
             color: palette().textMuted,
-            fontFamily: fontMono,
+            fontFamily: fontMono(),
             fontSize: textSize(12),
             lineHeight: textLineHeight(12, 1.45),
             numberOfLines: 2,
@@ -1348,7 +1348,7 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
                   <Text
                     style={{
                       color: palette().textMuted,
-                      fontFamily: fontMono,
+                      fontFamily: fontMono(),
                       fontSize: textSize(11),
                       lineHeight: textLineHeight(11, 1.3),
                       numberOfLines: 1,
@@ -1623,7 +1623,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
               color: palette().textMuted,
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 16 / 12),
-              fontFamily: fontMono,
+              fontFamily: fontMono(),
               textDecorationLine: muted() ? "line-through" : "none",
               numberOfLines: 1,
               textOverflow: filePath() ? "ellipsis-middle" : "ellipsis",
@@ -1654,7 +1654,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
                   color: palette().textMuted,
                   fontSize: textSize(12),
                   lineHeight: textLineHeight(12, 16 / 12),
-                  fontFamily: fontMono,
+                  fontFamily: fontMono(),
                   fontVariant: ["tabular-nums"],
                 }}
               >

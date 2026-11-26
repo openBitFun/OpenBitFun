@@ -1026,7 +1026,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         <Terminal
           ref={bindTerminalRef}
           style={{ flex: 1, minHeight: 0, minWidth: 0 }}
-          fontFamily={fontMono}
+          fontFamily={fontMono()}
           fontSize={textSize(13)}
           lineHeight={rowHeight()}
           cursorStyle={{

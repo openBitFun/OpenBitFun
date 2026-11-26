@@ -92,7 +92,7 @@ function FileRow(props: { file: () => ReviewLaunchFile; first: () => boolean }) 
         style={{
           width: space.lg,
           color: palette().textMuted,
-          fontFamily: fontMono,
+          fontFamily: fontMono(),
           fontSize: textSize(12),
           lineHeight: textLineHeight(12, 1.3),
         }}
@@ -104,7 +104,7 @@ function FileRow(props: { file: () => ReviewLaunchFile; first: () => boolean }) 
           flex: 1,
           minWidth: 0,
           color: included() ? palette().text : palette().textMuted,
-          fontFamily: fontMono,
+          fontFamily: fontMono(),
           fontSize: textSize(12),
           lineHeight: textLineHeight(12, 1.35),
           numberOfLines: 1,

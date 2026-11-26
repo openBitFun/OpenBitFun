@@ -485,7 +485,7 @@ export function WorkspaceActionDialogs(): JSX.Element {
           <Text
             style={{
               ...textStyle("mono", { color: palette().textMuted }),
-              fontFamily: fontMono,
+              fontFamily: fontMono(),
               numberOfLines: 2,
               textOverflow: "ellipsis-middle",
             }}

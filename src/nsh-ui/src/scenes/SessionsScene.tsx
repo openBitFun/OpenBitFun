@@ -2869,7 +2869,7 @@ function InlineFigureCard(props: { figure: InlineFigureDirective }) {
         <Text
           style={{
             color: palette().textMuted,
-            fontFamily: fontMono,
+            fontFamily: fontMono(),
             fontSize: textSize(11),
             lineHeight: textLineHeight(11, 1.3),
             numberOfLines: 1,
@@ -7016,7 +7016,7 @@ function SessionComposer(props: SessionComposerProps) {
                     fontSize: textSize(10.5),
                     lineHeight: textLineHeight(10.5, 1.15),
                     fontWeight: "500",
-                    fontFamily: compactLayout() ? undefined : fontMono,
+                    fontFamily: compactLayout() ? undefined : fontMono(),
                   }}
                 >
                   {compactLayout() ? tr("sessions.promptSuggestionUse") : "Tab"}
@@ -8972,7 +8972,7 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
                 fontSize: textSize(11),
                 lineHeight: textLineHeight(11, 1.2),
                 fontWeight: "500",
-                fontFamily: fontMono,
+                fontFamily: fontMono(),
                 fontVariant: ["tabular-nums"],
               }}
             >

@@ -2960,7 +2960,7 @@ function PortForwardModal() {
                           style={{
                             minWidth: 52,
                             color: palette().text,
-                            fontFamily: fontMono,
+                            fontFamily: fontMono(),
                             fontVariant: ["tabular-nums"],
                             fontSize: textSize(12),
                             lineHeight: textLineHeight(12, 1.35),
@@ -2987,7 +2987,7 @@ function PortForwardModal() {
                           <Text
                             style={{
                               color: palette().textMuted,
-                              fontFamily: fontMono,
+                              fontFamily: fontMono(),
                               fontVariant: ["tabular-nums"],
                               fontSize: textSize(11),
                               lineHeight: textLineHeight(11, 1.35),

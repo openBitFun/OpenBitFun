@@ -950,9 +950,10 @@ export function inputFontSans(
   return fontSans(locale);
 }
 
-/** Code / monospace font stack with sans-serif CJK fallbacks so CJK inside code never falls back to serif. */
-export const fontMono =
-  '"Fira Code", "SF Mono", Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", ui-monospace, monospace';
+/** Latin stays monospaced; missing glyphs follow the localized UI font, as in the former web UI. */
+export function fontMono(): string {
+  return `'Fira Code', 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Courier New', ${fontSans()}, monospace`;
+}
 
 /** The scheme the user chose in this surface: follow the host, or force one. */
 export const appearanceMode = signal<"system" | "light" | "dark">("system");
@@ -1083,7 +1084,7 @@ export function syncGlobalNativeTheme(family = fontSans()): void {
       theme: {
         radius: "0.5rem",
         "font-sans": family,
-        "font-mono": fontMono,
+        "font-mono": fontMono(),
       },
       light: paletteToCssVars(
         activePreset ? activePreset.palette : openbitfunLightPalette,
@@ -1566,7 +1567,7 @@ export function textStyle(role: TextRole, opts?: TextStyleOptions): TextStyle {
     fontVariant: tabular,
   };
   if (spec.mono) {
-    style.fontFamily = fontMono;
+    style.fontFamily = fontMono();
   } else {
     style.fontFamily = fontSans();
     style.letterSpacing = textTracking(spec.size, uppercase);

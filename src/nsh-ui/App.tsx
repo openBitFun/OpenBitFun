@@ -1684,7 +1684,7 @@ function SceneErrorCard(props: { error: unknown; reset: () => void; area: "scene
         <Text
           style={{
             color: palette().textSecondary,
-            fontFamily: fontMono,
+            fontFamily: fontMono(),
             fontSize: textSize(12),
             lineHeight: textLineHeight(12, 1.45),
             textAlign: "center",

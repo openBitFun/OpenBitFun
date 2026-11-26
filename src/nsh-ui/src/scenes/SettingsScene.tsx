@@ -6927,7 +6927,7 @@ function ModelSection() {
                     accessibilityLabel="model-request-url-preview"
                     style={{
                       ...textStyle("caption", { color: palette().textMuted }),
-                      fontFamily: fontMono,
+                      fontFamily: fontMono(),
                       minWidth: 0,
                       numberOfLines: 2,
                       textOverflow: "ellipsis-middle",

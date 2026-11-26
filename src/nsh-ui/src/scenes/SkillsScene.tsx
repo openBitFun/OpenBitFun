@@ -620,7 +620,7 @@ function SkillInspectModal() {
                   style={{
                     minWidth: 0,
                     color: palette().textSecondary,
-                    fontFamily: fontMono,
+                    fontFamily: fontMono(),
                     fontSize: textSize(12),
                     lineHeight: textLineHeight(12, 1.44),
                     userSelect: "text",
@@ -689,7 +689,7 @@ function SkillInspectModal() {
                     <Text
                       style={{
                         color: palette().textMuted,
-                        fontFamily: fontMono,
+                        fontFamily: fontMono(),
                         fontSize: textSize(12),
                         lineHeight: textLineHeight(12, 1.35),
                       }}
@@ -1361,7 +1361,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
                               style={{
                                 minWidth: 0,
                                 color: palette().textMuted,
-                                fontFamily: fontMono,
+                                fontFamily: fontMono(),
                                 fontSize: textSize(12),
                                 lineHeight: textLineHeight(12, 1.4),
                                 numberOfLines: 1,

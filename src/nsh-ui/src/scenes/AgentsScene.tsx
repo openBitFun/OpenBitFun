@@ -632,7 +632,7 @@ function ToolMultiSelect() {
                         style={{
                           flex: 1,
                           minWidth: 0,
-                          fontFamily: fontMono,
+                          fontFamily: fontMono(),
                           color: checked() ? palette().text : palette().textSecondary,
                           fontSize: textSize(12),
                           lineHeight: textLineHeight(12, 1.4),

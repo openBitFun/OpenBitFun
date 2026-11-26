@@ -84,6 +84,7 @@ export interface MarkdownStyleOptions {
 interface StyleCacheSlot<T> {
   palette: Palette;
   fontPx: number;
+  fontFamily: string;
   cjk?: boolean;
   styles: T;
 }
@@ -273,7 +274,7 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       paddingVertical: 4,
     },
     codeBlockCode: {
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(codeBase),
       lineHeight: textLineHeight(codeBase, 1.54),
       color: p.text,
@@ -281,7 +282,7 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       paddingVertical: 12,
     },
     code: {
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(inlineCodeBase),
       color: p.text,
       backgroundColor: p.surfaceTertiary,
@@ -290,7 +291,7 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       paddingVertical: 1,
     },
     keyboard: {
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(11),
       color: p.textSecondary,
       backgroundColor: p.surfaceTertiary,
@@ -414,6 +415,7 @@ const customMarkdownStylesCache = new Map<string, StyleCacheSlot<TextViewStyles>
 export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewStyles {
   const p = palette();
   const fontPx = uiFontBasePx();
+  const fontFamily = fontMono();
   const cjk = cjkTypography();
 
   // Zero-allocation hot paths for default (15px prose) and compact (13px) styles.
@@ -421,13 +423,14 @@ export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewSt
     if (
       defaultMarkdownCache &&
       defaultMarkdownCache.palette === p &&
+      defaultMarkdownCache.fontFamily === fontFamily &&
       defaultMarkdownCache.fontPx === fontPx &&
       defaultMarkdownCache.cjk === cjk
     ) {
       return defaultMarkdownCache.styles;
     }
     const styles = buildMarkdownStyles(p, false, typeScale.prose);
-    defaultMarkdownCache = { palette: p, fontPx, cjk, styles };
+    defaultMarkdownCache = { palette: p, fontPx, fontFamily, cjk, styles };
     return styles;
   }
 
@@ -435,13 +438,14 @@ export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewSt
     if (
       compactMarkdownCache &&
       compactMarkdownCache.palette === p &&
+      compactMarkdownCache.fontFamily === fontFamily &&
       compactMarkdownCache.fontPx === fontPx &&
       compactMarkdownCache.cjk === cjk
     ) {
       return compactMarkdownCache.styles;
     }
     const styles = buildMarkdownStyles(p, true, 13);
-    compactMarkdownCache = { palette: p, fontPx, cjk, styles };
+    compactMarkdownCache = { palette: p, fontPx, fontFamily, cjk, styles };
     return styles;
   }
 
@@ -449,14 +453,14 @@ export function createMarkdownStyles(options?: MarkdownStyleOptions): TextViewSt
   const base = options.baseFontSize ?? (compact ? 13 : typeScale.prose);
   const key = `${compact ? "c" : "d"}:${base}`;
   const cached = customMarkdownStylesCache.get(key);
-  if (cached && cached.palette === p && cached.fontPx === fontPx && cached.cjk === cjk) {
+  if (cached && cached.palette === p && cached.fontPx === fontPx && cached.fontFamily === fontFamily && cached.cjk === cjk) {
     return cached.styles;
   }
   const styles = buildMarkdownStyles(p, compact, base);
   if (customMarkdownStylesCache.size > 16) {
     customMarkdownStylesCache.clear();
   }
-  customMarkdownStylesCache.set(key, { palette: p, fontPx, cjk, styles });
+  customMarkdownStylesCache.set(key, { palette: p, fontPx, fontFamily, cjk, styles });
   return styles;
 }
 
@@ -475,7 +479,7 @@ function buildDiffViewStyles(p: Palette): DiffViewStyles {
     },
     lineNumber: {
       color: p.textMuted,
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(11),
       fontVariant: ["tabular-nums"],
     },
@@ -493,7 +497,7 @@ function buildDiffViewStyles(p: Palette): DiffViewStyles {
     },
     line: {
       color: p.text,
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(12),
     },
     lineAdded: {
@@ -529,7 +533,7 @@ function buildDiffViewStyles(p: Palette): DiffViewStyles {
       borderColor: p.borderSubtle,
       paddingHorizontal: 10,
       paddingVertical: 4,
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(11),
     },
     fileHeader: {
@@ -556,15 +560,17 @@ function buildDiffViewStyles(p: Palette): DiffViewStyles {
 export function createDiffViewStyles(): DiffViewStyles {
   const p = palette();
   const fontPx = uiFontBasePx();
+  const fontFamily = fontMono();
   if (
     diffViewStylesCache &&
     diffViewStylesCache.palette === p &&
+    diffViewStylesCache.fontFamily === fontFamily &&
     diffViewStylesCache.fontPx === fontPx
   ) {
     return diffViewStylesCache.styles;
   }
   const styles = buildDiffViewStyles(p);
-  diffViewStylesCache = { palette: p, fontPx, styles };
+  diffViewStylesCache = { palette: p, fontPx, fontFamily, styles };
   return styles;
 }
 
@@ -580,7 +586,7 @@ function buildEditorStyles(p: Palette): EditorStyles {
     },
     lineNumber: {
       color: p.textMuted,
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(11),
       fontVariant: ["tabular-nums"],
     },
@@ -598,7 +604,7 @@ function buildEditorStyles(p: Palette): EditorStyles {
     },
     line: {
       color: p.text,
-      fontFamily: fontMono,
+      fontFamily: fontMono(),
       fontSize: textSize(12),
     },
     activeLine: {
@@ -652,15 +658,17 @@ function buildEditorStyles(p: Palette): EditorStyles {
 export function createEditorStyles(): EditorStyles {
   const p = palette();
   const fontPx = uiFontBasePx();
+  const fontFamily = fontMono();
   if (
     editorStylesCache &&
     editorStylesCache.palette === p &&
+    editorStylesCache.fontFamily === fontFamily &&
     editorStylesCache.fontPx === fontPx
   ) {
     return editorStylesCache.styles;
   }
   const styles = buildEditorStyles(p);
-  editorStylesCache = { palette: p, fontPx, styles };
+  editorStylesCache = { palette: p, fontPx, fontFamily, styles };
   return styles;
 }
 

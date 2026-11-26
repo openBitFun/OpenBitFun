@@ -512,7 +512,7 @@ function ChannelsSection() {
                       <Text
                         style={{
                           minWidth: 0,
-                          fontFamily: fontMono,
+                          fontFamily: fontMono(),
                           ...textStyle("caption", { color: palette().textSecondary }),
                           numberOfLines: 2,
                           textOverflow: "ellipsis-middle",

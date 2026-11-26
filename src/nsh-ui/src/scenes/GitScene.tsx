@@ -1573,7 +1573,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
               indicators="bars"
               inline="wordAlt"
               lineNumbers={true}
-              fontFamily={fontMono}
+              fontFamily={fontMono()}
               fontSize={textSize(12)}
               lineHeight={textLineHeight(12, 1.55)}
               styles={createDiffViewStyles()}
@@ -2391,7 +2391,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
                   indicators="bars"
                   inline="wordAlt"
                   lineNumbers={true}
-                  fontFamily={fontMono}
+                  fontFamily={fontMono()}
                   fontSize={textSize(12)}
                   lineHeight={textLineHeight(12, 1.55)}
                   styles={createDiffViewStyles()}

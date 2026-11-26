@@ -913,7 +913,7 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
         ) : (
           <Text
             style={{
-              fontFamily: fontMono,
+              fontFamily: fontMono(),
               fontSize: textSize(typeScale.label),
               color: palette().text,
               backgroundColor: palette().surfaceTertiary,
@@ -1076,7 +1076,7 @@ function editorStyles(compact: boolean): RichEditorStyles {
         color: p.textMuted,
       },
       codeBlock: {
-        fontFamily: fontMono,
+        fontFamily: fontMono(),
         fontSize: textSize(codeBase),
         lineHeight: textLineHeight(codeBase, 1.54),
         color: p.text,
@@ -1123,7 +1123,7 @@ function editorStyles(compact: boolean): RichEditorStyles {
       italic: { fontStyle: "italic" as const },
       strike: { color: p.textMuted },
       code: {
-        fontFamily: fontMono,
+        fontFamily: fontMono(),
         fontSize: textSize(codeBase),
         color: p.text,
         backgroundColor: p.surfaceTertiary,
@@ -1172,7 +1172,7 @@ function BubbleFormatButton(props: {
     >
       <Text
         style={{
-          fontFamily: props.mono ? fontMono : fontSans(),
+          fontFamily: props.mono ? fontMono() : fontSans(),
           fontSize: textSize(typeScale.caption),
           lineHeight: textLineHeight(typeScale.caption, 1.2),
           fontWeight: props.bold ? "600" : "500",
@@ -1422,7 +1422,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
                     color: palette().text,
                     placeholderColor: palette().textMuted,
                     caretColor: palette().accent,
-                    fontFamily: fontMono,
+                    fontFamily: fontMono(),
                     fontSize: textSize(typeScale.caption),
                     lineHeight: textLineHeight(typeScale.caption, 1.5),
                   }}

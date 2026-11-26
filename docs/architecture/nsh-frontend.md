@@ -20,6 +20,10 @@ window the NSH web target ran in during the migration.
   Windows and Linux builds enter through `BundledFontsApp.tsx` to register the
   bundled HarmonyOS Sans fonts before mount. The UI uses the SC face for Simplified
   Chinese, the base face for English and system fonts for Traditional Chinese.
+  That entry also registers Fira Code (400/500/600), retained from the former React
+  UI. Code blocks, inline code, editors and terminals share the mono stack: Latin
+  uses Fira Code, and missing glyphs follow the active locale's UI font. Cached
+  widget styles include that family so changing the display language updates code too.
 - **Browser / phone.** `servedBackend.ts` installs `webSocketConnection.ts` when the
   page was served by a backend's OBP listener (`#nsh-params`).
 - **Other devices.** Every 2.0 backend is a fleet entry: the bridge sends each

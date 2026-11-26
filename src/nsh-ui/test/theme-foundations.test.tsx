@@ -241,7 +241,7 @@ test("cross-platform font stacks guarantee sans-serif CJK fallbacks and keep Win
       expect(stack).toContain('"Noto Sans CJK SC"');
       expect(stack).toContain('"WenQuanYi Micro Hei"');
       expect(textStyle("body").fontFamily).toBe(stack);
-      expect(textStyle("mono").fontFamily).toBe(fontMono);
+      expect(textStyle("mono").fontFamily).toBe(fontMono());
     }
 
     // Traditional Chinese prioritizes TC sans-serif faces ahead of SC faces.
@@ -261,9 +261,9 @@ test("cross-platform font stacks guarantee sans-serif CJK fallbacks and keep Win
     }
 
     // Monospace code text includes sans-serif CJK fallbacks before generic monospace.
-    expect(fontMono).toContain('"Microsoft YaHei UI"');
-    expect(fontMono).toContain('"Noto Sans CJK SC"');
-    expect(fontMono.endsWith("monospace")).toBe(true);
+    expect(fontMono()).toContain('"Microsoft YaHei UI"');
+    expect(fontMono()).toContain('"Noto Sans CJK SC"');
+    expect(fontMono().endsWith("monospace")).toBe(true);
 
     // Unified toast auto-dismiss duration is 6 seconds.
     expect(DEFAULT_TOAST_DURATION_MS).toBe(6000);

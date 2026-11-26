@@ -16,6 +16,15 @@ The frontend includes the upstream notices and license texts in
 
 The offline map renderer includes d3-geo 3.1.0 and 3.1.1, and d3-array 3.2.4. Their copyright and license notices are included in `third-party/visualize-NOTICES.txt`.
 
+## Fira Code
+
+- Project: Fira Code
+- License: SIL Open Font License 1.1
+
+Windows and Linux native desktop distributions bundle the original Regular (400),
+Medium (500), and SemiBold (600) WOFF2 faces used by the former React desktop UI.
+The complete license and copyright notice ship under `nsh/third-party/fonts/fira-code/LICENSE.txt`.
+
 ## HarmonyOS Sans Fonts
 
 - Project: HarmonyOS Sans Fonts

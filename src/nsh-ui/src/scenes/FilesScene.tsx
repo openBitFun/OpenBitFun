@@ -2624,7 +2624,7 @@ function SourceEditorPane(props: { file: OpenFile; compact?: boolean; showNotice
         indentGuides={true}
         activeLine={editingContent() !== null}
         highlighting={!props.file.large}
-        fontFamily={fontMono}
+        fontFamily={fontMono()}
         fontSize={textSize(13)}
         lineHeight={textLineHeight(13, 1.55)}
         softWrap={props.file.kind !== "code"}
@@ -2742,7 +2742,7 @@ function PreviewBody(props: { compact?: boolean }) {
                   indicators="bars"
                   inline="wordAlt"
                   lineNumbers={true}
-                  fontFamily={fontMono}
+                  fontFamily={fontMono()}
                   fontSize={textSize(12)}
                   lineHeight={textLineHeight(12, 1.55)}
                   styles={createDiffViewStyles()}

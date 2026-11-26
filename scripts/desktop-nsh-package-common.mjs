@@ -294,7 +294,8 @@ export function planNativeUiBuild({ nshOut, fingerprint, apple, force = false } 
   if (!existsSync(join(nshOut, "bundle.nshc")) || !existsSync(join(nshOut, "app.json"))) {
     return { shouldBuild: true, reason: "native UI bundle output incomplete" };
   }
-  if (!apple && !existsSync(join(nshOut, "third-party/fonts/harmonyos-sans/LICENSE.txt"))) {
+  if (!apple && ["harmonyos-sans", "fira-code"].some(font =>
+    !existsSync(join(nshOut, `third-party/fonts/${font}/LICENSE.txt`)))) {
     return { shouldBuild: true, reason: "bundled font notices missing" };
   }
   return { shouldBuild: false, reason: "up to date" };
@@ -307,6 +308,9 @@ function finalizeNativeUiBuild({ nshOut, app, apple, fingerprint, nshVersion }) 
     for (const file of ["LICENSE.txt", "NOTICE.txt"]) {
       cpSync(join(root, app, "assets/fonts/harmonyos-sans", file), join(notices, file));
     }
+    const codeNotices = join(nshOut, "third-party/fonts/fira-code");
+    mkdirSync(codeNotices, { recursive: true });
+    cpSync(join(root, app, "assets/fonts/fira-code/LICENSE.txt"), join(codeNotices, "LICENSE.txt"));
   }
   const stampPath = nativeUiStampPath(nshOut);
   mkdirSync(dirname(stampPath), { recursive: true });

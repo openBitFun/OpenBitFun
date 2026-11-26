@@ -186,6 +186,12 @@ test('native UI build planning skips up-to-date bundles and keeps stamps outside
   assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: true, force: true }).shouldBuild, true);
   // Non-Apple bundles also require font notices.
   assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: false }).shouldBuild, true);
+  mkdirSync(join(nshOut, 'third-party/fonts/harmonyos-sans'), { recursive: true });
+  writeFileSync(join(nshOut, 'third-party/fonts/harmonyos-sans/LICENSE.txt'), 'HarmonyOS license');
+  assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: false }).shouldBuild, true);
+  mkdirSync(join(nshOut, 'third-party/fonts/fira-code'), { recursive: true });
+  writeFileSync(join(nshOut, 'third-party/fonts/fira-code/LICENSE.txt'), 'Fira Code license');
+  assert.equal(planNativeUiBuild({ nshOut, fingerprint: fp1.fingerprint, apple: false }).shouldBuild, false);
 });
 
 test('runner builds in isolated target/desktop-nsh-runner and stages next to backend lib', (t) => {

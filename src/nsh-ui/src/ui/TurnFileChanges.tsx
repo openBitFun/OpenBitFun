@@ -170,7 +170,7 @@ export function TurnFileChangesCard(props: {
                 color: palette().success,
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.3),
-                fontFamily: fontMono,
+                fontFamily: fontMono(),
                 fontWeight: "500",
                 fontVariant: ["tabular-nums"],
               }}
@@ -182,7 +182,7 @@ export function TurnFileChangesCard(props: {
                 color: palette().danger,
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.3),
-                fontFamily: fontMono,
+                fontFamily: fontMono(),
                 fontWeight: "500",
                 fontVariant: ["tabular-nums"],
               }}
@@ -282,7 +282,7 @@ export function TurnFileChangesCard(props: {
                       color: badge().color(),
                       fontSize: textSize(10),
                       lineHeight: textLineHeight(10, 1.2),
-                      fontFamily: fontMono,
+                      fontFamily: fontMono(),
                       fontWeight: "700",
                       textAlign: "left",
                     }}
@@ -339,7 +339,7 @@ export function TurnFileChangesCard(props: {
                         color: palette().success,
                         fontSize: textSize(12),
                         lineHeight: textLineHeight(12, 1.3),
-                        fontFamily: fontMono,
+                        fontFamily: fontMono(),
                         fontWeight: "500",
                         fontVariant: ["tabular-nums"],
                       }}
@@ -351,7 +351,7 @@ export function TurnFileChangesCard(props: {
                         color: palette().danger,
                         fontSize: textSize(12),
                         lineHeight: textLineHeight(12, 1.3),
-                        fontFamily: fontMono,
+                        fontFamily: fontMono(),
                         fontWeight: "500",
                         fontVariant: ["tabular-nums"],
                       }}
@@ -508,7 +508,7 @@ export function TurnChangesDiffModal(props: {
                         style={{
                           color: palette().success,
                           fontSize: textSize(11),
-                          fontFamily: fontMono,
+                          fontFamily: fontMono(),
                           fontVariant: ["tabular-nums"],
                         }}
                       >
@@ -518,7 +518,7 @@ export function TurnChangesDiffModal(props: {
                         style={{
                           color: palette().danger,
                           fontSize: textSize(11),
-                          fontFamily: fontMono,
+                          fontFamily: fontMono(),
                           fontVariant: ["tabular-nums"],
                         }}
                       >
@@ -562,7 +562,7 @@ export function TurnChangesDiffModal(props: {
                     indicators="bars"
                     inline="wordAlt"
                     lineNumbers={true}
-                    fontFamily={fontMono}
+                    fontFamily={fontMono()}
                     fontSize={textSize(12)}
                     lineHeight={textLineHeight(12, 1.55)}
                     styles={createDiffViewStyles()}
