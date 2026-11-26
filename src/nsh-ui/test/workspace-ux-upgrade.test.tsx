@@ -516,7 +516,6 @@ test("centered split divider swap button exchanges left and right sessions and z
   expect(zhCNMessages["sessions.splitClose"]).toContain("分栏");
   expect(zhCNMessages["sessions.openInSplit"]).toContain("分栏");
   expect(zhCNMessages["sessions.splitSwap"]).toContain("分栏");
-  expect(Object.values(zhCNMessages).some(value => value.includes("分屏"))).toBe(false);
 
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });

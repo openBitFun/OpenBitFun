@@ -1,4 +1,5 @@
 import { expect, open, test } from "nsh/test";
+import { enUSMessages } from "../src/locales/en-US";
 import { createMiniAppMarketBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -220,7 +221,7 @@ test("submissions: lists the account's submissions and withdraws one after confi
   expect(app.texts()).toContain("Reason: Asks for shell access it does not use.");
   // Only drafts and submissions under review can be withdrawn.
   expect(app.shows("label:submission-withdraw-sub-2")).toBe(false);
-  expect(app.texts().some(text => text.includes("publish new releases from the OpenBitFun market website"))).toBe(true);
+  expect(app.texts()).toContain(enUSMessages["market.submissions.publishNote"]);
 
   await app.press("label:submission-withdraw-sub-1");
   await app.waitFor("label:submission-withdraw-confirm-sub-1");
