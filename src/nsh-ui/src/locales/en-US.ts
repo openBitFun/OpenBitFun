@@ -884,6 +884,7 @@ export const enUSMessages = {
   "terminal.shellLabel": "Shell: {{name}}",
   "terminal.runProfile": "Run profile…",
   "terminal.newShell": "New shell",
+  "terminal.newWithShell": "New terminal with shell…",
   "terminal.profilesTitle": "Terminal Profiles",
   "terminal.saveProfile": "Save profile",
   "terminal.createProfile": "Create profile",

@@ -1989,31 +1989,30 @@ test("terminal scene creates a host session", async () => {
   expect(app.texts().join("\n")).not.toContain("simulated backend has no answer");
 });
 
-test("the terminal starts the shell the picker chose, and remembers it", async () => {
+test("the terminal menu launches the chosen shell once and plus uses the saved default", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", {
     ...DESKTOP,
     host: { handlers: backend.handlers },
-    // The shell a previous run of this surface selected.
     storage: { "openbitfun.nsh.terminal-shell.v1": "shell-zsh" },
   });
+  const creations = () => backend.calls.filter(call => call.action === "terminal_create");
 
   await openToolScene(app, "terminal");
-  await app.waitFor("Shell: zsh");
-  const firstShell = backend.calls.filter(call => call.action === "terminal_create").pop();
-  expect(firstShell?.request).toMatchObject({ shellId: "shell-zsh", shellType: "Zsh" });
+  await app.waitFor("zsh");
+  expect(creations()[0]?.request).toMatchObject({ shellId: "shell-zsh", shellType: "Zsh" });
 
-  await app.press("shell-picker");
-  await app.waitFor("Shell: bash");
-  // A shell the host reports as unavailable is not offered.
+  await app.press("New terminal with shell…");
+  await app.waitFor("bash");
   expect(app.texts()).not.toContain("fish");
-  expect(app.texts()).not.toContain("Shell: fish");
-  await app.press("shell-option-shell-bash");
+  expect(creations().length).toBe(1);
+  await app.press("bash");
+  await app.waitUntil(() => creations().length === 2);
+  expect(creations()[1]?.request).toMatchObject({ shellId: "shell-bash", shellType: "Bash" });
 
-  await app.waitFor("Shell: bash");
   await app.press("New shell");
-  const created = backend.calls.filter(call => call.action === "terminal_create").pop();
-  expect(created?.request).toMatchObject({ shellId: "shell-bash", shellType: "Bash" });
+  await app.waitUntil(() => creations().length === 3);
+  expect(creations()[2]?.request).toMatchObject({ shellId: "shell-zsh", shellType: "Zsh" });
 });
 
 test("terminal tabs keep their own shell and switch without losing output", async () => {
@@ -2095,13 +2094,11 @@ test("a saved terminal profile reopens its shell with its startup command", asyn
   await openToolScene(app, "terminal");
   await app.waitFor("shell 1");
 
-  // A profile names the shell the picker has selected, not the host's default.
-  await app.press("shell-picker");
-  await app.press("shell-option-shell-bash");
-  await app.waitFor("Shell: bash");
-
   await app.press("profiles-toggle");
   await app.waitFor("No saved profile yet; the form below saves the first one.");
+  await app.press("profile-shell-picker");
+  await app.press("shell-option-shell-bash");
+  await app.waitFor("Shell: bash");
   await app.type("profile-command", "pnpm run dev");
   await app.press("profile-save");
   await app.waitFor("Saved Terminal 1");

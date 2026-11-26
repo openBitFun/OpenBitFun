@@ -883,6 +883,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "terminal.shellLabel": "終端機：{{name}}",
   "terminal.runProfile": "執行設定檔…",
   "terminal.newShell": "新增終端機",
+  "terminal.newWithShell": "選擇 Shell 新增終端機…",
   "terminal.profilesTitle": "終端機設定檔",
   "terminal.saveProfile": "儲存設定檔",
   "terminal.createProfile": "建立設定檔",

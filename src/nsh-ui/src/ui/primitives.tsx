@@ -159,7 +159,7 @@ export function TooltipBubble(props: TooltipBubbleProps) {
       <If
         when={Boolean(props.children)}
         else={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flexShrink: 1 }}>
             <Text
               style={{
                 flexShrink: 1,

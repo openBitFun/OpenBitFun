@@ -1,5 +1,5 @@
 import { ToolPaneHeader } from "../ui/toolPane";
-import { cleanup, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
+import { cleanup, computed, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
 import { fleetDeviceById } from "../fleetStore";
 import { formatCount } from "../format";
@@ -156,6 +156,7 @@ function TabChip(props: {
   title: string;
   status: string;
   active: boolean;
+  maxWidth: number;
   compact?: boolean;
   agent?: boolean;
   /** Stacked (narrow) layout: a taller chip so it is a full touch target. */
@@ -193,6 +194,8 @@ function TabChip(props: {
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
+        // The inline close confirmation needs room for both actions.
+        maxWidth: confirming() ? undefined : props.maxWidth,
         gap: space.hair,
         minHeight: tabHeight(),
         paddingLeft: space.sm,
@@ -220,7 +223,7 @@ function TabChip(props: {
       <View
         role="tab"
         tooltip={
-          props.compact && !compactLayout() ? (
+          !compactLayout() ? (
             <TooltipBubble text={`${displayTitle()} · ${localizedTabStatus(props.status)}`} />
           ) : undefined
         }
@@ -237,6 +240,9 @@ function TabChip(props: {
         style={{
           flexDirection: "row",
           alignItems: "center",
+          minWidth: 0,
+          maxWidth: props.maxWidth,
+          flexShrink: 1,
           gap: space.chip,
           paddingVertical: space.hair,
           paddingHorizontal: space.hair,
@@ -262,6 +268,8 @@ function TabChip(props: {
                 lineHeight: textLineHeight(12, 16 / 12),
                 fontWeight: props.active ? "600" : "500",
                 maxWidth: props.compact ? 112 : 168,
+                minWidth: 0,
+                flexShrink: 1,
                 numberOfLines: 1,
                 textOverflow: "ellipsis-middle",
               }}
@@ -270,7 +278,7 @@ function TabChip(props: {
             </Text>
           }
         >
-          <View style={{ width: props.compact ? 112 : 150 }}>
+          <View style={{ width: props.compact ? 112 : 150, minWidth: 0, flexShrink: 1 }}>
             <InputBox
               size="sm"
               value={renameDraft()}
@@ -418,6 +426,55 @@ function shellOptions(): SelectDropdownOption<string>[] {
   ];
 }
 
+function NewTerminalButton(props: { disabled: boolean; onCreate: (shellId?: string) => void }) {
+  const open = signal(false);
+  const anchor = signal<ViewRef | null>(null);
+  const menuItems = (): DropdownMenuItem[] => [
+    { id: "new", label: tr("pane.terminal.new"), onSelect: () => props.onCreate() },
+    ...terminalShells().map((shell, index) => ({
+      id: `shell-${shell.id}`,
+      label: shell.name || shell.path || shell.type,
+      separator: index === 0,
+      onSelect: () => props.onCreate(shell.id),
+    })),
+  ];
+
+  return (
+    <View
+      ref={el => anchor.set(el)}
+      style={{ flexDirection: "row", alignItems: "center", borderRadius: radii.md, backgroundColor: palette().panelHover }}
+    >
+      <IconButton
+        icon="plus"
+        size="sm"
+        iconSize={18}
+        disabled={props.disabled}
+        tooltip={tr("pane.terminal.new")}
+        accessibilityLabel={tr("terminal.newShell")}
+        onPress={() => props.onCreate()}
+      />
+      <IconButton
+        icon="chevron-down"
+        size="sm"
+        iconSize={13}
+        style={{ width: controlHeight.xs }}
+        active={open()}
+        disabled={props.disabled}
+        tooltip={tr("terminal.newWithShell")}
+        accessibilityLabel={tr("terminal.newWithShell")}
+        onPress={() => open.set(!open())}
+      />
+      <DropdownMenu
+        open={open() && !props.disabled}
+        anchor={anchor()}
+        align="end"
+        items={menuItems()}
+        onClose={() => open.set(false)}
+      />
+    </View>
+  );
+}
+
 function quickProfileOptions(): SelectDropdownOption<string>[] {
   return profilesFor(activeWorkspaceRoot()).map(profile => ({
     value: profile.id,
@@ -431,7 +488,7 @@ function quickProfileOptions(): SelectDropdownOption<string>[] {
 export function TerminalScene(props: { compact?: boolean } = {}) {
   attachTerminalWriter(writeToMountedTerminals, resetMountedTerminals);
   const sceneWidth = createSceneWidth();
-  const measuredWidth = signal(0);
+  const tabStrip = createSceneWidth();
   const compactMenuOpen = signal(false);
   const compactMenuAnchor = signal<ViewRef | null>(null);
   const runProfileOpen = signal(false);
@@ -488,9 +545,9 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     if (profileModalOpen() !== next) profileModalOpen.set(next);
   });
 
-  const startNewShell = () => {
+  const startNewShell = (shellId?: string) => {
     if (deviceOffline()) return;
-    void openTerminal(activeWorkspaceId(), activeWorkspaceRoot());
+    void openTerminal(activeWorkspaceId(), activeWorkspaceRoot(), { shellId });
   };
   const startRenameActive = () => {
     const active = activeTerminalTab();
@@ -597,15 +654,21 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
   const narrow = () =>
     compactLayout() ||
     sceneWidth.stacked() ||
-    (measuredWidth() > 0 && measuredWidth() < 680);
+    (sceneWidth.width() > 0 && sceneWidth.width() < 680);
+
+  // Share the space the toolbar actually leaves. With many shells, keep
+  // each title readable and let the strip scroll to the selected tab.
+  const tabMaxWidth = computed(() => {
+    const cap = narrow() ? 176 : 240;
+    const count = visibleTerminalTabs().length;
+    if (!count || !tabStrip.width()) return cap;
+    const share = (tabStrip.width() - (count - 1) * space.hair) / count;
+    return Math.min(cap, Math.max(128, Math.floor(share)));
+  });
 
   return (
     <View
-      onLayout={event => {
-        sceneWidth.onLayout(event);
-        const next = Math.round(event.bounds.size.width);
-        if (next > 0 && next !== measuredWidth()) measuredWidth.set(next);
-      }}
+      onLayout={sceneWidth.onLayout}
       style={{
         flex: 1,
         minHeight: 0,
@@ -618,7 +681,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         <ToolPaneHeader />
       </If>
       <RemoteWorkspaceStatusBanner compact={props.compact} />
-      {/* Full workbench toolbar: one quiet row of tabs and ghost controls, one primary action. */}
+      {/* Full workbench toolbar: tabs, profile and editing controls, and the new terminal split button. */}
       <If when={!narrow()}>
         <View
           style={{
@@ -635,7 +698,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             backgroundColor: palette().canvas,
           }}
         >
-          <Scroll smoothWheel horizontal scrollbar={false} style={{ flex: 1, minWidth: 140, overflow: "hidden" }}>
+          <Scroll smoothWheel horizontal scrollbar={false} onLayout={tabStrip.onLayout} style={{ flex: 1, minWidth: 140, overflow: "hidden" }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
                 {(tab, index) => (
@@ -645,6 +708,8 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                     title={tab().title}
                     status={tab().status}
                     active={tab().id === terminalId()}
+                    maxWidth={tabMaxWidth()}
+                    compact={tabMaxWidth() < 176}
                     agent={Boolean(tab().agentCreated)}
                   />
                 )}
@@ -665,16 +730,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           </Scroll>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-            <SelectDropdown
-              options={shellOptions()}
-              value={selectedShellId() ?? "__default__"}
-              placeholder={tr("terminal.defaultShellLabel")}
-              accessibilityLabel="shell-picker"
-              size="sm"
-              minWidth={140}
-              maxWidth={196}
-              onChange={val => chooseShell(val === "__default__" ? null : val)}
-            />
             <If when={profilesFor(activeWorkspaceRoot()).length > 0}>
               <View ref={el => runProfileAnchor.set(el)} style={{ flexShrink: 0 }}>
                 <IconButton
@@ -721,15 +776,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               onPress={clearTerminalView}
             />
             <ToolbarDivider />
-            <Button
-              label={tr("pane.terminal.new")}
-              variant="primary"
-              size="sm"
-              leadingIcon="plus"
-              disabled={deviceOffline()}
-              accessibilityLabel={tr("terminal.newShell")}
-              onPress={startNewShell}
-            />
+            <NewTerminalButton disabled={deviceOffline()} onCreate={startNewShell} />
           </View>
         </View>
       </If>
@@ -750,7 +797,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             backgroundColor: palette().canvas,
           }}
         >
-          <Scroll smoothWheel horizontal scrollbar={false} style={{ flex: 1, minWidth: 0 }}>
+          <Scroll smoothWheel horizontal scrollbar={false} onLayout={tabStrip.onLayout} style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
                 {(tab, index) => (
@@ -760,6 +807,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                     title={tab().title}
                     status={tab().status}
                     active={tab().id === terminalId()}
+                    maxWidth={tabMaxWidth()}
                     agent={Boolean(tab().agentCreated)}
                     compact={true}
                     touch={compactLayout()}

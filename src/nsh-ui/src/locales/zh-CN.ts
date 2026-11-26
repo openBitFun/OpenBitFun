@@ -883,6 +883,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "terminal.shellLabel": "终端：{{name}}",
   "terminal.runProfile": "运行配置…",
   "terminal.newShell": "新建终端",
+  "terminal.newWithShell": "选择 Shell 新建终端…",
   "terminal.profilesTitle": "终端配置",
   "terminal.saveProfile": "保存配置",
   "terminal.createProfile": "新建配置",

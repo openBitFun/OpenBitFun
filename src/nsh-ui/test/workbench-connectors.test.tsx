@@ -958,7 +958,7 @@ test("settings scene renders subscription quotas and switches OpenBitFun appeara
   await app.waitFor("Showing the dark scheme");
 });
 
-test("terminal scene keeps theme canvas background in light scheme and manages shell SelectDropdown and profiles modal", async () => {
+test("terminal scene keeps theme canvas background in light scheme and manages shell launch menu and profiles modal", async () => {
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", {
     ...DESKTOP,
@@ -971,9 +971,9 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
   await app.waitFor("running");
   await app.waitFor("shell 1");
 
-  // Select shell via SelectDropdown, then open Terminal Profiles modal.
-  await app.press("shell-picker");
-  await app.press("shell-option-default");
+  await app.press("New terminal with shell…");
+  await app.press("New terminal");
+  await app.waitFor("shell 2");
   await app.press("profiles-toggle");
   await app.waitFor("Terminal Profiles");
   await app.type("profile-name", " Watch");
@@ -982,6 +982,45 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
   await app.waitFor("Saved Terminal 1 Watch");
   await app.waitFor("Open Terminal 1 Watch");
   await app.waitFor("default shell · pnpm test");
+});
+
+
+test("two long terminal tabs fit beside the narrow and full toolbars", async () => {
+  const titles = ["first", "second"].map(name => `wsp@desktop:/projects/worktrees/test-approval/${name}`);
+  const backend = createWorkbenchBackend({
+    terminalSessions: titles.map((name, index) => ({
+      id: `terminal-${index}`,
+      name,
+      workspaceId: "workspace-1",
+      status: "Running",
+    })),
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openToolScene(app, "terminal");
+  await app.waitFor(titles[1]);
+
+  for (const [width, toolbarControl] of [[559, "terminal-compact-menu"], [820, "New terminal with shell…"]] as const) {
+    await app.setViewport(width, DESKTOP.height);
+    await app.waitFor(toolbarControl);
+    for (const [index, title] of titles.entries()) {
+      const label = app.layout(`label:terminal-tab-${title}`);
+      const close = app.layout(`label:× >> nth=${index}`);
+      if (!label || !close) throw new Error(`Missing terminal tab at width ${width}`);
+      expect(label.clipped).toBe(false);
+      expect(close.clipped).toBe(false);
+      expect(label.x + label.width).toBeLessThanOrEqual(close.x);
+    }
+  }
+
+  const title = titles[1];
+  await app.hover(`label:terminal-tab-${title}`);
+  const tooltip = `text:${title} · running`;
+  await app.waitFor(tooltip);
+  const wrapped = app.layout(tooltip);
+  const singleLine = app.layout(`text:${title}`);
+  if (!wrapped || !singleLine) throw new Error("Missing terminal title or tooltip");
+  expect(wrapped.height).toBeGreaterThan(singleLine.height);
+  expect(wrapped.clipped).toBe(false);
 });
 
 
