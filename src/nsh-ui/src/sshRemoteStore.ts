@@ -22,6 +22,7 @@ import {
   activeWorkspace,
   closeWorkspace,
   loadWorkspaces,
+  navigateScene,
   onWorkspaceChanged,
   openPathWorkspace,
   selectWorkspace,
@@ -2639,7 +2640,7 @@ export async function createAssistantFromNewWorkspace(): Promise<boolean> {
       }
       selectWorkspace(created.id);
     }
-    activeScene.set("assistants");
+    navigateScene("assistants");
     newWorkspaceModalOpen.set(false);
     return true;
   } catch (error) {
@@ -2677,12 +2678,14 @@ export async function confirmNewWorkspace(): Promise<boolean> {
       });
       if (!opened) return false;
       newWorkspaceModalOpen.set(false);
+      navigateScene("sessions");
       return true;
     }
 
     if (primary) {
       await openPathWorkspace(primary.path);
       newWorkspaceModalOpen.set(false);
+      navigateScene("sessions");
       return true;
     }
 
@@ -2710,6 +2713,7 @@ export async function confirmNewWorkspace(): Promise<boolean> {
       });
       if (!opened) return false;
       newWorkspaceModalOpen.set(false);
+      navigateScene("sessions");
       return true;
     }
 
@@ -2718,6 +2722,7 @@ export async function confirmNewWorkspace(): Promise<boolean> {
     if (pendingInput) {
       await openPathWorkspace(pendingInput);
       newWorkspaceModalOpen.set(false);
+      navigateScene("sessions");
       return true;
     }
 
@@ -3231,7 +3236,13 @@ async function requestEnsureConnected(
       setLinkState(stateKey, "host-outdated");
       return true;
     }
-    setLinkState(stateKey, "offline", errorMessage(error));
+    const detail = errorMessage(error);
+    if (/remote_workspace_not_remote/i.test(detail)) {
+      // Local workspaces never have a remote SSH transport; clear any stale link state.
+      clearLinkKey(stateKey);
+      return true;
+    }
+    setLinkState(stateKey, "offline", detail);
     return false;
   }
   applyHostLink(answer?.link, target);

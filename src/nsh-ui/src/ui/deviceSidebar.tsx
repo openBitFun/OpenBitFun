@@ -71,6 +71,7 @@ const localCatalogueRead = new Set<string>();
 
 /** A tablet or a phone has no hover: the row actions a pointer reveals on hover stay shown there. */
 const touchFirst = platform.os === "ios" || platform.os === "android";
+const alwaysShowRowActions = () => touchFirst || compactLayout();
 
 function workspaceKey(deviceId: string, workspaceId: string): string {
   return `${deviceId}/${workspaceId}`;
@@ -304,7 +305,7 @@ function SessionRow(props: { node: DeviceTreeNode; workspaceId: string; row: Tre
       }}
       leading={<If when={shownMark(props.row.mark)}>{mark => <StateMark state={mark()} />}</If>}
       trailing={
-        <HoverActions visible={hovered() || menuOpen() || touchFirst}>
+        <HoverActions visible={hovered() || menuOpen() || alwaysShowRowActions()}>
           <RowMenuButton
             items={() => sessionMenuItems(sessionTarget(props.row, props.node.deviceId, props.workspaceId))}
             accessibilityLabel={`sidebar-session-actions-${props.row.sessionId}`}
@@ -348,6 +349,14 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
   const current = () =>
     activeWorkspaceId() === props.workspace.workspaceId && (!fleetActive() || deviceContext() === props.node.deviceId);
   const newSession = () => {
+    const k = key();
+    if (collapsedWorkspaces()[k] === true) {
+      collapsedWorkspaces.update(current => {
+        const next = { ...current };
+        delete next[k];
+        return next;
+      });
+    }
     void newSessionHere(props.workspace.workspaceId, props.node.deviceId);
     props.onNavigate?.();
   };
@@ -395,7 +404,7 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
           </If>
         }
         trailing={
-          <HoverActions visible={hovered() || menuOpen() || touchFirst}>
+          <HoverActions visible={hovered() || menuOpen() || alwaysShowRowActions()}>
             <IconButton
               icon="plus"
               size="xs"

@@ -485,6 +485,12 @@ const EXACT_STORE_MESSAGE_KEYS: Readonly<Record<string, MessageKey>> = {
   "saved the key": "error.webSearchSavedKey",
   "removed the key": "error.webSearchRemovedKey",
   "a key is needed for this provider": "error.webSearchKeyNeeded",
+  "the host stores no value yet; these are its defaults.": "error.hostDefaultsNotice",
+  "paste a configuration first": "error.mcpPasteConfigFirst",
+  saved: "error.mcpJsonSaved",
+  "unsaved changes": "error.mcpJsonUnsaved",
+  "not saved": "error.mcpJsonNotSaved",
+  "staged all changes": "error.gitStagedAll",
 };
 
 const WEB_SEARCH_PROVIDER_LABEL_KEYS: Readonly<Record<string, MessageKey>> = {
@@ -517,6 +523,37 @@ function localizeStoreMessage(locale: AppLocale, text: string): string | null {
     if (/^(?:exa|openbitfun)$/i.test(rawTarget)) {
       return trForLocale(locale, "settings.notice.savedField", { label: rawTarget });
     }
+    return trForLocale(locale, "error.fileSaved", { name: rawTarget });
+  }
+
+  const createdItem = /^Created\s+(.+)$/i.exec(text);
+  if (createdItem) {
+    return trForLocale(locale, "error.fileCreated", { name: createdItem[1].trim() });
+  }
+
+  const renamedItem = /^Renamed to\s+(.+)$/i.exec(text);
+  if (renamedItem) {
+    return trForLocale(locale, "error.fileRenamed", { name: renamedItem[1].trim() });
+  }
+
+  const stagedFile = /^Staged\s+(.+)$/i.exec(text);
+  if (stagedFile) {
+    return trForLocale(locale, "error.gitStagedFile", { path: stagedFile[1].trim() });
+  }
+
+  const unstagedCount = /^Unstaged\s+(\d+)\s+files$/i.exec(text);
+  if (unstagedCount) {
+    return trForLocale(locale, "error.gitUnstagedCount", { count: unstagedCount[1] });
+  }
+
+  const unstagedFile = /^Unstaged\s+(.+)$/i.exec(text);
+  if (unstagedFile) {
+    return trForLocale(locale, "error.gitUnstagedFile", { path: unstagedFile[1].trim() });
+  }
+
+  const checkedOut = /^Checked out\s+(.+)$/i.exec(text);
+  if (checkedOut) {
+    return trForLocale(locale, "error.gitCheckedOut", { branch: checkedOut[1].trim() });
   }
 
   const submittedTo = /^Submitted to\s+(.+)$/i.exec(text);

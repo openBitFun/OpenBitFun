@@ -862,11 +862,11 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 borderColor: palette().borderSubtle,
               }}
             >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexWrap: "wrap" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
                 <Text
                   style={{
                     flex: 1,
-                    minWidth: 72,
+                    minWidth: 0,
                     ...textStyle("caption", { color: palette().textMuted, tabular: true }),
                     fontWeight: "600",
                     numberOfLines: 1,
@@ -875,24 +875,26 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 >
                   {formatPlural(totalWorkingChanges(), "format.changeOne", "format.changeOther")}
                 </Text>
-                <Button
-                  label={tr("git.stageAll")}
-                  size="xs"
-                  variant="ghost"
-                  disabled={gitActionBusy() || totalWorkingChanges() === 0}
-                  accessibilityLabel="git-stage-all"
-                  onPress={() => void stageGitFiles([], true)}
-                />
-                <Button
-                  label={tr("git.unstageAll")}
-                  size="xs"
-                  variant="ghost"
-                  disabled={gitActionBusy() || (gitStatus()?.staged.length ?? 0) === 0}
-                  accessibilityLabel="git-unstage-all"
-                  onPress={() =>
-                    void unstageGitFiles((gitStatus()?.staged ?? []).map(file => file.path))
-                  }
-                />
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+                  <Button
+                    label={tr("git.stageAll")}
+                    size="xs"
+                    variant="ghost"
+                    disabled={gitActionBusy() || totalWorkingChanges() === 0}
+                    accessibilityLabel="git-stage-all"
+                    onPress={() => void stageGitFiles([], true)}
+                  />
+                  <Button
+                    label={tr("git.unstageAll")}
+                    size="xs"
+                    variant="ghost"
+                    disabled={gitActionBusy() || (gitStatus()?.staged.length ?? 0) === 0}
+                    accessibilityLabel="git-unstage-all"
+                    onPress={() =>
+                      void unstageGitFiles((gitStatus()?.staged ?? []).map(file => file.path))
+                    }
+                  />
+                </View>
               </View>
               <InputBox
                 size="sm"

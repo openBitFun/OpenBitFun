@@ -547,9 +547,11 @@ function NewWorkspaceModal() {
     return hasFolderTarget() ? tr("common.open") : tr("ssh.createWorkspace");
   };
 
-  const canPickLocalDir = () =>
-    Boolean(windowShellId()) &&
-    (!fleetActive() || Boolean(fleetDeviceById(deviceContext())?.isClientDevice));
+  const canPickLocalDir = () => {
+    const shell = windowShellId();
+    if (!shell || shell === "browser") return false;
+    return !fleetActive() || Boolean(fleetDeviceById(deviceContext())?.isClientDevice);
+  };
 
   const selectEnvironmentMode = (env: WorkspaceEnvironment) => {
     newWorkspaceError.set("");
@@ -998,6 +1000,11 @@ function SshConnectionModal() {
   const selectedSaved = (): SavedConnection | undefined =>
     savedConnections().find(c => c.id === sshSelectedConnectionId());
 
+  const wslUnsupportedOnHost = () =>
+    sshTargetType() === "wsl" && wslDistributions()?.supported === false;
+
+  const canConnect = () => !sshConnecting() && !sshTesting() && !wslUnsupportedOnHost();
+
   return (
     <ModalDialog
       open={sshConnectionModalOpen()}
@@ -1020,7 +1027,7 @@ function SshConnectionModal() {
       closeOnEscape={!sshConnecting()}
       onClose={closeSshConnectionModal}
       onSubmit={() => {
-        if (!showNewForm() || sshConnecting() || sshTesting()) return;
+        if (!showNewForm() || !canConnect()) return;
         void (sshEditOnly() ? saveSshConnectionForm() : submitSshConnectionForm());
       }}
       footer={
@@ -1033,7 +1040,7 @@ function SshConnectionModal() {
                 size="md"
                 leadingIcon="activity"
                 loading={sshTesting()}
-                disabled={sshConnecting()}
+                disabled={sshConnecting() || wslUnsupportedOnHost()}
                 accessibilityLabel="ssh-test-btn"
                 style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => void testSshConnection()}
@@ -1044,7 +1051,7 @@ function SshConnectionModal() {
               label={tr("common.save")}
               variant={sshEditOnly() ? "primary" : "ghost"}
               size="md"
-              disabled={sshConnecting() || sshTesting()}
+              disabled={!canConnect()}
               accessibilityLabel="ssh-save-btn"
               style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void saveSshConnectionForm()}
@@ -1058,7 +1065,7 @@ function SshConnectionModal() {
                 variant="primary"
                 size="md"
                 loading={sshConnecting()}
-                disabled={sshTesting()}
+                disabled={sshTesting() || wslUnsupportedOnHost()}
                 accessibilityLabel="ssh-connect-btn"
                 style={[
                   { minWidth: 88 },
@@ -1405,6 +1412,7 @@ function SshConnectionModal() {
                   <IconButton
                     icon="refresh"
                     size="xs"
+                    disabled={wslUnsupportedOnHost()}
                     tooltip={tr("common.refresh")}
                     accessibilityLabel="ssh-wsl-refresh"
                     onPress={() => void loadWslDistributions()}
@@ -1412,6 +1420,7 @@ function SshConnectionModal() {
                 }
               >
                 <SelectDropdown
+                  disabled={wslUnsupportedOnHost()}
                   placeholder={
                     wslLoading()
                       ? tr("ssh.discoveringWsl")
@@ -1666,16 +1675,20 @@ function SshConnectionModal() {
           </If>
 
           {/* Display name — optional, defaults to the host */}
-          <InputBox
-            variant="soft"
-            label={tr("ssh.aliasOptional")}
-            value={sshForm().name}
-            placeholder={aliasPlaceholder()}
-            accessibilityLabel="ssh-form-name"
-            onChange={v => setSshFormField("name", v)}
-          />
+          <If when={!wslUnsupportedOnHost()}>
+            <InputBox
+              variant="soft"
+              label={tr("ssh.aliasOptional")}
+              value={sshForm().name}
+              placeholder={aliasPlaceholder()}
+              disabled={wslUnsupportedOnHost()}
+              accessibilityLabel="ssh-form-name"
+              onChange={v => setSshFormField("name", v)}
+            />
+          </If>
 
           {/* Advanced Settings Toggle */}
+          <If when={!wslUnsupportedOnHost()}>
           <View style={{ gap: space.sm }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
               <Button
@@ -1686,6 +1699,7 @@ function SshConnectionModal() {
                 }
                 variant="ghost"
                 size="xs"
+                disabled={wslUnsupportedOnHost()}
                 leadingIcon={sshShowAdvanced() ? "chevron-up" : "chevron-down"}
                 accessibilityLabel="ssh-toggle-advanced"
                 onPress={() => sshShowAdvanced.update(v => !v)}
@@ -1720,6 +1734,7 @@ function SshConnectionModal() {
                     label={tr("ssh.wslUserOptional")}
                     value={sshForm().wslUser}
                     placeholder={tr("ssh.wslUserPlaceholder")}
+                    disabled={wslUnsupportedOnHost()}
                     accessibilityLabel="ssh-form-wsl-user"
                     onChange={v => setSshFormField("wslUser", v)}
                   />
@@ -1875,6 +1890,7 @@ function SshConnectionModal() {
               </View>
             </If>
           </View>
+          </If>
 
           {/* In-progress SSH Hop Test feedback */}
           <If when={sshTesting()}>

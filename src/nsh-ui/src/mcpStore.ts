@@ -680,7 +680,7 @@ export function openMcpDraft(id?: string): void {
       url: "",
       headers: "",
       enabled: false,
-      autoStart: true,
+      autoStart: false,
       startupSeconds: "",
     });
     return;

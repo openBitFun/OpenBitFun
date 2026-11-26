@@ -623,7 +623,9 @@ pub async fn save_session_metadata(
                 "Failed to save session metadata: {}",
                 desktop_session_error(error)
             ),
-        })
+        })?;
+    crate::fleet::refresh_local_now().await;
+    Ok(())
 }
 
 // @backend-command

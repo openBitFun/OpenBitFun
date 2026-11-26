@@ -162,9 +162,20 @@ function TabChip(props: {
   touch?: boolean;
 }) {
   const hovered = signal(false);
+  const chipRef = signal<ViewRef | null>(null);
   const innerRadius = concentricRadius(radii.sm, space.hair);
   const tabHeight = () => (compactLayout() ? layout.touchTarget : 28);
   const confirming = () => confirmingCloseTerminal() === props.tabId;
+  effect(() => {
+    if (!confirming() && !props.active) return;
+    const node = chipRef();
+    if (!node) return;
+    try {
+      node.reveal({ horizontal: "nearest", animated: false });
+    } catch {
+      // Layout may not be measured yet on initial mount.
+    }
+  });
   // One status mark per tab: compact strip shows `<StateMark>` (teal pulse via ui/fleet.tsx),
   // full strip shows localized inline status text.
   const showMark = () => Boolean(props.compact) && props.status.toLowerCase() === "running";
@@ -173,6 +184,7 @@ function TabChip(props: {
 
   return (
     <View
+      ref={el => chipRef.set(el)}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
       hitSlop={props.touch || compactLayout() ? touchSlop(controlHeight.md) : undefined}
@@ -362,18 +374,20 @@ function TabChip(props: {
               paddingHorizontal: space.xs + 2,
               borderRadius: radii.xs,
               borderCurve: "continuous",
-              backgroundColor: palette().danger,
+              borderWidth: 1,
+              borderColor: palette().dangerBorder,
+              backgroundColor: palette().dangerHoverBg,
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
               userSelect: "none",
               ...pressTransition(MOTION_DURATION.fast),
             }}
-            hoverStyle={{ opacity: 0.9 }}
+            hoverStyle={{ borderColor: palette().danger }}
             activeStyle={tactileActiveStyle(0.96)}
             focusVisibleStyle={focusRingStyle()}
           >
-            <Text style={{ ...textStyle("caption", { color: palette().actionPrimaryFg }), fontWeight: "600" }}>
+            <Text style={{ ...textStyle("caption", { color: palette().danger }), fontWeight: "600" }}>
               {tr("terminal.closeShell")}
             </Text>
           </View>
@@ -621,7 +635,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             backgroundColor: palette().canvas,
           }}
         >
-          <Scroll smoothWheel horizontal scrollbar={false} style={{ flex: 1, minWidth: 140 }}>
+          <Scroll smoothWheel horizontal scrollbar={false} style={{ flex: 1, minWidth: 140, overflow: "hidden" }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
                 {(tab, index) => (

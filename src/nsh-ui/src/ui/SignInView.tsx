@@ -270,10 +270,14 @@ function EmailStep(outer: { p: SignInViewProps }) {
         onPress={submit}
       />
       <If when={props.onGitHub ? "1" : ""}>
-        <LinkButton
+        <Button
           label={tr("signin.github")}
-          accessibilityLabel={`${props.idPrefix}-github`}
+          variant="secondary"
+          size="lg"
+          fullWidth
+          style={tallButton()}
           disabled={Boolean(props.busy)}
+          accessibilityLabel={`${props.idPrefix}-github`}
           onPress={() => props.onGitHub?.()}
         />
       </If>

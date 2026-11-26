@@ -536,6 +536,7 @@ function titlebarDragRegionProps(): {
   desktop?: { windowDrag: boolean };
   onPressDown?: (event: PressEvent) => void;
 } {
+  if (!nativeWindow()) return {};
   return usesNativeDragRegions() ? { desktop: { windowDrag: true } } : { onPressDown: handleTitlebarPressDown };
 }
 
@@ -2273,10 +2274,10 @@ function SearchPanel() {
               <Spinner size={13} color={palette().accent} />
             </If>
             <If when={!searchBusy() && searchQuery().length > 0}>
-              <IconButton
-                icon="close"
+              <Button
+                label={tr("common.clear")}
+                variant="ghost"
                 size="xs"
-                iconSize={11}
                 accessibilityLabel="global-search-clear"
                 tooltip={tr("common.clearSearch")}
                 onPress={() => {
@@ -2904,7 +2905,7 @@ function PhoneTopBar() {
         <If when={isLibrary()}>
           <LibraryScopeChip />
         </If>
-        <If when={!isLibrary()}>
+        <If when={!isLibrary() && activeScene() !== "all-sessions"}>
           <IconButton
             icon="search"
             size="md"
@@ -3665,7 +3666,7 @@ function StudioApp() {
       <AboutDialog />
       <CloseAskDialog />
       <ImageLightboxHost />
-      <ToastHost />
+      <ToastHost bottomOffset={activeScene() === "sessions" && Boolean(activeSessionId()) ? 116 : 0} />
     </View>
   );
 }

@@ -140,6 +140,8 @@ test("session header actions archive, rename and send a turn", async () => {
 
   await app.press("thread-actions-trigger");
   await app.press("Rename");
+  expect(app.value("session-rename")).toBe("NSH skeleton");
+  await app.clear("session-rename");
   await app.type("session-rename", "Renamed session");
   await app.press("Save");
   expect(backend.calls.find(call => call.action === "save_session_metadata")?.request).toMatchObject({

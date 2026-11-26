@@ -264,8 +264,11 @@ export const filteredInstalledSkills = computed<SkillRecord[]>(() => {
 });
 
 export const folderInstallUnsupportedReason = computed<string | null>(() => {
-  if (isRemoteWorkspace(activeWorkspace()) || isRemotePeerContext()) {
-    return "Remote workspace active: installing skills from a local folder path is unsupported.";
+  if (isRemoteWorkspace(activeWorkspace())) {
+    return tr("skills.folderInstallRemoteWorkspace");
+  }
+  if (isRemotePeerContext()) {
+    return tr("skills.folderInstallDesktopOnly");
   }
   return null;
 });

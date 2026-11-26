@@ -6,7 +6,7 @@ import { formatMonthYear, formatTimestamp } from "./format";
 import { tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
 import { currentDeviceScopeKey } from "./shared/deviceScope";
-import { basenameOfPath } from "./shared/workspaceUtils";
+import { basenameOfPath, isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace, activeWorkspaceId, workspaces } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -830,8 +830,9 @@ export async function saveRoutineDraft(): Promise<void> {
     return;
   }
 
-  const remoteConnectionId = wsRecord?.connectionId ?? draft.remoteConnectionId ?? undefined;
-  const remoteSshHost = wsRecord?.sshHost ?? draft.remoteSshHost ?? undefined;
+  const wsIsRemote = isRemoteWorkspace(wsRecord);
+  const remoteConnectionId = wsIsRemote ? (wsRecord?.connectionId ?? draft.remoteConnectionId ?? undefined) : undefined;
+  const remoteSshHost = wsIsRemote ? (wsRecord?.sshHost ?? draft.remoteSshHost ?? undefined) : undefined;
   const workspaceRef: CronWorkspaceRef | null = wsRecord
     ? {
         workspaceId: wsRecord.id,

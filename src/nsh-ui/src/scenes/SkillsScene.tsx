@@ -103,6 +103,15 @@ import {
   ToggleSwitch,
 } from "../ui/primitives";
 
+/** Removes a leading YAML frontmatter block (`--- ... ---`) so SKILL.md metadata isn't rendered as a giant heading. */
+function stripYamlFrontmatter(raw: string): string {
+  const normalized = raw.replace(/^\uFEFF/, "");
+  const match = normalized.match(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/);
+  if (!match) return raw;
+  const body = normalized.slice(match[0].length).replace(/^\r?\n+/, "");
+  return body || raw;
+}
+
 function scopeOptions(): ReadonlyArray<SelectDropdownOption<SkillScopeFilter>> {
   return [
     { value: "all", label: tr("skills.allScopes"), accessibilityLabel: "skills-scope-all" },
@@ -741,6 +750,7 @@ function SkillInspectModal() {
               <If when={!inspectedSkillLoading() && !inspectedSkillError() && inspectedSkillContent() !== null}>
                 <View
                   style={{
+                    minWidth: 0,
                     padding: 20,
                     borderRadius: radii.md,
                     borderCurve: "continuous",
@@ -749,7 +759,7 @@ function SkillInspectModal() {
                     backgroundColor: palette().canvas,
                   }}
                 >
-                  <View style={{ width: "100%", maxWidth: 624 }}>
+                  <View style={{ width: "100%", maxWidth: 624, minWidth: 0 }}>
                     <If
                       when={(inspectedSkillContent() ?? "").trim()}
                       else={
@@ -765,7 +775,7 @@ function SkillInspectModal() {
                       }
                     >
                       <MarkdownPreview
-                        markdown={inspectedSkillContent() ?? ""}
+                        markdown={stripYamlFrontmatter(inspectedSkillContent() ?? "")}
                         links="report"
                         compact={true}
                         onLinkPress={event => {
@@ -1220,23 +1230,27 @@ export function SkillsScene(props: { embedded?: boolean }) {
               <>
                 {viewTabs()}
                 {filterControls()}
-                {refreshButton()}
               </>
             }
-            primary={installButton()}
+            primary={
+              <>
+                {refreshButton()}
+                {installButton()}
+              </>
+            }
           />
         </If>
 
         <StudioBody style={props.embedded ? libraryBodyStyle() : undefined}>
           <If
             when={
-              Boolean(folderInstallUnsupportedReason())
+              isRemoteWorkspace(activeWorkspace())
               || (!directSkillManagementSupported() && !skillsLoading())
               || Boolean(skillsNotice())
             }
           >
             <View style={{ gap: 8 }}>
-              <If when={folderInstallUnsupportedReason() ?? ""}>
+              <If when={isRemoteWorkspace(activeWorkspace()) ? (folderInstallUnsupportedReason() ?? "") : ""}>
                 {warning => <InlineBanner tone="warning" message={warning()} />}
               </If>
               <If when={!directSkillManagementSupported() && !skillsLoading()}>

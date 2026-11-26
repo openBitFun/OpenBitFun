@@ -63,6 +63,7 @@ import {
   subscribeContextUsage,
 } from "../composerStatusStore";
 import { permissionMode } from "../permissionPolicyStore";
+import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import {
   ExploreGroupCard,
   FoldedGroupStep,
@@ -1756,6 +1757,9 @@ function ConversationHeader() {
               accessibilityLabel="session-rename"
               style={{ flex: 1, minWidth: 0 }}
               onChange={value => renameValue.set(value)}
+              onKeyPress={event => {
+                if (event.key === "Escape") renaming.set(false);
+              }}
               onSubmit={() => {
                 const id = activeSessionId();
                 const next = renameValue().trim();
@@ -1927,7 +1931,7 @@ function ThreadActionsSurface(props: {
               label={tr("common.rename")}
               onPress={() => {
                 closeThreadMenu();
-                renameValue.set("");
+                renameValue.set(session().sessionName || "");
                 renaming.set(true);
               }}
             />
@@ -2791,11 +2795,7 @@ function ThinkingBlock(props: {
 }
 
 function isRemoteActiveWorkspace(): boolean {
-  const ws = activeWorkspace() as
-    | ({ workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined);
-  if (!ws) return false;
-  const kind = (ws.workspaceKind ?? "").toLowerCase();
-  return kind === "remote" || kind === "remote_ssh" || kind === "docker" || kind === "wsl" || Boolean(ws.sshHost) || Boolean(ws.remoteConnectionId);
+  return isRemoteWorkspace(activeWorkspace());
 }
 
 /** A link in a reply: external links open via OS, relative or file paths resolve against the workspace root. */
@@ -7144,6 +7144,7 @@ function SessionPaneShell(props: {
   testID?: string;
   accessibilityLabel?: string;
   style: () => ViewStyle;
+  interactive?: () => boolean;
   onInteract?: () => void;
   onPress?: () => (() => void) | undefined;
   header?: JSX.Element;
@@ -7152,16 +7153,17 @@ function SessionPaneShell(props: {
   preComposer?: JSX.Element;
   composer?: JSX.Element;
 }) {
+  const active = () => (props.interactive ? props.interactive() : true);
   return (
     <View
       testID={props.testID}
       accessibilityLabel={props.accessibilityLabel}
       focusable={false}
-      onTouchStartCapture={props.onInteract}
-      onPressDown={props.onInteract}
-      onPress={props.onPress ? props.onPress() : undefined}
-      onMouseUp={props.onInteract}
-      onKeyDown={props.onInteract}
+      onTouchStartCapture={active() ? props.onInteract : undefined}
+      onPressDown={active() ? props.onInteract : undefined}
+      onPress={active() && props.onPress ? props.onPress() : undefined}
+      onMouseUp={active() ? props.onInteract : undefined}
+      onKeyDown={active() ? props.onInteract : undefined}
       style={{
         minHeight: 0,
         flexDirection: "column",
@@ -9965,12 +9967,7 @@ function SecondaryComposerDock() {
   const handleSecondaryPaste = async (event: PasteEvent, insertText: (text: string) => void) => {
     focusPane(1);
     const ws = secondaryWorkspaceRecord();
-    const isRemote = Boolean(
-      ws &&
-        ((ws.workspaceKind ?? "").toLowerCase().includes("remote") ||
-          (ws.workspaceKind ?? "").toLowerCase().includes("ssh") ||
-          Boolean(ws.sshHost)),
-    );
+    const isRemote = isRemoteWorkspace(ws);
     await handlePanePaste(event, {
       ...secondaryDropOpts(),
       workspaceId: secondaryWorkspaceId() || activeWorkspaceId() || undefined,
@@ -10245,15 +10242,7 @@ function BtwSessionPane(props?: { compact?: boolean }) {
   });
 
   const handleBtwPaste = async (event: PasteEvent, insertText: (text: string) => void) => {
-    const ws = activeWorkspace() as
-      | ({ workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined);
-    const isRemote = Boolean(
-      ws &&
-        ((ws.workspaceKind ?? "").toLowerCase().includes("remote") ||
-          (ws.workspaceKind ?? "").toLowerCase().includes("ssh") ||
-          Boolean(ws.sshHost) ||
-          Boolean(ws.remoteConnectionId)),
-    );
+    const isRemote = isRemoteWorkspace(activeWorkspace());
     await handlePanePaste(event, {
       ...btwDropOpts(),
       workspaceId: activeWorkspaceId() || undefined,
@@ -10668,6 +10657,7 @@ export function SessionsScene() {
     >
       <SessionPaneShell
         testID="primary-session-pane"
+        interactive={() => splitPaneOpen()}
         onInteract={() => {
           if (splitPaneOpen()) focusPane(0);
         }}

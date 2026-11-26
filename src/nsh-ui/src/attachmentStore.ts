@@ -25,20 +25,9 @@ export function isLocalAttachmentPathAllowed(): boolean {
       return false;
     }
   }
-  const ws = activeWorkspace() as
-    | ({ workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined);
-  if (ws) {
-    const kind = (ws.workspaceKind ?? "").toLowerCase();
-    if (
-      kind === "remote" ||
-      kind === "remote_ssh" ||
-      kind === "docker" ||
-      kind === "wsl" ||
-      Boolean(ws.sshHost) ||
-      Boolean(ws.remoteConnectionId)
-    ) {
-      return false;
-    }
+  const ws = activeWorkspace();
+  if (isRemoteWorkspace(ws)) {
+    return false;
   }
   return true;
 }
@@ -145,18 +134,11 @@ export function composeMessageWithFileAttachments(
   return trimmed ? `${trimmed} ${tags.join(" ")}` : tags.join(" ");
 }
 
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
+
 function isRemoteWorkspaceObj(ws: unknown): boolean {
-  const obj = ws as { workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined;
-  if (!obj) return false;
-  const kind = (obj.workspaceKind ?? "").toLowerCase();
-  return (
-    kind === "remote" ||
-    kind === "remote_ssh" ||
-    kind === "docker" ||
-    kind === "wsl" ||
-    Boolean(obj.sshHost) ||
-    Boolean(obj.remoteConnectionId)
-  );
+  if (!ws || typeof ws !== "object") return false;
+  return isRemoteWorkspace(ws as Parameters<typeof isRemoteWorkspace>[0]);
 }
 
 function formatPastedFileName(): string {

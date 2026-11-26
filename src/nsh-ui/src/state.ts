@@ -1982,6 +1982,9 @@ export async function renameSession(sessionId: string, name: string): Promise<vo
     sessions.update(current =>
       current.map(item => (item.sessionId === sessionId ? { ...item, sessionName: name } : item)),
     );
+    if (fleetActive()) {
+      await refreshFleetNavigator();
+    }
   });
 }
 

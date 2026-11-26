@@ -1412,10 +1412,14 @@ export function RoutinesScene(props: { embedded?: boolean }) {
               <>
                 {filterTabs()}
                 {searchField()}
-                {refreshControls()}
               </>
             }
-            primary={newButton()}
+            primary={
+              <>
+                {refreshControls()}
+                {newButton()}
+              </>
+            }
           />
         </If>
         <RoutinesBody embedded={props.embedded} />

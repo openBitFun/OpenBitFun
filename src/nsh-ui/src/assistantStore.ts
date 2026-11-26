@@ -6,7 +6,8 @@
 // remote and peer Linux/macOS targets never receive backslashes.
 
 import { computed, signal } from "nsh";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { fleetActive, invokeCommand, invokeRawCommand } from "./bridge";
+import { refreshFleetNavigator } from "./fleetStore";
 import { contentHash } from "./fileStore";
 import { tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
@@ -336,6 +337,14 @@ export async function loadPersonaFile(
   }
 }
 
+function syncWorkspaceSidebar(): void {
+  if (fleetActive()) {
+    void refreshFleetNavigator();
+  } else {
+    void loadWorkspaces();
+  }
+}
+
 export async function savePersonaFile(): Promise<void> {
   const assistant = selectedAssistant();
   if (!assistant || personaSaving()) return;
@@ -363,6 +372,7 @@ export async function savePersonaFile(): Promise<void> {
     personaNotice.set(tr("assistants.store.savedFile", { file: fileName }));
     if (fileName === "IDENTITY.md") {
       void loadAssistants(assistant.id);
+      syncWorkspaceSidebar();
     }
   } catch (error) {
     personaError.set(errorMessage(error));
@@ -404,6 +414,7 @@ export async function createAssistant(customName = newAssistantNameInput()): Pro
     newAssistantModalOpen.set(false);
     newAssistantNameInput.set("");
     await loadAssistants(createdId);
+    syncWorkspaceSidebar();
     assistantsNotice.set(
       nameIgnored ? tr("assistants.store.nameNeedsHostUpdate") : tr("assistants.store.created"),
     );
@@ -456,6 +467,7 @@ export async function executeAssistantConfirm(): Promise<void> {
       });
       confirmingAssistantAction.set(null);
       await loadAssistants(pending.id);
+      syncWorkspaceSidebar();
       const current = selectedAssistant();
       if (current && current.id === pending.id) {
         await loadPersonaFile(current, activePersonaFile());
@@ -467,6 +479,7 @@ export async function executeAssistantConfirm(): Promise<void> {
       });
       confirmingAssistantAction.set(null);
       await loadAssistants();
+      syncWorkspaceSidebar();
       assistantsNotice.set(tr("assistants.store.deleted"));
     }
   } catch (error) {
@@ -491,6 +504,7 @@ export async function resetSelectedPersonaFiles(): Promise<void> {
     await loadPersonaFile(assistant, activePersonaFile());
     personaNotice.set(tr("assistants.store.personaReset"));
     void loadAssistants(assistant.id);
+    syncWorkspaceSidebar();
   } catch (error) {
     personaError.set(errorMessage(error));
   } finally {
@@ -678,6 +692,7 @@ export function saveIdentityFields(
       );
       const next = typeof result.content === "string" ? result.content : null;
       identitySaveStatus.set("saved");
+      syncWorkspaceSidebar();
       // The persona editor shows IDENTITY.md too; keep it in step when it is clean.
       if (
         next !== null &&

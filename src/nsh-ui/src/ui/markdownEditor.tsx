@@ -57,6 +57,7 @@ import {
   type Palette,
 } from "../theme";
 import { activeWorkspace, activeWorkspaceRoot, openInAuxPane } from "../state";
+import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import { Icon } from "./icons";
 import {
   createMarkdownCodeActions,
@@ -95,15 +96,30 @@ export function visualEditorAvailable(): boolean {
   return visualEditorProbe;
 }
 
-/** Text compared the way the guard compares it: line endings, BOM and trailing whitespace do not count. */
+/** Text compared the way the guard compares it: line endings, BOM, trailing whitespace and extra blank runs outside fenced code blocks do not count. */
 function normalizeMarkdown(text: string): string {
   let value = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   value = value.replace(/\r\n?/g, "\n");
-  return value
-    .split("\n")
-    .map(line => line.replace(/[ \t]+$/, ""))
-    .join("\n")
-    .replace(/\n+$/, "");
+  const lines = value.split("\n").map(line => line.replace(/[ \t]+$/, ""));
+  const out: string[] = [];
+  let inFence = false;
+  let blankRun = 0;
+  for (const line of lines) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      blankRun = 0;
+      out.push(line);
+      continue;
+    }
+    if (!inFence && line === "") {
+      blankRun += 1;
+      if (blankRun <= 1) out.push(line);
+      continue;
+    }
+    blankRun = 0;
+    out.push(line);
+  }
+  return out.join("\n").replace(/\n+$/, "");
 }
 
 /** Whether two Markdown texts are the same document byte for byte, but for whitespace at line ends. */
@@ -581,8 +597,7 @@ export interface MarkdownPreviewProps {
 }
 
 function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
-  const ws = activeWorkspace() as ({ workspaceKind?: string; sshHost?: string } | null | undefined);
-  const isRemote = Boolean(ws && (ws.workspaceKind === "remote" || ws.workspaceKind === "remote_ssh" || ws.sshHost));
+  const isRemote = isRemoteWorkspace(activeWorkspace());
   const resolved = resolveWorkspaceMarkdownLink(event.url, activeWorkspaceRoot(), isRemote);
   if (resolved.kind === "external") {
     void openUrl(resolved.url).catch(() => undefined);
@@ -594,7 +609,7 @@ function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
 /** A Markdown document as a reader sees it, with Mermaid diagrams and display formulas. */
 export function MarkdownPreview(props: MarkdownPreviewProps) {
   return (
-    <View accessibilityLabel={props.accessibilityLabel} style={{ alignSelf: "stretch" }}>
+    <View accessibilityLabel={props.accessibilityLabel} style={{ alignSelf: "stretch", minWidth: 0 }}>
     <TextView
       markdown={props.markdown}
       selectable={true}

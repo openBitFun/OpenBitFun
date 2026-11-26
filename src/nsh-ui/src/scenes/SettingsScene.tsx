@@ -35,6 +35,7 @@ import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bri
 import { fleetDeviceById, fleetDevices, refreshFleetNavigator } from "../fleetStore";
 import { isCommandUnavailable } from "../hostCommands";
 import { isRemotePeerContext } from "../shared/deviceScope";
+import { isRemoteWorkspace } from "../shared/workspaceUtils";
 import { errorMessageOf } from "../shared/errorUtils";
 import {
   fetchUsageActivity,
@@ -1552,7 +1553,7 @@ function SettingsRow(props: {
   );
 }
 
-function noticeTone(notice: string): "danger" | "warning" | "success" {
+function noticeTone(notice: string): "danger" | "warning" | "success" | "info" {
   return settingsNoticeTone(notice);
 }
 
@@ -1904,11 +1905,28 @@ function fieldOptions(spec: FieldSpec) {
   return spec.dynamicOptions ? spec.dynamicOptions() : (spec.options ?? []);
 }
 
-/** Whether a choice list is short enough for a segmented control. */
+/** Rough character columns for segmented-control fitting (CJK glyphs take ~2 Latin columns). */
+function segmentedLabelColumns(text: string): number {
+  let cols = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    cols += code >= 0x2e80 ? 2 : 1;
+  }
+  return cols;
+}
+
+/** Whether a choice list is short enough for a segmented control without clipping labels. */
 function segmentedFits(spec: FieldSpec): boolean {
   if (spec.dynamicOptions) return false;
   const options = fieldOptions(spec);
-  return options.length <= 3 && options.every(option => optionLabel(option).length <= 12);
+  if (options.length > 3) return false;
+  let totalCols = 0;
+  for (const option of options) {
+    const cols = segmentedLabelColumns(optionLabel(option));
+    if (cols > 12) return false;
+    totalCols += cols;
+  }
+  return totalCols <= 28;
 }
 
 function ChoiceControl(props: { spec: FieldSpec }) {
@@ -2430,7 +2448,7 @@ function matchesNoticeTemplate(text: string, templateKey: MessageKey, placeholde
   return text.length >= prefix.length + suffix.length && text.startsWith(prefix) && text.endsWith(suffix);
 }
 
-function settingsNoticeTone(notice: string): "danger" | "warning" | "success" {
+function settingsNoticeTone(notice: string): "danger" | "warning" | "success" | "info" {
   if (
     notice === tr("settings.memory.resetDone") ||
     matchesNoticeTemplate(notice, "settings.notice.savedField", "label") ||
@@ -2464,6 +2482,9 @@ function settingsNoticeTone(notice: string): "danger" | "warning" | "success" {
   }
   if (lower.includes("warning") || lower.includes("unavailable")) {
     return "warning";
+  }
+  if (lower.includes("stores no value yet") || lower.includes("these are its defaults")) {
+    return "info";
   }
   return "success";
 }
@@ -3962,7 +3983,7 @@ function McpSection() {
         footer={
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
             <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
-              {mcpJsonState()}
+              {localizeHostError(mcpJsonState())}
             </Text>
             <Button
               label={tr("common.discard")}
@@ -5740,6 +5761,13 @@ function modelProtocolDecided(): boolean {
   return Boolean(modelDraft().editingId) || modelCatalogProvider() !== null;
 }
 
+const PROTOCOL_TAB_LABELS: Record<(typeof PROVIDER_FORMATS)[number], string> = {
+  openai: "OpenAI",
+  responses: "Responses",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+};
+
 /** The wire protocol of the model form, with the hint that `#` sends the base URL verbatim. */
 function ModelProtocolField() {
   return (
@@ -5752,7 +5780,7 @@ function ModelProtocolField() {
         value={modelDraft().provider}
         options={PROVIDER_FORMATS.map(format => ({
           value: format,
-          label: format,
+          label: PROTOCOL_TAB_LABELS[format] ?? format,
           accessibilityLabel: `model-format-${format}`,
         }))}
         onChange={format => {
@@ -7728,16 +7756,18 @@ function PoolsSection() {
         notice={poolsNotice()}
         onDismissNotice={() => poolsNotice.set("")}
         extra={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button
-              label={tr("settings.pools.addPool")}
-              leadingIcon="plus"
-              variant="secondary"
-              size="sm"
-              accessibilityLabel="add-pool"
-              onPress={() => openPoolDraft()}
-            />
-          </View>
+          <If when={pools().length > 0}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+              <Button
+                label={tr("settings.pools.addPool")}
+                leadingIcon="plus"
+                variant="secondary"
+                size="sm"
+                accessibilityLabel="add-pool"
+                onPress={() => openPoolDraft()}
+              />
+            </View>
+          </If>
         }
       >
         <View>
@@ -7772,7 +7802,7 @@ function PoolsSection() {
                 leadingIcon="plus"
                 variant="secondary"
                 size="sm"
-                accessibilityLabel="create-pool-empty"
+                accessibilityLabel="add-pool"
                 onPress={() => openPoolDraft()}
               />
             </View>
@@ -9285,13 +9315,14 @@ async function loadArchivedSessions(): Promise<void> {
   archivedSessionsLoading.set(true);
   archivedSessionsError.set("");
   try {
+    const remote = isRemoteWorkspace(workspace);
     const raw = await invokeCommand<unknown[]>(
       "list_archived_sessions",
       {
         workspace_id: workspace.id,
         workspace_path: workspace.rootPath,
-        ...(workspace.connectionId ? { remote_connection_id: workspace.connectionId } : {}),
-        ...(workspace.sshHost ? { remote_ssh_host: workspace.sshHost } : {}),
+        ...(remote && workspace.connectionId ? { remote_connection_id: workspace.connectionId } : {}),
+        ...(remote && workspace.sshHost ? { remote_ssh_host: workspace.sshHost } : {}),
       },
       archivedTargetOptions(),
     );
@@ -9354,13 +9385,14 @@ async function deleteAllArchived(): Promise<void> {
   if (!workspace || archivedDeletingAll()) return;
   archivedDeletingAll.set(true);
   try {
+    const remote = isRemoteWorkspace(workspace);
     const deleted = await invokeCommand<number>(
       "delete_all_archived_sessions",
       {
         workspace_id: workspace.id,
         workspace_path: workspace.rootPath,
-        ...(workspace.connectionId ? { remote_connection_id: workspace.connectionId } : {}),
-        ...(workspace.sshHost ? { remote_ssh_host: workspace.sshHost } : {}),
+        ...(remote && workspace.connectionId ? { remote_connection_id: workspace.connectionId } : {}),
+        ...(remote && workspace.sshHost ? { remote_ssh_host: workspace.sshHost } : {}),
       },
       archivedTargetOptions(),
     );
@@ -10147,24 +10179,25 @@ function ModelsPage() {
     const totalSubs = subscriptionAccounts().length;
     const subBadge =
       totalSubs > 0 ? (connectedSubs > 0 ? `${connectedSubs}/${totalSubs}` : totalSubs) : undefined;
+    const showIcons = !settingsCompact();
     const options: Array<{
       value: ModelsPageTab;
       label: string;
-      icon: IconName;
+      icon?: IconName;
       badge?: string | number;
       accessibilityLabel: string;
     }> = [
       {
         value: "models",
         label: tr("settings.models.tabModels"),
-        icon: "cpu",
+        icon: showIcons ? "cpu" : undefined,
         badge: storedModels().length > 0 ? storedModels().length : undefined,
         accessibilityLabel: "models-tab-models",
       },
       {
         value: "subscriptions",
         label: tr("settings.subscriptions.tabLabel"),
-        icon: "key",
+        icon: showIcons ? "key" : undefined,
         badge: subBadge,
         accessibilityLabel: "models-tab-subscriptions",
       },
@@ -10173,7 +10206,7 @@ function ModelsPage() {
       options.push({
         value: "pools",
         label: tr("settings.pools.title"),
-        icon: "layers",
+        icon: showIcons ? "layers" : undefined,
         badge: pools().length > 0 ? pools().length : undefined,
         accessibilityLabel: "models-tab-pools",
       });
@@ -10181,7 +10214,7 @@ function ModelsPage() {
     options.push({
       value: "network",
       label: tr("settings.models.tabNetwork"),
-      icon: "globe",
+      icon: showIcons ? "globe" : undefined,
       accessibilityLabel: "models-tab-network",
     });
     return options;
@@ -10192,7 +10225,7 @@ function ModelsPage() {
     settingsCompact() || (settingsSceneWidth() > 0 && settingsSceneWidth() < 1040);
   const tabBar = () => (
     <SegmentedTabs
-      size="md"
+      size={settingsCompact() ? "sm" : "md"}
       value={activeTab()}
       scrollable={scrollTabs()}
       options={tabOptions()}
@@ -10201,9 +10234,16 @@ function ModelsPage() {
   );
 
   return (
-    <View style={{ gap: layout.sectionGap }}>
+    <View style={{ gap: layout.sectionGap, minWidth: 0 }}>
       <If when={scrollTabs()} else={tabBar()}>
-        <Scroll smoothWheel horizontal={true} scrollbar={false}>
+        <Scroll
+          smoothWheel
+          horizontal={true}
+          scrollbar={false}
+          accessibilityLabel="models-tabs-scroll"
+          style={{ width: "100%", minWidth: 0, flexShrink: 0, overflow: "hidden" }}
+          contentStyle={{ flexDirection: "row" }}
+        >
           {tabBar()}
         </Scroll>
       </If>
@@ -11085,6 +11125,7 @@ function ShortcutsSection() {
     <SettingsGroup
       id="shortcuts"
       title={tr("settings.shortcuts.title")}
+      hideTitle={repeatsPageTitle(tr("settings.shortcuts.title"))}
       description={tr("shortcuts.body")}
       notice={shortcutNotice()}
       onDismissNotice={() => shortcutNotice.set("")}

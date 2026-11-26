@@ -1667,6 +1667,7 @@ pub async fn set_assistant_identity(
         return Err("workspace_id is required".to_string());
     }
     let content = write_assistant_identity(&state, &app, workspace_id, &request.patch).await?;
+    crate::fleet::refresh_local_now().await;
     let workspace = state
         .workspace_service
         .get_workspace(workspace_id)

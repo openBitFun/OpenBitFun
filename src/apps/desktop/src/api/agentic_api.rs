@@ -2688,11 +2688,13 @@ pub async fn update_session_title(
             request.remote_ssh_host,
         )
     });
-    runtime
+    let title = runtime
         .session_application()
         .rename_session(scope, session_id.to_string(), request.title)
         .await
-        .map_err(desktop_update_session_title_error)
+        .map_err(desktop_update_session_title_error)?;
+    crate::fleet::refresh_local_now().await;
+    Ok(title)
 }
 
 fn desktop_update_session_title_error(error: DesktopSessionApplicationError) -> String {

@@ -112,6 +112,16 @@ import {
   focusRingStyle,
 } from "../ui/primitives";
 
+/** Strips simple inline Markdown emphasis (`**bold**`, `__bold__`, `` `code` ``) for plain-text summary lines. */
+function plainDescriptionText(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
 function sourceOptions(): ReadonlyArray<SelectDropdownOption<AgentSourceFilter>> {
   return [
     { value: "all", label: tr("agents.allSources"), accessibilityLabel: "agent-scope-all" },
@@ -362,7 +372,7 @@ function BotCard(props: { item: AgentCatalogItem }) {
             textOverflow: "ellipsis",
           }}
         >
-          {props.item.description || tr("common.noDescription")}
+          {plainDescriptionText(props.item.description) || tr("common.noDescription")}
         </Text>
 
         <Text
@@ -1196,7 +1206,7 @@ function ParentSubagentsSection() {
           {(item, index) => (
             <ConfigRow
               label={item().name}
-              description={item().description || item().id}
+              description={plainDescriptionText(item().description) || item().id}
               divider={index() < parentSubagents().length - 1}
             >
               <ToggleSwitch
@@ -1406,10 +1416,14 @@ export function AgentsScene(props: { embedded?: boolean }) {
               <>
                 {kindTabs()}
                 {filterControls()}
-                {reloadButton()}
               </>
             }
-            primary={createButton()}
+            primary={
+              <>
+                {reloadButton()}
+                {createButton()}
+              </>
+            }
           />
         </If>
 

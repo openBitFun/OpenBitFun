@@ -2796,6 +2796,7 @@ export function TextField(props: TextFieldProps) {
           multiline={props.multiline}
           masked={props.masked}
           readonly={Boolean(props.readonly || props.disabled)}
+          disabled={Boolean(props.disabled)}
           autoFocus={autoFocus}
           keyboardType={props.content === "email" ? "email-address" : props.content ? "number-pad" : undefined}
           autoCapitalize={props.content ? "none" : undefined}

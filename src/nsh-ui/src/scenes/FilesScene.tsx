@@ -498,9 +498,13 @@ function revealInExplorerDisabled(): boolean {
   return isRemoteWorkspace() || isRemotePeerContext() || !isDesktopLocalShell();
 }
 
+function revealInExplorerDisabledLabel(): string {
+  return isRemoteWorkspace() ? tr("files.revealLocalOnly") : tr("files.revealDesktopOnly");
+}
+
 async function revealInSystemExplorer(path: string): Promise<void> {
   if (revealInExplorerDisabled()) {
-    pushToast(tr("files.revealLocalOnly"), "error");
+    pushToast(revealInExplorerDisabledLabel(), "error");
     return;
   }
   const workspaceId = activeWorkspaceId();
@@ -587,11 +591,12 @@ function fileMenuItems(target: string | null = selectedPath()): DropdownMenuItem
       {
         id: "copy-relative-path",
         label: tr("files.copyRelativePath"),
+        icon: "copy",
         onSelect: () => void copyText(relativeDisplayPath(selected, activeWorkspaceRoot())),
       },
       {
         id: "reveal",
-        label: revealInExplorerDisabled() ? tr("files.revealLocalOnly") : tr("files.revealInFinder"),
+        label: revealInExplorerDisabled() ? revealInExplorerDisabledLabel() : tr("files.revealInFinder"),
         icon: "external-link",
         disabled: revealInExplorerDisabled(),
         onSelect: () => void revealInSystemExplorer(selected),
@@ -1892,6 +1897,7 @@ function tabMenuItems(path: string): DropdownMenuItem[] {
     {
       id: "tab-copy-relative",
       label: tr("files.copyRelativePath"),
+      icon: "copy",
       onSelect: () => void copyText(relativeDisplayPath(path, activeWorkspaceRoot())),
     },
     {
@@ -1914,12 +1920,25 @@ function OpenFileTabChip(props: {
   onContext: (path: string, pos: Point) => void;
 }) {
   const hovered = signal(false);
+  const chipRef = signal<ViewRef | null>(null);
   const active = () => openFile()?.path === props.path;
   const dirty = () => isDirtyPath(props.path);
   const showClose = () => compactLayout() || Boolean(props.compact) || hovered() || active();
 
+  effect(() => {
+    if (!active()) return;
+    const node = chipRef();
+    if (!node) return;
+    try {
+      node.reveal({ horizontal: "nearest", animated: false });
+    } catch {
+      // Tab layout may not be measured yet on initial mount.
+    }
+  });
+
   return (
     <View
+      ref={el => chipRef.set(el)}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
       onMouseUp={event => {
@@ -2060,7 +2079,7 @@ function OpenFileTabStrip(props: { compact?: boolean }) {
       <Scroll
         smoothWheel
         horizontal
-        style={{ flex: 1, minWidth: 0, alignSelf: "stretch" }}
+        style={{ flex: 1, minWidth: 0, alignSelf: "stretch", overflow: "hidden" }}
         scrollbar={false}
       >
         <View style={{ flexDirection: "row", alignItems: "stretch", height: "100%" }}>
@@ -2203,10 +2222,12 @@ function EditorFindBar() {
             ? ""
             : (findResult()?.count ?? 0) === 0
               ? tr("files.findNoResults")
-              : tr("files.findCount", {
-                  current: (findResult()?.current ?? -1) + 1 || "?",
-                  total: formatCount(findResult()?.count ?? 0),
-                })}
+              : (findResult()?.current ?? -1) < 0
+                ? formatPlural(findResult()?.count ?? 0, "format.matchOne", "format.matchOther")
+                : tr("files.findCount", {
+                    current: (findResult()?.current ?? 0) + 1,
+                    total: formatCount(findResult()?.count ?? 0),
+                  })}
       </Text>
       <IconButton icon="chevron-up" size="xs" iconSize={12} tooltip={tr("files.findPrevious")} accessibilityLabel="file-find-previous" onPress={() => editorRef()?.run("findPrevious")} />
       <IconButton icon="chevron-down" size="xs" iconSize={12} tooltip={tr("files.findNext")} accessibilityLabel="file-find-next" onPress={() => editorRef()?.run("findNext")} />

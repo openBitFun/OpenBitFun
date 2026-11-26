@@ -1529,3 +1529,23 @@ test("Fleet mode displays remote workspace aliases instead of raw IPs and remove
   await app.waitUntil(() => !app.shows("id:sidebar-workspace-row-ws-remote"));
   expect(ssh.callsFor("close_workspace").some(c => c.payload.workspaceId === "ws-remote")).toBe(true);
 });
+
+test("Local workspaces carrying sshHost='localhost' from WorkspaceInfoDto are never treated as remote or offline", async () => {
+  const opened = [
+    {
+      id: "local_abc",
+      name: "sample-local",
+      rootPath: "/Users/dev/sample-local",
+      workspaceKind: "normal",
+      sshHost: "localhost",
+    },
+  ] as unknown as BackendOptions["openedWorkspaces"];
+  const ssh = createSshBackend({ openedWorkspaces: opened });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+
+  await app.waitFor("nav-library");
+  await openToolScene(app, "files");
+  await app.waitFor("Explorer");
+  expect(ssh.callsFor("remote_workspace_ensure_connected")).toHaveLength(0);
+  expect(app.shows("remote-link-offline")).toBe(false);
+});

@@ -403,6 +403,8 @@ test("rename sends the whole session record the host deserializes", async () => 
   await openSession(app, "NSH skeleton");
   await app.press("thread-actions-trigger");
   await app.press("Rename");
+  expect(app.value("session-rename")).toBe("NSH skeleton");
+  await app.clear("session-rename");
   await app.type("session-rename", "Renamed session");
   await app.press("Save");
   const request = backend.calls.find(call => call.action === "save_session_metadata")?.request as

@@ -767,7 +767,7 @@ function CreateSpaceSection() {
             size="md"
             leadingIcon="sparkles"
             loading={spaceCreating()}
-            disabled={Boolean(spaceCreationBlockedReason()) || spaceCreating()}
+            disabled={Boolean(spaceCreationBlockedReason()) || spaceCreating() || !spacePrompt().trim()}
             tooltip={spaceCreationBlockedReason() || undefined}
             accessibilityLabel="spaces-create-agent"
             style={

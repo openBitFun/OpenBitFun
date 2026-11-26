@@ -50,19 +50,34 @@ export function LibraryToolbar(props: {
         ...libraryColumnStyle(props.wide),
         paddingTop: space.lg,
         paddingBottom: space.md,
-        flexDirection: "row",
-        alignItems: "center",
-        flexWrap: studioCompact() ? "wrap" : "nowrap",
+        flexDirection: studioCompact() ? "column" : "row",
+        alignItems: studioCompact() ? "stretch" : "center",
+        flexWrap: "nowrap",
         gap: space.sm,
       }}
     >
       <View
-        style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}
+        style={{
+          flex: studioCompact() ? undefined : 1,
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: space.sm,
+        }}
       >
         {props.leading}
       </View>
       <If when={Boolean(props.primary)}>
-        <View style={{ flexShrink: 0, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <View
+          style={{
+            flexShrink: 0,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: studioCompact() ? "flex-end" : undefined,
+            gap: space.sm,
+          }}
+        >
           {props.primary}
         </View>
       </If>

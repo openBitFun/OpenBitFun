@@ -16,6 +16,7 @@ import { basename } from "./format";
 import { searchWorkspaceFiles, type WorkspaceRecord } from "./api";
 import { invokeCommand } from "./bridge";
 import { tr } from "./i18n";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import {
   activeWorkspace,
   activeWorkspaceId,
@@ -203,13 +204,6 @@ function workspaceItems(query: string): SearchItem[] {
       detail: isRecent ? tr("search.recentDetail", { path: ws.rootPath }) : ws.rootPath,
       target: ws.id,
     }));
-}
-
-function isRemoteWorkspace(ws: WorkspaceRecord | null | undefined): boolean {
-  if (!ws) return false;
-  const kind = (ws.workspaceKind ?? "").toLowerCase();
-  if (kind.includes("assistant")) return false;
-  return Boolean(ws.connectionId) || kind === "remote" || kind.includes("ssh") || kind.includes("docker");
 }
 
 /** The host's own message hits, from every opened workspace: one row per match inside a turn. */

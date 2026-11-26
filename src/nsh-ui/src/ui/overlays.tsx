@@ -873,20 +873,22 @@ function MenuSurface(props: {
                           flex: 1,
                           height: compactLayout() ? 32 : 24,
                           borderRadius: radii.xs,
+                          borderWidth: 1,
+                          borderColor: palette().dangerBorder,
                           alignItems: "center",
                           justifyContent: "center",
-                          backgroundColor: palette().danger,
+                          backgroundColor: palette().dangerHoverBg,
                           cursor: "pointer",
                           userSelect: "none",
                           ...pressTransition(MOTION_DURATION.fast),
                         }}
-                        hoverStyle={{ opacity: 0.92 }}
+                        hoverStyle={{ borderColor: palette().danger }}
                         activeStyle={tactileActiveStyle(0.96)}
                         focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                       >
                         <Text
                           style={{
-                            color: palette().actionPrimaryFg,
+                            color: palette().danger,
                             fontSize: textSize(12),
                             lineHeight: textLineHeight(12, 1.25),
                             fontWeight: "600",
@@ -1780,7 +1782,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
   );
 }
 
-export function ToastHost() {
+export function ToastHost(props: { bottomOffset?: number } = {}) {
   const hovered = signal(false);
 
   effect(() => {
@@ -1806,7 +1808,7 @@ export function ToastHost() {
               }
             : {
                 right: space.xl,
-                bottom: space.xl,
+                bottom: space.xl + (props.bottomOffset ?? 0),
                 alignItems: "flex-end",
                 pointerEvents: "box-none",
               }

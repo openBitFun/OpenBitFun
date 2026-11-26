@@ -5,18 +5,34 @@
 
 import type { WorkspaceRecord } from "../api";
 
+const LOCAL_SSH_HOST_PLACEHOLDERS = new Set(["localhost", "local", "127.0.0.1", "::1"]);
+
+/** True when `host` is a local placeholder (`localhost`, `local`, loopback), not a remote SSH host. */
+export function isLocalhostPlaceholder(host: string | null | undefined): boolean {
+  const normalized = (host ?? "").trim().toLowerCase();
+  return !normalized || LOCAL_SSH_HOST_PLACEHOLDERS.has(normalized);
+}
+
 /**
  * Single canonical check for whether a workspace lives on a remote transport
  * (SSH, Docker, WSL, or explicit remote connection) rather than locally on the
- * device that owns the workspace. Assistant workspaces stay local to their host.
+ * device that owns the workspace. Assistant workspaces stay local to their host,
+ * and local workspaces that carry a `"localhost"`/`"local"` placeholder in
+ * `sshHost` (e.g. from `WorkspaceInfoDto`) are never treated as remote.
  */
 export function isRemoteWorkspace(ws: WorkspaceRecord | null | undefined): boolean {
   if (!ws) return false;
   const kind = (ws.workspaceKind ?? "").toLowerCase();
   if (kind.includes("assistant")) return false;
+  const connectionId = (
+    ws.connectionId ??
+    (ws as { remoteConnectionId?: string }).remoteConnectionId ??
+    ""
+  ).trim();
+  const hasRemoteHost = !isLocalhostPlaceholder(ws.sshHost);
   return (
-    Boolean(ws.connectionId) ||
-    Boolean(ws.sshHost) ||
+    Boolean(connectionId) ||
+    hasRemoteHost ||
     kind === "remote" ||
     kind === "remote_ssh" ||
     kind.includes("ssh") ||
