@@ -56,6 +56,7 @@ import {
   windowMaximized,
   windowPlatform,
 } from "./src/bridge";
+import { CaptionActionStrip, SceneCaptionInset } from "./src/ui/titleBar";
 import { installSystemBack } from "./src/navigationHistory";
 import { subscribeAgentEvents } from "./src/agentEvents";
 import { installBackendResync } from "./src/backendResync";
@@ -1742,7 +1743,7 @@ function resolveAuxDockTarget(dx: number, dy: number, moveX: number, moveY: numb
   return current;
 }
 
-function AuxPane() {
+function AuxPane(props: { captionInset?: () => number } = {}) {
   const draggingHeader = signal(false);
   const expand = () => {
     const tab = AUX_TABS.find(item => item.id === auxPaneTab());
@@ -1785,8 +1786,9 @@ function AuxPane() {
     >
       <View
         style={{
-          height: compactShell() ? layout.touchTarget : 38,
-          paddingHorizontal: space.md,
+          height: compactShell() ? layout.touchTarget : props.captionInset?.() ? layout.topBarHeight : 38,
+          paddingLeft: space.md,
+          paddingRight: (props.captionInset?.() ?? 0) + space.md,
           flexDirection: "row",
           alignItems: "stretch",
           gap: space.sm,
@@ -1796,7 +1798,7 @@ function AuxPane() {
           borderColor: palette().borderSubtle,
         }}
       >
-        <View role="tablist" style={{ flexShrink: 1, minWidth: 0, flexDirection: "row", alignItems: "stretch", gap: space.md }}>
+        <CaptionActionStrip role="tablist" inset={props.captionInset?.() ?? 0} gap={space.md}>
           <Each of={AUX_TABS} key={tab => tab.id}>
             {tab => {
               const active = () => auxPaneTab() === tab().id;
@@ -1851,7 +1853,7 @@ function AuxPane() {
               );
             }}
           </Each>
-        </View>
+        </CaptionActionStrip>
         {/* Draggable header bar: pull downwards to dock at bottom, or left/right to move sides. */}
         <View
           {...headerDragResponder.panHandlers}
@@ -2692,6 +2694,29 @@ const auxAsSheet = computed(() => {
   return canvasAllowance < layout.canvasMinWidth;
 });
 
+const auxAtCanvasRight = computed(() =>
+  auxPaneOpen() && (auxFillsScene() || (auxPaneSide() === "right" && !auxAsSheet())),
+);
+
+function showSceneTopBar(): boolean {
+  if (!sidebarDocked() || pageDrawsWindowControls()) return true;
+  if (!windowControlsRightInsetPx()) return false;
+  // Notices and scrolling pages have no fixed first row to share with the caption.
+  if (lastError() || connectionState() === "failed" || connectionState() === "reconnecting") return true;
+  return !auxAtCanvasRight() && sceneGroupKey() !== "sessions" && !WORKSPACE_TOOL_SCENES.includes(activeScene());
+}
+
+function canvasCaptionInset(): number {
+  if (compactShell() || showSceneTopBar()) return 0;
+  // The canvas already stops short of the window edge by its margin and border.
+  return Math.max(0, windowControlsRightInsetPx() - layout.canvasInset - 1);
+}
+
+function sceneCaptionInset(): number {
+  if (auxPaneOpen() && (auxFillsScene() || auxPaneSide() === "right")) return 0;
+  return canvasCaptionInset();
+}
+
 /** Maximum docked aux pane height when positioned at the bottom (68% of the canvas height). */
 const dockedAuxMaxHeight = computed(() => {
   const height = shellHeight();
@@ -3192,7 +3217,7 @@ function AuxPaneSheet() {
           motion.style,
         ]}
       >
-        <AuxPane />
+        <AuxPane captionInset={() => onLeft() ? 0 : windowControlsRightInsetPx()} />
       </View>
       <SplitHandle
         surface="canvas"
@@ -3479,7 +3504,7 @@ function StudioApp() {
           flex: 1,
           minWidth: 0,
           minHeight: 0,
-          marginTop: compactShell() ? 0 : layout.canvasInset,
+          marginTop: compactShell() || windowControlsRightInsetPx() > 0 ? 0 : layout.canvasInset,
           marginRight: compactShell() ? 0 : layout.canvasInset,
           marginBottom: compactShell() ? 0 : layout.canvasInset,
           marginLeft: compactShell() || sidebarDocked() ? 0 : layout.canvasInset,
@@ -3505,8 +3530,7 @@ function StudioApp() {
             </View>
           }
         >
-          {/* Omit the empty 44 px canvas topbar slab when the docked sidebar owns nav and no custom window controls are drawn. */}
-          <If when={!sidebarDocked() || pageDrawsWindowControls()}>
+          <If when={showSceneTopBar()}>
             <SceneTopBar />
           </If>
         </If>
@@ -3549,9 +3573,11 @@ function StudioApp() {
                   fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="scene" />}
                 >
                   {/* Keyed by canonical scene group so switching primary routes gets a crisp 110ms GPU settle without remounting Library sub-tabs. */}
-                  <SmoothSwap swapKey={sceneGroupKey} skipInitial>
-                    {group => sceneElementForGroup(group)}
-                  </SmoothSwap>
+                  <SceneCaptionInset.Provider value={sceneCaptionInset}>
+                    <SmoothSwap swapKey={sceneGroupKey} skipInitial>
+                      {group => sceneElementForGroup(group)}
+                    </SmoothSwap>
+                  </SceneCaptionInset.Provider>
                 </ErrorBoundary>
               </View>
             </If>
@@ -3574,12 +3600,12 @@ function StudioApp() {
                   onDelta={delta => resizeDockedAux(-delta)}
                   onReset={() => setAuxPaneWidth(Math.min(DEFAULT_AUX_WIDTH, dockedAuxMaxWidth()))}
                 />
-                <AuxPane />
+                <AuxPane captionInset={canvasCaptionInset} />
               </View>
             </If>
 
             <If when={auxPaneOpen() && auxFillsScene()}>
-              <AuxPane />
+              <AuxPane captionInset={canvasCaptionInset} />
             </If>
           </View>
 
@@ -3653,6 +3679,20 @@ function StudioApp() {
       </If>
       <If when={overlayNav() && drawerOpen()}>
         <OverlaySidebarDrawer />
+      </If>
+      <If when={windowControlsRightInsetPx() > 0}>
+        <View
+          focusable={false}
+          style={{
+            position: "absolute",
+            right: windowControlsRightInsetPx(),
+            top: space.md,
+            width: 1,
+            height: layout.topBarHeight - 2 * space.md,
+            backgroundColor: palette().border,
+            pointerEvents: "none",
+          }}
+        />
       </If>
       <InboxSheet />
       <If when={searchOpen()}>

@@ -25,6 +25,7 @@ import type {
 } from "nsh";
 import { DiffView, Input, TextView } from "nsh/base";
 import { invokeCommand } from "../bridge";
+import { CaptionActionStrip, SceneCaptionInset } from "../ui/titleBar";
 import {
   getLiveRoundText,
   getLiveRoundThinking,
@@ -1369,6 +1370,7 @@ function SessionBreadcrumb(props: {
  * Guarantees pixel-identical height (`layout.topBarHeight`), borders, typography, and focus indicator.
  */
 function SessionHeaderBar(props: {
+  paneToRight?: () => boolean;
   testID?: string;
   titleTestID?: string;
   title: () => string;
@@ -1391,6 +1393,8 @@ function SessionHeaderBar(props: {
   actions?: JSX.Element;
   subline?: JSX.Element;
 }) {
+  const sceneInset = SceneCaptionInset();
+  const captionInset = () => props.paneToRight?.() ? 0 : sceneInset();
   const focusLabel = () =>
     typeof props.focusAccessibilityLabel === "function"
       ? props.focusAccessibilityLabel()
@@ -1403,7 +1407,8 @@ function SessionHeaderBar(props: {
         position: "relative",
         height: props.tall?.() ? 64 : layout.topBarHeight,
         minHeight: props.tall?.() ? 64 : layout.topBarHeight,
-        paddingHorizontal: sessionsPadX(),
+        paddingLeft: sessionsPadX(),
+        paddingRight: captionInset() > 0 ? captionInset() + space.sm : sessionsPadX(),
         justifyContent: "center",
         gap: space.hair,
         backgroundColor: palette().canvas,
@@ -1432,6 +1437,7 @@ function SessionHeaderBar(props: {
             flexDirection: "row",
             alignItems: "center",
             gap: space.sm,
+            overflow: captionInset() > 0 ? "hidden" : "visible",
             ...(focusActive() ? { cursor: "pointer", userSelect: "none" } : {}),
           }}
         >
@@ -1495,7 +1501,7 @@ function SessionHeaderBar(props: {
           {props.breadcrumb}
           {props.deviation}
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
+        <CaptionActionStrip inset={captionInset()} gap={space.xs}>
           <If when={props.statusState?.() ?? null}>
             {state => (
               <View
@@ -1520,7 +1526,7 @@ function SessionHeaderBar(props: {
             </Each>
           </If>
           {props.actions}
-        </View>
+        </CaptionActionStrip>
       </View>
       {props.subline}
     </View>
@@ -1569,7 +1575,7 @@ function ThreadMenuTrigger() {
  * right the state word (only when not idle), the tool toggles (≥ 720) and ⋯.
  * Phone: 48, ‹ back, the title 15/600 over the device badge, ⋯.
  */
-function ConversationHeader() {
+function ConversationHeader(props: { paneToRight: () => boolean }) {
   let searchRevealTimer: ReturnType<typeof setTimeout> | null = null;
   cleanup(() => {
     if (searchRevealTimer) {
@@ -1584,6 +1590,7 @@ function ConversationHeader() {
         else={
           <SessionHeaderBar
             testID="session-header"
+            paneToRight={props.paneToRight}
             titleTestID="session-title"
             title={headerTitle}
             focused={() => splitPaneOpen() && focusedPane() === 0}
@@ -10668,7 +10675,7 @@ export function SessionsScene() {
           flexBasis: showSplit() ? 0 : undefined,
           minWidth: showSplit() ? 260 : 0,
         })}
-        header={<ConversationHeader />}
+        header={<ConversationHeader paneToRight={showSplit} />}
         banners={
           <>
             <RemoteWorkspaceStatusBanner />
