@@ -406,12 +406,12 @@ not offer, and how it says so:
 ## Toolchain & setup
 
 The native desktop runner (`src/apps/desktop-nsh/native/Cargo.toml`) pins the
-`nsh-*` crates to `=0.7.0` and declares `rust-version = "1.97"`. The matching
-pinned NSH CLI (`v0.7.0`, SHA-256 verified against `scripts/ci/install-nsh.mjs`)
+`nsh-*` crates to `=0.7.1` and declares `rust-version = "1.97"`. The matching
+pinned NSH CLI (`v0.7.1`, SHA-256 verified against `scripts/ci/install-nsh.mjs`)
 is installed automatically by `pnpm install`:
 
 - `pnpm install` runs `node scripts/ci/install-nsh.mjs --postinstall`, which
-  reuses an existing matching `v0.7.0` installation if present or downloads the
+  reuses an existing matching `v0.7.1` installation if present or downloads the
   pinned release archive into `~/.nsh/bin`, then links/shims it into
   `node_modules/.bin/nsh`.
 - All `pnpm run ...` scripts (`desktop:dev`, `desktop:build`, `e2e:ui`,

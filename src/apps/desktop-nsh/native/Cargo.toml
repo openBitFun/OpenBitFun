@@ -31,7 +31,7 @@ path = "src/runner/main.rs"
 required-features = ["runner"]
 
 [dependencies]
-nsh-core = { version = "=0.7.0", default-features = false }
+nsh-core = { version = "=0.7.1", default-features = false }
 serde_json = "1.0"
 tokio = { version = "1.52", default-features = false, features = ["sync"] }
 
@@ -40,24 +40,24 @@ tokio = { version = "1.52", default-features = false, features = ["sync"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 libloading = { version = "0.8", optional = true }
 log = { version = "0.4", optional = true }
-nsh-base = { version = "=0.7.0", default-features = false, optional = true }
+nsh-base = { version = "=0.7.1", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-macos-app = { version = "=0.7.0", default-features = false, optional = true }
-nsh-platform-macos = { version = "=0.7.0", default-features = false, optional = true }
+nsh-macos-app = { version = "=0.7.1", default-features = false, optional = true }
+nsh-platform-macos = { version = "=0.7.1", default-features = false, optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"], optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"], optional = true }
 dispatch = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-nsh-windows-app = { version = "=0.7.0", default-features = false, optional = true }
-nsh-platform-windows = { version = "=0.7.0", default-features = false, optional = true }
+nsh-windows-app = { version = "=0.7.1", default-features = false, optional = true }
+nsh-platform-windows = { version = "=0.7.1", default-features = false, optional = true }
 windows = { version = "0.62", default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-linux-app = { version = "=0.7.0", default-features = false, optional = true }
-nsh-platform-linux = { version = "=0.7.0", default-features = false, optional = true }
+nsh-linux-app = { version = "=0.7.1", default-features = false, optional = true }
+nsh-platform-linux = { version = "=0.7.1", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.52", default-features = false, features = ["macros", "rt", "time"] }
@@ -160,10 +160,10 @@ overflow-checks = false
 
 # Same release profiles as the root workspace, so the runner and the backend
 # library it loads are built alike (`scripts/package-desktop-nsh-macos.mjs`).
+# Keep Cargo's default `codegen-units = 16` so ThinLTO runs in parallel across cores.
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 1
 strip = true
 
 [profile.release-fast]

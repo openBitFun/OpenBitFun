@@ -4,7 +4,7 @@
 // runs the headless UI suite (`cd src/nsh-ui && nsh test .`).
 //
 // The NSH crates of the runner are pinned to the same version
-// (`src/apps/desktop-nsh/native/Cargo.toml`, `nsh-* = "=0.7.0"`): bump both together.
+// (`src/apps/desktop-nsh/native/Cargo.toml`, `nsh-* = "=0.7.1"`): bump both together.
 // Archives are verified against the SHA-256 digests pinned below, not against a
 // checksum downloaded from the same place.
 //
@@ -40,14 +40,14 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-export const NSH_VERSION = 'v0.7.0';
+export const NSH_VERSION = 'v0.7.1';
 
 export const NSH_ASSETS = {
-  'darwin-arm64': { asset: 'nsh-macos-arm64.tar.gz', sha256: '5b2e5385e09a65ed63b178a8dd9cef03a9dcab204d2efc942300e0c5baea3853' },
-  'darwin-x64': { asset: 'nsh-macos-x86_64.tar.gz', sha256: 'd05bece7a99a043c6463d1ba28a923e188fb539110514fde9da6775c6b269dab' },
-  'linux-x64': { asset: 'nsh-linux-x86_64.tar.gz', sha256: 'd281bfa3d93d84e9831e1a97dfdb63104329fcc87a0a48c78db5aeabb00c0073' },
-  'linux-arm64': { asset: 'nsh-linux-arm64.tar.gz', sha256: '8392ec026bd32d1554b22f5ae8b574abcb746b502bc6ac93bcdca1436fdbbffc' },
-  'win32-x64': { asset: 'nsh-windows-x86_64.zip', sha256: '1c6ef86afe754198209fd452625f20f32077ecfca3a4431f960a411b0e51d8f3' },
+  'darwin-arm64': { asset: 'nsh-macos-arm64.tar.gz', sha256: '28e349b59c0b46e964010c8f858a78af5db4d26012d213c03d15ce28ddff0650' },
+  'darwin-x64': { asset: 'nsh-macos-x86_64.tar.gz', sha256: 'b0f42f8f586461edac9a00b02e2e4c4587f3b7a4039168c303b07dd1265162f7' },
+  'linux-x64': { asset: 'nsh-linux-x86_64.tar.gz', sha256: '04457ad3a53c91b66efcee537968c5af7c90df25cf61c18d51135ecc051e22b3' },
+  'linux-arm64': { asset: 'nsh-linux-arm64.tar.gz', sha256: '011099329342bc961c9089de2c7c1ccdd60c0177b77d81284756866c2087ebbb' },
+  'win32-x64': { asset: 'nsh-windows-x86_64.zip', sha256: 'f09aaf5155b0c57213fbda29ce1e82cd973694d33c745f74b94a1a966a673433' },
 };
 
 export function nshAsset(platform = process.platform, arch = process.arch) {

@@ -632,7 +632,7 @@ switcher in the main flow.
 ## Commands
 
 ```bash
-# `pnpm install` installs pinned nsh (v0.7.0) to ~/.nsh/bin and links node_modules/.bin/nsh.
+# `pnpm install` installs pinned nsh (v0.7.1) to ~/.nsh/bin and links node_modules/.bin/nsh.
 # Use `pnpm exec nsh ...` directly, or export PATH="$HOME/.nsh/bin:$PATH" for bare `nsh`:
 export PATH="$HOME/.nsh/bin:$PATH"
 

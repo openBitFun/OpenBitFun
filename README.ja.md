@@ -151,7 +151,7 @@ pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` は固定バージョンの NSH CLI（`v0.7.0`）を自動的にダウンロード・SHA-256 検証して `~/.nsh/bin` に配置し、`node_modules/.bin/nsh` にリンクします（スキップする場合は `OPENBITFUN_SKIP_NSH_INSTALL=1` を設定。詳細は [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）。`desktop:dev` は起動前に現在の Rust ツールチェーンでビルドします。再ビルドせずに前回のデバッグビルドを起動するには `pnpm run desktop:preview:debug`、UI のみのホットリロードには `pnpm exec nsh run src/nsh-ui --target web` を使用してください。コマンドラインでの作業の流れについては [CLI のガイド](./src/apps/cli/README.md)を参照してください。
+`pnpm install` は固定バージョンの NSH CLI（`v0.7.1`）を自動的にダウンロード・SHA-256 検証して `~/.nsh/bin` に配置し、`node_modules/.bin/nsh` にリンクします（スキップする場合は `OPENBITFUN_SKIP_NSH_INSTALL=1` を設定。詳細は [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）。`desktop:dev` は起動前に現在の Rust ツールチェーンでビルドします。再ビルドせずに前回のデバッグビルドを起動するには `pnpm run desktop:preview:debug`、UI のみのホットリロードには `pnpm exec nsh run src/nsh-ui --target web` を使用してください。コマンドラインでの作業の流れについては [CLI のガイド](./src/apps/cli/README.md)を参照してください。
 
 </details>
 

@@ -2,10 +2,7 @@
 //! app's Rust components.
 
 #[cfg(target_os = "android")]
-nsh::ui_sets!(vec![
-    nsh_base::registry(),
-    set_app_openbitfun_mobile_native()
-]);
+nsh::ui_sets!(vec![nsh_base::registry(), set_app_openbitfun_mobile_native()]);
 #[cfg(target_os = "android")]
 nsh::components!(app_components);
 

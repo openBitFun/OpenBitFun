@@ -150,7 +150,7 @@ pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` 会自动下载并校验（SHA-256）锁定版本的 NSH CLI（`v0.7.0`）到 `~/.nsh/bin`，并链接至 `node_modules/.bin/nsh` 供所有 `pnpm` 脚本直接使用（可设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过；详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)）。`desktop:dev` 会在启动前用当前 Rust 工具链重新构建。跳过重编译直接启动上次构建请用 `pnpm run desktop:preview:debug`，仅迭代前端热更新请用 `pnpm exec nsh run src/nsh-ui --target web`。CLI 入口见 [CLI 使用说明](./src/apps/cli/README.md)。
+`pnpm install` 会自动下载并校验（SHA-256）锁定版本的 NSH CLI（`v0.7.1`）到 `~/.nsh/bin`，并链接至 `node_modules/.bin/nsh` 供所有 `pnpm` 脚本直接使用（可设置 `OPENBITFUN_SKIP_NSH_INSTALL=1` 跳过；详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)）。`desktop:dev` 会在启动前用当前 Rust 工具链重新构建。跳过重编译直接启动上次构建请用 `pnpm run desktop:preview:debug`，仅迭代前端热更新请用 `pnpm exec nsh run src/nsh-ui --target web`。CLI 入口见 [CLI 使用说明](./src/apps/cli/README.md)。
 
 </details>
 

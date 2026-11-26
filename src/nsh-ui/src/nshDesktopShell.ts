@@ -4,7 +4,7 @@
 // shell unchanged. The desktop presence windows (cards, the pet) are started
 // from here and talk to this device's backend themselves (`desktopPresence.tsx`).
 
-import { computed, effect, Notifications, platform, signal } from "nsh";
+import { computed, effect, Notifications, platform, signal, type ImageAsset } from "nsh";
 import { Application, isAvailable, Menu, Tray, Window, type MenuItem, type WindowRef } from "nsh/desktop";
 import { startDesktopPresence } from "./desktopPresence";
 import { tr } from "./i18n";
@@ -20,9 +20,10 @@ export interface NshDesktopShellDeps {
   /**
    * The menu-bar / tray icon (a template image). It is an asset of the app that
    * packages the shell (NSH keeps assets inside the app's directory), so the
-   * host passes it in; without one no tray item is shown.
+   * host passes it in (an imported image is an `ImageAsset` since NSH 0.7.1,
+   * a URL string before); without one no tray item is shown.
    */
-  trayIcon?: string;
+  trayIcon?: ImageAsset | string;
 }
 
 /** The shell shortcuts the application menu carries (ids of `SHELL_SHORTCUTS` in `App.tsx`). */

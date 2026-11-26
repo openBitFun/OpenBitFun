@@ -9,13 +9,13 @@ name = "nsh-app-openbitfun-mobile-native-linux-app"
 path = "main.rs"
 
 [dependencies]
-nsh-linux-app = { version = "=0.7.0", default-features = false }
-nsh-core = { version = "=0.7.0" }
-nsh-base = { version = "=0.7.0", default-features = false }
+nsh-linux-app = { version = "=0.7.1", default-features = false }
+nsh-core = { version = "=0.7.1" }
+nsh-base = { version = "=0.7.1", default-features = false }
 app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-platform-linux = { version = "=0.7.0", default-features = false }
+nsh-platform-linux = { version = "=0.7.1", default-features = false }
 
 [features]
 default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "webview", "websocket", "updater", "svg", "net", "sound"]

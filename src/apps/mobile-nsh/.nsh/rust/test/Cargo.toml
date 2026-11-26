@@ -9,8 +9,8 @@ name = "nsh-app-openbitfun-mobile-native-test"
 path = "main.rs"
 
 [dependencies]
-nsh-core = { version = "=0.7.0" }
-nsh-testing = { version = "=0.7.0", features = ["js"] }
-nsh-base = { version = "=0.7.0" }
+nsh-core = { version = "=0.7.1" }
+nsh-testing = { version = "=0.7.1", features = ["js"] }
+nsh-base = { version = "=0.7.1" }
 app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
 workspace-hack = { package = "nsh-app-openbitfun-mobile-native-hack", path = "../hack" }

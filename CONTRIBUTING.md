@@ -16,7 +16,7 @@ Be respectful, kind, and constructive. We welcome contributors of all background
 - pnpm 10.15.0 via Corepack
 - Rust toolchain (install via [rustup](https://rustup.rs/)). The native desktop app requires Rust 1.97 or newer.
 - Linux desktop builds also require GTK4, libadwaita, and WebKitGTK 6.0 development packages
-- The pinned [NSH CLI](docs/architecture/nsh-frontend.md) (`v0.7.0`) is installed automatically during `pnpm install` into `~/.nsh/bin` and linked into `node_modules/.bin/nsh` (run `pnpm run nsh:install` manually if needed, or set `OPENBITFUN_SKIP_NSH_INSTALL=1` to opt out)
+- The pinned [NSH CLI](docs/architecture/nsh-frontend.md) (`v0.7.1`) is installed automatically during `pnpm install` into `~/.nsh/bin` and linked into `node_modules/.bin/nsh` (run `pnpm run nsh:install` manually if needed, or set `OPENBITFUN_SKIP_NSH_INSTALL=1` to opt out)
 
 OpenBitFun standardizes local JavaScript builds and CI on Node.js 22.12+. The GitHub
 Actions upgrades in this repository use Node.js 24-compatible action runtimes,
@@ -40,7 +40,7 @@ The check detects:
 
 - Missing `node_modules` or broken pnpm virtual store entries (fix: `pnpm install`)
 - Missing `src/apps/extension-host/dist` Bun Host entry (fix: `pnpm run plugin-host:prepare`)
-- Missing or mismatched pinned NSH CLI (`v0.7.0`, fix: `pnpm run nsh:install`)
+- Missing or mismatched pinned NSH CLI (`v0.7.1`, fix: `pnpm run nsh:install`)
 - Missing sherpa-onnx prebuilt libs (the sherpa-onnx-sys build script
   downloads from GitHub at build time; if the download fails on poor
   connectivity, set `SHERPA_ONNX_LIB_DIR` to the prebuilt lib directory
@@ -52,7 +52,7 @@ The check detects:
 pnpm install
 ```
 
-`pnpm install` also verifies/installs the pinned NSH CLI (`v0.7.0`, SHA-256 verified) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` so all `pnpm run ...` scripts and `pnpm exec nsh ...` work without modifying `PATH` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip). To invoke bare `nsh` directly in your shell, add `~/.nsh/bin` to `PATH`.
+`pnpm install` also verifies/installs the pinned NSH CLI (`v0.7.1`, SHA-256 verified) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` so all `pnpm run ...` scripts and `pnpm exec nsh ...` work without modifying `PATH` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip). To invoke bare `nsh` directly in your shell, add `~/.nsh/bin` to `PATH`.
 
 The pnpm workspace uses the root `pnpm-lock.yaml` as its dependency lockfile;
 do not commit `package-lock.json` files for workspace packages. The standalone
@@ -77,7 +77,7 @@ pnpm run e2e:ui                     # headless NSH UI suites (cd src/nsh-ui && n
 pnpm run e2e:smoke                  # launches the built app on a scratch profile and drives it over OBP
 ```
 
-> `pnpm install` provisions the pinned NSH CLI (`v0.7.0`) for local builds. `desktop:dev` rebuilds before every launch. For UI-only hot reload, use `pnpm exec nsh run src/nsh-ui --target web`. See [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md).
+> `pnpm install` provisions the pinned NSH CLI (`v0.7.1`) for local builds. `desktop:dev` rebuilds before every launch. For UI-only hot reload, use `pnpm exec nsh run src/nsh-ui --target web`. See [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md).
 
 Both launchers use the installed app's data by default, including existing model
 settings, workspaces, and sessions. Use `--isolated-data` for persistent test data

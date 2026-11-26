@@ -151,7 +151,7 @@ pnpm install
 pnpm run desktop:dev
 ```
 
-`pnpm install` automatically downloads and verifies (SHA-256) the pinned NSH CLI (`v0.7.0`) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)). `desktop:dev` rebuilds with the active Rust toolchain before launch. Use `pnpm run desktop:preview:debug` to relaunch the last debug build, or `pnpm exec nsh run src/nsh-ui --target web` for UI-only hot reload. See the [CLI guide](./src/apps/cli/README.md) for the command-line workflow.
+`pnpm install` automatically downloads and verifies (SHA-256) the pinned NSH CLI (`v0.7.1`) into `~/.nsh/bin` and links it into `node_modules/.bin/nsh` (set `OPENBITFUN_SKIP_NSH_INSTALL=1` to skip; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)). `desktop:dev` rebuilds with the active Rust toolchain before launch. Use `pnpm run desktop:preview:debug` to relaunch the last debug build, or `pnpm exec nsh run src/nsh-ui --target web` for UI-only hot reload. See the [CLI guide](./src/apps/cli/README.md) for the command-line workflow.
 
 </details>
 

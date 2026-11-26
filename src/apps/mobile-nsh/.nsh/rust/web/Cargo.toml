@@ -18,9 +18,9 @@ dev = ["nsh-platform-web/dev"]
 linkable = ["nsh-platform-web/linkable"]
 
 [dependencies]
-nsh-core = { version = "=0.7.0" }
-nsh-base = { version = "=0.7.0", features = ["highlight"] }
+nsh-core = { version = "=0.7.1" }
+nsh-base = { version = "=0.7.1", features = ["highlight"] }
 app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-nsh-platform-web = { version = "=0.7.0", default-features = false }
+nsh-platform-web = { version = "=0.7.1", default-features = false }
