@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>毕方 · 自己搭配</title>
+<style>
+/*__TOKENS__*/
+</style>
+<style id="page-css">
+*{box-sizing:border-box}
+body{margin:0}
+.page{min-height:100vh;background:var(--openbitfun-color-surface-scene);color:var(--openbitfun-color-content-primary);font-family:var(--openbitfun-font-family-sans);font-size:var(--openbitfun-type-body-md-font-size);line-height:var(--openbitfun-type-body-md-line-height);color-scheme:light}
+.page[data-color-scheme="dark"]{color-scheme:dark}
+.wrap{max-width:calc(var(--openbitfun-space-16)*18);margin:0 auto;padding:var(--openbitfun-space-12) var(--openbitfun-space-8)}
+h1{font-size:var(--openbitfun-type-display-sm-font-size);font-weight:var(--openbitfun-type-display-sm-font-weight);line-height:var(--openbitfun-type-display-sm-line-height);margin:0 0 var(--openbitfun-space-3)}
+h2{font-size:var(--openbitfun-type-heading-section-font-size);font-weight:var(--openbitfun-type-heading-section-font-weight);line-height:var(--openbitfun-type-heading-section-line-height);margin:0 0 var(--openbitfun-space-3)}
+.lead{color:var(--openbitfun-color-content-secondary);margin:0 0 var(--openbitfun-space-8);max-width:calc(var(--openbitfun-space-16)*12)}
+:focus-visible{outline:var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);outline-offset:var(--openbitfun-focus-offset)}
+.layout{display:grid;grid-template-columns:repeat(auto-fit,minmax(calc(var(--openbitfun-space-16)*6),1fr));gap:var(--openbitfun-space-6);align-items:start}
+.panel{background:var(--openbitfun-color-surface-raised);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);border-radius:var(--openbitfun-radius-2xl);padding:var(--openbitfun-space-5)}
+.preview{position:sticky;top:var(--openbitfun-space-4)}
+.stage{background:var(--stage);border-radius:var(--openbitfun-radius-lg);display:grid;grid-template-columns:1.3fr 1fr;align-items:center;padding:var(--openbitfun-space-6) var(--openbitfun-space-4) var(--openbitfun-space-2)}
+.stage svg,.states svg{width:100%;display:block}
+.states{background:var(--stage);border-radius:var(--openbitfun-radius-lg);display:grid;grid-template-columns:repeat(6,1fr);gap:var(--openbitfun-space-1);padding:var(--openbitfun-space-2);margin-top:var(--openbitfun-space-2)}
+.states div{text-align:center;font-size:var(--openbitfun-type-micro-font-size);color:var(--openbitfun-color-content-muted)}
+.tiny{display:flex;align-items:center;gap:var(--openbitfun-space-4);margin-top:var(--openbitfun-space-3);font-size:var(--openbitfun-type-meta-font-size);color:var(--openbitfun-color-content-muted)}
+.tiny span{display:inline-flex;align-items:center;gap:var(--openbitfun-space-1)}
+.checks{display:none;list-style:none;margin:var(--openbitfun-space-4) 0 0;padding:0;font-size:var(--openbitfun-type-body-sm-font-size);line-height:var(--openbitfun-type-body-sm-line-height)}
+.checks li{padding:var(--openbitfun-space-1) 0;color:var(--openbitfun-color-content-secondary)}
+.checks li b{font-weight:var(--openbitfun-type-heading-section-font-weight)}
+.checks li[data-level="ok"] b{color:var(--openbitfun-color-status-success-emphasis)}
+.checks li[data-level="warn"] b{color:var(--openbitfun-color-status-warning-emphasis)}
+.actions{display:flex;flex-wrap:wrap;gap:var(--openbitfun-space-2);margin-top:var(--openbitfun-space-4)}
+button{font:inherit;font-size:var(--openbitfun-type-body-sm-font-size);color:var(--openbitfun-color-content-primary);background:var(--openbitfun-color-surface-tertiary);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);border-radius:var(--openbitfun-radius-pill);padding:var(--openbitfun-space-2) var(--openbitfun-space-4);cursor:pointer}
+.group+.group{margin-top:var(--openbitfun-space-6)}
+.sub{font-size:var(--openbitfun-type-meta-font-size);color:var(--openbitfun-color-content-muted);margin:var(--openbitfun-space-3) 0 var(--openbitfun-space-2)}
+.swatches{display:flex;flex-wrap:wrap;gap:var(--openbitfun-space-2)}
+.swatch{width:var(--openbitfun-space-10);height:var(--openbitfun-space-10);border-radius:var(--openbitfun-radius-pill);padding:0;background:var(--c);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-default);position:relative}
+.swatch[aria-pressed="true"]{outline:var(--openbitfun-focus-width) solid var(--openbitfun-color-content-primary);outline-offset:var(--openbitfun-focus-offset)}
+.swatch.same{background:conic-gradient(var(--c) 0 50%, var(--openbitfun-color-surface-tertiary) 0)}
+.pick{position:relative;width:var(--openbitfun-space-10);height:var(--openbitfun-space-10);border-radius:var(--openbitfun-radius-pill);background:conic-gradient(var(--openbitfun-color-identity-project-red),var(--openbitfun-color-identity-project-orange),var(--openbitfun-color-identity-project-yellow),var(--openbitfun-color-identity-project-green),var(--openbitfun-color-identity-project-cyan),var(--openbitfun-color-identity-project-blue),var(--openbitfun-color-identity-project-purple),var(--openbitfun-color-identity-project-pink),var(--openbitfun-color-identity-project-red));cursor:pointer;flex:none}
+.pick::before{content:"";position:absolute;inset:var(--openbitfun-space-1);border-radius:var(--openbitfun-radius-pill);background:var(--c,var(--openbitfun-color-surface-raised));border:var(--openbitfun-focus-width) solid var(--openbitfun-color-surface-raised)}
+.pick::after{content:"+";position:absolute;inset:0;display:grid;place-items:center;font-size:var(--openbitfun-type-heading-compact-page-font-size);color:var(--openbitfun-color-content-secondary)}
+.pick[data-on="true"]::after{content:none}
+.pick[data-on="true"]{outline:var(--openbitfun-focus-width) solid var(--openbitfun-color-content-primary);outline-offset:var(--openbitfun-focus-offset)}
+.pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0}
+.pick:has(input:focus-visible){outline:var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);outline-offset:var(--openbitfun-focus-offset)}
+.hexrow{display:flex;align-items:center;gap:var(--openbitfun-space-2);margin-top:var(--openbitfun-space-3);font-size:var(--openbitfun-type-body-sm-font-size);color:var(--openbitfun-color-content-muted)}
+.hex{font-family:var(--openbitfun-font-family-mono);font-size:var(--openbitfun-type-body-sm-font-size);color:var(--openbitfun-color-content-primary);background:var(--openbitfun-color-field-background);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-field-border);border-radius:var(--openbitfun-radius-pill);padding:var(--openbitfun-space-1) var(--openbitfun-space-3);width:calc(var(--openbitfun-space-16) * 1.6);text-transform:lowercase}
+.hex:focus,.hex:focus-visible{outline:none;border-color:var(--openbitfun-color-field-border-focus)}
+.hex[aria-invalid="true"]{border-color:var(--openbitfun-color-status-danger-emphasis)}
+.swatch[data-tok]::after{content:"";position:absolute;right:calc(var(--openbitfun-space-1) * -0.5);bottom:calc(var(--openbitfun-space-1) * -0.5);width:var(--openbitfun-space-3);height:var(--openbitfun-space-3);border-radius:var(--openbitfun-radius-pill);background:var(--openbitfun-color-content-primary);border:var(--openbitfun-focus-width) solid var(--openbitfun-color-surface-raised)}
+.legend{margin:var(--openbitfun-space-2) 0 0;font-size:var(--openbitfun-type-meta-font-size);color:var(--openbitfun-color-content-muted);display:flex;align-items:center;gap:var(--openbitfun-space-1)}
+.legend i{width:var(--openbitfun-space-2);height:var(--openbitfun-space-2);border-radius:var(--openbitfun-radius-pill);background:var(--openbitfun-color-content-primary)}
+fieldset{border:0;margin:0;padding:0;display:grid;grid-template-columns:44px 1fr;align-items:start;gap:var(--openbitfun-space-3);font-size:var(--openbitfun-type-body-sm-font-size)}
+fieldset+fieldset{margin-top:var(--openbitfun-space-3)}
+legend{float:left;width:44px;padding:7px 0 0;margin:0;color:var(--openbitfun-color-content-muted)}
+.opts-row{display:flex;flex-wrap:wrap;gap:6px}
+fieldset label{position:relative;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:var(--openbitfun-radius-pill);border:1px solid var(--openbitfun-color-border-subtle, rgba(0,0,0,.1));background:var(--openbitfun-color-surface-raised, #fff);color:var(--openbitfun-color-content-secondary);cursor:pointer;transition:background .15s,border-color .15s,color .15s;user-select:none}
+fieldset label:hover{border-color:var(--openbitfun-color-border-default, rgba(0,0,0,.22));color:var(--openbitfun-color-content-primary)}
+fieldset label input{position:absolute;opacity:0;pointer-events:none}
+fieldset label:has(input:checked){background:var(--openbitfun-color-content-primary);border-color:var(--openbitfun-color-content-primary);color:var(--openbitfun-color-surface-raised, #fff)}
+fieldset label:has(input:focus-visible){outline:2px solid var(--openbitfun-color-content-primary);outline-offset:2px}
+i.bl{display:inline-block;width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 1.5px rgba(255,255,255,.7)}
+.note{margin-top:var(--openbitfun-space-6);font-size:var(--openbitfun-type-body-sm-font-size);color:var(--openbitfun-color-content-secondary)}
+</style>
+</head>
+<body>
+<div class="page" id="root" data-openbitfun-design-system-root data-color-scheme="light"><div class="wrap">
+  <h1>毕方 · 自己搭配</h1>
+  <p class="lead">选颜色和五官，实时预览。</p>
+
+  <div class="layout">
+    <section class="panel" aria-label="选择颜色">
+      <div class="group">
+        <h2>身体</h2>
+        <div class="swatches"><div id="bodies" style="display:contents"></div><label class="pick" id="bodyPickWrap" title="自定义身体颜色"><input type="color" id="bodyPick" aria-label="自定义身体颜色"></label></div>
+        <p class="legend"><i></i>设计系统 token</p>
+        <div class="hexrow">HEX <input class="hex" id="bodyHex" spellcheck="false" maxlength="7" aria-label="身体颜色 HEX"></div>
+      </div>
+      <div class="group">
+        <h2>天线球（待命时的颜色）</h2>
+        <div class="swatches"><div id="balls" style="display:contents"></div><label class="pick" id="ballPickWrap" title="自定义球的颜色"><input type="color" id="ballPick" aria-label="自定义球的颜色"></label></div>
+        <div class="hexrow">HEX <input class="hex" id="ballHex" spellcheck="false" maxlength="7" aria-label="天线球颜色 HEX"></div>
+      </div>
+      <div class="group">
+        <h2>显示</h2>
+        <form id="opts">
+          <fieldset><legend>质感</legend><div class="opts-row"><label><input type="radio" name="finish" value="smooth" checked>光滑</label><label><input type="radio" name="finish" value="metal">金属</label><label><input type="radio" name="finish" value="plush">毛绒</label></div></fieldset>
+          <fieldset><legend>背景</legend><div class="opts-row"><label><input type="radio" name="bg" value="tertiary" checked title="surface.tertiary">浅灰</label><label><input type="radio" name="bg" value="scene">场景</label><label><input type="radio" name="bg" value="chrome">窗口</label></div></fieldset>
+          <fieldset><legend>眼睛</legend><div class="opts-row"><label><input type="radio" name="eye" value="auto" checked>自动</label><label><input type="radio" name="eye" value="white">白</label><label><input type="radio" name="eye" value="black">黑</label></div></fieldset>
+          <fieldset><legend>嘴</legend><div class="opts-row"><label><input type="radio" name="mouth" value="auto" checked>默认</label><label><input type="radio" name="mouth" value="none">无</label><label><input type="radio" name="mouth" value="beak">鸟嘴</label><label><input type="radio" name="mouth" value="state">随状态</label><label><input type="radio" name="mouth" value="smile">微笑</label><label><input type="radio" name="mouth" value="cat">猫猫嘴</label><label><input type="radio" name="mouth" value="o">小圆嘴</label></div></fieldset>
+          <fieldset><legend>腮红</legend><div class="opts-row"><label><input type="radio" name="blush" value="auto" checked>默认</label><label><input type="radio" name="blush" value="none">无</label><label><input type="radio" name="blush" value="coral"><i class="bl" style="background:#ef8d70"></i>珊瑚</label><label><input type="radio" name="blush" value="pink"><i class="bl" style="background:#ff8fab"></i>粉</label><label><input type="radio" name="blush" value="peach"><i class="bl" style="background:#ffb07c"></i>蜜桃</label><label><input type="radio" name="blush" value="rose"><i class="bl" style="background:#e8738f"></i>玫瑰</label></div></fieldset>
+          <fieldset><legend>主题</legend><div class="opts-row"><label><input type="radio" name="scheme" value="light" checked>浅色</label><label><input type="radio" name="scheme" value="dark">深色</label></div></fieldset>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel preview" aria-label="预览">
+      <div class="stage" id="big"></div>
+      <div class="states" id="states"></div>
+      <div class="tiny" id="tiny"></div>
+      <ul class="checks" id="checks"></ul>
+      <div class="actions">
+        <button type="button" id="dl3d">下载 3D SVG</button>
+        <button type="button" id="dlFlat">下载平面 SVG</button>
+        <button type="button" id="copy">复制配色 JSON</button>
+      </div>
+      <p class="note">状态球颜色固定，只能改待命时的球色。</p>
+    </section>
+  </div>
+</div></div>
+
+<script>
+/*__BF__*/
+</script>
+<script>
+(function(){
+  const {render, STYLE, hueOf, hueDist} = BF;
+  const st = document.createElement('style'); st.textContent = STYLE; document.head.appendChild(st);
+  const TK = /*__TOKENS_JSON__*/{};
+
+  /* ---- 颜色工具 ---- */
+  const toHsl = h => { const [r,g,b] = [1,3,5].map(i => parseInt(h.substr(i,2),16)/255); const M=Math.max(r,g,b), m=Math.min(r,g,b), l=(M+m)/2, d=M-m;
+    if(!d) return [0,0,l*100]; const s=d/(1-Math.abs(2*l-1)); const hh = M===r?((g-b)/d)%6 : M===g?(b-r)/d+2 : (r-g)/d+4; return [(hh*60+360)%360, s*100, l*100]; };
+  const toHex = (h,s,l) => { s=Math.max(0,Math.min(100,s))/100; l=Math.max(0,Math.min(100,l))/100; const k=n=>(n+h/30)%12, a=s*Math.min(l,1-l), f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+    return '#'+[f(0),f(8),f(4)].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join(''); };
+  const adj = (hex, dl, ds=0) => { const [h,s,l] = toHsl(hex); return toHex(h, s<4 ? s : s+ds, l+dl); };
+  const lum = h => { const c=[1,3,5].map(i=>{ const x=parseInt(h.substr(i,2),16)/255; return x<=.03928?x/12.92:((x+.055)/1.055)**2.4; }); return .2126*c[0]+.7152*c[1]+.0722*c[2]; };
+  const contrast = (a,b) => { const x=lum(a)+.05, y=lum(b)+.05; return Math.max(x,y)/Math.min(x,y); };
+  const chroma = h => { const v=[1,3,5].map(i=>parseInt(h.substr(i,2),16)/255); return Math.max(...v)-Math.min(...v); };
+  const norm = h => h.toLowerCase();
+  // 感知亮度（OKLab L）：深色身体用白眼睛，浅色身体用黑眼睛
+  const okL = h => { const f = i => { const v = parseInt(h.substr(i,2),16)/255; return v<=.04045 ? v/12.92 : ((v+.055)/1.055)**2.4; };
+    const [r,g,b] = [f(1),f(3),f(5)], l = Math.cbrt(.4122214708*r+.5363325363*g+.0514459929*b), m = Math.cbrt(.2119034982*r+.6806995451*g+.1073969566*b), s = Math.cbrt(.0883024619*r+.2817188376*g+.6299787005*b);
+    return .2104542553*l + .793617785*m - .0040720468*s; };
+  const EYE_SPLIT = .70;
+
+  /* ---- 可选颜色：主推方案 R 的身体色 + 常用球色 ---- */
+  const S = { mouth:'auto', blush:'auto', eye:'auto', finish:'smooth', bg:'tertiary', scheme:'light', body:{tok:'color.identity.project.cyan'}, ball:{tok:'color.control.highlight.background'} };
+  const t = n => TK[n][S.scheme];
+  // 统一色板：身体色和天线球色都来自生成器里的 BF.BOARD，全文件共用这一份
+  const BODIES = BF.BOARD.bodies.map(b => Object.assign({}, b));
+  const BALLS = BF.BOARD.balls.map(b => Object.assign({}, b));
+  const hexOf = o => o.tok ? t(o.tok) : o.hex;
+  const bodyHex = () => hexOf(S.body);
+  const ballHex = () => S.ball.same ? (toHsl(bodyHex())[2] < 20 ? adj(bodyHex(), 22) : adj(bodyHex(), 12, 4)) : hexOf(S.ball);
+
+  /* ---- 由身体色 + 球色得到整套配色 ---- */
+  function palette(){
+    const b = S.body;
+    return BF.makePalette(bodyHex(), ballHex(), { eye: S.eye, bifang: b.bifang, name: b.name, onDark: t('color.content.onDark'), onLight: t('color.content.onLight'), ring: t('color.surface.raised'),
+      status: { think: t('color.accent.secondary'), work: t('color.status.info.emphasis'), ask: t('color.status.warning.emphasis'),
+        ok: t('color.status.success.emphasis'), err: t('color.status.danger.emphasis'), off: t('color.content.muted') } });
+  }
+
+  /* ---- 检查 ---- */
+  const STATUS_NAMES = { think:'思考', work:'执行', ask:'需要你', ok:'完成', err:'异常' };
+  function checks(P){
+    const out = [], stage = t('color.surface.' + S.bg);
+    const eyeC = contrast(P.side, P.eye);
+    out.push([eyeC >= 3 ? 'ok' : 'warn', `眼睛对比度 ${eyeC.toFixed(1)}:1`, eyeC >= 3 ? '' : '低于 3:1，眼睛看不清，建议换身体颜色。']);
+    const bgC = contrast(P.side, stage);
+    const edged = lum(P.side) > .72; // 生成器会给浅色身体自动加细轮廓
+    out.push([bgC >= 1.3 || edged ? 'ok' : 'warn', `身体和背景 ${bgC.toFixed(2)}:1`, bgC >= 1.3 ? '' : edged ? '颜色接近背景，已自动加一圈同色系细轮廓。' : '身体快和背景融在一起了，小尺寸会看不出轮廓。']);
+    const hb = hueOf(P.accent);
+    const clash = hb == null ? [] : Object.entries(P.status).filter(([k]) => STATUS_NAMES[k]).map(([k,c]) => [k, hueDist(hb, hueOf(c))]).filter(([,d]) => d < 30);
+    out.push([clash.length ? 'warn' : 'ok', clash.length ? `待命球和“${clash.map(([k]) => STATUS_NAMES[k]).join('、')}”同色系` : '待命球和状态色分得开',
+      clash.length ? '待命和干活时颜色差不多，用户分不清它是不是在工作。' : '']);
+    const ballC = contrast(P.accent, P.side), same = hb != null && hueOf(P.side) != null && hueDist(hb, hueOf(P.side)) < 20;
+    const weak = ballC < 1.3 || (same && ballC < 1.5);
+    out.push([!weak ? 'ok' : 'warn', `球和身体 ${ballC.toFixed(2)}:1`, !weak ? '' : '球和身体太接近，天线球不够醒目。']);
+    return out;
+  }
+
+  /* ---- 渲染 ---- */
+  const sw = (o, kind) => { const c = o.same ? bodyHex() : hexOf(o); const on = kind === 'body' ? S.body === o : S.ball === o;
+    return `<button type="button" class="swatch${o.same ? ' same' : ''}" style="--c:${c}" data-kind="${kind}" data-i="${o._i}" aria-pressed="${on}"${o.tok ? ' data-tok' : ''} title="${o.name}${o.tok ? ' · ' + o.tok : ''} · ${c}" aria-label="${o.name}"></button>`; };
+  const ALL_BODIES = BODIES; BODIES.forEach((o,i) => o._i = i); BALLS.forEach((o,i) => o._i = i);
+  S.body = ALL_BODIES.find(o => o.key === 'cyan'); S.ball = BALLS.find(o => o.name === '珍珠白'); // 默认搭配要能通过全部检查
+  const pick = () => Object.assign({}, S.mouth !== 'auto' && { mouth: S.mouth }, S.blush !== 'auto' && { blush: S.blush });
+  const opt = (P, o) => Object.assign({ palette:P, noStyle:true, finish:S.finish }, pick(), o);
+
+  function draw(){
+    const root = document.getElementById('root');
+    root.dataset.colorScheme = S.scheme;
+    root.style.setProperty('--stage', `var(--openbitfun-color-surface-${S.bg})`);
+    document.getElementById('bodies').innerHTML = BODIES.map(o => sw(o,'body')).join('');
+    document.getElementById('balls').innerHTML = BALLS.map(o => sw(o,'ball')).join('');
+    const P = palette();
+    syncCustom('body', P.side, S.body._i === -1); syncCustom('ball', P.accent, S.ball._i === -1);
+    document.getElementById('big').innerHTML = render('idle', opt(P,{compact:1})) + render('idle', opt(P,{compact:1, view: S.finish === 'plush' ? 'front' : 'flat'}));
+    document.getElementById('states').innerHTML = [['thinking','思考'],['coding','执行'],['awaiting','需要你'],['done','完成'],['error','异常'],['sleeping','离线']]
+      .map(([id,n]) => `<div>${render(id, opt(P,{compact:1}))}${n}</div>`).join('');
+    document.getElementById('tiny').innerHTML = '小尺寸 ' + [32,22,18].map(px => `<span><span style="display:block;width:${px}px;height:${px}px">${render('idle', opt(P,{tiny:true}))}</span>${px}px</span>`).join('');
+    document.getElementById('checks').innerHTML = checks(P).map(([lv, title, tip]) => `<li data-level="${lv}"><b>${lv === 'ok' ? '✓' : '!'} ${title}</b>${tip ? '：' + tip : ''}</li>`).join('');
+    window.__P = P;
+  }
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.swatch'); if (!b) return;
+    if (b.dataset.kind === 'body') S.body = ALL_BODIES[+b.dataset.i]; else S.ball = BALLS[+b.dataset.i];
+    draw();
+  });
+  // 自定义：色盘和 HEX 输入框都是静态元素，重绘不会打断拖动取色
+  function syncCustom(kind, hex, on){
+    const wrap = document.getElementById(kind + 'PickWrap'), input = document.getElementById(kind + 'Hex');
+    wrap.dataset.on = on; wrap.style.setProperty('--c', on ? hex : '');
+    document.getElementById(kind + 'Pick').value = hex.slice(0,7).toLowerCase();
+    if (document.activeElement !== input) { input.value = hex.toLowerCase(); input.removeAttribute('aria-invalid'); }
+  }
+  const setCustom = (kind, hex) => { const o = { hex, name:'自定义', _i:-1 }; if (kind === 'body') S.body = o; else S.ball = o; draw(); };
+  for (const kind of ['body','ball']) {
+    document.getElementById(kind + 'Pick').oninput = e => setCustom(kind, e.target.value);
+    const hexIn = document.getElementById(kind + 'Hex');
+    hexIn.oninput = e => { const v = e.target.value.trim().replace(/^#?/, '#'); const ok = /^#[0-9a-f]{6}$/i.test(v);
+      e.target.setAttribute('aria-invalid', String(!ok)); if (ok) setCustom(kind, v.toLowerCase()); };
+    hexIn.onblur = () => draw();
+  }
+  document.getElementById('opts').onchange = e => { S[e.target.name] = e.target.value; draw(); };
+
+  const save = (name, text, type) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type})); a.download = name; a.click(); URL.revokeObjectURL(a.href); };
+  const fileName = v => `bitfun-${v}-${window.__P.side.slice(1)}-${window.__P.accent.slice(1)}.svg`;
+  document.getElementById('dl3d').onclick = () => save(fileName('3d'), render('idle', Object.assign({ palette: window.__P, finish: S.finish }, pick())), 'image/svg+xml');
+  document.getElementById('dlFlat').onclick = () => save(fileName('flat'), render('idle', Object.assign({ palette: window.__P, view: S.finish === 'plush' ? 'front' : 'flat', finish: S.finish }, pick())), 'image/svg+xml');
+  document.getElementById('copy').onclick = async e => {
+    const P = window.__P, json = JSON.stringify({ body: S.body.tok || P.side, ball: S.ball.tok || P.accent, eye: P.eye, finish: S.finish, scheme: S.scheme }, null, 2);
+    try { await navigator.clipboard.writeText(json); e.target.textContent = '已复制'; } catch { save('bitfun-colors.json', json, 'application/json'); e.target.textContent = '已下载 JSON'; }
+    setTimeout(() => e.target.textContent = '复制配色 JSON', 1600);
+  };
+  draw();
+})();
+</script>
+</body>
+</html>

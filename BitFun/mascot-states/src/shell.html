@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>毕方形象 · 多状态设计与配色</title>
+<style>
+/*__TOKENS__*/
+</style>
+<style>
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--openbitfun-space-16) + var(--openbitfun-space-4))}
+body{margin:0;background:var(--openbitfun-color-surface-scene);color:var(--openbitfun-color-content-primary);font-family:var(--openbitfun-font-family-sans);font-size:var(--openbitfun-type-body-md-font-size);line-height:var(--openbitfun-type-body-md-line-height);color-scheme:light}
+.head{max-width:calc(var(--openbitfun-space-16)*20);margin:0 auto;padding:var(--openbitfun-space-12) var(--openbitfun-space-8) var(--openbitfun-space-6)}
+.eyebrow{font-size:var(--openbitfun-type-meta-font-size);letter-spacing:.12em;color:var(--openbitfun-color-content-muted);margin:0 0 var(--openbitfun-space-2)}
+h1{font-size:var(--openbitfun-type-display-sm-font-size);font-weight:var(--openbitfun-type-display-sm-font-weight);line-height:var(--openbitfun-type-display-sm-line-height);margin:0 0 var(--openbitfun-space-3)}
+.lead{color:var(--openbitfun-color-content-secondary);max-width:calc(var(--openbitfun-space-16)*12);margin:0}
+nav{position:sticky;top:0;z-index:var(--openbitfun-layer-sticky);background:var(--openbitfun-color-surface-scene);border-bottom:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle)}
+nav ol{list-style:none;display:flex;flex-wrap:wrap;gap:var(--openbitfun-space-2);max-width:calc(var(--openbitfun-space-16)*20);margin:0 auto;padding:var(--openbitfun-space-3) var(--openbitfun-space-8)}
+nav a{display:inline-flex;align-items:center;gap:var(--openbitfun-space-2);padding:var(--openbitfun-space-2) var(--openbitfun-space-4);border-radius:var(--openbitfun-radius-pill);color:var(--openbitfun-color-content-secondary);text-decoration:none;font-size:var(--openbitfun-type-body-sm-font-size)}
+nav a:hover{background:var(--openbitfun-color-surface-workbench)}
+nav a[aria-current="true"]{background:var(--openbitfun-color-surface-workbench);color:var(--openbitfun-color-content-primary)}
+nav b{font-family:var(--openbitfun-font-family-mono);font-weight:inherit;color:var(--openbitfun-color-content-muted)}
+a:focus-visible{outline:var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);outline-offset:var(--openbitfun-focus-offset)}
+section{border-top:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle)}
+section header{max-width:calc(var(--openbitfun-space-16)*20);margin:0 auto;padding:var(--openbitfun-space-10) var(--openbitfun-space-8) 0}
+section h2{font-size:var(--openbitfun-type-heading-compact-page-font-size);font-weight:var(--openbitfun-type-heading-compact-page-font-weight);line-height:var(--openbitfun-type-heading-compact-page-line-height);margin:0 0 var(--openbitfun-space-1)}
+section header p{margin:0;color:var(--openbitfun-color-content-secondary);font-size:var(--openbitfun-type-body-sm-font-size)}
+iframe{display:block;width:100%;border:0;height:calc(var(--openbitfun-space-16)*12)}
+footer{max-width:calc(var(--openbitfun-space-16)*20);margin:0 auto;padding:var(--openbitfun-space-8);color:var(--openbitfun-color-content-muted);font-size:var(--openbitfun-type-meta-font-size)}
+</style>
+</head>
+<body data-openbitfun-design-system-root data-color-scheme="light">
+<div class="head">
+  <p class="eyebrow">OPENBITFUN · MASCOT SYSTEM v1.0</p>
+  <h1>毕方形象 · 多状态设计与配色</h1>
+  <p class="lead">OpenBitFun 吉祥物“毕方”的形象、状态与配色。</p>
+</div>
+<nav aria-label="章节"><ol>
+  <li><a href="#customize"><b>01</b>自己搭配</a></li>
+  <li><a href="#states"><b>02</b>形象与状态</a></li>
+  <li><a href="#palettes"><b>03</b>配色方案</a></li>
+</ol></nav>
+
+<section id="customize">
+  <header><h2>01 · 自己搭配</h2></header>
+  <iframe title="自己搭配" data-frame="customize" allow="clipboard-write" srcdoc="/*__FRAME_customize__*/"></iframe>
+</section>
+<section id="states">
+  <header><h2>02 · 形象与状态</h2></header>
+  <iframe title="形象与状态" data-frame="states" srcdoc="/*__FRAME_states__*/"></iframe>
+</section>
+<section id="palettes">
+  <header><h2>03 · 配色方案</h2></header>
+  <iframe title="配色方案" data-frame="palettes" srcdoc="/*__FRAME_palettes__*/"></iframe>
+</section>
+
+<footer>由 src/build.js 生成，请勿手工修改本文件；源码见仓库 mascot-states/src。生成时间 /*__BUILT_AT__*/。</footer>
+
+<script>
+(function(){
+  // 各章节在独立的 iframe 中运行，互不干扰；子页面上报内容高度，这里同步 iframe 高度
+  const frames = [...document.querySelectorAll('iframe[data-frame]')];
+  addEventListener('message', e => {
+    const f = frames.find(x => x.contentWindow === e.source);
+    if (f && e.data && typeof e.data.bfHeight === 'number') f.style.height = Math.ceil(e.data.bfHeight) + 'px';
+  });
+  // 导航高亮当前章节
+  const links = [...document.querySelectorAll('nav a')];
+  const io = new IntersectionObserver(es => es.forEach(en => { if (en.isIntersecting) links.forEach(a => a.setAttribute('aria-current', String(a.hash === '#' + en.target.id))); }), { rootMargin: '-40% 0px -55% 0px' });
+  document.querySelectorAll('section').forEach(s => io.observe(s));
+})();
+</script>
+</body>
+</html>

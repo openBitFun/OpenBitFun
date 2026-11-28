@@ -1,0 +1,210 @@
+{
+  "$source": "Cinnnnnnndy/OpenBitFun @ feat/mobile-design-lab-fusion · design-system/packages/{theme-openbitfun,design-tokens}/src/*.tokens.json（只摘录本页用到的 token；system 尺度取自 main）",
+  "ref": {
+    "neutral.0": "#ffffff",
+    "neutral.50": "#fdfdfd",
+    "neutral.70": "#f8f8f9",
+    "neutral.75": "#f7f7f7",
+    "neutral.100": "#f3f3f5",
+    "neutral.200": "#e8e8e8",
+    "neutral.350": "#b0b0b0",
+    "neutral.550": "#858585",
+    "neutral.650": "#6a6a6a",
+    "neutral.900": "#1c1c1f",
+    "neutral.950": "#0e0e10",
+    "neutral.1000": "#000000",
+    "navy.950": "#101a27",
+    "blue.400": "#60a5fa",
+    "blue.550": "#2e7eff",
+    "blue.600": "#2563eb",
+    "cyan.400": "#36c6d7",
+    "cyan.500": "#059cb0",
+    "cyan.600": "#07879a",
+    "green.400": "#34d399",
+    "green.550": "#1aa73e",
+    "green.600": "#269f70",
+    "amber.400": "#ffcc00",
+    "amber.525": "#d5a910",
+    "amber.550": "#ff8c00",
+    "amber.625": "#d47628",
+    "red.400": "#f36f80",
+    "red.600": "#c95765",
+    "red.650": "#ec221f",
+    "purple.500": "#8b5cf6",
+    "purple.600": "#7c6b99",
+    "purple.650": "#7b43f8",
+    "pink.400": "#f472b6",
+    "pink.600": "#db2777"
+  },
+  "theme": {
+    "color.surface.scene": [
+      "{neutral.0}",
+      "{neutral.900}"
+    ],
+    "color.surface.canvas": [
+      "{neutral.50}",
+      "{neutral.950}"
+    ],
+    "color.surface.raised": [
+      "{neutral.0}",
+      "{neutral.900}"
+    ],
+    "color.surface.tertiary": [
+      "{neutral.75}",
+      "{neutral.950}"
+    ],
+    "color.surface.chrome": [
+      "{neutral.70}",
+      "{neutral.950}"
+    ],
+    "color.surface.workbench": [
+      "{neutral.100}",
+      "{neutral.950}"
+    ],
+    "color.content.primary": [
+      "rgba(0, 0, 0, 0.80)",
+      "{neutral.200}"
+    ],
+    "color.content.secondary": [
+      "rgba(0, 0, 0, 0.60)",
+      "{neutral.350}"
+    ],
+    "color.content.muted": [
+      "{neutral.650}",
+      "{neutral.550}"
+    ],
+    "color.content.onDark": [
+      "{neutral.0}",
+      "{neutral.0}"
+    ],
+    "color.content.onLight": [
+      "{neutral.1000}",
+      "{neutral.1000}"
+    ],
+    "color.border.subtle": [
+      "rgba(16, 26, 39, 0.08)",
+      "rgba(255, 255, 255, 0.12)"
+    ],
+    "color.border.default": [
+      "rgba(16, 26, 39, 0.15)",
+      "rgba(255, 255, 255, 0.18)"
+    ],
+    "color.link.default": [
+      "{cyan.500}",
+      "{cyan.500}"
+    ],
+    "color.focus.ring": [
+      "{neutral.650}",
+      "{blue.400}"
+    ],
+    "color.control.highlight.background": [
+      "{cyan.500}",
+      "{cyan.500}"
+    ],
+    "color.accent.secondary": [
+      "{purple.600}",
+      "{purple.500}"
+    ],
+    "color.action.primary.background": [
+      "{navy.950}",
+      "rgba(255, 255, 255, 0.16)"
+    ],
+    "color.identity.project.blue": [
+      "{blue.600}",
+      "{blue.400}"
+    ],
+    "color.identity.project.cyan": [
+      "{cyan.600}",
+      "{cyan.400}"
+    ],
+    "color.identity.project.green": [
+      "{green.600}",
+      "{green.400}"
+    ],
+    "color.identity.project.yellow": [
+      "{amber.525}",
+      "{amber.400}"
+    ],
+    "color.identity.project.orange": [
+      "{amber.625}",
+      "{amber.550}"
+    ],
+    "color.identity.project.red": [
+      "{red.600}",
+      "{red.400}"
+    ],
+    "color.identity.project.purple": [
+      "{purple.650}",
+      "{purple.500}"
+    ],
+    "color.identity.project.pink": [
+      "{pink.600}",
+      "{pink.400}"
+    ],
+    "color.status.info.emphasis": [
+      "{blue.550}",
+      "{blue.550}"
+    ],
+    "color.status.success.emphasis": [
+      "{green.550}",
+      "{green.550}"
+    ],
+    "color.status.warning.emphasis": [
+      "{amber.550}",
+      "{amber.550}"
+    ],
+    "color.status.danger.emphasis": [
+      "{red.650}",
+      "{red.650}"
+    ],
+    "color.field.background": [
+      "{neutral.0}",
+      "{neutral.900}"
+    ],
+    "color.field.border": [
+      "rgba(0, 0, 0, 0.08)",
+      "rgba(255, 255, 255, 0.18)"
+    ],
+    "color.field.borderFocus": [
+      "{neutral.550}",
+      "{neutral.550}"
+    ]
+  },
+  "system": {
+    "space.1": "4px",
+    "space.2": "8px",
+    "space.3": "12px",
+    "space.4": "16px",
+    "space.5": "20px",
+    "space.6": "24px",
+    "space.8": "32px",
+    "space.12": "48px",
+    "space.16": "64px",
+    "radius.lg": "12px",
+    "radius.2xl": "20px",
+    "radius.pill": "9999px",
+    "border.width.default": "1px",
+    "focus.width": "2px",
+    "focus.offset": "2px",
+    "layer.sticky": "15",
+    "font.family.sans": "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+    "font.family.mono": "'Fira Code', 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Courier New', monospace",
+    "type.display.sm.fontSize": "32px",
+    "type.display.sm.fontWeight": "600",
+    "type.display.sm.lineHeight": "1.1",
+    "type.heading.compactPage.fontSize": "20px",
+    "type.heading.compactPage.fontWeight": "600",
+    "type.heading.compactPage.lineHeight": "1.2",
+    "type.heading.section.fontSize": "15px",
+    "type.heading.section.fontWeight": "600",
+    "type.heading.section.lineHeight": "1.2",
+    "type.body.md.fontSize": "14px",
+    "type.body.md.lineHeight": "1.5",
+    "type.body.sm.fontSize": "13px",
+    "type.body.sm.lineHeight": "1.5",
+    "type.meta.fontSize": "11px",
+    "type.micro.fontSize": "10px",
+    "type.code.meta.fontSize": "11px",
+    "space.10": "40px"
+  }
+}
