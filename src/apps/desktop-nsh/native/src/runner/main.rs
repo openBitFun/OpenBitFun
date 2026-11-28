@@ -16,6 +16,9 @@
 //! platform: `<App>.app/Contents/Resources/nsh` on macOS, `nsh\` next to
 //! the executable on Windows and `nsh/` next to it on Linux.
 
+// Launch packaged Windows builds from Explorer without allocating a console.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod backend_library;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
