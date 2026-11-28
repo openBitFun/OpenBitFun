@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>毕方 · 配色探索</title>
+<style>
+/*__TOKENS__*/
+</style>
+<style id="page-css">
+*{box-sizing:border-box}
+body{margin:0}
+.page{min-height:100vh;background:var(--openbitfun-color-surface-scene);color:var(--openbitfun-color-content-primary);font-family:var(--openbitfun-font-family-sans);font-size:var(--openbitfun-type-body-md-font-size);line-height:var(--openbitfun-type-body-md-line-height);color-scheme:light}
+.page[data-color-scheme="dark"]{color-scheme:dark}
+.wrap{max-width:calc(var(--openbitfun-space-16)*20);margin:0 auto;padding:var(--openbitfun-space-12) var(--openbitfun-space-8)}
+h1{font-size:var(--openbitfun-type-display-sm-font-size);font-weight:var(--openbitfun-type-display-sm-font-weight);line-height:var(--openbitfun-type-display-sm-line-height);margin:0 0 var(--openbitfun-space-3)}
+h2{font-size:var(--openbitfun-type-heading-compact-page-font-size);font-weight:var(--openbitfun-type-heading-compact-page-font-weight);line-height:var(--openbitfun-type-heading-compact-page-line-height);margin:var(--openbitfun-space-12) 0 var(--openbitfun-space-2)}
+h2 small{font-size:var(--openbitfun-type-body-sm-font-size);color:var(--openbitfun-color-content-muted);font-weight:inherit;margin-left:var(--openbitfun-space-2)}
+.lead,.gdesc,.note{color:var(--openbitfun-color-content-secondary)}
+.lead,.gdesc{margin:0 0 var(--openbitfun-space-4);max-width:calc(var(--openbitfun-space-16)*14)}
+.gdesc,.note{font-size:var(--openbitfun-type-body-sm-font-size);line-height:var(--openbitfun-type-body-sm-line-height)}
+a{color:var(--openbitfun-color-link-default)}
+:focus-visible{outline:var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);outline-offset:var(--openbitfun-focus-offset)}
+.bar{position:sticky;top:0;z-index:var(--openbitfun-layer-sticky);display:flex;flex-wrap:wrap;gap:var(--openbitfun-space-2) var(--openbitfun-space-6);margin:var(--openbitfun-space-5) 0 0;padding:var(--openbitfun-space-3) 0;background:var(--openbitfun-color-surface-scene);border-bottom:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle)}
+.bar fieldset{border:0;margin:0;padding:0;display:flex;gap:var(--openbitfun-space-3);align-items:center;font-size:var(--openbitfun-type-body-sm-font-size)}
+.bar legend{float:left;padding:0;color:var(--openbitfun-color-content-muted)}
+.bar label{display:inline-flex;gap:var(--openbitfun-space-1);align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(calc(var(--openbitfun-space-16)*3.25),1fr));gap:var(--openbitfun-space-4)}
+.card{background:var(--openbitfun-color-surface-raised);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);border-radius:var(--openbitfun-radius-2xl);overflow:hidden}
+.card.tbc{border-style:dashed;border-color:var(--openbitfun-color-border-default);padding:var(--openbitfun-space-4);color:var(--openbitfun-color-content-secondary);font-size:var(--openbitfun-type-body-sm-font-size)}
+.card.tbc b{display:block;color:var(--openbitfun-color-content-primary);font-size:var(--openbitfun-type-heading-section-font-size)}
+.stage{display:grid;grid-template-columns:1.25fr 1fr;align-items:center;padding:var(--openbitfun-space-4) var(--openbitfun-space-3) var(--openbitfun-space-1);background:var(--stage);position:relative}
+.stage svg,.states svg{width:100%;display:block}
+.stage .no{position:absolute;left:var(--openbitfun-space-3);top:var(--openbitfun-space-2);font-size:var(--openbitfun-type-meta-font-size);color:var(--openbitfun-color-content-secondary)}
+.states{display:grid;grid-template-columns:repeat(6,1fr);padding:var(--openbitfun-space-1) var(--openbitfun-space-2) var(--openbitfun-space-2);background:var(--stage)}
+.states div{text-align:center;font-size:var(--openbitfun-type-micro-font-size);color:var(--openbitfun-color-content-muted)}
+.meta{padding:var(--openbitfun-space-3) var(--openbitfun-space-4) var(--openbitfun-space-4)}
+.meta b{font-size:var(--openbitfun-type-heading-section-font-size);font-weight:var(--openbitfun-type-heading-section-font-weight)}
+.meta span{display:block;color:var(--openbitfun-color-content-muted);font-size:var(--openbitfun-type-meta-font-size);overflow-wrap:anywhere}
+.chips{display:flex;gap:var(--openbitfun-space-1) var(--openbitfun-space-2);margin-top:var(--openbitfun-space-2);flex-wrap:wrap}
+.chips i{display:inline-flex;align-items:center;gap:var(--openbitfun-space-1);font-style:normal;font-size:var(--openbitfun-type-micro-font-size);color:var(--openbitfun-color-content-secondary);font-family:var(--openbitfun-font-family-mono)}
+.chips i:before{content:"";width:var(--openbitfun-space-3);height:var(--openbitfun-space-3);border-radius:var(--openbitfun-radius-pill);background:var(--c);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle)}
+.swbox{background:var(--stage);border:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);border-radius:var(--openbitfun-radius-2xl);padding:var(--openbitfun-space-4) var(--openbitfun-space-5);margin-bottom:var(--openbitfun-space-4)}
+.swrow{display:flex;gap:var(--openbitfun-space-3);flex-wrap:wrap;padding:var(--openbitfun-space-2) 0}
+.swlab{width:var(--openbitfun-space-16);flex:none;font-size:var(--openbitfun-type-body-sm-font-size);color:var(--openbitfun-color-content-muted)}
+.sw{display:flex;flex-direction:column;align-items:center;width:var(--openbitfun-space-16);font-size:var(--openbitfun-type-meta-font-size)}
+.sw i{width:var(--openbitfun-space-12);height:var(--openbitfun-space-12);border-radius:var(--openbitfun-radius-pill);margin-bottom:var(--openbitfun-space-1);box-shadow:inset 0 0 0 1px var(--openbitfun-color-border-default)}
+.sw code{font-family:var(--openbitfun-font-family-mono);font-size:var(--openbitfun-type-micro-font-size);color:var(--openbitfun-color-content-muted)}
+.alt{margin-top:var(--openbitfun-space-12);border-top:var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle)}
+.alt summary{cursor:pointer;padding:var(--openbitfun-space-4) 0;font-size:var(--openbitfun-type-heading-section-font-size);font-weight:var(--openbitfun-type-heading-section-font-weight);color:var(--openbitfun-color-content-secondary)}
+.note{margin-top:var(--openbitfun-space-6);background:var(--openbitfun-color-surface-tertiary);border-radius:var(--openbitfun-radius-lg);padding:var(--openbitfun-space-4) var(--openbitfun-space-5)}
+.note b{color:var(--openbitfun-color-content-primary)}
+</style>
+</head>
+<body>
+<div class="page" id="root" data-openbitfun-design-system-root data-color-scheme="light"><div class="wrap">
+  <h1>毕方 · 统一色板</h1>
+  <p class="lead">全文件统一的一套色板：18 种身体色 + 7 种天线球色。</p>
+
+  <form class="bar" id="bar">
+    <fieldset><legend>质感</legend><label><input type="radio" name="finish" value="smooth" checked>光滑</label><label><input type="radio" name="finish" value="metal">金属</label><label><input type="radio" name="finish" value="plush">毛绒</label></fieldset>
+    <fieldset><legend>展示底</legend><label><input type="radio" name="bg" value="tertiary" checked>surface.tertiary</label><label><input type="radio" name="bg" value="scene">surface.scene</label><label><input type="radio" name="bg" value="chrome">surface.chrome</label><label><input type="radio" name="bg" value="workbench">surface.workbench</label></fieldset>
+    <fieldset><legend>主题</legend><label><input type="radio" name="scheme" value="light" checked>浅色</label><label><input type="radio" name="scheme" value="dark">深色</label></fieldset>
+  </form>
+
+  <div id="groups"></div>
+
+</div></div>
+
+<script>
+/*__BF__*/
+</script>
+<script>
+(function(){
+  const {render, STYLE, statusColor} = BF;
+  const st = document.createElement('style'); st.textContent = STYLE; document.head.appendChild(st);
+
+  const { BOARD, makePalette } = BF;
+  const TK = /*__TOKENS_JSON__*/{};
+  const S = { finish:'smooth', bg:'tertiary', scheme:'light' };
+  const t = n => TK[n][S.scheme];
+  const hexOf = o => o.tok ? t(o.tok) : o.hex;
+  const status = () => ({ think: t('color.accent.secondary'), work: t('color.status.info.emphasis'), ask: t('color.status.warning.emphasis'), ok: t('color.status.success.emphasis'), err: t('color.status.danger.emphasis'), off: t('color.content.muted') });
+  const pal = b => makePalette(hexOf(b), b.ball || BOARD.balls.find(x => x.key === 'pearl').hex, { name: b.name, note: b.note, bifang: b.bifang, onDark: t('color.content.onDark'), onLight: t('color.content.onLight'), ring: t('color.surface.raised'), status: status() });
+  const SAMPLE = [['thinking','思考'],['coding','执行'],['awaiting','需要你'],['done','完成'],['error','异常'],['sleeping','离线']];
+  const svg = (id,P,o) => render(id, Object.assign({palette:P,compact:1,finish:S.finish,noStyle:true,lod:.45}, o||{})); // 卡片较小，毛绒用较低密度
+  function card(b,i){
+    const P = pal(b), no = String(i+1).padStart(2,'0');
+    const chips = [['身体',P.side],['眼睛',P.eye],['待命球',P.accent]].map(([l,c]) => `<i style="--c:${c}">${l} ${c}</i>`).join('');
+    return `<div class="card" id="${b.key}"><div class="stage"><span class="no">${no}</span>${svg('idle',P)}${svg('idle',P,{view:'flat'})}</div>
+      <div class="states">${SAMPLE.map(([id,n]) => `<div>${svg(id,P)}${n}</div>`).join('')}</div>
+      <div class="meta"><b>${no} ${b.name}</b><span>${b.tok || b.note || '非 token'}</span><div class="chips">${chips}</div></div></div>`;
+  }
+  function draw(){
+    const root = document.getElementById('root');
+    root.dataset.colorScheme = S.scheme;
+    root.style.setProperty('--stage', `var(--openbitfun-color-surface-${S.bg})`);
+    const strip = (lab, arr) => `<div class="swrow"><span class="swlab">${lab}</span>${arr.map(b => `<span class="sw"><i style="background:${b.same ? 'conic-gradient(var(--openbitfun-color-content-muted) 0 50%, transparent 0)' : hexOf(b)}"></i>${b.name}<code>${b.same ? '随身体' : hexOf(b)}</code></span>`).join('')}</div>`;
+    document.getElementById('groups').innerHTML = `<h2>色板<small>${BOARD.bodies.length} 种身体色 · ${BOARD.balls.length} 种天线球色</small></h2>
+      <div class="swbox">${strip('身体', BOARD.bodies)}${strip('天线球', BOARD.balls)}</div>
+      <h2>每种身体色的默认搭配<small>天线球用色板里的默认球色，可在“自己搭配”里换</small></h2>
+      <div class="grid">${BOARD.bodies.map(card).join('')}</div>`;
+  }
+  document.getElementById('bar').onchange = e => { S[e.target.name] = e.target.value; draw(); };
+  draw();
+})();
+</script>
+</body>
+</html>
