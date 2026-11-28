@@ -17,6 +17,8 @@ pub struct TokenAnchor {
     pub prefix_message_count: usize,
     pub prefix_last_message_id: Option<String>,
     pub prefix_digest: String,
+    /// Model configuration ID. Legacy provider-model-name values remain readable
+    /// but do not match a configuration ID.
     pub model_id: String,
     pub input_tokens: usize,
     pub system_tokens_at_anchor: usize,
@@ -53,6 +55,7 @@ pub struct TokenAnchorInput {
     pub session_id: String,
     pub turn_id: String,
     pub round_id: String,
+    /// Model configuration ID, not the provider model name.
     pub model_id: String,
     pub input_tokens: usize,
     pub system_tokens_at_anchor: usize,
@@ -408,6 +411,60 @@ mod tests {
             .skipped
             .iter()
             .all(|skip| skip.reason == "model_id_mismatch"));
+    }
+
+    #[test]
+    fn legacy_model_name_anchor_survives_upgrade_and_config_id_anchor_restores_matching() {
+        let messages = vec![Message::user("hello".into())];
+        let legacy_payload = serde_json::json!({
+            "anchor_id": "token_anchor_legacy",
+            "session_id": "session",
+            "turn_id": "turn",
+            "round_id": "round-legacy",
+            "prefix_message_count": messages.len(),
+            "prefix_last_message_id": messages.last().unwrap().id,
+            "prefix_digest": digest_message_prefix(&messages),
+            "model_id": "shared-provider-model-name",
+            "input_tokens": 123,
+            "system_tokens_at_anchor": 0,
+            "tool_tokens_at_anchor": 0,
+            "prepended_reminder_tokens_at_anchor": 0,
+            "created_at_unix_ms": 1
+        });
+        let legacy: TokenAnchor = serde_json::from_value(legacy_payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&legacy).unwrap(), legacy_payload);
+
+        let store = TokenAnchorStore::new();
+        store.replace_session("session", vec![legacy.clone()]);
+        let selection =
+            store.select_latest_matching_for_model("session", &messages, Some("model-config-id"));
+        assert!(selection.selected.is_none());
+        assert_eq!(selection.skipped.len(), 1);
+        assert_eq!(selection.skipped[0].reason, "model_id_mismatch");
+
+        let current = TokenAnchor::from_request_prefix(
+            TokenAnchorInput {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                round_id: "round-current".into(),
+                model_id: "model-config-id".into(),
+                input_tokens: 456,
+                system_tokens_at_anchor: 0,
+                tool_tokens_at_anchor: 0,
+                prepended_reminder_tokens_at_anchor: 0,
+            },
+            &messages,
+        );
+        store.append(current.clone());
+        let selection =
+            store.select_latest_matching_for_model("session", &messages, Some("model-config-id"));
+        assert_eq!(selection.selected, Some(current));
+        assert!(selection.skipped.is_empty());
+        assert!(store.anchors("session").contains(&legacy));
+        assert!(store
+            .select_latest_matching_for_model("session", &messages, Some("other-config-id"))
+            .selected
+            .is_none());
     }
 
     #[test]

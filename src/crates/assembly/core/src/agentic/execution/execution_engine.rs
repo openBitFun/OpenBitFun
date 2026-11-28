@@ -5126,7 +5126,7 @@ impl ExecutionEngine {
                         session_id: context.session_id.clone(),
                         turn_id: context.dialog_turn_id.clone(),
                         round_id,
-                        model_id: ai_client.config.model.clone(),
+                        model_id: model_id.clone(),
                         input_tokens: usage.prompt_token_count as usize,
                         system_tokens_at_anchor,
                         tool_tokens_at_anchor,
